@@ -35,7 +35,7 @@ return new class extends Migration
             $t->unsignedBigInteger('deal_amount')->nullable();
             $t->unsignedBigInteger('redeem_amount')->nullable();
             $t->string('voucher_code')->default('');
-            $t->text('remark')->default('');
+            $t->text('remark')->nullable();
             $t->string('created_by')->default('');
             $t->timestamps();
         });
@@ -125,7 +125,7 @@ return new class extends Migration
             $t->string('target_id', 24)->default('0');
             $t->string('target_label')->default('');
             $t->string('venue', 10)->default('双店');
-            $t->text('detail')->default('');
+            $t->text('detail')->nullable();
         });
 
         // 单行设置：清单规则 + 同步快照
