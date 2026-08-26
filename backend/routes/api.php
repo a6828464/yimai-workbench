@@ -135,7 +135,7 @@ Route::middleware('auth:sanctum')->group(function () {
         try {
             KyClient::token((bool) $r->input('force'));
         } catch (\Throwable $e) {
-            abort(502, $e->getMessage());
+            return response()->json(['code' => 1, 'message' => $e->getMessage()]);
         }
 
         return ok(['ok' => true]);
@@ -147,9 +147,9 @@ Route::middleware('auth:sanctum')->group(function () {
         try {
             return ok(KyClient::call($path, $r->input('form')));
         } catch (\InvalidArgumentException $e) {
-            abort(422, $e->getMessage());
+            return response()->json(['code' => 1, 'message' => $e->getMessage()], 422);
         } catch (\Throwable $e) {
-            abort(502, $e->getMessage());
+            return response()->json(['code' => 1, 'message' => $e->getMessage()]);
         }
     });
 
@@ -161,7 +161,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'model' => 'required|string',
             'messages' => 'required|array',
         ]);
-        abort_unless(str_starts_with($d['baseUrl'], 'https://'), 422, '接口地址必须为 https');
+        if (! str_starts_with($d['baseUrl'], 'https://')) return response()->json(['code' => 1, 'message' => '接口地址必须为 https'], 422);
 
         // 推理模型（reasoner / r1 / o1 / o3 / thinking）不支持 temperature，
         // 且 max_tokens 需要足够大来容纳推理过程
@@ -185,13 +185,13 @@ Route::middleware('auth:sanctum')->group(function () {
                 ->timeout(90)
                 ->post(rtrim($d['baseUrl'], '/').'/chat/completions', $payload);
         } catch (\Throwable $e) {
-            abort(502, '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160));
+            return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
         }
         if (! $resp->successful()) {
-            abort(502, '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 250));
+            return response()->json(['code' => 1, 'message' => '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 250)]);
         }
         $content = $resp->json('choices.0.message.content');
-        abort_if($content === null, 502, '大模型响应缺少内容: '.mb_substr($resp->body(), 0, 150));
+        if ($content === null) return response()->json(['code' => 1, 'message' => '大模型响应缺少内容: '.mb_substr($resp->body(), 0, 150)]);
 
         return ok(['content' => $content]);
     });
@@ -201,17 +201,17 @@ Route::middleware('auth:sanctum')->group(function () {
             'baseUrl' => 'required|url',
             'apiKey' => 'required|string',
         ]);
-        abort_unless(str_starts_with($d['baseUrl'], 'https://'), 422, '接口地址必须为 https');
+        if (! str_starts_with($d['baseUrl'], 'https://')) return response()->json(['code' => 1, 'message' => '接口地址必须为 https'], 422);
 
         try {
             $resp = Http::withToken($d['apiKey'])
                 ->timeout(30)
                 ->get(rtrim($d['baseUrl'], '/').'/models');
         } catch (\Throwable $e) {
-            abort(502, '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160));
+            return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
         }
         if (! $resp->successful()) {
-            abort(502, '获取模型列表 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 200));
+            return response()->json(['code' => 1, 'message' => '获取模型列表 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 200)]);
         }
 
         // OpenAI 兼容格式：{data:[{id}]}；部分厂商为 {data:{...}} 或 {models:[...]}
