@@ -168,18 +168,22 @@
           body: JSON.stringify({
             model: aiStore.config.model,
             messages: [{ role: 'user', content: '回复OK' }],
-            max_tokens: 5
+            max_tokens: 512
           })
         })
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        if (!resp.ok) {
+          const t = await resp.text().catch(() => '')
+          throw new Error(`HTTP ${resp.status} ${t.slice(0, 200)}`)
+        }
       } else {
+        // 后端代理：max_tokens 给足余量，避免部分模型因 max_tokens 过小直接 400
         await apiPost('/ai/chat', {
           baseUrl: aiStore.config.baseUrl,
           apiKey: aiStore.config.apiKey,
           model: aiStore.config.model,
           messages: [{ role: 'user', content: '回复OK' }],
           temperature: 0.1,
-          maxTokens: 8
+          maxTokens: 512
         })
       }
       testResult.value = '测试连接 ✓ 连通正常'

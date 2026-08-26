@@ -163,12 +163,22 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
         abort_unless(str_starts_with($d['baseUrl'], 'https://'), 422, '接口地址必须为 https');
 
+        // 推理模型（reasoner / r1 / o1 / o3 / thinking）不支持 temperature，
+        // 且 max_tokens 需要足够大来容纳推理过程
+        $isReasoning = (bool) preg_match('/(reasoner|^r1|deepseek-r1|^o1|^o3|-thinking|viz|thinking)/i', $d['model']);
         $payload = [
             'model' => $d['model'],
             'messages' => $d['messages'],
-            'temperature' => (float) ($r->input('temperature', 0.8)),
         ];
-        if ($r->filled('maxTokens')) $payload['max_tokens'] = (int) $r->input('maxTokens');
+        // 非推理模型才带 temperature
+        if (! $isReasoning && $r->filled('temperature')) {
+            $payload['temperature'] = (float) $r->input('temperature');
+        }
+        // max_tokens：推理模型给足余量，普通模型按传入值
+        if ($r->filled('maxTokens')) {
+            $mt = (int) $r->input('maxTokens');
+            $payload['max_tokens'] = $isReasoning ? max(2048, $mt) : max(16, $mt);
+        }
 
         try {
             $resp = Http::withToken($d['apiKey'])
@@ -178,10 +188,10 @@ Route::middleware('auth:sanctum')->group(function () {
             abort(502, '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160));
         }
         if (! $resp->successful()) {
-            abort(502, '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 200));
+            abort(502, '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 250));
         }
         $content = $resp->json('choices.0.message.content');
-        abort_if($content === null, 502, '大模型响应缺少内容');
+        abort_if($content === null, 502, '大模型响应缺少内容: '.mb_substr($resp->body(), 0, 150));
 
         return ok(['content' => $content]);
     });
