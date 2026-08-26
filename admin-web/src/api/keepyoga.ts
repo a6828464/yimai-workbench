@@ -1,8 +1,11 @@
 /**
  * KeepYoga 只读客户端
- * 登录凭据保存在开发服务器侧（.env.local），前端仅持有临时 access_token。
- * 阶段1由 Laravel Integration 模块提供等价接口。
+ * - 后端模式（USE_BACKEND）：凭据与 access_token 全部由 Laravel 服务端持有，
+ *   前端仅调用 /ky/session 与 /ky/call 代理接口
+ * - 演示模式：沿用 Vite 开发服务器代理（.env.local 凭据），token 存于前端内存
  */
+import { USE_BACKEND, apiPost } from './backend'
+
 const BRAND_ID = '108193'
 const VERSION = '10.1.3'
 
@@ -11,6 +14,11 @@ export const KY_STORES: Record<string, string> = { 绿地店: '1', 东部店: '4
 let cachedToken = ''
 
 export async function kySession(force = false): Promise<string> {
+  if (USE_BACKEND) {
+    // 会话由服务端建立并缓存，浏览器不接触 token
+    await apiPost('/ky/session', force ? { force: true } : undefined)
+    return 'backend'
+  }
   if (cachedToken && !force) return cachedToken
   const resp = await fetch('/api/ky/session', { method: 'POST' })
   const data = await resp.json()
@@ -20,6 +28,15 @@ export async function kySession(force = false): Promise<string> {
 }
 
 async function kyPost<T = unknown>(path: string, body: Record<string, unknown>, venueId?: string): Promise<T> {
+  if (USE_BACKEND) {
+    const form: Record<string, unknown> = { ...body }
+    if (venueId && form['venue_id'] === undefined) form['venue_id'] = venueId
+    const data = await apiPost<{ errno?: string | number } & Record<string, unknown>>('/ky/call', { path, form })
+    if (String(data?.errno ?? '0') !== '0') {
+      throw new Error(`${path} errno=${data?.errno} ${data?.emsg ?? ''}`)
+    }
+    return data as T
+  }
   const token = await kySession()
   const params: Record<string, string> = {
     access_token: token,

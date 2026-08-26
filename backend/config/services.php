@@ -35,4 +35,10 @@ return [
         ],
     ],
 
+    // 随心瑜 KeepYoga（只读接入，凭据仅存服务端）
+    'ky' => [
+        'phone' => env('KY_PHONE'),
+        'password' => env('KY_PASSWORD'),
+    ],
+
 ];

@@ -7,6 +7,7 @@ use App\Models\Customer;
 use App\Models\Lead;
 use App\Models\Task;
 use App\Models\User;
+use App\Services\KyClient;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -123,6 +124,29 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($m = $r->query('module')) $q->where('module', $m);
         if ($a = $r->query('action')) $q->where('action', $a);
         return ok($q->limit((int) $r->query('size', 200))->get()->map(fn ($x) => camel($x)));
+    });
+
+    // ---------- KeepYoga 只读代理（阶段1：凭据仅存服务端） ----------
+    Route::post('/ky/session', function (Request $r) {
+        try {
+            KyClient::token((bool) $r->input('force'));
+        } catch (\Throwable $e) {
+            abort(502, $e->getMessage());
+        }
+
+        return ok(['ok' => true]);
+    });
+
+    Route::post('/ky/call', function (Request $r) {
+        $path = (string) $r->input('path', '');
+        abort_unless(is_array($r->input('form')), 422, 'form 必须是对象');
+        try {
+            return ok(KyClient::call($path, $r->input('form')));
+        } catch (\InvalidArgumentException $e) {
+            abort(422, $e->getMessage());
+        } catch (\Throwable $e) {
+            abort(502, $e->getMessage());
+        }
     });
 });
 
