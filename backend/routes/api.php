@@ -148,6 +148,46 @@ Route::middleware('auth:sanctum')->group(function () {
             abort(502, $e->getMessage());
         }
     });
+
+    // ---------- 版本更新（仅超管） ----------
+    Route::get('/system/version', function () {
+        return ok(systemVersionInfo());
+    });
+
+    Route::get('/system/changelog', function () {
+        $file = dirname(base_path()).'/CHANGELOG.md';
+        abort_unless(is_file($file), 404, 'CHANGELOG.md 不存在');
+
+        return ok(['content' => file_get_contents($file)]);
+    });
+
+    Route::post('/system/update', function (Request $r) {
+        abort_unless($r->user()->role === 'R_SUPER', 403);
+        $log = [];
+
+        // 拉取最新代码（仅快进合并，避免覆盖本地改动）
+        $pull = runInRepo(['git', 'pull', '--ff-only', 'origin', 'main']);
+        $log[] = ['step' => 'git pull', 'ok' => $pull['ok'], 'output' => $pull['output']];
+        if (! $pull['ok']) {
+            audit($r, '失败', '版本更新', 0, '在线更新', '双店', implode("\n", array_slice($pull['output'], -3)));
+            return ok(['success' => false, 'log' => $log]);
+        }
+
+        // 数据库结构同步（幂等）
+        $migrate = runInRepo([PHP_BINARY, ArtisanBinary(), 'migrate', '--force']);
+        $log[] = ['step' => 'php artisan migrate', 'ok' => $migrate['ok'], 'output' => $migrate['output']];
+
+        // 后端依赖同步（composer.lock 有变化时才装）
+        if ($pull['changed']) {
+            $composer = runInRepo(['composer', 'install', '--no-interaction', '--prefer-dist', '--no-dev']);
+            $log[] = ['step' => 'composer install', 'ok' => $composer['ok'], 'output' => $composer['output']];
+        }
+
+        $info = systemVersionInfo();
+        audit($r, '执行', '版本更新', 0, '在线更新至 '.substr((string) $info['remote']['commit'], 0, 7), '双店', implode("\n", array_map(fn ($l) => $l['step'].': '.($l['ok'] ? 'OK' : 'FAIL'), $log)));
+
+        return ok(['success' => ! in_array(false, array_column($log, 'ok'), true), 'version' => $info, 'log' => $log]);
+    });
 });
 
 // ---------- helpers ----------
@@ -219,4 +259,59 @@ function filteredIds(string $list): array
                 default => false,
             };
         })->pluck('id')->all();
+}
+
+// ---------- 版本更新 helpers ----------
+
+function ArtisanBinary(): string
+{
+    return base_path('artisan');
+}
+
+/** 在仓库根目录执行命令，返回 [ok, output[], changed?] */
+function runInRepo(array $cmd): array
+{
+    $process = new Symfony\Component\Process\Process($cmd, base_path());
+    $process->setTimeout(300)->run();
+
+    return [
+        'ok' => $process->isSuccessful(),
+        'output' => array_filter(array_map('trim', explode("\n", trim($process->getOutput()."\n".$process->getErrorOutput())))),
+        'changed' => $process->isSuccessful() && str_contains($process->getOutput(), 'files changed'),
+    ];
+}
+
+/** 本地 + 远程版本信息 */
+function systemVersionInfo(): array
+{
+    $git = function (array $args): string {
+        $p = new Symfony\Component\Process\Process(['git', ...$args], base_path());
+        $p->setTimeout(30)->run();
+
+        return trim($p->isSuccessful() ? $p->getOutput() : '');
+    };
+
+    $local = [
+        'branch' => $git(['rev-parse', '--abbrev-ref', 'HEAD']),
+        'commit' => $git(['rev-parse', 'HEAD']),
+        'message' => $git(['log', '-1', '--pretty=%s']),
+        'date' => $git(['log', '-1', '--pretty=%ci']),
+    ];
+
+    // 远端 main 最新提交（ls-remote 复用本机凭据，无需 API token）
+    $remoteSha = '';
+    $remoteErr = '';
+    $p = new Symfony\Component\Process\Process(['git', 'ls-remote', 'origin', 'refs/heads/main'], base_path());
+    $p->setTimeout(60)->run();
+    if ($p->isSuccessful() && preg_match('/^([0-9a-f]{40})/m', $p->getOutput(), $m)) {
+        $remoteSha = $m[1];
+    } else {
+        $remoteErr = mb_substr(trim($p->getErrorOutput()), 0, 200);
+    }
+
+    return [
+        'local' => $local,
+        'remote' => ['commit' => $remoteSha, 'error' => $remoteErr],
+        'upToDate' => $remoteSha !== '' && str_starts_with($remoteSha, $local['commit']),
+    ];
 }
