@@ -134,7 +134,10 @@
 
   function extractErrMsg(e: unknown): string {
     const resp = (e as { response?: { data?: { message?: string } } })?.response?.data
-    return String(resp?.message ?? e).slice(0, 120)
+    if (resp?.message) return String(resp.message).slice(0, 160)
+    const data = (e as { code?: number; message?: string }).message
+    if (data) return String(data).slice(0, 160)
+    return String(e).slice(0, 120)
   }
 
   async function save() {
@@ -177,7 +180,7 @@
         }
       } else {
         // 后端代理：max_tokens 给足余量，避免部分模型因 max_tokens 过小直接 400
-        await apiPost('/ai/chat', {
+        const r = await apiPost<{ code?: number; message?: string; content?: string }>('/ai/chat', {
           baseUrl: aiStore.config.baseUrl,
           apiKey: aiStore.config.apiKey,
           model: aiStore.config.model,
@@ -185,6 +188,11 @@
           temperature: 0.1,
           maxTokens: 512
         })
+        // 后端失败时 HTTP 200 + code:1，需显式判断
+        if (r && r.code !== undefined && r.code !== 0) {
+          throw new Error(r.message || 'AI_ERROR')
+        }
+        if (!r?.content) throw new Error('响应缺少内容')
       }
       testResult.value = '测试连接 ✓ 连通正常'
       ElMessage.success('连接成功，模型可用')

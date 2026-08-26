@@ -164,13 +164,16 @@ async function callLLM(messages: ChatMessage[]): Promise<string> {
   const c = store.config
 
   if (USE_BACKEND) {
-    const d = await apiPost<{ content: string }>('/ai/chat', {
+    const d = await apiPost<{ content?: string; code?: number; message?: string }>('/ai/chat', {
       baseUrl: c.baseUrl,
       apiKey: c.apiKey,
       model: c.model,
       messages,
       temperature: c.temperature
     })
+    if (d && d.code !== undefined && d.code !== 0) {
+      throw new Error(d.message || 'LLM_HTTP_ERROR')
+    }
     if (!d?.content) throw new Error('LLM_EMPTY_RESPONSE')
     return String(d.content)
   }
@@ -200,7 +203,10 @@ async function callLLM(messages: ChatMessage[]): Promise<string> {
 /** 获取服务商可用模型列表（OpenAI 兼容 /models），走 Laravel 代理 */
 export async function fetchAvailableModels(baseUrl: string, apiKey: string): Promise<string[]> {
   if (!USE_BACKEND) throw new Error('需要后端模式支持')
-  const d = await apiPost<{ models: string[] }>('/ai/models', { baseUrl, apiKey })
+  const d = await apiPost<{ models?: string[]; code?: number; message?: string }>('/ai/models', { baseUrl, apiKey })
+  if (d && d.code !== undefined && d.code !== 0) {
+    throw new Error(d.message || '获取模型列表失败')
+  }
   return d?.models ?? []
 }
 
