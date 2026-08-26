@@ -29,9 +29,12 @@
               <ElInput v-model="form.apiKey" type="password" show-password placeholder="sk-..." />
             </ElFormItem>
             <ElFormItem label="模型">
-              <ElSelect v-model="form.model" filterable allow-create default-first-option>
-                <ElOption v-for="m in presetModels" :key="m" :label="m" :value="m" />
-              </ElSelect>
+              <div class="flex gap-2 w-full">
+                <ElSelect v-model="form.model" filterable allow-create default-first-option class="flex-1">
+                  <ElOption v-for="m in modelOptions" :key="m" :label="m" :value="m" />
+                </ElSelect>
+                <ElButton :loading="loadingModels" @click="loadModels">获取模型</ElButton>
+              </div>
             </ElFormItem>
             <ElFormItem label="温度">
               <ElSlider v-model="form.temperature" :min="0" :max="1.5" :step="0.1" show-input class="!w-full !pr-2" />
@@ -44,7 +47,7 @@
               :closable="false"
               class="mb-4"
             >
-              当前阶段密钥保存在浏览器本地，仅限内部试用；阶段1后端上线后由 Laravel 代理调用，Key 仅存服务器环境变量，前端不再接触。
+              当前阶段密钥保存在浏览器本地，仅限内部试用；大模型调用已由 Laravel 后端代理转发（规避浏览器跨域限制），后续将把 Key 迁移至服务器端存储。
             </ElAlert>
 
             <div class="flex gap-2">
@@ -87,6 +90,8 @@
 <script setup lang="ts">
   import { AI_PROVIDER_PRESETS, useAiConfigStore } from '@/store/modules/ai-config'
   import { useYimaiStore } from '@/store/modules/yimai'
+  import { fetchAvailableModels } from '@/api/ai'
+  import { USE_BACKEND, apiPost } from '@/api/backend'
   import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'YimaiAiConfig' })
@@ -98,11 +103,39 @@
   const saving = ref(false)
   const testing = ref(false)
   const testResult = ref('')
+  const loadingModels = ref(false)
+  const fetchedModels = ref<string[]>([])
 
   const presetModels = computed(() => {
     const preset = AI_PROVIDER_PRESETS.find((p) => p.label === form.providerLabel)
     return preset?.models.length ? preset.models : [form.model].filter(Boolean)
   })
+
+  /** 模型下拉选项：优先展示从服务商拉取的真实列表 */
+  const modelOptions = computed(() => (fetchedModels.value.length ? fetchedModels.value : presetModels.value))
+
+  async function loadModels() {
+    if (!form.baseUrl || !form.apiKey) {
+      ElMessage.warning('请先填写接口地址和 API Key')
+      return
+    }
+    loadingModels.value = true
+    try {
+      const models = await fetchAvailableModels(form.baseUrl, form.apiKey)
+      fetchedModels.value = models
+      ElMessage.success(`已获取 ${models.length} 个模型`)
+      if (models.length && !models.includes(form.model)) form.model = models[0]
+    } catch (e) {
+      ElMessage.error(`获取模型失败：${extractErrMsg(e)}`)
+    } finally {
+      loadingModels.value = false
+    }
+  }
+
+  function extractErrMsg(e: unknown): string {
+    const resp = (e as { response?: { data?: { message?: string } } })?.response?.data
+    return String(resp?.message ?? e).slice(0, 120)
+  }
 
   async function save() {
     saving.value = true
@@ -127,26 +160,33 @@
     testResult.value = '测试中...'
     try {
       Object.assign(aiStore.config, form)
-      const resp = await fetch(`${aiStore.config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aiStore.config.apiKey}` },
-        body: JSON.stringify({
+      if (!USE_BACKEND) {
+        // 演示模式：浏览器直连（仅对支持CORS的服务商可用）
+        const resp = await fetch(`${aiStore.config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aiStore.config.apiKey}` },
+          body: JSON.stringify({
+            model: aiStore.config.model,
+            messages: [{ role: 'user', content: '回复OK' }],
+            max_tokens: 5
+          })
+        })
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      } else {
+        await apiPost('/ai/chat', {
+          baseUrl: aiStore.config.baseUrl,
+          apiKey: aiStore.config.apiKey,
           model: aiStore.config.model,
           messages: [{ role: 'user', content: '回复OK' }],
-          max_tokens: 5
+          temperature: 0.1,
+          maxTokens: 8
         })
-      })
-      if (resp.ok) {
-        testResult.value = '测试连接 ✓ 连通正常'
-        ElMessage.success('连接成功，模型可用')
-      } else {
-        const t = await resp.text().catch(() => '')
-        testResult.value = `失败 HTTP ${resp.status}`
-        ElMessage.error(`连接失败：HTTP ${resp.status} ${t.slice(0, 120)}`)
       }
+      testResult.value = '测试连接 ✓ 连通正常'
+      ElMessage.success('连接成功，模型可用')
     } catch (e) {
-      testResult.value = '网络错误'
-      ElMessage.error(`无法访问接口：${String(e).slice(0, 100)}（可能是浏览器跨域限制，阶段1将由后端代理）`)
+      testResult.value = '连接失败'
+      ElMessage.error(`连接失败：${extractErrMsg(e)}${USE_BACKEND ? '' : '（演示模式受浏览器跨域限制，请启用后端模式）'}`)
     } finally {
       testing.value = false
       setTimeout(() => (testResult.value = ''), 6000)

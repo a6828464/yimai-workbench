@@ -1,5 +1,6 @@
 import { useAiConfigStore } from '@/store/modules/ai-config'
 import { useYimaiStore } from '@/store/modules/yimai'
+import { USE_BACKEND, apiPost } from './backend'
 
 // ==================== 朋友圈：选项口径（报告 7.3-7.4） ====================
 
@@ -152,10 +153,28 @@ interface ChatMessage {
   content: string
 }
 
+/**
+ * 大模型调用统一入口
+ * - 后端模式：经 Laravel /ai/chat 代理转发，规避浏览器跨域限制（推荐）
+ * - 演示模式：浏览器直连（仅对支持CORS的服务商可用）
+ */
 async function callLLM(messages: ChatMessage[]): Promise<string> {
   const store = useAiConfigStore()
   if (!store.isReady()) throw new Error('AI_NOT_CONFIGURED')
   const c = store.config
+
+  if (USE_BACKEND) {
+    const d = await apiPost<{ content: string }>('/ai/chat', {
+      baseUrl: c.baseUrl,
+      apiKey: c.apiKey,
+      model: c.model,
+      messages,
+      temperature: c.temperature
+    })
+    if (!d?.content) throw new Error('LLM_EMPTY_RESPONSE')
+    return String(d.content)
+  }
+
   const resp = await fetch(`${c.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -176,6 +195,13 @@ async function callLLM(messages: ChatMessage[]): Promise<string> {
   const content = data?.choices?.[0]?.message?.content
   if (!content) throw new Error('LLM_EMPTY_RESPONSE')
   return String(content)
+}
+
+/** 获取服务商可用模型列表（OpenAI 兼容 /models），走 Laravel 代理 */
+export async function fetchAvailableModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  if (!USE_BACKEND) throw new Error('需要后端模式支持')
+  const d = await apiPost<{ models: string[] }>('/ai/models', { baseUrl, apiKey })
+  return d?.models ?? []
 }
 
 function parseJsonLoose(text: string): { title: string; content: string; tags: string[] } | null {

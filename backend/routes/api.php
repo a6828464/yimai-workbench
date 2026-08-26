@@ -9,6 +9,7 @@ use App\Models\Task;
 use App\Models\User;
 use App\Services\KyClient;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/auth/login', [App\Http\Controllers\AuthController::class, 'login']);
@@ -147,6 +148,71 @@ Route::middleware('auth:sanctum')->group(function () {
         } catch (\Throwable $e) {
             abort(502, $e->getMessage());
         }
+    });
+
+    // ---------- AI 大模型代理（OpenAI 兼容协议，解决浏览器跨域） ----------
+    Route::post('/ai/chat', function (Request $r) {
+        $d = $r->validate([
+            'baseUrl' => 'required|url',
+            'apiKey' => 'required|string',
+            'model' => 'required|string',
+            'messages' => 'required|array',
+        ]);
+        abort_unless(str_starts_with($d['baseUrl'], 'https://'), 422, '接口地址必须为 https');
+
+        $payload = [
+            'model' => $d['model'],
+            'messages' => $d['messages'],
+            'temperature' => (float) ($r->input('temperature', 0.8)),
+        ];
+        if ($r->filled('maxTokens')) $payload['max_tokens'] = (int) $r->input('maxTokens');
+
+        try {
+            $resp = Http::withToken($d['apiKey'])
+                ->timeout(90)
+                ->post(rtrim($d['baseUrl'], '/').'/chat/completions', $payload);
+        } catch (\Throwable $e) {
+            abort(502, '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160));
+        }
+        if (! $resp->successful()) {
+            abort(502, '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 200));
+        }
+        $content = $resp->json('choices.0.message.content');
+        abort_if($content === null, 502, '大模型响应缺少内容');
+
+        return ok(['content' => $content]);
+    });
+
+    Route::post('/ai/models', function (Request $r) {
+        $d = $r->validate([
+            'baseUrl' => 'required|url',
+            'apiKey' => 'required|string',
+        ]);
+        abort_unless(str_starts_with($d['baseUrl'], 'https://'), 422, '接口地址必须为 https');
+
+        try {
+            $resp = Http::withToken($d['apiKey'])
+                ->timeout(30)
+                ->get(rtrim($d['baseUrl'], '/').'/models');
+        } catch (\Throwable $e) {
+            abort(502, '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160));
+        }
+        if (! $resp->successful()) {
+            abort(502, '获取模型列表 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 200));
+        }
+
+        // OpenAI 兼容格式：{data:[{id}]}；部分厂商为 {data:{...}} 或 {models:[...]}
+        $json = $resp->json();
+        $raw = $json['data'] ?? $json['models'] ?? [];
+        if (is_array($raw) && isset($raw[0]) && is_array($raw[0])) {
+            $ids = array_map(fn ($m) => (string) ($m['id'] ?? $m['name'] ?? ''), $raw);
+        } else {
+            $ids = is_array($raw) ? array_map('strval', $raw) : [];
+        }
+        $ids = array_values(array_filter(array_unique($ids)));
+        sort($ids, SORT_NATURAL | SORT_FLAG_CASE);
+
+        return ok(['models' => $ids]);
     });
 
     // ---------- 版本更新（仅超管） ----------
