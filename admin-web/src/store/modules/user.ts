@@ -157,6 +157,7 @@ export const useUserStore = defineStore(
       lockPassword.value = ''
       // 清空访问令牌
       accessToken.value = ''
+      localStorage.removeItem('backend-token')
       // 清空刷新令牌
       refreshToken.value = ''
       // 注意：不清空工作台标签页，等下次登录时根据用户判断

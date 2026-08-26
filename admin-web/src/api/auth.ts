@@ -1,9 +1,9 @@
 import { HttpError } from '@/utils/http/error'
 import { useUserStore } from '@/store/modules/user'
+import { USE_BACKEND, apiGet, apiPost, setBackendToken } from './backend'
 
 /**
- * 本地模拟认证（阶段1接入 Laravel 后端后替换）
- * 角色：超管(R_SUPER) / 店长(R_MANAGER) / 老师(R_TEACHER) / 新媒体(R_MEDIA)
+ * 认证：VITE_USE_BACKEND=true 走 Laravel 后端，否则本地模拟
  */
 interface LocalAccount extends Api.Auth.UserInfo {
   password: string
@@ -25,6 +25,22 @@ function findAccount(predicate: (a: LocalAccount) => boolean): LocalAccount | nu
 }
 
 export async function fetchLogin(params: Api.Auth.LoginParams): Promise<Api.Auth.LoginResponse> {
+  if (USE_BACKEND) {
+    try {
+      const data = await apiPost<{ token: string; userInfo: Api.Auth.UserInfo }>('/auth/login', {
+        userName: params.userName,
+        password: params.password
+      })
+      setBackendToken(data.token)
+      useUserStore().setUserInfo(data.userInfo)
+      return { token: data.token, refreshToken: data.token }
+    } catch (e: unknown) {
+      const msg =
+        (e as { response?: { data?: { message?: string } } }).response?.data?.message ?? '账号或密码错误'
+      throw new HttpError(msg, 400)
+    }
+  }
+
   const name = params.userName.trim()
   const account = findAccount((a) => a.userName === name || a.key === name.toLowerCase())
   if (!account || account.password !== params.password) {
@@ -37,6 +53,9 @@ export async function fetchLogin(params: Api.Auth.LoginParams): Promise<Api.Auth
 }
 
 export function fetchGetUserInfo(): Promise<Api.Auth.UserInfo> {
+  if (USE_BACKEND) {
+    return apiGet<Api.Auth.UserInfo>('/me')
+  }
   const userStore = useUserStore()
   const token = userStore.accessToken
   const key = token.startsWith('local.') ? token.slice(6) : ''

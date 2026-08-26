@@ -1,20 +1,39 @@
 import { useUserStore } from '@/store/modules/user'
 import { useYimaiStore } from '@/store/modules/yimai'
 import { fetchKyMembers, KY_STORES } from './keepyoga'
+import { USE_BACKEND, apiGet, apiPost, apiPatch, apiPut } from './backend'
 import type { YimaiLead, YimaiAuditLog, YimaiCustomer as StoreCustomer, MemberRules } from '@/store/modules/yimai'
 
 export type { YimaiLead, YimaiAuditLog, MemberRules }
+
+let rulesCache: MemberRules = { renewalThreshold: 10, vipThreshold: 100, declineMode: 'strict' }
+
+export async function refreshMemberRules(): Promise<MemberRules> {
+  if (USE_BACKEND) {
+    rulesCache = await apiGet<MemberRules>('/member-rules')
+  }
+  return rulesCache
+}
 
 /** 卓越店长训练营五张运营清单 */
 export type MemberListKey = '待续课' | '出勤降低' | 'VIP' | '预流失' | '待复活'
 
 export function getMemberRules(): MemberRules {
+  if (USE_BACKEND) return rulesCache
   ensureSeeded()
-  return useYimaiStore().state.rules
+  rulesCache = useYimaiStore().state.rules
+  return rulesCache
 }
 
-export function setMemberRules(rules: MemberRules) {
+export function setMemberRules(rules: MemberRules): void {
+  if (USE_BACKEND) {
+    void apiPut<MemberRules>('/member-rules', rules as unknown as Record<string, unknown>).then((r) => {
+      rulesCache = r
+    })
+    return
+  }
   useYimaiStore().setMemberRules(rules)
+  rulesCache = rules
 }
 
 /**
@@ -49,6 +68,10 @@ function lastVisitDays(date: string | null): number {
 }
 
 export function updateMemberFields(id: number, patch: Partial<YimaiCustomer>, actionLabel?: string): boolean {
+  if (USE_BACKEND) {
+    void apiPatch(`/customers/${id}`, { ...patch, _action: actionLabel ?? '修改' } as Record<string, unknown>)
+    return true
+  }
   return useYimaiStore().updateMember(id, patch, actionLabel)
 }
 
@@ -141,6 +164,9 @@ function allCustomers(): YimaiCustomer[] {
 // ==================== 前端客资（留资） ====================
 
 export function queryLeads(params: PageParams & { name?: string; venue?: string; status?: string; source?: string }) {
+  if (USE_BACKEND) {
+    return apiGet<{ records: YimaiLead[]; total: number }>('/leads', params as Record<string, unknown>)
+  }
   ensureSeeded()
   const store = useYimaiStore()
   const a = actor()
@@ -155,14 +181,23 @@ export function queryLeads(params: PageParams & { name?: string; venue?: string;
 }
 
 export function addLead(data: Omit<YimaiLead, 'id' | 'status' | 'createdBy' | 'createdAt'> & { status?: YimaiLead['status'] }) {
+  if (USE_BACKEND) {
+    return apiPost<{ id: number }>('/leads', data as unknown as Record<string, unknown>)
+  }
   return Promise.resolve(useYimaiStore().addLead(data))
 }
 
 export function updateLead(id: number, patch: Partial<YimaiLead>) {
+  if (USE_BACKEND) {
+    return apiPatch<unknown>(`/leads/${id}`, patch as Record<string, unknown>)
+  }
   return Promise.resolve(useYimaiStore().updateLead(id, patch))
 }
 
 export function getLeadHistory(leadId: number): Promise<YimaiAuditLog[]> {
+  if (USE_BACKEND) {
+    return apiGet<YimaiAuditLog[]>(`/leads/${leadId}/history`)
+  }
   return Promise.resolve(useYimaiStore().getLeadHistory(leadId))
 }
 
@@ -184,6 +219,10 @@ export function canAssignTeacher(): boolean {
 // ==================== 审计留痕 ====================
 
 export function queryAuditLogs(params: PageParams & { operator?: string; module?: string; action?: string }) {
+  if (USE_BACKEND) {
+    return apiGet<{ records: YimaiAuditLog[]; total: number }>('/audit-logs', params as Record<string, unknown>)
+      .then((d) => ({ records: d.records ?? [], total: d.records?.length ?? 0 }))
+  }
   const a = actor()
   if (!a.isSuper && !a.isBoss) {
     return Promise.reject(new Error('无权限：仅老板可查看操作留痕'))
@@ -202,6 +241,11 @@ export function queryAuditLogs(params: PageParams & { operator?: string; module?
 export function queryCustomers(
   params: PageParams & { name?: string; venue?: string; layer?: string; type?: 'all' | 'member' | 'lead'; list?: MemberListKey }
 ): Promise<{ records: YimaiCustomer[]; total: number; current: number; size: number }> {
+  if (USE_BACKEND) {
+    return apiGet<{ records: YimaiCustomer[]; total: number }>('/customers', {
+      name: params.name, venue: params.venue, list: params.list, size: params.size
+    } as Record<string, unknown>).then((d) => ({ ...d, current: 1, size: params.size ?? 20 }))
+  }
   const a = actor()
   let list: YimaiCustomer[] = allCustomers().filter((c) => inScope(c.venue, a.scopeVenue))
   if (a.isMedia) list = list.filter((c) => c.layer === 'P5')
@@ -347,6 +391,10 @@ const TASKS: YimaiTask[] = [
 ]
 
 export function queryTasks(params: PageParams & { status?: string; venue?: string }) {
+  if (USE_BACKEND) {
+    return apiGet<{ records: YimaiTask[]; total: number }>('/tasks', params as Record<string, unknown>)
+      .then((d) => ({ records: d.records ?? [], total: d.records?.length ?? 0, current: 1, size: params.size ?? 20 }))
+  }
   const a = actor()
   let list = TASKS.filter((t) => inScope(t.venue, a.scopeVenue))
   if (a.isTeacher) list = list.filter((t) => t.owner === a.userName || t.owner === '未分配')
@@ -366,12 +414,19 @@ const APPROVALS: YimaiApproval[] = [
 ]
 
 export function queryApprovals(params: PageParams & { status?: string }) {
+  if (USE_BACKEND) {
+    return apiGet<{ records: YimaiApproval[]; total: number }>('/approvals', params as Record<string, unknown>)
+      .then((d) => ({ records: d.records ?? [], total: d.records?.length ?? 0, current: 1, size: params.size ?? 20 }))
+  }
   let list = [...APPROVALS]
   if (params.status) list = list.filter((x) => x.status === params.status)
   return Promise.resolve({ records: paginate(list, params), total: list.length, current: params.current ?? 1, size: params.size ?? 20 })
 }
 
 export function decideApproval(id: number, decision: '初审通过' | '终审通过' | '驳回') {
+  if (USE_BACKEND) {
+    return apiPost<boolean>(`/approvals/${id}/decide`, { decision })
+  }
   useYimaiStore().decideApproval(id, decision)
   return Promise.resolve(true)
 }

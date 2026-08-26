@@ -232,7 +232,7 @@
 </template>
 
 <script setup lang="ts">
-  import { queryCustomers, getMemberRules, setMemberRules, computeMemberLists, updateMemberFields, EVAL_DIMENSIONS, evalTotalScore } from '@/api/yimai'
+  import { queryCustomers, getMemberRules, setMemberRules, refreshMemberRules, computeMemberLists, updateMemberFields, EVAL_DIMENSIONS, evalTotalScore } from '@/api/yimai'
   import type { YimaiCustomer, MemberListKey } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { ElMessage, ElTag } from 'element-plus'
@@ -315,6 +315,8 @@
     loading.value = true
     try {
       page.value.current = 1
+      await refreshMemberRules()
+      rules.value = getMemberRules()
       const listFilter = searchForm.value.list ? (searchForm.value.list as MemberListKey) : undefined
       const res = await queryCustomers({ name: searchForm.value.name, list: listFilter })
       all.value = res.records
