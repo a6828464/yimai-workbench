@@ -28,3 +28,4 @@ admin-web/src/types/import/components.d.ts
 # 编辑器
 .idea/
 .vscode/settings.json
+releases/

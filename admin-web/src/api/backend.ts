@@ -16,8 +16,15 @@ export function clearBackendToken() {
   localStorage.removeItem(TOKEN_KEY)
 }
 
+declare global {
+  interface Window {
+    __YIMAI_API_BASE__?: string
+  }
+}
+
 const http = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE ?? '/api',
+  // 运行时配置（dist/config.js）> 构建时环境变量 > 默认 /api
+  baseURL: window.__YIMAI_API_BASE__ || import.meta.env.VITE_API_BASE || '/api',
   timeout: 20000
 })
 
