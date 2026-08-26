@@ -29,9 +29,21 @@ class KyClient
 
     private const CACHE_KEY = 'ky_access_token';
 
+    /** 凭据来源优先级：数据库 app_settings.ky（后台可改）> .env */
+    public static function credentials(): array
+    {
+        $ky = \App\Models\AppSetting::first()?->ky ?? [];
+        $phone = is_string($ky['phone'] ?? null) && $ky['phone'] !== '' ? (string) $ky['phone'] : (string) config('services.ky.phone');
+        $password = is_string($ky['password'] ?? null) && $ky['password'] !== '' ? (string) $ky['password'] : (string) config('services.ky.password');
+
+        return [$phone, $password];
+    }
+
     public static function configured(): bool
     {
-        return (bool) (config('services.ky.phone') && config('services.ky.password'));
+        [$phone, $password] = self::credentials();
+
+        return (bool) ($phone && $password);
     }
 
     /** 登录并返回 access_token（默认走缓存） */
@@ -44,9 +56,10 @@ class KyClient
             return (string) Cache::get(self::CACHE_KEY);
         }
 
+        [$phone, $password] = self::credentials();
         $resp = Http::asForm()->timeout(30)->post(self::BASE.'/passport/api/login', [
-            'phone' => config('services.ky.phone'),
-            'pwd' => md5((string) config('services.ky.password')),
+            'phone' => $phone,
+            'pwd' => md5($password),
             'keep' => '1',
             'brand_id' => '',
             'venue_id' => '',

@@ -10,11 +10,34 @@
         <ElTag size="small" effect="plain">品牌 108193 · 一麦瑜伽</ElTag>
         <ElTag v-if="sessionAt" size="small" type="success">会话 {{ sessionAt }}</ElTag>
         <div class="flex-1" />
+        <ElButton size="small" @click="openKyConfig">登录账号设置</ElButton>
         <ElButton type="primary" :loading="connecting" @click="connect">{{ connected ? '刷新会话' : '建立连接' }}</ElButton>
       </div>
       <div class="mt-2 text-xs text-gray-400 leading-5">
-        凭据仅保存在开发服务器侧（.env.local），前端只持有临时token · 只读查询，不写回任何核心业务数据 · 阶段1由 Laravel Integration 模块接管并增加批次校验
+        凭据保存在服务器端 · 只读查询，不写回任何核心业务数据 · 全量导入由服务器直连随心瑜完成，不经过浏览器
       </div>
+
+      <!-- 随心瑜登录账号设置（仅超管可见） -->
+      <ElDialog v-model="kyCfgOpen" title="随心瑜登录账号设置" width="460px" append-to-body>
+        <ElForm label-width="96px">
+          <ElFormItem label="登录手机号">
+            <ElInput v-model="kyForm.phone" placeholder="随心瑜后台登录手机号" />
+          </ElFormItem>
+          <ElFormItem label="登录密码">
+            <ElInput v-model="kyForm.password" type="password" show-password placeholder="留空则保持不变" />
+          </ElFormItem>
+          <ElAlert type="info" :closable="false" class="mb-2">
+            <template #title>
+              保存后会立即使用该账号重新连接，用于计数/同步/全量导入。两个门店共用同一个随心瑜管理账号。
+            </template>
+          </ElAlert>
+        </ElForm>
+        <template #footer>
+          <ElButton @click="kyCfgOpen = false">取消</ElButton>
+          <ElButton type="primary" :loading="kySaving" @click="saveKyConfig">保存并切换账号</ElButton>
+        </template>
+      </ElDialog>
+
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <ElButton
           type="warning"
@@ -25,7 +48,7 @@
         >
           全量导入会员到客户池
         </ElButton>
-        <span class="text-xs text-gray-400">拉取双店会员基础表，按外部ID去重合并（已有本地分层/负责人不被覆盖）</span>
+        <span class="text-xs text-gray-400">服务器直连随心瑜拉取双店会员，按外部ID去重合并（已有建档/负责人不被覆盖）</span>
       </div>
       <ElAlert v-if="importResult" :title="importResult" type="success" show-icon :closable="false" class="mt-3" />
     </ElCard>
@@ -133,11 +156,48 @@
   import type { KyCounts, KyMemberRow } from '@/api/keepyoga'
   import { useYimaiStore } from '@/store/modules/yimai'
   import { addLead, importKyMembersToPool } from '@/api/yimai'
+  import { apiGet, apiPut, USE_BACKEND } from '@/api/backend'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiSync' })
 
   const yimaiStore = useYimaiStore()
+
+  // ---------- 随心瑜账号设置（仅超管） ----------
+  const kyCfgOpen = ref(false)
+  const kySaving = ref(false)
+  const kyForm = reactive({ phone: '', password: '' })
+
+  async function openKyConfig() {
+    if (!USE_BACKEND) return
+    try {
+      const d = await apiGet<{ phone: string }>('/ky/config')
+      kyForm.phone = d?.phone ?? ''
+      kyForm.password = ''
+      kyCfgOpen.value = true
+    } catch (e) {
+      ElMessage.error(`读取账号设置失败：${String(e).slice(0, 80)}`)
+    }
+  }
+
+  async function saveKyConfig() {
+    if (!kyForm.phone) {
+      ElMessage.warning('请填写登录手机号')
+      return
+    }
+    kySaving.value = true
+    try {
+      await apiPut('/ky/config', { phone: kyForm.phone, password: kyForm.password })
+      ElMessage.success('账号已保存，正在用新账号重新连接...')
+      kyCfgOpen.value = false
+      connected.value = false
+      await connect()
+    } catch (e) {
+      ElMessage.error(`保存失败：${String(e).slice(0, 100)}`)
+    } finally {
+      kySaving.value = false
+    }
+  }
 
   // ---------- 连接 ----------
   const connecting = ref(false)

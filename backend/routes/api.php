@@ -153,6 +153,85 @@ Route::middleware('auth:sanctum')->group(function () {
         }
     });
 
+    // ---------- 随心瑜账号配置（仅超管，存数据库，可切换） ----------
+    Route::get('/ky/config', function (Request $r) {
+        abort_unless($r->user()->role === 'R_SUPER', 403);
+        $ky = (AppSetting::first()?->ky) ?? [];
+
+        return ok([
+            'phone' => (string) ($ky['phone'] ?? ''),
+            'configured' => (bool) ((($ky['phone'] ?? '') && ($ky['password'] ?? '')) || config('services.ky.phone')),
+        ]);
+    });
+
+    Route::put('/ky/config', function (Request $r) {
+        abort_unless($r->user()->role === 'R_SUPER', 403);
+        $d = $r->validate(['phone' => 'required|string|max:20', 'password' => 'nullable|string|max:64']);
+        $s = AppSetting::firstOrCreate([]);
+        $ky = (array) (($s->ky) ?? []);
+        $ky['phone'] = trim($d['phone']);
+        if (! empty($d['password'])) $ky['password'] = $d['password'];
+        $s->update(['ky' => $ky]);
+        Illuminate\Support\Facades\Cache::forget('ky_access_token');
+        audit($r, '修改', 'KeepYoga同步', 0, '随心瑜账号', '双店', "登录账号更新为 {$ky['phone']}");
+
+        return ok(['phone' => $ky['phone'], 'configured' => true]);
+    });
+
+    // ---------- KeepYoga 服务端全量导入（服务器拉取+幂等落库，避免大请求经浏览器） ----------
+    Route::post('/ky/import', function (Request $r) {
+        $venue = (string) $r->input('venue');
+        $venueId = (string) $r->input('venueId');
+        abort_unless(in_array($venue, ['绿地店', '东部店'], true), 422, '门店无效');
+        try {
+            $rows = KyClient::call('member/api/getmembersbycondwithpager', [
+                'page_index' => 1, 'page_size' => 10000, 'cond' => '', 'consultant_id' => -1, 'venue_id' => $venueId,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['code' => 1, 'message' => 'KeepYoga 拉取失败：'.$e->getMessage()]);
+        }
+
+        $members = $rows['data']['members'] ?? [];
+        $created = 0;
+        $updated = 0;
+        foreach ($members as $row) {
+            if (! is_array($row) || empty($row['id'])) continue;
+            $externalId = "ky:{$venueId}:{$row['id']}";
+            $name = (string) ($row['name'] ?? '') ?: '会员';
+            $phone = (string) ($row['phone'] ?? '') ?: '';
+            $existing = Customer::where('external_id', $externalId)->first();
+            if ($existing) {
+                $updated++;
+                continue;
+            }
+            Customer::create([
+                'name' => $name,
+                'phone' => $phone,
+                'phone_tail' => substr($phone, -4),
+                'venue' => $venue,
+                'source' => (string) ($row['source_title'] ?? '') ?: 'KeepYoga',
+                'main_card' => '待同步卡项',
+                'layer' => 'P5',
+                'status' => '暂缓',
+                'owner' => '未分配',
+                'next_action' => '分配负责人并建档',
+                'external_id' => $externalId,
+            ]);
+            $created++;
+        }
+        $total = $created + $updated;
+
+        $batch = 'IMP-'.now()->format('Ymd-His').'-'.substr((string) mt_rand(1000, 9999), 0, 4);
+        SyncJob::create([
+            'batch_no' => $batch, 'data_type' => '会员全量', 'venue' => $venue,
+            'total_count' => $total, 'success_count' => $total, 'fail_count' => 0,
+            'status' => '成功', 'operator' => $r->user()->name, 'finished_at' => now(),
+        ]);
+        audit($r, '导入', 'KeepYoga同步', 0, "批次{$batch}", $venue, "服务端全量导入：新增{$created} 更新{$updated} 共{$total}");
+
+        return ok(['created' => $created, 'updated' => $updated, 'total' => $total, 'batchNo' => $batch]);
+    });
+
     // ---------- AI 大模型代理（OpenAI 兼容协议，解决浏览器跨域） ----------
     Route::post('/ai/chat', function (Request $r) {
         $d = $r->validate([
@@ -430,36 +509,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
         return ok(['ok' => true]);
     });
-});
-
-// ---------- 公开接口（免登录，H5 分享页用） ----------
-Route::prefix('public')->group(function () {
-    Route::get('/training/{code}', function (string $code) {
-        $plan = TrainingPlan::where('share->code', $code)->first();
-        if (! $plan || ($plan->share['enabled'] ?? false) !== true || $plan->status !== '已确认') {
-            return response()->json(['errno' => 404, 'emsg' => '分享不存在或已停用'], 404);
-        }
-        $plan->share = array_merge($plan->share ?? [], ['views' => ($plan->share['views'] ?? 0) + 1]);
-        $plan->save();
-
-        return ok([
-            'memberName' => $plan->member_name,
-            'profile' => $plan->profile,
-            'goal' => $plan->goal,
-            'content' => $plan->content,
-            'images' => $plan->images,
-            'confirmedAt' => optional($plan->confirmed_at)->toDateString(),
-        ]);
-    });
-
-    Route::get('/sales/{token}', function (string $token) {
-        $share = PublishedShare::where('type', 'sales')->where('token', $token)->first();
-        if (! $share) {
-            return response()->json(['errno' => 404, 'emsg' => '分享不存在或已停用'], 404);
-        }
-
-        return ok($share->payload);
-    });
 
     // ---------- 版本更新（仅超管） ----------
     Route::get('/system/version', function () {
@@ -467,8 +516,16 @@ Route::prefix('public')->group(function () {
     });
 
     Route::get('/system/changelog', function () {
-        $file = dirname(base_path()).'/CHANGELOG.md';
-        abort_unless(is_file($file), 404, 'CHANGELOG.md 不存在');
+        $candidates = [
+            base_path().'/CHANGELOG.md',                 // 后端站根（部署时随包复制）
+            dirname(base_path()).'/CHANGELOG.md',        // 上一级（git 仓库根）
+            base_path().'/public/CHANGELOG.md',
+        ];
+        $file = null;
+        foreach ($candidates as $f) {
+            if (is_file($f)) { $file = $f; break; }
+        }
+        abort_unless($file !== null, 404, 'CHANGELOG.md 不存在');
 
         return ok(['content' => file_get_contents($file)]);
     });
@@ -499,6 +556,36 @@ Route::prefix('public')->group(function () {
         audit($r, '执行', '版本更新', 0, '在线更新至 '.substr((string) $info['remote']['commit'], 0, 7), '双店', implode("\n", array_map(fn ($l) => $l['step'].': '.($l['ok'] ? 'OK' : 'FAIL'), $log)));
 
         return ok(['success' => ! in_array(false, array_column($log, 'ok'), true), 'version' => $info, 'log' => $log]);
+    });
+});
+
+// ---------- 公开接口（免登录，H5 分享页用） ----------
+Route::prefix('public')->group(function () {
+    Route::get('/training/{code}', function (string $code) {
+        $plan = TrainingPlan::where('share->code', $code)->first();
+        if (! $plan || ($plan->share['enabled'] ?? false) !== true || $plan->status !== '已确认') {
+            return response()->json(['errno' => 404, 'emsg' => '分享不存在或已停用'], 404);
+        }
+        $plan->share = array_merge($plan->share ?? [], ['views' => ($plan->share['views'] ?? 0) + 1]);
+        $plan->save();
+
+        return ok([
+            'memberName' => $plan->member_name,
+            'profile' => $plan->profile,
+            'goal' => $plan->goal,
+            'content' => $plan->content,
+            'images' => $plan->images,
+            'confirmedAt' => optional($plan->confirmed_at)->toDateString(),
+        ]);
+    });
+
+    Route::get('/sales/{token}', function (string $token) {
+        $share = PublishedShare::where('type', 'sales')->where('token', $token)->first();
+        if (! $share) {
+            return response()->json(['errno' => 404, 'emsg' => '分享不存在或已停用'], 404);
+        }
+
+        return ok($share->payload);
     });
 });
 
@@ -596,29 +683,50 @@ function runInRepo(array $cmd): array
 /** 本地 + 远程版本信息 */
 function systemVersionInfo(): array
 {
-    $git = function (array $args): string {
-        $p = new Symfony\Component\Process\Process(['git', ...$args], base_path());
-        $p->setTimeout(30)->run();
+    // 本地版本：优先读取打包时生成的 version.json（生产部署非 git 仓库）
+    $vFile = base_path().'/version.json';
+    $local = ['branch' => 'main', 'commit' => '', 'message' => '', 'date' => ''];
+    if (is_file($vFile)) {
+        $vj = json_decode((string) file_get_contents($vFile), true);
+        if (is_array($vj)) {
+            $local = [
+                'branch' => (string) ($vj['branch'] ?? 'main'),
+                'commit' => (string) ($vj['commit'] ?? ''),
+                'message' => (string) ($vj['message'] ?? ''),
+                'date' => (string) ($vj['date'] ?? ''),
+            ];
+        }
+    } else {
+        // 回退：用 git（开发环境）
+        $git = function (array $args): string {
+            try {
+                $p = new Symfony\Component\Process\Process(['git', ...$args], base_path());
+                $p->setTimeout(30)->run();
+                return trim($p->isSuccessful() ? $p->getOutput() : '');
+            } catch (\Throwable) {
+                return '';
+            }
+        };
+        $local = [
+            'branch' => $git(['rev-parse', '--abbrev-ref', 'HEAD']) ?: 'main',
+            'commit' => $git(['rev-parse', 'HEAD']),
+            'message' => $git(['log', '-1', '--pretty=%s']),
+            'date' => $git(['log', '-1', '--pretty=%ci']),
+        ];
+    }
 
-        return trim($p->isSuccessful() ? $p->getOutput() : '');
-    };
-
-    $local = [
-        'branch' => $git(['rev-parse', '--abbrev-ref', 'HEAD']),
-        'commit' => $git(['rev-parse', 'HEAD']),
-        'message' => $git(['log', '-1', '--pretty=%s']),
-        'date' => $git(['log', '-1', '--pretty=%ci']),
-    ];
-
-    // 远端 main 最新提交（ls-remote 复用本机凭据，无需 API token）
+    // 远端 main 最新提交：Gitee API（服务器可达，无需本机凭据）
     $remoteSha = '';
     $remoteErr = '';
-    $p = new Symfony\Component\Process\Process(['git', 'ls-remote', 'origin', 'refs/heads/main'], base_path());
-    $p->setTimeout(60)->run();
-    if ($p->isSuccessful() && preg_match('/^([0-9a-f]{40})/m', $p->getOutput(), $m)) {
-        $remoteSha = $m[1];
-    } else {
-        $remoteErr = mb_substr(trim($p->getErrorOutput()), 0, 200);
+    try {
+        $resp = Illuminate\Support\Facades\Http::timeout(20)->get('https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/commits/main');
+        if ($resp->successful() && ($resp->json('sha') ?? false)) {
+            $remoteSha = (string) $resp->json('sha');
+        } else {
+            $remoteErr = 'Gitee API '.$resp->status();
+        }
+    } catch (\Throwable $e) {
+        $remoteErr = mb_substr($e->getMessage(), 0, 200);
     }
 
     return [

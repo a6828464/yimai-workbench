@@ -461,20 +461,17 @@ export function querySyncJobs(params: PageParams & { status?: string; dataType?:
   return Promise.resolve({ records: paginate(list, params), total: list.length, current: params.current ?? 1, size: params.size ?? 20 })
 }
 
-/** KeepYoga 全量导入：拉取门店全部会员并按外部ID upsert 进客户池 */
+/** KeepYoga 全量导入：服务端拉取门店全部会员并按外部ID幂等合并（大请求不经过浏览器） */
 export async function importKyMembersToPool(storeKey: '绿地店' | '东部店'): Promise<{ created: number; updated: number; total: number }> {
-  const rows = await fetchKyMembers(storeKey, '', 99999)
-
   if (USE_BACKEND) {
-    // 服务端按 external_id 幂等合并，并记录同步批次
-    const res = await apiPost<{ created: number; updated: number; total: number }>('/customers/import', {
+    const res = await apiPost<{ created: number; updated: number; total: number }>('/ky/import', {
       venue: storeKey,
-      venueId: KY_STORES[storeKey],
-      rows: rows.map((r) => ({ memberId: r.memberId, name: r.name, phone: r.phone, source: r.source }))
+      venueId: KY_STORES[storeKey]
     })
     return { created: res.created, updated: res.updated, total: res.total }
   }
 
+  const rows = await fetchKyMembers(storeKey, '', 99999)
   ensureSeeded()
   const mapped: YimaiCustomer[] = rows.map((r, i) => ({
     id: 500000 + i,

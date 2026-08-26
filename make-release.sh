@@ -20,6 +20,20 @@ cat > "$STAGE/frontend/config.js" << 'EOF'
 window.__YIMAI_API_BASE__ = '/api'
 EOF
 
+echo "── 1.5/4 写入版本与更新日志..."
+mkdir -p "$STAGE/backend"
+cd "$ROOT"
+# 版本信息（供「版本更新」页读取；服务器非 git 仓库）
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+COMMIT="$(git rev-parse HEAD 2>/dev/null || echo '')"
+MSG="$(git log -1 --pretty=%s 2>/dev/null || echo '')"
+DATE="$(git log -1 --pretty=%ci 2>/dev/null || echo '')"
+cat > "$STAGE/backend/version.json" << PVEOF
+{"branch":"$BRANCH","commit":"$COMMIT","message":"$MSG","date":"$DATE"}
+PVEOF
+# 把更新日志一并复制进后端站（版本更新页展示）
+[ -f "$ROOT/CHANGELOG.md" ] && cp "$ROOT/CHANGELOG.md" "$STAGE/backend/CHANGELOG.md"
+
 echo "── 2/4 后端生产依赖..."
 cd "$ROOT/backend"
 composer install --no-dev --prefer-dist --no-interaction --quiet || composer install --no-interaction --quiet
