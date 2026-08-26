@@ -104,6 +104,13 @@
     return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
   }
 
+  /** 手机号脱敏：138****2073；非11位原样返回 */
+  function maskPhone(p: string): string {
+    const v = String(p ?? '').trim()
+    if (/^1\d{10}$/.test(v)) return `${v.slice(0, 3)}****${v.slice(-4)}`
+    return v || '—'
+  }
+
   const {
     columns,
     columnChecks,
@@ -131,7 +138,7 @@
           formatter: (row: YimaiCustomer) =>
             h('div', [
               h('p', { class: 'font-500' }, row.name),
-              h('p', { class: 'text-xs text-gray-400' }, `尾号${row.phoneTail} · ${row.source}`)
+              h('p', { class: 'text-xs text-gray-400' }, `${row.phone ? maskPhone(row.phone) : `尾号${row.phoneTail || '—'}`} · ${row.source}`)
             ])
         },
         {

@@ -290,13 +290,22 @@
         }
       }
       if (withSnapshot) {
-        yimaiStore.saveSnapshot({
+        const snap = {
           fetchedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
           fetchedBy: yimaiStore.currentActor().operatorName,
           counts: JSON.parse(JSON.stringify(counts.value)),
           todayBookings: { 绿地店: today.value['绿地店'].total, 东部店: today.value['东部店'].total },
           trialBookings: { 绿地店: today.value['绿地店'].trialHits, 东部店: today.value['东部店'].trialHits }
-        })
+        }
+        if (USE_BACKEND) {
+          // 后端模式：快照落库，工作台/经营看板读取同一份
+          await apiPut('/today/snapshot', {
+            todayBookings: snap.todayBookings,
+            trialBookings: snap.trialBookings
+          })
+        } else {
+          yimaiStore.saveSnapshot(snap)
+        }
         ElMessage.success('快照已更新，工作台「今日预约」已联动')
       }
     } finally {

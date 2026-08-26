@@ -73,6 +73,7 @@ Route::middleware('auth:sanctum')->group(function () {
         }
         if ($n = $r->query('name')) $q->where('name', 'like', "%{$n}%");
         if ($l = $r->query('list')) $q->whereIn('id', filteredIds($l));
+        if ($ly = $r->query('layer')) $q->where('layer', $ly);
         if ($o = $r->query('owner')) $q->where('owner', $o);
         if ($s = $r->query('status')) $q->where('status', $s);
         if ($src = $r->query('source')) $q->where('source', 'like', "%{$src}%");
@@ -415,6 +416,79 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // ---------- 今日工作台汇总（服务端计算） ----------
+    // ---------- 快照（今日预约等，落库供工作台读取） ----------
+    Route::get('/today/snapshot', function (Request $r) {
+        $snap = AppSetting::first()?->snapshot ?? [];
+
+        return ok($snap);
+    });
+
+    Route::put('/today/snapshot', function (Request $r) {
+        $d = $r->validate([
+            'todayBookings' => 'required|array',
+            'trialBookings' => 'required|array',
+        ]);
+        $s = AppSetting::firstOrCreate([]);
+        $snap = $s->snapshot ?? [];
+        $snap['todayBookings'] = [
+            '绿地店' => (int) ($d['todayBookings']['绿地店'] ?? 0),
+            '东部店' => (int) ($d['todayBookings']['东部店'] ?? 0),
+        ];
+        $snap['trialBookings'] = [
+            '绿地店' => (int) ($d['trialBookings']['绿地店'] ?? 0),
+            '东部店' => (int) ($d['trialBookings']['东部店'] ?? 0),
+        ];
+        $snap['fetchedAt'] = now()->format('Y-m-d H:i:s');
+        $snap['fetchedBy'] = $r->user()->name;
+        $s->update(['snapshot' => $snap]);
+
+        return ok($snap);
+    });
+
+    // ---------- 经营看板指标（基于现有业务数据实时计算） ----------
+    Route::get('/analytics/summary', function (Request $r) {
+        $u = $r->user();
+
+        $custQ = Customer::query();
+        if ($u->role !== 'R_SUPER') $custQ->where('venue', $u->venue);
+        $customers = $custQ->get();
+        $totalMembers = $customers->where('layer', '!=', 'P5')->count();
+        $unassigned = $customers->where('owner', '未分配')->count();
+
+        $leadQ = Lead::query();
+        if ($u->role !== 'R_SUPER' && $u->venue) $leadQ->where('venue', $u->venue);
+        $leads = $leadQ->get();
+        $newLeads = $leads->where('status', '新留资')->count();
+        $leadsWithTeacher = $leads->filter(fn ($l) => $l->service_teacher !== '')->count();
+        $assignRate = $leads->count() > 0 ? round($leadsWithTeacher / $leads->count() * 100) : 0;
+
+        $custWithAction = $customers->filter(fn ($c) => $c->owner !== '未分配' && $c->next_action !== null && $c->next_action !== '')->count();
+        $closureRate = $totalMembers > 0 ? round($custWithAction / $totalMembers * 100) : 0;
+
+        $renewalIds = filteredIds('待续课');
+        $renewing = $customers->whereIn('id', $renewalIds);
+        $renewalTouched = $renewing->filter(fn ($c) => $c->renewal_plan !== null && $c->renewal_plan !== '')->count();
+        $renewalRate = $renewing->count() > 0 ? round($renewalTouched / $renewing->count() * 100) : 0;
+
+        $taskQ = Task::query();
+        if ($u->role !== 'R_SUPER' && $u->venue) $taskQ->where('venue', $u->venue);
+        $tasks = $taskQ->get();
+        $taskRate = $tasks->count() > 0 ? round($tasks->where('status', '已完成')->count() / $tasks->count() * 100) : 0;
+
+        return ok([
+            'totalCustomers' => $customers->count(),
+            'totalMembers' => $totalMembers,
+            'unassigned' => $unassigned,
+            'assignRate' => $assignRate,           // 留资分配率
+            'closureRate' => $closureRate,          // 客户闭环率
+            'renewalTasks' => $renewing->count(),   // 待续课数
+            'renewalRate' => $renewalRate,          // 续费已处理率
+            'taskRate' => $taskRate,                // 任务完成率
+            'doneTasks' => $tasks->where('status', '已完成')->count(),
+            'totalTasks' => $tasks->count(),
+        ]);
+    });
+
     Route::get('/today/summary', function (Request $r) {
         $u = $r->user();
 
@@ -538,29 +612,78 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/system/update', function (Request $r) {
         abort_unless($r->user()->role === 'R_SUPER', 403);
         $log = [];
+        $base = base_path();
+        $token = (string) config('services.gitee.token');
 
-        // 拉取最新代码（仅快进合并，避免覆盖本地改动）
-        $pull = runInRepo(['git', 'pull', '--ff-only', 'origin', 'main']);
-        $log[] = ['step' => 'git pull', 'ok' => $pull['ok'], 'output' => $pull['output']];
-        if (! $pull['ok']) {
-            audit($r, '失败', '版本更新', 0, '在线更新', '双店', implode("\n", array_slice($pull['output'], -3)));
+        if ($token === '') {
+            return ok(['success' => false, 'log' => [['step' => 'gitee token', 'ok' => false, 'output' => ['服务器未配置 GITEE_TOKEN']]]]);
+        }
+
+        // 1. 从 Gitee release-deploy 分支拉取发布包分片并拼接
+        $script = <<<SHELL
+#!/bin/bash
+set -e
+WORK=/tmp/yimai_update
+rm -rf \$WORK && mkdir -p \$WORK && cd \$WORK
+TOKEN="$token"
+for f in part_aa part_ab; do
+  curl -s --connect-timeout 20 -o "\$f.json" "https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/contents/\$f?access_token=\$TOKEN&ref=release-deploy" || { echo "拉取 \$f 失败"; exit 1; }
+  python3 -c "import json,base64; d=json.load(open('/tmp/yimai_update/\$f.json')); open('/tmp/yimai_update/\$f','wb').write(base64.b64decode(d['content']))" || { echo "解码 \$f 失败"; exit 1; }
+done
+cat part_aa part_ab > pkg.zip
+unzip -oq pkg.zip -d unpack || { echo "解压失败"; exit 1; }
+echo PKG-OK
+SHELL;
+        $dl = runShell($script, 180);
+        $log[] = ['step' => '拉取发布包', 'ok' => $dl['ok'], 'output' => $dl['output']];
+        if (! $dl['ok']) {
+            $log[] = ['step' => '终止', 'ok' => false, 'output' => ['未获取到发布包，请检查网络/Gitee token']];
+            audit($r, '失败', '版本更新', 0, '在线更新', '双店', implode("\n", array_slice($dl['output'], 0, 5)));
+
             return ok(['success' => false, 'log' => $log]);
         }
 
-        // 数据库结构同步（幂等）
-        $migrate = runInRepo([PHP_BINARY, ArtisanBinary(), 'migrate', '--force']);
-        $log[] = ['step' => 'php artisan migrate', 'ok' => $migrate['ok'], 'output' => $migrate['output']];
+        // 2. 覆盖后端（保留 .env、storage、bootstrap/cache）
+        $apply = <<<SHELL
+#!/bin/bash
+set -e
+SRC=/tmp/yimai_update/unpack/yimai-workbench/backend
+DST="$base"
+if [ ! -d "\$SRC" ]; then echo "发布包结构异常"; exit 1; fi
+# 备份当前版本
+mkdir -p /tmp/yimai_backup
+rsync -a --exclude '.env' --exclude 'storage' --exclude 'bootstrap/cache' \$DST/ /tmp/yimai_backup/ 2>/dev/null || true
+# 覆盖新代码（保留本地配置）
+rsync -a \
+  --exclude '.env' --exclude '.env.*' \
+  --exclude 'storage/logs' --exclude 'storage/framework/cache/data' \
+  --exclude 'storage/framework/sessions' --exclude 'storage/framework/views' \
+  --exclude 'bootstrap/cache/*.php' \
+  \$SRC/ \$DST/
+chown -R www:www \$DST
+echo APPLY-OK
+SHELL;
+        $ap = runShell($apply, 180);
+        $log[] = ['step' => '覆盖后端代码', 'ok' => $ap['ok'], 'output' => $ap['output']];
 
-        // 后端依赖同步（composer.lock 有变化时才装）
-        if ($pull['changed']) {
-            $composer = runInRepo(['composer', 'install', '--no-interaction', '--prefer-dist', '--no-dev']);
-            $log[] = ['step' => 'composer install', 'ok' => $composer['ok'], 'output' => $composer['output']];
+        // 3. 数据库迁移
+        if ($ap['ok']) {
+            $migrate = runInRepo([PHP_BINARY, ArtisanBinary(), 'migrate', '--force']);
+            $log[] = ['step' => 'php artisan migrate', 'ok' => $migrate['ok'], 'output' => array_slice($migrate['output'], 0, 4)];
+        }
+
+        // 4. 同步前端 dist（若有）
+        $fe = "/tmp/yimai_update/unpack/yimai-workbench/frontend";
+        if (is_dir($fe)) {
+            $feApply = runShell("rsync -a --delete '$fe/' /www/wwwroot/oa.shunan.fun/ && chown -R www:www /www/wwwroot/oa.shunan.fun && echo FE-OK", 120);
+            $log[] = ['step' => '同步前端', 'ok' => $feApply['ok'], 'output' => $feApply['output']];
         }
 
         $info = systemVersionInfo();
-        audit($r, '执行', '版本更新', 0, '在线更新至 '.substr((string) $info['remote']['commit'], 0, 7), '双店', implode("\n", array_map(fn ($l) => $l['step'].': '.($l['ok'] ? 'OK' : 'FAIL'), $log)));
+        $allOk = ! in_array(false, array_column($log, 'ok'), true);
+        audit($r, $allOk ? '执行' : '失败', '版本更新', 0, '在线更新', '双店', implode("\n", array_map(fn ($l) => $l['step'].': '.($l['ok'] ? 'OK' : 'FAIL'), $log)));
 
-        return ok(['success' => ! in_array(false, array_column($log, 'ok'), true), 'version' => $info, 'log' => $log]);
+        return ok(['success' => $allOk, 'version' => $info, 'log' => $log]);
     });
 });
 
@@ -682,6 +805,18 @@ function runInRepo(array $cmd): array
         'ok' => $process->isSuccessful(),
         'output' => array_filter(array_map('trim', explode("\n", trim($process->getOutput()."\n".$process->getErrorOutput())))),
         'changed' => $process->isSuccessful() && str_contains($process->getOutput(), 'files changed'),
+    ];
+}
+
+/** 执行一段 shell 脚本（在线更新用），返回 [ok, output[]] */
+function runShell(string $script, int $timeout = 180): array
+{
+    $process = new Symfony\Component\Process\Process(['bash', '-c', $script], base_path());
+    $process->setTimeout($timeout)->run();
+
+    return [
+        'ok' => $process->isSuccessful(),
+        'output' => array_filter(array_map('trim', explode("\n", trim($process->getOutput()."\n".$process->getErrorOutput())))),
     ];
 }
 
