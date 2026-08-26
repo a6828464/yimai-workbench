@@ -7,7 +7,7 @@
           <template #label>
             <span class="flex items-center gap-1.5">
               {{ t.label }}
-              <ElTag v-if="t.key !== 'all'" size="small" :type="t.tag" effect="plain">{{ listCounts[t.key] ?? 0 }}</ElTag>
+              <ElTag v-if="t.key !== 'all'" size="small" :type="t.tag" effect="plain">{{ listCounts[TAB_KEY_TO_LIST[t.key]] ?? 0 }}</ElTag>
             </span>
           </template>
         </ElTabPane>
@@ -248,6 +248,13 @@
   })
 
   const LIST_KEYS: MemberListKey[] = ['待续课', '出勤降低', 'VIP', '预流失', '待复活']
+  const TAB_KEY_TO_LIST: Record<string, MemberListKey> = {
+    renewal: '待续课',
+    decline: '出勤降低',
+    vip: 'VIP',
+    predrop: '预流失',
+    revive: '待复活'
+  }
   const TABS: { key: string; label: string; tag?: 'danger' | 'warning' | 'success' | 'info' | 'primary' }[] = [
     { key: 'all', label: '总览' },
     { key: 'renewal', label: '待续课', tag: 'danger' },
@@ -293,10 +300,7 @@
       if (activeTab.value !== 'all') list = list.filter((c) => c.owner === userStore.getUserInfo.userName)
     }
     if (activeTab.value !== 'all') {
-      const key = activeTab.value.charAt(0).toUpperCase() + activeTab.value.slice(1)
-      const map: Record<string, MemberListKey> = { renewal: '待续课', decline: '出勤降低', vip: 'VIP', predrop: '预流失', revive: '待复活' }
-      list = list.filter((c) => computeMemberLists(c).includes(map[activeTab.value]))
-      void key
+      list = list.filter((c) => computeMemberLists(c).includes(TAB_KEY_TO_LIST[activeTab.value]))
     }
     return list
   }
