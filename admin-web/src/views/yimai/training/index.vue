@@ -205,6 +205,8 @@
   import { useTrainingStore } from '@/store/modules/training'
   import type { TrainingPlan, PlanContent } from '@/store/modules/training'
   import { generateTrainingPlan, detectHighRisk } from '@/api/ai'
+  import { loadTrainingPlansCloud, syncTrainingPlansCloud } from '@/api/yimai'
+  import { USE_BACKEND } from '@/api/backend'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiTraining' })
@@ -212,6 +214,48 @@
   const trainingStore = useTrainingStore()
   const plans = computed(() => trainingStore.state.plans)
   const loading = ref(false)
+
+  // ---------- 云端同步（后端模式：进入加载远端，变更防抖回写） ----------
+  let cloudReady = false
+  let syncing = false
+  let pendingSync: ReturnType<typeof setTimeout> | null = null
+
+  onMounted(async () => {
+    if (!USE_BACKEND) {
+      cloudReady = true
+      return
+    }
+    try {
+      const remote = await loadTrainingPlansCloud()
+      if (remote && remote.length) {
+        trainingStore.state.plans = remote as unknown as TrainingPlan[]
+        trainingStore.state.nextId = Math.max(100, ...remote.map((p) => Number(p.id ?? 0))) + 1
+      }
+    } catch (e) {
+      ElMessage.warning(`云端训练计划加载失败：${String(e).slice(0, 80)}`)
+    } finally {
+      cloudReady = true
+    }
+  })
+
+  watch(
+    plans,
+    () => {
+      if (!USE_BACKEND || !cloudReady || syncing) return
+      if (pendingSync) clearTimeout(pendingSync)
+      pendingSync = setTimeout(async () => {
+        syncing = true
+        try {
+          await syncTrainingPlansCloud(JSON.parse(JSON.stringify(plans.value)))
+        } catch {
+          /* 静默重试交给下一次变更 */
+        } finally {
+          syncing = false
+        }
+      }, 800)
+    },
+    { deep: true }
+  )
 
   function emptyForm() {
     return {

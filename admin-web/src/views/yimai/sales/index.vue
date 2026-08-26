@@ -16,7 +16,7 @@
           :model-value="sales.state.share.enabled"
           active-text="开启"
           inactive-text="停用"
-          @change="(v: string | number | boolean) => sales.setShareEnabled(Boolean(v))"
+          @change="(v: string | number | boolean) => onShareToggle(Boolean(v))"
         />
         <ElButton type="primary" @click="preview">预览 / 发送 H5</ElButton>
       </div>
@@ -39,11 +39,32 @@
   import Coaches from './modules/coaches.vue'
   import Cases from './modules/cases.vue'
   import { useSalesStore } from '@/store/modules/sales'
+  import { publishShare } from '@/api/yimai'
+  import { USE_BACKEND } from '@/api/backend'
+  import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'YimaiSales' })
 
   const sales = useSalesStore()
   const tab = ref('basic')
+
+  /** 开启/更新分享时，把当前工作台内容发布为服务端快照（H5 跨设备可访问） */
+  async function onShareToggle(enabled: boolean) {
+    sales.setShareEnabled(enabled)
+    if (!USE_BACKEND || !enabled) return
+    try {
+      await publishShare('sales', sales.state.share.code, {
+        share: sales.state.share,
+        info: sales.state.info,
+        products: sales.state.products,
+        coaches: sales.state.coaches,
+        cases: sales.state.cases
+      })
+      ElMessage.success('已发布到线上，客户可在微信中打开')
+    } catch (e) {
+      ElMessage.error(`线上发布失败：${String(e).slice(0, 80)}`)
+    }
+  }
 
   function preview() {
     const url = `${window.location.origin}${window.location.pathname}#/s/${sales.state.share.code}`

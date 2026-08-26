@@ -80,7 +80,10 @@ export interface AccountRow {
   status: '启用'
 }
 
-export function listAccounts(): AccountRow[] {
+export async function listAccounts(): Promise<AccountRow[]> {
+  if (USE_BACKEND) {
+    return apiGet<AccountRow[]>('/accounts')
+  }
   return LOCAL_ACCOUNTS.map((a) => ({
     key: a.key,
     userName: a.userName,

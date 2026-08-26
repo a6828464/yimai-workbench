@@ -443,6 +443,17 @@ const SYNC_JOBS: YimaiSyncJob[] = [
 ]
 
 export function querySyncJobs(params: PageParams & { status?: string; dataType?: string }) {
+  if (USE_BACKEND) {
+    return apiGet<{ records: YimaiSyncJob[]; total: number }>('/sync-jobs', {
+      status: params.status,
+      dataType: params.dataType
+    } as Record<string, unknown>).then((d) => ({
+      records: d.records ?? [],
+      total: d.total ?? (d.records?.length ?? 0),
+      current: params.current ?? 1,
+      size: params.size ?? 20
+    }))
+  }
   const a = actor()
   let list = SYNC_JOBS.filter((s) => s.venue === '双店' || inScope(s.venue, a.scopeVenue))
   if (params.status) list = list.filter((s) => s.status === params.status)
@@ -452,8 +463,19 @@ export function querySyncJobs(params: PageParams & { status?: string; dataType?:
 
 /** KeepYoga 全量导入：拉取门店全部会员并按外部ID upsert 进客户池 */
 export async function importKyMembersToPool(storeKey: '绿地店' | '东部店'): Promise<{ created: number; updated: number; total: number }> {
-  ensureSeeded()
   const rows = await fetchKyMembers(storeKey, '', 99999)
+
+  if (USE_BACKEND) {
+    // 服务端按 external_id 幂等合并，并记录同步批次
+    const res = await apiPost<{ created: number; updated: number; total: number }>('/customers/import', {
+      venue: storeKey,
+      venueId: KY_STORES[storeKey],
+      rows: rows.map((r) => ({ memberId: r.memberId, name: r.name, phone: r.phone, source: r.source }))
+    })
+    return { created: res.created, updated: res.updated, total: res.total }
+  }
+
+  ensureSeeded()
   const mapped: YimaiCustomer[] = rows.map((r, i) => ({
     id: 500000 + i,
     name: r.name || `会员${r.memberId}`,
@@ -657,6 +679,28 @@ export interface TeacherOverview {
 
 export async function getTeacherOverview(startDate: string, endDate: string): Promise<TeacherOverview> {
   const a = actor()
+
+  if (USE_BACKEND) {
+    // 成员/客资计数由服务端按角色口径计算；课时部分沿用看板演示序列（阶段2接入真实排课）
+    const [members, leads] = await Promise.all([
+      queryCustomers({ type: 'member', size: 9999 }),
+      queryLeads({ size: 9999 })
+    ])
+    const myMembers = members.records.filter((c) => c.owner === a.userName && c.layer !== 'P5')
+    const myLeads = leads.records.filter((l) => (l as unknown as { serviceTeacher?: string }).serviceTeacher === a.userName)
+    const poolLeads = leads.records.filter(
+      (l) => !(l as unknown as { serviceTeacher?: string }).serviceTeacher && l.status === '新留资'
+    )
+    const { daily } = await getDashboardSeries(startDate, endDate, '双店')
+    return {
+      memberCount: myMembers.length,
+      resourceCount: myLeads.length + poolLeads.length,
+      newResourceCount: poolLeads.length,
+      classCount: Math.round(daily.reduce((s, p) => s + p.bookings, 0) * 0.6),
+      servedCount: Math.round(daily.reduce((s, p) => s + p.trials + p.bookings * 0.35, 0))
+    }
+  }
+
   const myMembers = allCustomers().filter(
     (c) => c.owner === a.userName && c.layer !== 'P5' && inScope(c.venue, a.scopeVenue)
   )
@@ -716,9 +760,39 @@ export function generateMarketingCopy(platform: string, topic: string, point: st
   return Promise.resolve({ content, tags })
 }
 
+// ==================== 训练计划云端同步（阶段1） ====================
+
+export async function loadTrainingPlansCloud(): Promise<Record<string, unknown>[] | null> {
+  if (!USE_BACKEND) return null
+  return apiGet<Record<string, unknown>[]>('/training-plans')
+}
+
+export async function syncTrainingPlansCloud(plans: unknown[]): Promise<void> {
+  if (!USE_BACKEND) return
+  await apiPut('/training-plans/bulk', { plans })
+}
+
+/** 发布对外分享快照（H5 跨设备访问） */
+export function publishShare(type: string, token: string, payload: Record<string, unknown>): Promise<void> {
+  if (!USE_BACKEND) return Promise.resolve()
+  return apiPost('/shares/publish', { type, token, payload }).then(() => undefined)
+}
+
 // ==================== 今日工作台汇总 ====================
 
-export function getTodaySummary() {
+export function getTodaySummary(): Promise<{
+  newLeads: number
+  pendingFollowup: number
+  expiringMembers: number
+  riskCount: number
+  pendingApprovals: number
+  todayBookings: { 绿地店: number; 东部店: number }
+  trialBookings: { 绿地店: number; 东部店: number }
+  scopeLabel: string
+  snapshotTime: string
+}> {
+  if (USE_BACKEND) return apiGet('/today/summary')
+
   const a = actor()
   const userVenue = a.scopeVenue
   const scopedCustomers = allCustomers().filter((c) => inScope(c.venue, userVenue))
@@ -767,7 +841,9 @@ function calcDays(date: string | null): number {
   return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
 }
 
-export function getFollowupQueue() {
+export function getFollowupQueue(): Promise<(YimaiCustomer & { lastVisitDays: number })[]> {
+  if (USE_BACKEND) return apiGet<(YimaiCustomer & { lastVisitDays: number })[]>('/today/followups')
+
   const a = actor()
   const userVenue = a.scopeVenue
   const scoped = allCustomers().filter((c) => inScope(c.venue, userVenue))
@@ -779,7 +855,9 @@ export function getFollowupQueue() {
   )
 }
 
-export function getRiskAlerts() {
+export function getRiskAlerts(): Promise<{ id: number; level: string; text: string; action: string }[]> {
+  if (USE_BACKEND) return apiGet<{ id: number; level: string; text: string; action: string }[]>('/today/alerts')
+
   const a = actor()
   const userVenue = a.scopeVenue
   const scopedTasks = TASKS.filter((t) => inScope(t.venue, userVenue))

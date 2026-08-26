@@ -94,6 +94,7 @@
 
 <script setup lang="ts">
   import { useSalesStore } from '@/store/modules/sales'
+  import axios from 'axios'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'SalesSharePage' })
@@ -101,15 +102,25 @@
   const route = useRoute()
   const sales = useSalesStore()
 
+  /** 数据：优先后端公开快照（跨设备），失败回退本地 store */
+  const data = ref({
+    share: sales.state.share,
+    info: sales.state.info,
+    coaches: sales.state.coaches,
+    products: sales.state.products,
+    cases: sales.state.cases
+  })
+  const loading = ref(true)
+
   const invalid = computed(() => {
-    if (!sales.state.share.enabled) return true
-    return route.params.code !== sales.state.share.code
+    if (!data.value.share.enabled) return true
+    return route.params.code !== data.value.share.code
   })
 
-  const info = computed(() => sales.state.info)
-  const coaches = computed(() => sales.state.coaches)
-  const priceProducts = computed(() => sales.state.products)
-  const authedCases = computed(() => sales.state.cases.filter((c) => c.authorized))
+  const info = computed(() => data.value.info)
+  const coaches = computed(() => data.value.coaches)
+  const priceProducts = computed(() => data.value.products)
+  const authedCases = computed(() => data.value.cases.filter((c) => c.authorized))
 
   function coachName(c: { coachId: number | '' }): string {
     if (c.coachId === '') return ''
@@ -124,6 +135,31 @@
       ElMessage.warning(info.value.address)
     }
   }
+
+  watch(
+    () => route.params.code,
+    async (codeRaw) => {
+      const code = String(codeRaw ?? '')
+      loading.value = true
+      try {
+        const base = (import.meta.env.VITE_API_BASE as string) || '/api'
+        const resp = await axios.get(`${base.replace(/\/$/, '')}/public/sales/${encodeURIComponent(code)}`)
+        data.value = resp.data?.data
+      } catch {
+        // 回退本地（演示模式/同浏览器）
+        data.value = {
+          share: sales.state.share,
+          info: sales.state.info,
+          coaches: sales.state.coaches,
+          products: sales.state.products,
+          cases: sales.state.cases
+        }
+      } finally {
+        loading.value = false
+      }
+    },
+    { immediate: true }
+  )
 
   onMounted(() => {
     if (!invalid.value) sales.registerView()

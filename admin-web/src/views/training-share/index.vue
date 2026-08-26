@@ -78,6 +78,8 @@
 
 <script setup lang="ts">
   import { useTrainingStore } from '@/store/modules/training'
+  import type { TrainingPlan } from '@/store/modules/training'
+  import axios from 'axios'
   import { ElImage, ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'TrainingSharePage' })
@@ -85,10 +87,32 @@
   const route = useRoute()
   const trainingStore = useTrainingStore()
 
-  const plan = computed(() => {
-    const code = String(route.params.code ?? '')
-    return trainingStore.state.plans.find((p) => p.share.code === code) ?? null
-  })
+  /**
+   * 数据来源：
+   * 1. 后端公开接口 /api/public/training/{code}（跨设备，微信内打开）
+   * 2. 本地 store（演示模式/同浏览器）
+   */
+  const plan = ref<TrainingPlan | null>(null)
+  const loading = ref(true)
+
+  watch(
+    () => route.params.code,
+    async (codeRaw) => {
+      const code = String(codeRaw ?? '')
+      loading.value = true
+      try {
+        const base = (import.meta.env.VITE_API_BASE as string) || '/api'
+        const resp = await axios.get(`${base.replace(/\/$/, '')}/public/training/${encodeURIComponent(code)}`)
+        plan.value = resp.data?.data as TrainingPlan
+      } catch {
+        // 后端不可用或演示模式：回退本地
+        plan.value = trainingStore.state.plans.find((p) => p.share.code === code) ?? null
+      } finally {
+        loading.value = false
+      }
+    },
+    { immediate: true }
+  )
 
   const invalid = computed(() => {
     const p = plan.value
@@ -97,11 +121,6 @@
     if (!p.share.enabled) return true
     return false
   })
-
-  async function copyAddressFallback() {
-    /* 占位：无 */
-  }
-  void copyAddressFallback
 
   onMounted(() => {
     if (!invalid.value) {

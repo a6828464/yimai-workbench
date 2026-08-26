@@ -5,6 +5,9 @@ use App\Models\Approval;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Lead;
+use App\Models\PublishedShare;
+use App\Models\SyncJob;
+use App\Models\TrainingPlan;
 use App\Models\Task;
 use App\Models\User;
 use App\Services\KyClient;
@@ -215,6 +218,239 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(['models' => $ids]);
     });
 
+    // ---------- 人员管理 ----------
+    Route::get('/accounts', function (Request $r) {
+        abort_unless($r->user()->role === 'R_SUPER', 403);
+        $roleMap = ['R_SUPER' => '超管', 'R_MANAGER' => '店长', 'R_TEACHER' => '老师', 'R_MEDIA' => '新媒体'];
+
+        return ok(User::orderBy('id')->get()->map(fn ($u) => [
+            'key' => $u->username,
+            'userName' => $u->name,
+            'roleCode' => $u->role,
+            'roleLabel' => $roleMap[$u->role] ?? $u->role,
+            'venues' => $u->venues ?? [],
+            'email' => $u->email,
+            'status' => '启用',
+        ]));
+    });
+
+    // ---------- 训练计划（按人持久化，整表同步） ----------
+    Route::get('/training-plans', function (Request $r) {
+        return ok(TrainingPlan::where('created_by', $r->user()->name)->orderBy('id')->get()
+            ->map(fn ($p) => array_merge(['id' => $p->id], $p->payload ?? [])));
+    });
+
+    Route::put('/training-plans/bulk', function (Request $r) {
+        $plans = $r->input('plans');
+        abort_unless(is_array($plans), 422, 'plans 必须是数组');
+
+        // 整表替换（按人隔离）：id 由前端维护，服务端原样持久化
+        \Illuminate\Support\Facades\DB::transaction(function () use ($plans, $r) {
+            TrainingPlan::where('created_by', $r->user()->name)->delete();
+            foreach ($plans as $p) {
+                if (! is_array($p)) continue;
+                TrainingPlan::create([
+                    'id' => (int) ($p['id'] ?? 0),
+                    'member_name' => (string) ($p['memberName'] ?? '') ?: '未命名',
+                    'payload' => $p,
+                    'status' => (string) ($p['status'] ?? '草稿'),
+                    'share' => is_array($p['share'] ?? null) ? $p['share'] : null,
+                    'source' => (string) ($p['source'] ?? ''),
+                    'created_by' => $r->user()->name,
+                    'confirmed_at' => ($p['status'] ?? '') === '已确认' ? now() : null,
+                ]);
+            }
+        });
+
+        return ok(['saved' => count($plans)]);
+    });
+
+    // ---------- KeepYoga 导入落库 + 同步批次 ----------
+    Route::post('/customers/import', function (Request $r) {
+        $d = $r->validate([
+            'venue' => 'required|string',
+            'venueId' => 'required|string',
+            'rows' => 'required|array',
+        ]);
+        $created = 0;
+        $updated = 0;
+        foreach ($d['rows'] as $row) {
+            if (! is_array($row) || empty($row['memberId'])) continue;
+            $externalId = "ky:{$d['venueId']}:{$row['memberId']}";
+            $existing = Customer::where('external_id', $externalId)->first();
+            if ($existing) {
+                $updated++;
+                continue;
+            }
+            Customer::create([
+                'name' => (string) ($row['name'] ?? '会员') ?: '会员',
+                'phone' => (string) ($row['phone'] ?? ''),
+                'phone_tail' => substr((string) ($row['phone'] ?? ''), -4),
+                'venue' => $d['venue'],
+                'source' => (string) ($row['source'] ?? '') ?: 'KeepYoga',
+                'main_card' => '待同步卡项',
+                'layer' => 'P5',
+                'status' => '暂缓',
+                'owner' => '未分配',
+                'next_action' => '分配负责人并建档',
+                'external_id' => $externalId,
+            ]);
+            $created++;
+        }
+        $total = $created + $updated;
+
+        $batch = 'IMP-'.now()->format('Ymd-His').'-'.substr((string) mt_rand(1000, 9999), 0, 4);
+        SyncJob::create([
+            'batch_no' => $batch,
+            'data_type' => '会员全量',
+            'venue' => $d['venue'],
+            'total_count' => $total,
+            'success_count' => $total,
+            'fail_count' => 0,
+            'status' => '成功',
+            'operator' => $r->user()->name,
+            'finished_at' => now(),
+        ]);
+        audit($r, '导入', 'KeepYoga同步', 0, "批次{$batch}", $d['venue'], "全量会员导入：新增{$created} 更新{$updated} 共{$total}");
+
+        return ok(['created' => $created, 'updated' => $updated, 'total' => $total, 'batchNo' => $batch]);
+    });
+
+    Route::get('/sync-jobs', function () {
+        return ok(SyncJob::orderByDesc('id')->limit(100)->get()->map(fn ($x) => camel($x)));
+    });
+
+    // ---------- 今日工作台汇总（服务端计算） ----------
+    Route::get('/today/summary', function (Request $r) {
+        $u = $r->user();
+
+        $custQ = Customer::query();
+        if ($u->role === 'R_MANAGER') $custQ->where('venue', $u->venue);
+        if ($u->role === 'R_TEACHER' && $u->venue) $custQ->where('venue', $u->venue);
+        $scopedCustomers = $custQ->get();
+
+        $leadQ = Lead::query();
+        if ($u->role === 'R_MANAGER') $leadQ->where('venue', $u->venue);
+        if ($u->role === 'R_TEACHER') $leadQ->where(fn ($w) => $w->where('service_teacher', $u->name)->orWhere('service_teacher', ''));
+        $leads = $leadQ->get();
+
+        $taskQ = Task::query();
+        if ($u->role === 'R_MANAGER') $taskQ->where('venue', $u->venue);
+        if ($u->role === 'R_TEACHER') $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+        $overdueTasks = $taskQ->where('status', '已逾期')->count();
+
+        $renewalIds = filteredIds('待续课');
+        $expiringMembers = $scopedCustomers->whereIn('id', $renewalIds)->count();
+        $tomorrow = now()->addDay()->toDateString();
+
+        $setting = AppSetting::first();
+        $snap = $setting?->snapshot;
+
+        return ok([
+            'newLeads' => $scopedCustomers->where('layer', 'P5')->count() + $leads->where('status', '新留资')->count(),
+            'pendingFollowup' => $scopedCustomers->where('next_action_time', '<=', $tomorrow)->count(),
+            'expiringMembers' => $expiringMembers,
+            'riskCount' => $overdueTasks + $scopedCustomers->where('owner', '未分配')->count() + $leads->where('status', '新留资')->count(),
+            'pendingApprovals' => $u->role === 'R_MEDIA' ? 0 : Approval::where('status', 'like', '待%')->count(),
+            'todayBookings' => [
+                '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['todayBookings']['绿地店'] ?? 0) : 0,
+                '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['todayBookings']['东部店'] ?? 0) : 0,
+            ],
+            'trialBookings' => [
+                '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['trialBookings']['绿地店'] ?? 0) : 0,
+                '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['trialBookings']['东部店'] ?? 0) : 0,
+            ],
+            'scopeLabel' => $u->venue ? "本店 · {$u->venue}" : '双店',
+            'snapshotTime' => in_array($u->role, ['R_SUPER', 'R_MANAGER'], true) ? (string) ($snap['fetchedAt'] ?? '') : '',
+        ]);
+    });
+
+    Route::get('/today/followups', function (Request $r) {
+        $u = $r->user();
+        $q = Customer::query()->whereIn('layer', ['P0', 'P1', 'P5']);
+        if ($u->role === 'R_MANAGER') $q->where('venue', $u->venue);
+        if ($u->role === 'R_TEACHER' && $u->venue) $q->where('venue', $u->venue);
+
+        return ok($q->orderBy('id')->limit(6)->get()->map(function ($c) {
+            $arr = camel($c);
+            $days = $c->last_visit ? (int) ((time() - strtotime($c->last_visit)) / 86400) : 9999;
+            $arr['lastVisitDays'] = $days;
+
+            return $arr;
+        }));
+    });
+
+    Route::get('/today/alerts', function (Request $r) {
+        $u = $r->user();
+        $alerts = [];
+
+        $leadQ = Lead::query()->where('status', '新留资');
+        if ($u->role === 'R_MANAGER') $leadQ->where('venue', $u->venue);
+        foreach ($leadQ->orderByDesc('id')->limit(2)->get() as $l) {
+            $alerts[] = ['id' => 9000 + $l->id, 'level' => '高', 'text' => "[{$l->venue}] 新客资 {$l->name} 待首响（{$l->source}）", 'action' => '24小时内完成首轮联系'];
+        }
+
+        $taskQ = Task::query()->where('status', '已逾期');
+        if ($u->role === 'R_MANAGER') $taskQ->where('venue', $u->venue);
+        if ($u->role === 'R_TEACHER') $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+        foreach ($taskQ->limit(4)->get() as $t) {
+            $alerts[] = ['id' => 100 + $t->id, 'level' => '中', 'text' => "任务「{$t->title}-{$t->customer_name}」已逾期", 'action' => '提醒责任人完成闭环'];
+        }
+
+        $expiring = Customer::whereIn('id', filteredIds('待续课'))->orderBy('expire_date')->limit(2)->get();
+        foreach ($expiring as $c) {
+            $alerts[] = ['id' => 200 + $c->id, 'level' => '中', 'text' => "{$c->name} 卡项临近到期（剩余{$c->remain_times}节）", 'action' => '确认续费窗口沟通结果'];
+        }
+
+        return ok($alerts);
+    });
+
+    // ---------- 对外发布（H5 分享快照） ----------
+    Route::post('/shares/publish', function (Request $r) {
+        $d = $r->validate([
+            'type' => 'required|string|max:16',
+            'token' => 'required|string|max:40',
+            'payload' => 'required|array',
+        ]);
+        PublishedShare::updateOrCreate(
+            ['type' => $d['type'], 'token' => $d['token']],
+            ['payload' => $d['payload'], 'created_by' => $r->user()->name]
+        );
+        audit($r, '发布', 'H5分享', 0, "分享码[{$d['token']}]", '双店', "类型：{$d['type']}");
+
+        return ok(['ok' => true]);
+    });
+});
+
+// ---------- 公开接口（免登录，H5 分享页用） ----------
+Route::prefix('public')->group(function () {
+    Route::get('/training/{code}', function (string $code) {
+        $plan = TrainingPlan::where('share->code', $code)->first();
+        if (! $plan || ($plan->share['enabled'] ?? false) !== true || $plan->status !== '已确认') {
+            return response()->json(['errno' => 404, 'emsg' => '分享不存在或已停用'], 404);
+        }
+        $plan->share = array_merge($plan->share ?? [], ['views' => ($plan->share['views'] ?? 0) + 1]);
+        $plan->save();
+
+        return ok([
+            'memberName' => $plan->member_name,
+            'profile' => $plan->profile,
+            'goal' => $plan->goal,
+            'content' => $plan->content,
+            'images' => $plan->images,
+            'confirmedAt' => optional($plan->confirmed_at)->toDateString(),
+        ]);
+    });
+
+    Route::get('/sales/{token}', function (string $token) {
+        $share = PublishedShare::where('type', 'sales')->where('token', $token)->first();
+        if (! $share) {
+            return response()->json(['errno' => 404, 'emsg' => '分享不存在或已停用'], 404);
+        }
+
+        return ok($share->payload);
+    });
+
     // ---------- 版本更新（仅超管） ----------
     Route::get('/system/version', function () {
         return ok(systemVersionInfo());
@@ -381,3 +617,4 @@ function systemVersionInfo(): array
         'upToDate' => $remoteSha !== '' && str_starts_with($remoteSha, $local['commit']),
     ];
 }
+

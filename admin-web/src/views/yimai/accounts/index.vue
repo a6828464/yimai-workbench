@@ -58,7 +58,7 @@
   onMounted(async () => {
     loading.value = true
     try {
-      accounts.value = listAccounts()
+      accounts.value = await listAccounts()
     } finally {
       loading.value = false
     }
