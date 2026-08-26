@@ -8,6 +8,10 @@ dist-ssr/
 .env
 .env.*
 
+# 会话导出（含GitHub token等敏感信息，严禁入库）
+new-session-*.json
+*-session-*.json
+
 # 日志与临时文件
 *.log
 logs/
