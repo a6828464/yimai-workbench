@@ -1,70 +1,62 @@
-# 宝塔面板部署指南（阶段1测试环境）
+# 部署指南（宝塔面板 · 安装包方式）
 
-> 架构：前端静态站（Vue3 构建产物）+ 后端 API 站（Laravel 12 + MySQL）
+> 推荐流程：本地跑 `./make-release.sh` 生成安装包 → 宝塔上传解压 → 浏览器向导安装
 > 微信内打开 H5 分享页必须 HTTPS，请务必配置 SSL 证书
 
-## 一、域名规划（示例，替换成你的主域）
+## 一、宝塔环境要求
+
+| 组件 | 版本要求 | 说明 |
+|------|----------|------|
+| Nginx | 任意近期版本 | Web 服务器 |
+| MySQL | 5.7+（推荐 8.0） | 数据库 |
+| PHP | **8.2 ~ 8.4** | Laravel 12 要求 ≥8.2 |
+
+PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
+`fileinfo` `opcache` `pdo_mysql` `mbstring` `curl` `zip` `gd` `bcmath`
+
+- ❌ 不需要装 Composer（安装包已内置 vendor）
+- ❌ 不需要装 Node.js（前端已构建成静态文件）
+
+## 二、域名规划（示例，替换成你的主域）
 
 | 用途 | 域名 | 说明 |
 |------|------|------|
 | 前端 | `oa.yimaiyoga.com` | 工作台 + H5 分享页 |
-| 后端 | `oaapi.yimaiyoga.com` | Laravel API |
+| 后端 API | `oaapi.yimaiyoga.com` | Laravel 接口 |
 
-国内服务器需完成 ICP 备案后才能解析使用。
+国内服务器需 ICP 备案后才能解析。
 
-## 二、宝塔环境要求
+## 三、上传安装包
 
-- Nginx 任意近期版本
-- MySQL 5.7+（推荐 8.0）
-- PHP **8.2 ~ 8.4**（Laravel 12 要求 ≥8.2），安装扩展：`fileinfo opcache pdo_mysql mbstring curl zip gd bcmath`
-- Composer（宝塔 PHP 设置里启用）
+1. 宝塔 → 文件 → 上传 `releases/yimai-workbench-xxxx.zip`
+2. 解压到 `/www/wwwroot/`，得到：
 
-## 三、后端部署（oaapi.yourdomain.com）
-
-```bash
-# 1. 拉代码
-cd /www/wwwroot
-git clone <仓库地址> yimai && cd yimai/backend
-
-# 2. 配置
-cp .env.example .env    # 填好数据库/KeepYoga凭据，改成实际域名
-php artisan key:generate
-
-# 3. 依赖与初始化
-composer install --no-dev --optimize-autoloader --no-interaction
-php artisan migrate:fresh --seed --force   # 首次；已有数据用 migrate --force
-
-# 4. 目录权限（宝塔网站用户为 www）
-chown -R www:www storage bootstrap/cache
+```
+/www/wwwroot/yimai-workbench/
+├── backend/      # 后端（含 vendor、public/install.php）
+└── frontend/     # 前端构建产物
 ```
 
-宝塔 → 网站 → 添加站点：
-- 域名：`oaapi.yourdomain.com`，根目录指向 **`yimai/backend/public`**
-- PHP 版本选 8.2+；伪静态规则填 Laravel：
+## 四、后端站点（oaapi.yourdomain.com）
 
-```nginx
-location / {
-    try_files $uri $uri/ /index.php?$query_string;
-}
-```
+1. 宝塔 → 网站 → 添加站点：
+   - 域名：`oaapi.yourdomain.com`
+   - 根目录：`/www/wwwroot/yimai-workbench/backend/public`
+   - PHP 版本：8.2+
+2. 数据库（二选一）：
+   - **面板建库**：数据库菜单创建 `yimai` 库+用户（推荐）
+   - 安装向导里填 root 也可自动建库
+3. SSL：Let's Encrypt 一键签发 → 开启「强制 HTTPS」
+4. **浏览器打开 `https://oaapi.yourdomain.com/install.php`**：
+   - 环境检测全绿 → 填数据库信息 → （可选）填随心瑜账号 → 开始安装
+   - 完成后自动锁定向导；建议顺手删掉 `backend/public/install.php`
 
-- SSL：Let's Encrypt 一键签发，开启「强制HTTPS」
+验证：访问 `https://oaapi.yourdomain.com/up` 返回 ok 即正常。
 
-验证：浏览器打开 `https://oaapi.yourdomain.com/api/app-setting-rules`（401 JSON 即正常）或 `GET /up` 返回 ok。
+## 五、前端站点（oa.yourdomain.com）
 
-## 四、前端部署（oa.yourdomain.com）
-
-本地构建后上传 dist（或服务器上装 Node 构建）：
-
-```bash
-cd admin-web
-# .env.production 已入库：VITE_API_BASE=/api 时走单域名反代；
-# 双域名部署则改为 VITE_API_BASE=https://oaapi.yourdomain.com/api
-pnpm install && pnpm build
-# 产物在 admin-web/dist
-```
-
-宝塔 → 添加静态站点，根目录指向 `admin-web/dist`，伪静态：
+1. 宝塔 → 网站 → 添加**静态**站点，根目录：`/www/wwwroot/yimai-workbench/frontend`
+2. 伪静态规则：
 
 ```nginx
 location / {
@@ -72,38 +64,44 @@ location / {
 }
 ```
 
-同样配置 SSL + 强制 HTTPS。
+3. SSL 同上配置并强制 HTTPS
+4. **接口地址对接**（二选一）：
+   - 双域名（默认）：编辑 `frontend/config.js`：
+     ```js
+     window.__YIMAI_API_BASE__ = 'https://oaapi.yourdomain.com/api'
+     ```
+   - 单域名反代：保持 `/api`，并在前端站点 nginx 配置加反向代理：
+     ```nginx
+     location ^~ /api/ {
+         proxy_pass https://oaapi.yourdomain.com/api/;
+         proxy_set_header Host oaapi.yourdomain.com;
+         proxy_ssl_server_name on;
+     }
+     ```
+   改完刷新浏览器即生效，无需重新构建。
 
-### 单域名方案（可选，免 CORS 更干净）
+## 六、测试账号
 
-只开一个站点 `oa.yourdomain.com`：
-- 根目录指向前端 dist
-- 反向代理 `/api` → 后端站点域名
-- `.env.production` 保持 `VITE_API_BASE = /api`
+密码统一 `yimai123`
 
-```nginx
-location ^~ /api/ {
-    proxy_pass https://oaapi.yourdomain.com/api/;
-    proxy_set_header Host oaapi.yourdomain.com;
-    proxy_ssl_server_name on;
-}
-location / { try_files $uri $uri/ /index.html; }
-```
+| 账号 | 角色 |
+|------|------|
+| `nange` | 超管 |
+| `wangdz` / `lidz` | 店长（绿地店 / 东部店） |
+| `huangmin` / `tingting` | 老师 |
+| `ayu` | 新媒体 |
 
-## 五、测试账号
+## 七、日常更新
 
-密码统一 `yimai123`：超管 `nange` / 店长 `wangdz`(绿地) `lidz`(东部) / 老师 `huangmin` `tingting` / 新媒体 `ayu`
+- **后端**：后台「系统管理→版本更新」一键更新；或重新打包覆盖 backend（保留 .env 与 storage）
+- **前端**：重新打包取 frontend 目录整体覆盖（config.js 记得保留或重配）
 
-## 六、日常更新
-
-后台「系统管理 → 版本更新」一键更新仅对**后端代码**生效。
-前端更新流程：本地 `pnpm build` → 覆盖上传 dist（或在服务器 git pull 后重新构建）。
-
-## 七、常见问题
+## 八、常见问题
 
 | 现象 | 处理 |
 |------|------|
-| 登录报网络错误 | 检查 `.env` 的 APP_URL 与 SANCTUM_STATEFUL_DOMAINS 是否匹配实际域名 |
-| KeepYoga 同步 502 | `.env` 缺 KY_PHONE/KY_PASSWORD，改完 `php artisan config:clear` |
+| install.php 环境检测红叉 | 装对应 PHP 扩展；目录权限改 www 可写 |
+| 登录报网络错误 | config.js 的接口地址与实际不符；或后端站点 SSL 未配 |
+| KeepYoga 同步 502 | 安装时未填随心瑜凭据 → 补到 backend/.env 后保存 |
 | 页面刷新 404 | 前端伪静态未配 try_files index.html |
-| 接口 500 | `storage/logs/laravel.log` 看日志；多为目录权限或 .env 未配 |
+| 接口 500 | 看 `backend/storage/logs/` 当天日志；多为权限或 .env 配置问题 |
