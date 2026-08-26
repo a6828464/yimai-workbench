@@ -723,12 +723,16 @@ function systemVersionInfo(): array
     // 远端 main 最新提交：Gitee API（服务器可达，无需本机凭据）
     $remoteSha = '';
     $remoteErr = '';
+    $giteeToken = (string) config('services.gitee.token');
     try {
-        $resp = Illuminate\Support\Facades\Http::timeout(20)->get('https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/commits/main');
+        $resp = Illuminate\Support\Facades\Http::timeout(20)->get(
+            'https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/commits/main',
+            $giteeToken !== '' ? ['access_token' => $giteeToken] : []
+        );
         if ($resp->successful() && ($resp->json('sha') ?? false)) {
             $remoteSha = (string) $resp->json('sha');
         } else {
-            $remoteErr = 'Gitee API '.$resp->status();
+            $remoteErr = 'Gitee API '.$resp->status().' '.mb_substr($resp->body(), 0, 120);
         }
     } catch (\Throwable $e) {
         $remoteErr = mb_substr($e->getMessage(), 0, 200);

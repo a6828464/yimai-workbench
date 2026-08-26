@@ -41,4 +41,9 @@ return [
         'password' => env('KY_PASSWORD'),
     ],
 
+    // Gitee API（版本更新对比远端提交）
+    'gitee' => [
+        'token' => env('GITEE_TOKEN'),
+    ],
+
 ];
