@@ -91,6 +91,7 @@
 <script setup lang="ts">
   import { Picture, Paperclip, Close } from '@element-plus/icons-vue'
   import { mittBus } from '@/utils/sys'
+  import { useAiConfigStore } from '@/store/modules/ai-config'
   import meAvatar from '@/assets/images/avatar/avatar5.webp'
   import aiAvatar from '@/assets/images/avatar/avatar10.webp'
 
@@ -109,8 +110,8 @@
   // 常量定义
   const MOBILE_BREAKPOINT = 640
   const SCROLL_DELAY = 100
-  const BOT_NAME = 'Art Bot'
-  const USER_NAME = 'Ricky'
+  const BOT_NAME = '一麦AI助手'
+  const USER_NAME = '我'
 
   // 响应式布局
   const { width } = useWindowSize()
@@ -125,84 +126,6 @@
   const messageId = ref(10)
   const messageContainer = ref<HTMLElement | null>(null)
 
-  // 初始化聊天消息数据
-  const initializeMessages = (): ChatMessage[] => [
-    {
-      id: 1,
-      sender: BOT_NAME,
-      content: '你好！我是你的AI助手，有什么我可以帮你的吗？',
-      time: '10:00',
-      isMe: false,
-      avatar: aiAvatar
-    },
-    {
-      id: 2,
-      sender: USER_NAME,
-      content: '我想了解一下系统的使用方法。',
-      time: '10:01',
-      isMe: true,
-      avatar: meAvatar
-    },
-    {
-      id: 3,
-      sender: BOT_NAME,
-      content: '好的，我来为您介绍系统的主要功能。首先，您可以通过左侧菜单访问不同的功能模块...',
-      time: '10:02',
-      isMe: false,
-      avatar: aiAvatar
-    },
-    {
-      id: 4,
-      sender: USER_NAME,
-      content: '听起来很不错，能具体讲讲数据分析部分吗？',
-      time: '10:05',
-      isMe: true,
-      avatar: meAvatar
-    },
-    {
-      id: 5,
-      sender: BOT_NAME,
-      content: '当然可以。数据分析模块可以帮助您实时监控关键指标，并生成详细的报表...',
-      time: '10:06',
-      isMe: false,
-      avatar: aiAvatar
-    },
-    {
-      id: 6,
-      sender: USER_NAME,
-      content: '太好了，那我如何开始使用呢？',
-      time: '10:08',
-      isMe: true,
-      avatar: meAvatar
-    },
-    {
-      id: 7,
-      sender: BOT_NAME,
-      content: '您可以先创建一个项目，然后在项目中添加相关的数据源，系统会自动进行分析。',
-      time: '10:09',
-      isMe: false,
-      avatar: aiAvatar
-    },
-    {
-      id: 8,
-      sender: USER_NAME,
-      content: '明白了，谢谢你的帮助！',
-      time: '10:10',
-      isMe: true,
-      avatar: meAvatar
-    },
-    {
-      id: 9,
-      sender: BOT_NAME,
-      content: '不客气，有任何问题随时联系我。',
-      time: '10:11',
-      isMe: false,
-      avatar: aiAvatar
-    }
-  ]
-
-  const messages = ref<ChatMessage[]>(initializeMessages())
-
   // 工具函数
   const formatCurrentTime = (): string => {
     return new Date().toLocaleTimeString([], {
@@ -210,6 +133,15 @@
       minute: '2-digit'
     })
   }
+
+  const messages = ref<ChatMessage[]>([{
+    id: 0,
+    sender: BOT_NAME,
+    content: '你好，我是一麦AI助手。有什么门店经营、会员服务、文案创作的问题都可以问我（由大模型驱动）。',
+    time: formatCurrentTime(),
+    isMe: false,
+    avatar: aiAvatar
+  }])
 
   const scrollToBottom = (): void => {
     nextTick(() => {
@@ -222,7 +154,7 @@
   }
 
   // 消息处理方法
-  const sendMessage = (): void => {
+  const sendMessage = async (): Promise<void> => {
     const text = messageText.value.trim()
     if (!text) return
 
@@ -238,6 +170,73 @@
     messages.value.push(newMessage)
     messageText.value = ''
     scrollToBottom()
+
+    // 调用大模型回答
+    const aiStore = useAiConfigStore()
+    const { USE_BACKEND, apiPost } = await import('@/api/backend')
+    if (!aiStore.isReady()) {
+      messages.value.push({
+        id: messageId.value++,
+        sender: BOT_NAME,
+        content: '尚未接入大模型。请找超管在「模型配置」中填写服务商信息并启用后，我才能回答。',
+        time: formatCurrentTime(),
+        isMe: false,
+        avatar: aiAvatar
+      })
+      scrollToBottom()
+      return
+    }
+
+    // 简易"思考中"占位
+    const thinking: ChatMessage = {
+      id: messageId.value++,
+      sender: BOT_NAME,
+      content: '· · ·',
+      time: formatCurrentTime(),
+      isMe: false,
+      avatar: aiAvatar
+    }
+    messages.value.push(thinking)
+    scrollToBottom()
+
+    try {
+      const c = aiStore.config
+      let reply = ''
+      if (USE_BACKEND) {
+        const d = await apiPost<{ content?: string; code?: number; message?: string }>('/ai/chat', {
+          baseUrl: c.baseUrl,
+          apiKey: c.apiKey,
+          model: c.model,
+          messages: [
+            { role: 'system', content: '你是一麦瑜伽普拉提馆的内部AI助手，回答简洁、专业、口语化。' },
+            { role: 'user', content: text }
+          ],
+          temperature: c.temperature
+        })
+        if (d && d.code !== undefined && d.code !== 0) throw new Error(d.message || 'AI_ERROR')
+        reply = d?.content ?? ''
+      } else {
+        const resp = await fetch(`${c.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.apiKey}` },
+          body: JSON.stringify({
+            model: c.model,
+            messages: [
+              { role: 'system', content: '你是一麦瑜伽普拉提馆的内部AI助手，回答简洁、专业、口语化。' },
+              { role: 'user', content: text }
+            ],
+            temperature: c.temperature
+          })
+        })
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        reply = (await resp.json())?.choices?.[0]?.message?.content ?? ''
+      }
+      thinking.content = reply || '（模型未返回内容，请重试）'
+    } catch (e) {
+      thinking.content = `回答失败：${String(e).slice(0, 160)}`
+    } finally {
+      scrollToBottom()
+    }
   }
 
   // 聊天窗口控制方法

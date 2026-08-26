@@ -39,11 +39,11 @@
           </li>
           <li class="btn-item" @click="toDocs()">
             <ArtSvgIcon icon="ri:book-2-line" />
-            <span>{{ $t('topBar.user.docs') }}</span>
+            <span>项目说明</span>
           </li>
           <li class="btn-item" @click="toGithub()">
-            <ArtSvgIcon icon="ri:github-line" />
-            <span>{{ $t('topBar.user.github') }}</span>
+            <ArtSvgIcon icon="ri:smartphone-line" />
+            <span>随心瑜管理后台</span>
           </li>
           <li class="btn-item" @click="lockScreen()">
             <ArtSvgIcon icon="ri:lock-line" />
@@ -64,7 +64,6 @@
   import { useRouter } from 'vue-router'
   import { ElMessageBox } from 'element-plus'
   import { useUserStore } from '@/store/modules/user'
-  import { WEB_LINKS } from '@/utils/constants'
   import { mittBus } from '@/utils/sys'
 
   defineOptions({ name: 'ArtUserMenu' })
@@ -88,14 +87,14 @@
    * 打开文档页面
    */
   const toDocs = (): void => {
-    window.open(WEB_LINKS.DOCS)
+    router.push('/yimai-about/main')
   }
 
   /**
-   * 打开 GitHub 页面
+   * 打开随心瑜管理后台登录页
    */
   const toGithub = (): void => {
-    window.open(WEB_LINKS.GITHUB)
+    window.open('https://cloud.keepyoga.com', '_blank')
   }
 
   /**

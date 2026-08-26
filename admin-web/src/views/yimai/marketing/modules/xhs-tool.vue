@@ -56,22 +56,43 @@
       </div>
     </ElCard>
 
-    <!-- 生成结果：标题/正文/标签 三段式 -->
+    <!-- 生成结果：小红书笔记卡片 -->
     <ElCard v-if="hasResult || warning || generating" shadow="never" class="mb-4">
       <template #header>
         <div class="flex-cb">
           <span class="font-500">生成结果</span>
-          <ElTag size="small" :type="source === 'llm' ? 'success' : 'warning'">{{ source === 'llm' ? '大模型生成' : '本地模板草稿' }}</ElTag>
+          <div class="flex-c gap-3">
+            <ElButton v-if="hasResult" link size="small" :type="editMode ? 'primary' : 'info'" @click="editMode = !editMode">
+              {{ editMode ? '预览' : '编辑' }}
+            </ElButton>
+            <ElTag size="small" :type="source === 'llm' ? 'success' : 'warning'">{{ source === 'llm' ? '大模型生成' : '本地模板草稿' }}</ElTag>
+          </div>
         </div>
       </template>
       <ElAlert v-if="warning" :title="warning" type="warning" show-icon :closable="false" class="mb-3" />
       <div v-loading="generating">
-        <div class="text-xs text-gray-400 mb-1">标题</div>
-        <ElInput v-model="title" class="mb-3" />
-        <div class="text-xs text-gray-400 mb-1">正文</div>
-        <ElInput v-model="content" type="textarea" :rows="9" class="mb-3" />
-        <div class="text-xs text-gray-400 mb-1">话题标签（逗号分隔，可编辑）</div>
-        <ElInput v-model="tagsText" />
+        <!-- 编辑模式 -->
+        <template v-if="editMode">
+          <div class="text-xs text-gray-400 mb-1">标题</div>
+          <ElInput v-model="title" class="mb-3" />
+          <div class="text-xs text-gray-400 mb-1">正文</div>
+          <ElInput v-model="content" type="textarea" :rows="9" class="mb-3" />
+          <div class="text-xs text-gray-400 mb-1">话题标签（逗号分隔，可编辑）</div>
+          <ElInput v-model="tagsText" />
+        </template>
+        <!-- 笔记样式预览 -->
+        <div v-else class="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden bg-white dark:bg-[#0d0d0d]">
+          <div class="px-4 pt-5 pb-3 bg-gradient-to-r from-[#ff2442]/10 to-[#ff7a45]/10">
+            <h3 class="text-[17px] font-700 leading-snug text-g-900">{{ title }}</h3>
+            <div class="mt-1.5 text-xs text-g-500">一麦瑜伽 · 小红书笔记</div>
+          </div>
+          <p class="px-4 py-3 text-[14.5px] leading-[1.85] text-g-700 whitespace-pre-wrap break-all">{{ content }}</p>
+          <div v-if="tags.length" class="px-4 pb-4 flex flex-wrap gap-1.5">
+            <span v-for="tag in tags.slice(0, 10)" :key="tag" class="px-2 py-0.5 rounded-full text-xs bg-[#ff2442]/10 text-[#ff2442]">
+              {{ tag }}
+            </span>
+          </div>
+        </div>
         <div class="mt-3 flex gap-2">
           <ElButton type="primary" plain @click="copyAll">复制整篇</ElButton>
           <ElButton plain @click="saveFavorite">收藏到笔记库</ElButton>
@@ -141,6 +162,10 @@
   const title = ref('')
   const content = ref('')
   const tagsText = ref('')
+
+  const tags = computed(() => tagsText.value.split(/\s+/).filter(Boolean))
+
+  const editMode = ref(false)
   const source = ref<'llm' | 'fallback'>('fallback')
   const warning = ref('')
   const favVisible = ref(false)

@@ -1,10 +1,10 @@
 <template>
   <div class="p-4">
-    <ElAlert :title="bannerText" type="info" show-icon :closable="false" class="mb-4">
+    <ElAlert v-if="isSuper" :title="bannerText" type="info" show-icon :closable="false" class="mb-4">
       <template #default>
         <div class="flex items-center justify-between flex-wrap gap-2">
           <span>{{ bannerText }}</span>
-          <ElButton v-if="isSuper" link type="primary" @click="$router.push('/yimai/ai-config')">
+          <ElButton link type="primary" @click="$router.push('/yimai/ai-config')">
             前往配置
           </ElButton>
         </div>

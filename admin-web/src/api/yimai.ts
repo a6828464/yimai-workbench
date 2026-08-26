@@ -239,11 +239,14 @@ export function queryAuditLogs(params: PageParams & { operator?: string; module?
 // ==================== 客户经营池 ====================
 
 export function queryCustomers(
-  params: PageParams & { name?: string; venue?: string; layer?: string; type?: 'all' | 'member' | 'lead'; list?: MemberListKey }
+  params: PageParams & { name?: string; venue?: string; layer?: string; type?: 'all' | 'member' | 'lead'; list?: MemberListKey; owner?: string; haveCourse?: string; remainRange?: string }
 ): Promise<{ records: YimaiCustomer[]; total: number; current: number; size: number }> {
   if (USE_BACKEND) {
     return apiGet<{ records: YimaiCustomer[]; total: number }>('/customers', {
-      name: params.name, venue: params.venue, list: params.list, size: params.size
+      name: params.name, venue: params.venue, layer: params.layer, list: params.list,
+      haveCourse: params.haveCourse || undefined,
+      remainMax: params.remainRange || undefined,
+      size: params.size
     } as Record<string, unknown>).then((d) => ({ ...d, current: 1, size: params.size ?? 20 }))
   }
   const a = actor()
@@ -259,6 +262,9 @@ export function queryCustomers(
   if (params.name) list = list.filter((c) => c.name.includes(String(params.name)))
   if (params.venue) list = list.filter((c) => c.venue === params.venue)
   if (params.layer) list = list.filter((c) => c.layer === params.layer)
+  if (params.haveCourse === 'true') list = list.filter((c) => c.mainCard && c.mainCard !== '—')
+  if (params.haveCourse === 'false') list = list.filter((c) => !c.mainCard || c.mainCard === '—')
+  if (params.remainRange) list = list.filter((c) => c.remainTimes !== null && c.remainTimes <= Number(params.remainRange))
   return Promise.resolve({ records: paginate(list, params), total: list.length, current: params.current ?? 1, size: params.size ?? 20 })
 }
 

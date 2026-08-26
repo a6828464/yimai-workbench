@@ -49,17 +49,40 @@
       </div>
     </ElCard>
 
-    <!-- 生成结果 -->
+    <!-- 生成结果：朋友圈预览卡片 -->
     <ElCard v-if="result || warning || generating" shadow="never" class="mb-4">
       <template #header>
         <div class="flex-cb">
           <span class="font-500">生成结果</span>
-          <ElTag size="small" :type="source === 'llm' ? 'success' : 'warning'">{{ source === 'llm' ? '大模型生成' : '本地模板草稿' }}</ElTag>
+          <div class="flex-c gap-3">
+            <ElButton v-if="result" link size="small" :type="editMode ? 'primary' : 'info'" @click="editMode = !editMode">
+              {{ editMode ? '预览' : '编辑' }}
+            </ElButton>
+            <ElTag size="small" :type="source === 'llm' ? 'success' : 'warning'">{{ source === 'llm' ? '大模型生成' : '本地模板草稿' }}</ElTag>
+          </div>
         </div>
       </template>
       <ElAlert v-if="warning" :title="warning" type="warning" show-icon :closable="false" class="mb-3" />
       <div v-loading="generating">
-        <ElInput v-model="result" type="textarea" :rows="8" />
+        <!-- 编辑模式 -->
+        <ElInput v-if="editMode" v-model="result" type="textarea" :rows="8" resize="none" />
+        <!-- 朋友圈样式预览 -->
+        <div v-else class="rounded-lg border border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-[#0d0d0d]">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg overflow-hidden shrink-0 bg-theme/10 flex-c">
+              <i class="ri-user-smile-line text-xl text-theme" />
+            </div>
+            <div>
+              <div class="text-sm font-600 text-g-900">{{ persona.name || persona.role || '我' }}</div>
+              <div class="text-xs text-g-500 mt-0.5">刚刚 · 来自一麦</div>
+            </div>
+          </div>
+          <p class="mt-3 text-[15px] leading-[1.8] text-g-800 whitespace-pre-wrap break-all">{{ result }}</p>
+          <div class="mt-3 flex items-center gap-4 text-xs text-g-500">
+            <span class="flex-c gap-1"><i class="ri-heart-line" /> 赞</span>
+            <span class="flex-c gap-1"><i class="ri-chat-1-line" /> 评论</span>
+          </div>
+        </div>
         <div class="mt-3 flex gap-2">
           <ElButton type="primary" plain @click="copyAll">复制全文</ElButton>
           <ElButton plain @click="saveFavorite">收藏到朋友圈库</ElButton>
@@ -137,6 +160,7 @@
   const generating = ref(false)
   const result = ref('')
   const source = ref<'llm' | 'fallback'>('fallback')
+  const editMode = ref(false)
   const warning = ref('')
   const favVisible = ref(false)
 

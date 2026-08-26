@@ -13,10 +13,10 @@
         </ElTabPane>
       </ElTabs>
 
-      <!-- 规则说明/设置 -->
+      <!-- 规则设置 -->
       <div class="mb-3 flex flex-wrap items-center gap-3 text-xs text-gray-400">
-        <span>口径：待续课=最近月有出勤且剩余&lt;{{ rules.renewalThreshold }}节 · VIP=累计购买&gt;{{ rules.vipThreshold }}节 · 出勤降低={{ rules.declineMode === 'strict' ? '连续三月递减' : '最近两月下降' }} · 预流失=上月出勤本月停训或15-30天未到店 · 待复活=&gt;30天未到店且有卡</span>
-        <ElButton link type="primary" size="small" @click="rulesDlg = true">调整阈值</ElButton>
+        <span>{{ scopeHint }}</span>
+        <ElButton link type="primary" size="small" @click="rulesDlg = true">调整续费/流失阈值</ElButton>
       </div>
 
       <!-- 总览筛选 -->
@@ -243,8 +243,8 @@
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
   const isTeacher = computed(() => roles.value.includes('R_TEACHER'))
   const scopeHint = computed(() => {
-    if (isTeacher.value) return `我的会员 · 五清单自动归入（口径：卓越店长训练营）`
-    return `数据范围：${userStore.getUserInfo.venue ?? '双店'} · 五清单自动归入（口径：卓越店长训练营会员管理板块）`
+    if (isTeacher.value) return `数据范围：我的会员（${userStore.getUserInfo.venue ?? '双店'}）`
+    return `数据范围：${userStore.getUserInfo.venue ?? '双店'}`
   })
 
   const LIST_KEYS: MemberListKey[] = ['待续课', '出勤降低', 'VIP', '预流失', '待复活']

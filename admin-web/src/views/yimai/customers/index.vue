@@ -4,7 +4,7 @@
       <div class="mb-4 flex flex-wrap items-center gap-3">
         <ElInput
           v-model="searchForm.name"
-          placeholder="客户姓名"
+          placeholder="客户姓名 / 尾号"
           clearable
           class="!w-45"
           @change="handleSearch"
@@ -15,6 +15,18 @@
         </ElSelect>
         <ElSelect v-model="searchForm.layer" placeholder="经营分层" clearable class="!w-36" @change="handleSearch">
           <ElOption v-for="(v, k) in LAYER_LABELS" :key="k" :label="`${k} ${v}`" :value="k" />
+        </ElSelect>
+        <ElSelect v-model="searchForm.list" placeholder="运营清单" clearable class="!w-32" @change="handleSearch">
+          <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
+        </ElSelect>
+        <ElSelect v-model="searchForm.haveCourse" placeholder="有课卡" clearable class="!w-28" @change="handleSearch">
+          <ElOption label="有课卡" value="true" />
+          <ElOption label="无课卡" value="false" />
+        </ElSelect>
+        <ElSelect v-model="searchForm.remainRange" placeholder="剩余课时" clearable class="!w-32" @change="handleSearch">
+          <ElOption label="≤ 5 节" value="5" />
+          <ElOption label="≤ 10 节" value="10" />
+          <ElOption label="≤ 20 节" value="20" />
         </ElSelect>
         <ElButton type="primary" plain @click="handleSearch">查询</ElButton>
         <ElButton @click="handleReset">重置</ElButton>
@@ -48,6 +60,8 @@
 
   defineOptions({ name: 'YimaiCustomers' })
 
+  const LIST_KEYS = ['待续课', '出勤降低', 'VIP', '预流失', '待复活']
+
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
   const isManager = computed(() => roles.value.includes('R_MANAGER'))
@@ -79,7 +93,10 @@
   const searchForm = ref({
     name: '',
     venue: '',
-    layer: ''
+    layer: '',
+    list: '',
+    haveCourse: '',
+    remainRange: ''
   })
 
   function daysAgo(date: string | null) {
@@ -200,12 +217,16 @@
   })
 
   function handleSearch() {
-    replaceSearchParams({ ...searchForm.value })
+    const p = { ...searchForm.value }
+    replaceSearchParams({
+      ...p,
+      list: (p.list as '待续课' | '出勤降低' | 'VIP' | '预流失' | '待复活' | '') || undefined
+    })
     getData()
   }
 
   function handleReset() {
-    searchForm.value = { name: '', venue: '', layer: '' }
+    searchForm.value = { name: '', venue: '', layer: '', list: '', haveCourse: '', remainRange: '' }
     resetSearchParams()
     getData()
   }

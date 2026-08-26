@@ -27,7 +27,7 @@ export const globalComponentsConfig: GlobalComponentConfig[] = [
     component: defineAsyncComponent(
       () => import('@/components/core/layouts/art-settings-panel/index.vue')
     ),
-    enabled: true
+    enabled: false
   },
   {
     name: '全局搜索',

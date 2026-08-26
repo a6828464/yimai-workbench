@@ -73,6 +73,11 @@ Route::middleware('auth:sanctum')->group(function () {
         }
         if ($n = $r->query('name')) $q->where('name', 'like', "%{$n}%");
         if ($l = $r->query('list')) $q->whereIn('id', filteredIds($l));
+        if ($o = $r->query('owner')) $q->where('owner', $o);
+        if ($s = $r->query('status')) $q->where('status', $s);
+        if ($src = $r->query('source')) $q->where('source', 'like', "%{$src}%");
+        if ($r->query('haveCourse')) $q->whereNotNull('main_card')->where('main_card', '!=', '—');
+        if (is_numeric($r->query('remainMax'))) $q->where('remain_times', '<=', (int) $r->query('remainMax'));
         $rows = $q->orderBy('id')->get()->map(fn ($x) => camel($x));
         return ok(['records' => array_slice($rows->toArray(), 0, (int) ($r->query('size', 500))), 'total' => $rows->count()]);
     });
