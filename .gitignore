@@ -1,0 +1,24 @@
+# 依赖与构建产物
+node_modules/
+dist/
+dist-ssr/
+
+# 本地环境与密钥（KeepYoga凭据等，严禁入库）
+*.local
+.env
+.env.*
+
+# 日志与临时文件
+*.log
+logs/
+.DS_Store
+Thumbs.db
+
+# 自动生成文件
+.auto-import.json
+admin-web/src/types/import/auto-imports.d.ts
+admin-web/src/types/import/components.d.ts
+
+# 编辑器
+.idea/
+.vscode/settings.json
