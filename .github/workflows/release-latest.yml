@@ -1,0 +1,56 @@
+name: Build latest release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: admin-web/pnpm-lock.yaml
+
+      - name: Build frontend
+        working-directory: admin-web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Assemble release package
+        run: |
+          set -euo pipefail
+          mkdir -p stage/app
+          git archive --format=tar --worktree-attributes HEAD backend CHANGELOG.md | tar -x -C stage/app
+          rm -rf stage/app/backend/public/assets stage/app/backend/public/index.html
+          cp -R admin-web/dist/assets stage/app/backend/public/assets
+          cp admin-web/dist/index.html stage/app/backend/public/index.html
+          if [ -f admin-web/dist/favicon.ico ]; then cp admin-web/dist/favicon.ico stage/app/backend/public/favicon.ico; fi
+          rm -f stage/app/backend/public/config.js
+          printf '%s\n' "window.__YIMAI_API_BASE__ = '/api'" > stage/app/backend/public/config.js
+          printf '{"branch":"main","commit":"%s","message":"%s","date":"%s"}\n' "$(git rev-parse HEAD)" "$(git log -1 --pretty=%s)" "$(git log -1 --pretty=%ci)" > stage/app/backend/version.json
+          rm -f stage/app/backend/public/install.php
+          cd stage
+          zip -qr ../yimai-workbench-latest.zip app -x '*.DS_Store'
+
+      - name: Publish auto-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete auto-latest --yes 2>/dev/null || true
+          gh release create auto-latest yimai-workbench-latest.zip \
+            --target "$GITHUB_SHA" \
+            --title "自动构建 $GITHUB_SHA" \
+            --notes "由 main 分支最新提交自动构建。"
