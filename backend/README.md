@@ -60,7 +60,7 @@ KeepYoga 会话、代理、导入和同步批次接口仅允许超管调用。�
 
 ## 生产部署
 
-- Nginx 根目录必须指向 `backend/public`。
+- Nginx 根目录必须指向部署包中的 `app/public`（源码目录对应 `backend/public`）。
 - 生产环境设置 `APP_ENV=production`、`APP_DEBUG=false` 和正确的 `APP_TIMEZONE`。
 - 发布后执行 `php artisan migrate --force`，不要执行 `migrate:fresh`。
 - 保留 `.env`、`storage` 和 `bootstrap/cache`，不要把这些内容放入发布包。

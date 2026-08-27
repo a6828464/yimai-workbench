@@ -17,12 +17,13 @@ PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
 - ❌ 不需要装 Composer（安装包已内置 vendor）
 - ❌ 不需要装 Node.js（前端已构建成静态文件）
 
-## 二、域名规划（示例，替换成你的主域）
+## 二、域名规划
 
-| 用途 | 域名 | 说明 |
-|------|------|------|
-| 前端 | `oa.yimaiyoga.com` | 工作台 + H5 分享页 |
-| 后端 API | `oaapi.yimaiyoga.com` | Laravel 接口 |
+统一使用一个域名，例如 `oa.nbyimai.com`：
+
+- `/`、`/assets/*`：Vue 工作台与 H5 分享页
+- `/api/*`：Laravel API
+- `/up`：Laravel 健康检查
 
 国内服务器需 ICP 备案后才能解析。
 
@@ -33,51 +34,41 @@ PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
 
 ```
 /www/wwwroot/yimai-workbench/
-├── backend/      # 后端（含 vendor；安装器仅限首次受控安装）
-└── frontend/     # 前端构建产物
+└── app/          # Laravel 应用；Vue 构建产物已合入 app/public
 ```
 
-## 四、后端站点（oaapi.yourdomain.com）
+## 四、统一站点（oa.yourdomain.com）
 
 1. 宝塔 → 网站 → 添加站点：
-   - 域名：`oaapi.yourdomain.com`
-   - 根目录：`/www/wwwroot/yimai-workbench/backend/public`
+   - 域名：`oa.yourdomain.com`
+   - 根目录：`/www/wwwroot/yimai-workbench/app/public`
    - PHP 版本：8.2+
 2. 数据库（二选一）：
    - **面板建库**：数据库菜单创建 `yimai` 库+用户（推荐）
    - 安装向导里填 root 也可自动建库
 3. SSL：Let's Encrypt 一键签发 → 开启「强制 HTTPS」
-4. 首次部署应在受限网络中完成数据库配置和迁移；安装完成后立即删除 `backend/public/install.php`，禁止将安装器长期暴露在公网。
+4. 配置 `app/.env`，然后执行 `php artisan migrate --force` 并创建初始超管账号。
 5. 不要使用 `migrate:fresh` 初始化已有生产数据库；后续发布只执行 `php artisan migrate --force`。
 
-验证：访问 `https://oaapi.yourdomain.com/up` 返回 ok 即正常。
+验证：访问 `https://oa.yourdomain.com/api/customers`，未登录时返回 JSON `401` 即表示 API 已进入 Laravel。
 
-## 五、前端站点（oa.yourdomain.com）
-
-1. 宝塔 → 网站 → 添加**静态**站点，根目录：`/www/wwwroot/yimai-workbench/frontend`
-2. 伪静态规则：
+## 五、Nginx 路由
 
 ```nginx
+location ~ ^/(api(?:/|$)|up$) {
+    try_files $uri $uri/ /index.php?$query_string;
+}
+
 location / {
     try_files $uri $uri/ /index.html;
 }
 ```
 
-3. SSL 同上配置并强制 HTTPS
-4. **接口地址对接**（二选一）：
-   - 双域名（默认）：编辑 `frontend/config.js`：
-     ```js
-     window.__YIMAI_API_BASE__ = 'https://oaapi.yourdomain.com/api'
-     ```
-   - 单域名反代：保持 `/api`，并在前端站点 nginx 配置加反向代理：
-     ```nginx
-     location ^~ /api/ {
-         proxy_pass https://oaapi.yourdomain.com/api/;
-         proxy_set_header Host oaapi.yourdomain.com;
-         proxy_ssl_server_name on;
-     }
-     ```
-   改完刷新浏览器即生效，无需重新构建。
+前端 `public/config.js` 固定使用同源 API：
+
+```js
+window.__YIMAI_API_BASE__ = '/api'
+```
 
 ## 六、初始账号
 
@@ -86,7 +77,7 @@ location / {
 ## 七、日常更新
 
 - **后端**：使用受控发布流程覆盖代码，保留 `.env`、`storage` 和 `bootstrap/cache`，然后执行 `php artisan migrate --force`；不要依赖 Web 请求直接覆盖生产代码。
-- **前端**：重新打包取 frontend 目录整体覆盖（config.js 记得保留或重配）
+- **前端**：重新构建并覆盖 `app/public/index.html`、`app/public/assets/`；保留 `index.php` 和 `.env`
 
 ## 八、常见问题
 

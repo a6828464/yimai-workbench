@@ -1,5 +1,13 @@
 ﻿# 更新日志
 
+## 2026-08-28 ｜ deploy: 阿里云切换为 oa.nbyimai.com 单域名单站点
+
+- Vue 构建产物与 Laravel `public` 合并，由同一个 HTTPS 域名提供页面、API 和 H5 分享页。
+- `oa.nbyimai.com` 根目录切换为 Laravel `public`，启用 PHP 8.4 和可信 SSL。
+- `/api/*`、`/up` 进入 Laravel，其他路径回退 Vue `index.html`。
+- 删除旧 `oaapi.nbyimai.com` 宝塔站点及旧目录，保留数据库和统一站点备份。
+- 发布脚本改为生成 `app/public` 单站点结构，并使用锁文件安装依赖。
+
 ## 2026-08-28 ｜ feat: KeepYoga 多表同步与会员经营清单数据闭环
 
 - 新增 KeepYoga 会员基础、会员卡、团课签到、私教签到多表同步。
