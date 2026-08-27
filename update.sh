@@ -29,4 +29,4 @@ php artisan migrate --force
 php artisan optimize:clear
 chown -R www:www "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
 
-echo "更新完成：$COMMIT"
+echo "更新完成"
