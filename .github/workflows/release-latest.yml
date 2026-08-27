@@ -20,8 +20,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: pnpm
-          cache-dependency-path: admin-web/pnpm-lock.yaml
 
       - name: Build frontend
         working-directory: admin-web
