@@ -59,7 +59,7 @@ jobs:
             --notes "由 main 分支最新提交自动构建。"
 
       - name: Publish Gitee release
-        if: ${{ secrets.GITEE_TOKEN != '' }}
+        if: ${{ env.GITEE_TOKEN != '' }}
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_API: https://gitee.com/api/v5
