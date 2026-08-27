@@ -3,6 +3,7 @@ name: Build latest release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -56,3 +57,31 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "自动构建 $GITHUB_SHA" \
             --notes "由 main 分支最新提交自动构建。"
+
+      - name: Publish Gitee release
+        if: ${{ secrets.GITEE_TOKEN != '' }}
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_API: https://gitee.com/api/v5
+          GITEE_REPO: meng-taoo/yimai-workbench
+        run: |
+          set -euo pipefail
+          TAG="build-${GITHUB_SHA::7}"
+          BODY="由 main 分支提交 ${GITHUB_SHA} 自动构建。后台更新请使用该发行包。"
+          existing="$(curl --fail-with-body -sS -G "$GITEE_API/repos/$GITEE_REPO/releases" \
+            --data-urlencode "access_token=$GITEE_TOKEN" \
+            --data-urlencode "page=1" --data-urlencode "per_page=100")"
+          release_id="$(printf '%s' "$existing" | python3 -c 'import json,sys; tag=sys.argv[1]; print(next((str(x["id"]) for x in json.load(sys.stdin) if x.get("tag_name")==tag), ""))' "$TAG")"
+          if [ -n "$release_id" ]; then
+            curl --fail-with-body -sS -X DELETE "$GITEE_API/repos/$GITEE_REPO/releases/$release_id" \
+              --data-urlencode "access_token=$GITEE_TOKEN"
+          fi
+          response="$(curl --fail-with-body -sS -X POST "$GITEE_API/repos/$GITEE_REPO/releases" \
+            --data-urlencode "access_token=$GITEE_TOKEN" \
+            --data-urlencode "tag_name=$TAG" \
+            --data-urlencode "name=一麦工作台 $TAG" \
+            --data-urlencode "body=$BODY" \
+            --data-urlencode "target_commitish=$GITHUB_SHA")"
+          upload_url="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')"
+          curl --fail-with-body -sS -X POST "${upload_url}?access_token=$GITEE_TOKEN" \
+            -F "file=@yimai-workbench-latest.zip"

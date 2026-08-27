@@ -71,6 +71,7 @@
       </h3>
       <ElSkeleton v-if="loading" :rows="6" animated />
       <div v-else-if="changelogHtml" class="changelog-body" v-html="changelogHtml" />
+      <ElAlert v-else-if="changelogError" type="warning" :closable="false" :title="changelogError" />
       <ElEmpty v-else description="暂无 CHANGELOG.md" />
     </div>
   </div>
@@ -92,6 +93,7 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
   const updating = ref(false)
   const version = ref<VersionInfo | null>(null)
   const changelogHtml = ref('')
+  const changelogError = ref('')
 
   const remoteError = computed(() => version.value?.remote.error || '')
   const upToDate = computed(() => version.value?.upToDate ?? true)
@@ -107,9 +109,10 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
   async function loadChangelog() {
     try {
       const d = await apiGet<{ content: string }>('/system/changelog')
-      changelogHtml.value = renderMarkdown(d.content)
+      changelogHtml.value = renderMarkdown(d.content || '')
     } catch {
       changelogHtml.value = ''
+      changelogError.value = '更新日志暂时无法读取，请稍后重试'
     }
   }
 
@@ -190,13 +193,9 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
       loading.value = false
       return
     }
-    try {
-      await Promise.all([loadVersion(), loadChangelog()])
-    } catch (e) {
-      ElMessage.error(`加载失败：${String(e).slice(0, 80)}`)
-    } finally {
-      loading.value = false
-    }
+    const results = await Promise.allSettled([loadVersion(), loadChangelog()])
+    if (results.some((result) => result.status === 'rejected')) ElMessage.warning('部分版本信息暂时不可用')
+    loading.value = false
   })
 </script>
 

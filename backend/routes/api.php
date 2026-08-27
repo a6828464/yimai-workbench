@@ -607,9 +607,10 @@ Route::middleware('auth:sanctum')->group(function () {
         foreach ($candidates as $f) {
             if (is_file($f)) { $file = $f; break; }
         }
-        abort_unless($file !== null, 404, 'CHANGELOG.md 不存在');
+        if ($file === null) return ok(['content' => "# 更新日志\n\n暂无可用更新日志。"]);
 
-        return ok(['content' => file_get_contents($file)]);
+        $content = file_get_contents($file);
+        return ok(['content' => is_string($content) && trim($content) !== '' ? $content : "# 更新日志\n\n暂无可用更新日志。"]);
     });
 
     Route::post('/system/update', function (Request $r) {
@@ -805,7 +806,7 @@ function systemVersionInfo(): array
         ];
     }
 
-    // 远端 main 最新提交：Gitee API（服务器可达，无需本机凭据）
+    // 远端 main 最新提交：优先 Gitee，失败时回退 GitHub
     $remoteSha = '';
     $remoteErr = '';
     $giteeToken = (string) config('services.gitee.token');
@@ -817,7 +818,12 @@ function systemVersionInfo(): array
         if ($resp->successful() && ($resp->json('sha') ?? false)) {
             $remoteSha = (string) $resp->json('sha');
         } else {
-            $remoteErr = 'Gitee API '.$resp->status().' '.mb_substr($resp->body(), 0, 120);
+            $fallback = Illuminate\Support\Facades\Http::timeout(20)->get('https://api.github.com/repos/a6828464/yimai-workbench/commits/main');
+            if ($fallback->successful() && ($fallback->json('sha') ?? false)) {
+                $remoteSha = (string) $fallback->json('sha');
+            } else {
+                $remoteErr = 'Gitee/GitHub API 均不可达';
+            }
         }
     } catch (\Throwable $e) {
         $remoteErr = mb_substr($e->getMessage(), 0, 200);

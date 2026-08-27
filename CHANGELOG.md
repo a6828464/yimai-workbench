@@ -1,5 +1,13 @@
 ﻿# 更新日志
 
+## 2026-08-28 ｜ fix: 完善在线发布包和版本日志
+
+- GitHub Actions 推送 `main` 后自动构建 `auto-latest` 发布包。
+- 支持配置 `GITEE_TOKEN` 后同步创建 Gitee Release 并上传同一发布包。
+- 服务器更新脚本优先下载 Gitee 最新 Release，失败时回退 GitHub。
+- 修复版本页面更新日志接口失败时整页状态异常的问题。
+- 更新日志缺失时返回明确的空日志内容，不再触发 404。
+
 ## 2026-08-28 ｜ deploy: 阿里云切换为 oa.nbyimai.com 单域名单站点
 
 - Vue 构建产物与 Laravel `public` 合并，由同一个 HTTPS 域名提供页面、API 和 H5 分享页。
