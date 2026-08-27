@@ -16,7 +16,8 @@ unzip -q "$WORK_ROOT/release.zip" -d "$WORK_ROOT/unpacked"
 RELEASE_ROOT="$WORK_ROOT/unpacked/app"
 
 # Preserve production-only files while replacing application code and built assets.
-rsync -a --delete \
+# 发布包不携带 vendor，保留服务器现有生产依赖。
+rsync -a \
   --exclude '.env' \
   --exclude 'storage/' \
   --exclude 'bootstrap/cache/' \
