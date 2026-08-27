@@ -24,7 +24,12 @@ jobs:
         run: |
           npm install --global pnpm@11
           pnpm install --no-frozen-lockfile --reporter=append-only
-          pnpm build
+
+      - name: Typecheck and build frontend
+        working-directory: admin-web
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm build
 
       - name: Assemble release package
         run: |
