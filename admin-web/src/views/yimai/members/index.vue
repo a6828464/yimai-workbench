@@ -322,7 +322,13 @@
       await refreshMemberRules()
       rules.value = getMemberRules()
       const listFilter = searchForm.value.list ? (searchForm.value.list as MemberListKey) : undefined
-      const res = await queryCustomers({ name: searchForm.value.name, list: listFilter })
+      const res = await queryCustomers({
+        name: searchForm.value.name,
+        list: listFilter,
+        type: 'member',
+        current: 1,
+        size: 5000
+      })
       all.value = res.records
     } finally {
       loading.value = false

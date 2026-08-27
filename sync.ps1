@@ -56,7 +56,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "✗ 提交失败" -ForegroundColor Red; e
 Write-Host "[4/4] 推送到 GitHub..." -ForegroundColor Cyan
 git push origin main
 if ($LASTEXITCODE -eq 0) {
-  Write-Host "`n✓ 已同步 · CHANGELOG.md 已更新 · 在线查看: https://github.com/a6828464/yimai-workbench/blob/master/CHANGELOG.md" -ForegroundColor Green
+  Write-Host "`n✓ 已同步 · CHANGELOG.md 已更新 · 在线查看: https://github.com/a6828464/yimai-workbench/blob/main/CHANGELOG.md" -ForegroundColor Green
 } else {
   Write-Host "`n⚠ 推送失败，稍后重试: git push origin main" -ForegroundColor Yellow
 }

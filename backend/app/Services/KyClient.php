@@ -25,6 +25,7 @@ class KyClient
         'mcard/api/getmcardsbycond',
         'venue/api/getallcontractlist',
         'course/api/queryreversionleague',
+        'course/api/queryreversionprivate',
     ];
 
     private const CACHE_KEY = 'ky_access_token';
@@ -57,13 +58,20 @@ class KyClient
         }
 
         [$phone, $password] = self::credentials();
-        $resp = Http::asForm()->timeout(30)->post(self::BASE.'/passport/api/login', [
+        $response = Http::asForm()->timeout(30)->post(self::BASE.'/passport/api/login', [
             'phone' => $phone,
             'pwd' => md5($password),
             'keep' => '1',
             'brand_id' => '',
             'venue_id' => '',
-        ])->json();
+        ]);
+        if (! $response->successful()) {
+            throw new RuntimeException('KeepYoga 登录请求失败 HTTP '.$response->status());
+        }
+        $resp = $response->json();
+        if (! is_array($resp)) {
+            throw new RuntimeException('KeepYoga 登录响应格式异常');
+        }
 
         $token = (string) ($resp['data']['access_token'] ?? '');
         if ($token === '') {
@@ -94,8 +102,15 @@ class KyClient
                 'version' => self::VERSION,
                 'os' => 'pc',
             ];
-            $resp = Http::asForm()->timeout(30)->post(self::BASE.'/'.$path, $payload)->json();
-            $errno = (string) ($resp['errno'] ?? '0');
+            $response = Http::asForm()->timeout(30)->post(self::BASE.'/'.$path, $payload);
+            if (! $response->successful()) {
+                throw new RuntimeException("{$path} HTTP ".$response->status());
+            }
+            $resp = $response->json();
+            if (! is_array($resp) || ! array_key_exists('errno', $resp)) {
+                throw new RuntimeException("{$path} 响应格式异常");
+            }
+            $errno = (string) $resp['errno'];
             if ($errno === '0') {
                 return $resp;
             }

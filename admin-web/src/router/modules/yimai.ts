@@ -189,12 +189,6 @@ export const yimaiRoutes: AppRouteRecord[] = [
         component: '/yimai/version',
         meta: { title: '版本更新', icon: 'ri:install-line', roles: SUPER, keepAlive: false }
       },
-      {
-        path: '/system/user-center',
-        name: 'UserCenter',
-        component: '/system/user-center',
-        meta: { title: '个人中心', icon: 'ri:user-line', isHide: true, isHideTab: true, keepAlive: true }
-      }
     ]
   }
 ]

@@ -28,6 +28,11 @@ const http = axios.create({
   timeout: 20000
 })
 
+function unwrap<T>(body: { code?: number; data?: T; message?: string }): T {
+  if (body?.code !== undefined && body.code !== 0) throw new Error(body.message || '请求失败')
+  return body?.data as T
+}
+
 http.interceptors.request.use((cfg) => {
   const token = getBackendToken()
   if (token) cfg.headers.Authorization = `Bearer ${token}`
@@ -48,20 +53,20 @@ http.interceptors.response.use(
 
 export async function apiGet<T = unknown>(path: string, params?: Record<string, unknown>): Promise<T> {
   const r = await http.get(path, { params })
-  return r.data?.data as T
+  return unwrap<T>(r.data)
 }
 
-export async function apiPost<T = unknown>(path: string, body?: Record<string, unknown>): Promise<T> {
-  const r = await http.post(path, body)
-  return r.data?.data as T
+export async function apiPost<T = unknown>(path: string, body?: Record<string, unknown>, timeout?: number): Promise<T> {
+  const r = await http.post(path, body, { timeout })
+  return unwrap<T>(r.data)
 }
 
 export async function apiPatch<T = unknown>(path: string, body?: Record<string, unknown>): Promise<T> {
   const r = await http.patch(path, body)
-  return r.data?.data as T
+  return unwrap<T>(r.data)
 }
 
 export async function apiPut<T = unknown>(path: string, body?: Record<string, unknown>): Promise<T> {
   const r = await http.put(path, body)
-  return r.data?.data as T
+  return unwrap<T>(r.data)
 }

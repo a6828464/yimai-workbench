@@ -5,7 +5,7 @@
       <div class="flex-cb gap-3 flex-wrap mb-4">
         <h3 class="text-lg font-medium text-g-900 flex-c gap-2">
           <i class="ri-install-line text-theme text-xl" />
-          版本与在线更新
+           版本与发布状态
         </h3>
         <ElButton type="primary" plain size="small" :loading="checking" @click="checkUpdate">
           <i class="ri-refresh-line mr-1" />
@@ -40,7 +40,7 @@
           {{ version.local.message }}
         </div>
 
-        <!-- 有更新时 -->
+         <!-- 有更新时，生产版本通过受控发布流程部署 -->
         <ElAlert
           v-if="!upToDate && !remoteError"
           type="warning"
@@ -48,16 +48,7 @@
           class="mt-4"
         >
           <template #title>
-            远端存在新提交 {{ short(version.remote.commit) }}，可一键更新到最新版本
-            <ElButton
-              type="warning"
-              size="small"
-              class="ml-2"
-              :loading="updating"
-              @click="doUpdate"
-            >
-              一键更新
-            </ElButton>
+            远端存在新提交 {{ short(version.remote.commit) }}，请按受控发布流程更新
           </template>
         </ElAlert>
 
@@ -65,20 +56,6 @@
           <template #title>无法连接远端仓库：{{ remoteError }}</template>
         </ElAlert>
 
-        <!-- 更新日志输出 -->
-        <div v-if="updateLog.length" class="mt-4">
-          <div
-            v-for="(l, i) in updateLog"
-            :key="i"
-            class="flex-c-s gap-2 text-sm py-1 border-b border-dashed border-g-200 last:border-none"
-          >
-            <ElTag :type="l.ok ? 'success' : 'danger'" size="small" effect="dark">
-              {{ l.ok ? 'OK' : 'FAIL' }}
-            </ElTag>
-            <span class="text-g-600 w-36 shrink-0">{{ l.step }}</span>
-            <span class="font-mono text-xs text-g-500 truncate">{{ l.output.join(' ｜ ') }}</span>
-          </div>
-        </div>
       </template>
     </div>
 
@@ -96,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-  import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
+  import { apiGet, USE_BACKEND } from '@/api/backend'
   import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'YimaiVersion' })
@@ -106,18 +83,10 @@
     remote: { commit: string; error: string }
     upToDate: boolean
   }
-  interface UpdateLogItem {
-    step: string
-    ok: boolean
-    output: string[]
-  }
-
   const loading = ref(true)
   const checking = ref(false)
-  const updating = ref(false)
   const version = ref<VersionInfo | null>(null)
   const changelogHtml = ref('')
-  const updateLog = ref<UpdateLogItem[]>([])
 
   const remoteError = computed(() => version.value?.remote.error || '')
   const upToDate = computed(() => version.value?.upToDate ?? true)
@@ -150,25 +119,6 @@
       ElMessage.error(`检查失败：${String(e).slice(0, 80)}`)
     } finally {
       checking.value = false
-    }
-  }
-
-  async function doUpdate() {
-    updating.value = true
-    updateLog.value = []
-    try {
-      const d = await apiPost<{ success: boolean; log: UpdateLogItem[] }>('/system/update')
-      updateLog.value = d.log ?? []
-      if (d.success) {
-        ElMessage.success('更新完成，刷新浏览器加载新版前端')
-      } else {
-        ElMessage.warning('部分步骤失败，请查看日志（git pull 失败通常是本地有未提交改动）')
-      }
-      await loadVersion()
-    } catch (e) {
-      ElMessage.error(`更新失败：${String(e).slice(0, 100)}`)
-    } finally {
-      updating.value = false
     }
   }
 

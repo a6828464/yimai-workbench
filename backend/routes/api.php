@@ -11,6 +11,7 @@ use App\Models\TrainingPlan;
 use App\Models\Task;
 use App\Models\User;
 use App\Services\KyClient;
+use App\Services\KyMemberSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
@@ -71,16 +72,33 @@ Route::middleware('auth:sanctum')->group(function () {
             if ($u->venue) $q->where('venue', $u->venue);
             $q->where('owner', $u->name);
         }
-        if ($n = $r->query('name')) $q->where('name', 'like', "%{$n}%");
+        if ($u->role === 'R_MEDIA') $q->where('layer', 'P5');
+        if ($n = trim((string) $r->query('name', ''))) {
+            $q->where(fn ($w) => $w->where('name', 'like', "%{$n}%")
+                ->orWhere('phone', 'like', "%{$n}%")
+                ->orWhere('phone_tail', 'like', "%{$n}%"));
+        }
+        if ($v = $r->query('venue')) $q->where('venue', $v);
         if ($l = $r->query('list')) $q->whereIn('id', filteredIds($l));
         if ($ly = $r->query('layer')) $q->where('layer', $ly);
         if ($o = $r->query('owner')) $q->where('owner', $o);
         if ($s = $r->query('status')) $q->where('status', $s);
         if ($src = $r->query('source')) $q->where('source', 'like', "%{$src}%");
-        if ($r->query('haveCourse')) $q->whereNotNull('main_card')->where('main_card', '!=', '—');
+        if ($r->query('type') === 'member') {
+            $q->where(fn ($w) => $w->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%'));
+        }
+        if ($r->query('type') === 'lead') {
+            $q->where('layer', 'P5')->where(fn ($w) => $w->whereNull('external_id')->orWhere('external_id', 'not like', 'ky:%'));
+        }
+        if ($r->query('haveCourse') === 'true') $q->whereNotNull('main_card')->where('main_card', '!=', '—');
+        if ($r->query('haveCourse') === 'false') $q->where(fn ($w) => $w->whereNull('main_card')->orWhere('main_card', '—'));
         if (is_numeric($r->query('remainMax'))) $q->where('remain_times', '<=', (int) $r->query('remainMax'));
-        $rows = $q->orderBy('id')->get()->map(fn ($x) => camel($x));
-        return ok(['records' => array_slice($rows->toArray(), 0, (int) ($r->query('size', 500))), 'total' => $rows->count()]);
+        $current = max(1, (int) $r->query('current', 1));
+        $size = min(5000, max(1, (int) $r->query('size', 20)));
+        $total = (clone $q)->count();
+        $rows = $q->orderByDesc('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
+
+        return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
     });
 
     Route::patch('/customers/{id}', function (Request $r, int $id) {
@@ -106,13 +124,23 @@ Route::middleware('auth:sanctum')->group(function () {
         $q = Task::query();
         if ($u->role === 'R_MANAGER') $q->where('venue', $u->venue);
         if ($u->role === 'R_TEACHER') $q->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
-        return ok($q->orderBy('id')->get()->map(fn ($x) => camel($x)));
+        $current = max(1, (int) $r->query('current', 1));
+        $size = min(100, max(1, (int) $r->query('size', 20)));
+        $total = (clone $q)->count();
+        $rows = $q->orderBy('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
+
+        return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
     });
 
     Route::get('/approvals', function (Request $r) {
         $u = $r->user();
         abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER']), 403);
-        return ok(Approval::orderBy('id')->get()->map(fn ($x) => camel($x)));
+        $current = max(1, (int) $r->query('current', 1));
+        $size = min(100, max(1, (int) $r->query('size', 20)));
+        $total = Approval::count();
+        $rows = Approval::orderBy('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
+
+        return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
     });
 
     Route::post('/approvals/{id}/decide', function (Request $r, int $id) {
@@ -133,11 +161,17 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($o = $r->query('operator')) $q->where('operator_name', 'like', "%{$o}%");
         if ($m = $r->query('module')) $q->where('module', $m);
         if ($a = $r->query('action')) $q->where('action', $a);
-        return ok($q->limit((int) $r->query('size', 200))->get()->map(fn ($x) => camel($x)));
+        $current = max(1, (int) $r->query('current', 1));
+        $size = min(100, max(1, (int) $r->query('size', 20)));
+        $total = (clone $q)->count();
+        $rows = $q->forPage($current, $size)->get()->map(fn ($x) => camel($x));
+
+        return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
     });
 
     // ---------- KeepYoga 只读代理（阶段1：凭据仅存服务端） ----------
     Route::post('/ky/session', function (Request $r) {
+        requireSuper($r);
         try {
             KyClient::token((bool) $r->input('force'));
         } catch (\Throwable $e) {
@@ -148,6 +182,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('/ky/call', function (Request $r) {
+        requireSuper($r);
         $path = (string) $r->input('path', '');
         abort_unless(is_array($r->input('form')), 422, 'form 必须是对象');
         try {
@@ -186,56 +221,30 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ---------- KeepYoga 服务端全量导入（服务器拉取+幂等落库，避免大请求经浏览器） ----------
     Route::post('/ky/import', function (Request $r) {
+        requireSuper($r);
+        $stores = ['绿地店' => '1', '东部店' => '4250'];
         $venue = (string) $r->input('venue');
         $venueId = (string) $r->input('venueId');
-        abort_unless(in_array($venue, ['绿地店', '东部店'], true), 422, '门店无效');
+        abort_unless(isset($stores[$venue]) && $stores[$venue] === $venueId, 422, '门店参数无效');
         try {
-            $rows = KyClient::call('member/api/getmembersbycondwithpager', [
-                'page_index' => 1, 'page_size' => 10000, 'cond' => '', 'consultant_id' => -1, 'venue_id' => $venueId,
-            ]);
+            $result = KyMemberSyncService::sync($venue, $venueId);
         } catch (\Throwable $e) {
-            return response()->json(['code' => 1, 'message' => 'KeepYoga 拉取失败：'.$e->getMessage()]);
+            return response()->json(['code' => 1, 'message' => 'KeepYoga 多表同步失败：'.$e->getMessage()]);
         }
-
-        $members = $rows['data']['members'] ?? [];
-        $created = 0;
-        $updated = 0;
-        foreach ($members as $row) {
-            if (! is_array($row) || empty($row['id'])) continue;
-            $externalId = "ky:{$venueId}:{$row['id']}";
-            $name = (string) ($row['name'] ?? '') ?: '会员';
-            $phone = (string) ($row['phone'] ?? '') ?: '';
-            $existing = Customer::where('external_id', $externalId)->first();
-            if ($existing) {
-                $updated++;
-                continue;
-            }
-            Customer::create([
-                'name' => $name,
-                'phone' => $phone,
-                'phone_tail' => substr($phone, -4),
-                'venue' => $venue,
-                'source' => (string) ($row['source_title'] ?? '') ?: 'KeepYoga',
-                'main_card' => '待同步卡项',
-                'layer' => 'P5',
-                'status' => '暂缓',
-                'owner' => '未分配',
-                'next_action' => '分配负责人并建档',
-                'external_id' => $externalId,
-            ]);
-            $created++;
-        }
-        $total = $created + $updated;
 
         $batch = 'IMP-'.now()->format('Ymd-His').'-'.substr((string) mt_rand(1000, 9999), 0, 4);
         SyncJob::create([
             'batch_no' => $batch, 'data_type' => '会员全量', 'venue' => $venue,
-            'total_count' => $total, 'success_count' => $total, 'fail_count' => 0,
-            'status' => '成功', 'operator' => $r->user()->name, 'finished_at' => now(),
+            'total_count' => $result['total'],
+            'success_count' => $result['created'] + $result['updated'] + $result['unchanged'],
+            'fail_count' => $result['skipped'],
+            'status' => $result['skipped'] > 0 ? '部分失败' : '成功',
+            'operator' => $r->user()->name, 'finished_at' => now(),
         ]);
-        audit($r, '导入', 'KeepYoga同步', 0, "批次{$batch}", $venue, "服务端全量导入：新增{$created} 更新{$updated} 共{$total}");
+        audit($r, '导入', 'KeepYoga同步', 0, "批次{$batch}", $venue,
+            "会员{$result['total']} 卡项{$result['cards']} 预约{$result['bookings']} 签到{$result['signedBookings']}；新增{$result['created']} 更新{$result['updated']} 未变化{$result['unchanged']} 跳过{$result['skipped']}");
 
-        return ok(['created' => $created, 'updated' => $updated, 'total' => $total, 'batchNo' => $batch]);
+        return ok($result + ['batchNo' => $batch]);
     });
 
     // ---------- AI 大模型代理（OpenAI 兼容协议，解决浏览器跨域） ----------
@@ -360,59 +369,23 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(['saved' => count($plans)]);
     });
 
-    // ---------- KeepYoga 导入落库 + 同步批次 ----------
+    // ---------- Legacy browser import (retained only for old clients) ----------
     Route::post('/customers/import', function (Request $r) {
-        $d = $r->validate([
-            'venue' => 'required|string',
-            'venueId' => 'required|string',
-            'rows' => 'required|array',
-        ]);
-        $created = 0;
-        $updated = 0;
-        foreach ($d['rows'] as $row) {
-            if (! is_array($row) || empty($row['memberId'])) continue;
-            $externalId = "ky:{$d['venueId']}:{$row['memberId']}";
-            $existing = Customer::where('external_id', $externalId)->first();
-            if ($existing) {
-                $updated++;
-                continue;
-            }
-            Customer::create([
-                'name' => (string) ($row['name'] ?? '会员') ?: '会员',
-                'phone' => (string) ($row['phone'] ?? ''),
-                'phone_tail' => substr((string) ($row['phone'] ?? ''), -4),
-                'venue' => $d['venue'],
-                'source' => (string) ($row['source'] ?? '') ?: 'KeepYoga',
-                'main_card' => '待同步卡项',
-                'layer' => 'P5',
-                'status' => '暂缓',
-                'owner' => '未分配',
-                'next_action' => '分配负责人并建档',
-                'external_id' => $externalId,
-            ]);
-            $created++;
-        }
-        $total = $created + $updated;
-
-        $batch = 'IMP-'.now()->format('Ymd-His').'-'.substr((string) mt_rand(1000, 9999), 0, 4);
-        SyncJob::create([
-            'batch_no' => $batch,
-            'data_type' => '会员全量',
-            'venue' => $d['venue'],
-            'total_count' => $total,
-            'success_count' => $total,
-            'fail_count' => 0,
-            'status' => '成功',
-            'operator' => $r->user()->name,
-            'finished_at' => now(),
-        ]);
-        audit($r, '导入', 'KeepYoga同步', 0, "批次{$batch}", $d['venue'], "全量会员导入：新增{$created} 更新{$updated} 共{$total}");
-
-        return ok(['created' => $created, 'updated' => $updated, 'total' => $total, 'batchNo' => $batch]);
+        requireSuper($r);
+        return response()->json(['code' => 1, 'message' => '该接口已废弃，请使用 /ky/import 执行会员、卡项和出勤多表同步'], 410);
     });
 
-    Route::get('/sync-jobs', function () {
-        return ok(SyncJob::orderByDesc('id')->limit(100)->get()->map(fn ($x) => camel($x)));
+    Route::get('/sync-jobs', function (Request $r) {
+        requireSuper($r);
+        $q = SyncJob::query();
+        if ($status = $r->query('status')) $q->where('status', $status);
+        if ($type = $r->query('dataType')) $q->where('data_type', 'like', "%{$type}%");
+        $current = max(1, (int) $r->query('current', 1));
+        $size = min(100, max(1, (int) $r->query('size', 20)));
+        $total = (clone $q)->count();
+        $rows = $q->orderByDesc('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
+
+        return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
     });
 
     // ---------- 今日工作台汇总（服务端计算） ----------
@@ -424,9 +397,14 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::put('/today/snapshot', function (Request $r) {
+        requireSuper($r);
         $d = $r->validate([
             'todayBookings' => 'required|array',
+            'todayBookings.绿地店' => 'required|integer|min:0',
+            'todayBookings.东部店' => 'required|integer|min:0',
             'trialBookings' => 'required|array',
+            'trialBookings.绿地店' => 'required|integer|min:0',
+            'trialBookings.东部店' => 'required|integer|min:0',
         ]);
         $s = AppSetting::firstOrCreate([]);
         $snap = $s->snapshot ?? [];
@@ -610,80 +588,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('/system/update', function (Request $r) {
-        abort_unless($r->user()->role === 'R_SUPER', 403);
-        $log = [];
-        $base = base_path();
-        $token = (string) config('services.gitee.token');
-
-        if ($token === '') {
-            return ok(['success' => false, 'log' => [['step' => 'gitee token', 'ok' => false, 'output' => ['服务器未配置 GITEE_TOKEN']]]]);
-        }
-
-        // 1. 从 Gitee release-deploy 分支拉取发布包分片并拼接
-        $script = <<<SHELL
-#!/bin/bash
-set -e
-WORK=/tmp/yimai_update
-rm -rf \$WORK && mkdir -p \$WORK && cd \$WORK
-TOKEN="$token"
-for f in part_aa part_ab; do
-  curl -s --connect-timeout 20 -o "\$f.json" "https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/contents/\$f?access_token=\$TOKEN&ref=release-deploy" || { echo "拉取 \$f 失败"; exit 1; }
-  python3 -c "import json,base64; d=json.load(open('/tmp/yimai_update/\$f.json')); open('/tmp/yimai_update/\$f','wb').write(base64.b64decode(d['content']))" || { echo "解码 \$f 失败"; exit 1; }
-done
-cat part_aa part_ab > pkg.zip
-unzip -oq pkg.zip -d unpack || { echo "解压失败"; exit 1; }
-echo PKG-OK
-SHELL;
-        $dl = runShell($script, 180);
-        $log[] = ['step' => '拉取发布包', 'ok' => $dl['ok'], 'output' => $dl['output']];
-        if (! $dl['ok']) {
-            $log[] = ['step' => '终止', 'ok' => false, 'output' => ['未获取到发布包，请检查网络/Gitee token']];
-            audit($r, '失败', '版本更新', 0, '在线更新', '双店', implode("\n", array_slice($dl['output'], 0, 5)));
-
-            return ok(['success' => false, 'log' => $log]);
-        }
-
-        // 2. 覆盖后端（保留 .env、storage、bootstrap/cache）
-        $apply = <<<SHELL
-#!/bin/bash
-set -e
-SRC=/tmp/yimai_update/unpack/yimai-workbench/backend
-DST="$base"
-if [ ! -d "\$SRC" ]; then echo "发布包结构异常"; exit 1; fi
-# 备份当前版本
-mkdir -p /tmp/yimai_backup
-rsync -a --exclude '.env' --exclude 'storage' --exclude 'bootstrap/cache' \$DST/ /tmp/yimai_backup/ 2>/dev/null || true
-# 覆盖新代码（保留本地配置）
-rsync -a \
-  --exclude '.env' --exclude '.env.*' \
-  --exclude 'storage/logs' --exclude 'storage/framework/cache/data' \
-  --exclude 'storage/framework/sessions' --exclude 'storage/framework/views' \
-  --exclude 'bootstrap/cache/*.php' \
-  \$SRC/ \$DST/
-chown -R www:www \$DST
-echo APPLY-OK
-SHELL;
-        $ap = runShell($apply, 180);
-        $log[] = ['step' => '覆盖后端代码', 'ok' => $ap['ok'], 'output' => $ap['output']];
-
-        // 3. 数据库迁移
-        if ($ap['ok']) {
-            $migrate = runInRepo([PHP_BINARY, ArtisanBinary(), 'migrate', '--force']);
-            $log[] = ['step' => 'php artisan migrate', 'ok' => $migrate['ok'], 'output' => array_slice($migrate['output'], 0, 4)];
-        }
-
-        // 4. 同步前端 dist（若有）
-        $fe = "/tmp/yimai_update/unpack/yimai-workbench/frontend";
-        if (is_dir($fe)) {
-            $feApply = runShell("rsync -a --delete '$fe/' /www/wwwroot/oa.shunan.fun/ && chown -R www:www /www/wwwroot/oa.shunan.fun && echo FE-OK", 120);
-            $log[] = ['step' => '同步前端', 'ok' => $feApply['ok'], 'output' => $feApply['output']];
-        }
-
-        $info = systemVersionInfo();
-        $allOk = ! in_array(false, array_column($log, 'ok'), true);
-        audit($r, $allOk ? '执行' : '失败', '版本更新', 0, '在线更新', '双店', implode("\n", array_map(fn ($l) => $l['step'].': '.($l['ok'] ? 'OK' : 'FAIL'), $log)));
-
-        return ok(['success' => $allOk, 'version' => $info, 'log' => $log]);
+        abort(410, '在线更新已停用，请使用受控发布流程部署版本');
     });
 });
 
@@ -719,6 +624,11 @@ Route::prefix('public')->group(function () {
 
 // ---------- helpers ----------
 function ok($data) { return response()->json(['code' => 0, 'data' => $data]); }
+
+function requireSuper(Request $request): void
+{
+    abort_unless($request->user()?->role === 'R_SUPER', 403, '仅超管可执行此操作');
+}
 
 function camel($model): array
 {
@@ -771,18 +681,24 @@ function filteredIds(string $list): array
     $threshold = $rules['renewalThreshold'] ?? 10;
     $vip = $rules['vipThreshold'] ?? 100;
     $strict = ($rules['declineMode'] ?? 'strict') === 'strict';
-    $days = fn ($d) => $d ? (int) ((time() - strtotime($d)) / 86400) : 9999;
+    $days = fn ($d) => $d ? (int) ((time() - strtotime($d)) / 86400) : null;
 
     return Customer::query()->get()
         ->filter(function (Customer $c) use ($list, $threshold, $vip, $strict, $days) {
             $m1 = $c->attend_m1; $m2 = $c->attend_m2; $m3 = $c->attend_m3;
             $dd = $days($c->last_visit);
+            $hasAsset = $c->main_card !== null && ! in_array($c->main_card, ['', '—', '待同步卡项'], true);
+            $expireDays = $c->expire_date ? now()->startOfDay()->diffInDays($c->expire_date, false) : null;
+            $revive = (bool) $c->in_revive || ($dd !== null && $dd > 30 && $hasAsset);
+            $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= 15 && $dd <= 30));
+            $declining = ! $revive && ! $preLoss && ($strict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3));
             return match ($list) {
-                '待续课' => $m3 > 0 && $c->remain_times !== null && $c->remain_times < $threshold,
-                '出勤降低' => $strict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3),
-                'VIP' => $c->total_purchased > $vip,
-                '预流失' => ($m2 > 0 && $m3 === 0) || ($dd >= 15 && $dd <= 30),
-                '待复活' => $dd > 30 && $c->main_card !== '—',
+                '待续课' => $hasAsset && (($m3 > 0 && $c->remain_times !== null && $c->remain_times <= $threshold)
+                    || ($expireDays !== null && $expireDays >= 0 && $expireDays <= 30)),
+                '出勤降低' => $declining,
+                'VIP' => $c->total_purchased >= $vip,
+                '预流失' => $preLoss,
+                '待复活' => $revive,
                 default => false,
             };
         })->pluck('id')->all();
@@ -879,4 +795,3 @@ function systemVersionInfo(): array
         'upToDate' => $remoteSha !== '' && str_starts_with($remoteSha, $local['commit']),
     ];
 }
-

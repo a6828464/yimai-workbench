@@ -1,59 +1,76 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# 一麦工作台后端
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Laravel 12 + Sanctum 的双店经营工作台 API。后端负责认证、角色和门店范围、客资/会员/任务/审批、审计、KeepYoga 只读同步以及 H5 分享数据。
 
-## About Laravel
+## 环境要求
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- PHP 8.2 或更高版本
+- MySQL 8.0（5.7 兼容性未作为生产目标）
+- `pdo_mysql`、`mbstring`、`openssl`、`curl`、`fileinfo`、`zip`
+- 已安装项目依赖：`composer install --no-dev --prefer-dist`
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## 本地运行
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+```bash
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+php artisan serve
+```
 
-## Learning Laravel
+前端默认通过 `VITE_API_BASE` 访问 `/api`。生产环境应使用 HTTPS 和 Nginx 伪静态配置。
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+## KeepYoga 配置
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+KeepYoga 凭据只由服务端使用，不进入浏览器。首次安装可通过环境变量配置：
 
-## Laravel Sponsors
+```env
+KY_PHONE=随心瑜登录手机号
+KY_PASSWORD=随心瑜登录密码
+```
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+超管也可以在前端“KeepYoga同步 → 登录账号设置”中修改数据库配置。数据库中的 `app_settings.ky` 优先于环境变量。
 
-### Premium Partners
+“全量导入会员”会同步并聚合：
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+- 会员基础表
+- 会员卡表
+- 团课预约/签到记录
+- 私教预约/签到记录
 
-## Contributing
+同步结果会写入 `customers`，并按 `member_id`、`m_id` 关联卡项和出勤。出勤使用最近三个完整自然月，只有“已签到”记录会计入。
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## 主要接口
 
-## Code of Conduct
+所有业务接口前缀为 `/api`，登录后使用 Sanctum Bearer Token：
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+- `POST /auth/login`
+- `GET /me`
+- `GET /customers`
+- `GET /leads`
+- `GET /tasks`
+- `GET /approvals`
+- `GET /audit-logs`
+- `POST /ky/session`
+- `POST /ky/call`
+- `POST /ky/import`
+- `GET /sync-jobs`
 
-## Security Vulnerabilities
+KeepYoga 会话、代理、导入和同步批次接口仅允许超管调用。前端菜单隐藏不等于后端授权，权限必须以 API 返回为准。
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## 生产部署
 
-## License
+- Nginx 根目录必须指向 `backend/public`。
+- 生产环境设置 `APP_ENV=production`、`APP_DEBUG=false` 和正确的 `APP_TIMEZONE`。
+- 发布后执行 `php artisan migrate --force`，不要执行 `migrate:fresh`。
+- 保留 `.env`、`storage` 和 `bootstrap/cache`，不要把这些内容放入发布包。
+- 安装完成后删除或在 Nginx 中禁止访问 `public/install.php`。
+- 不建议使用 Web 在线更新覆盖生产代码，应使用受控发布流程并保留回滚版本。
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+## 检查命令
+
+```bash
+php -l routes/api.php
+php artisan route:list --path=api
+composer audit --locked
+```

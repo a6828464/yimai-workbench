@@ -287,7 +287,7 @@
     loading.value = true
     try {
       page.value.current = 1
-      list.value = (await queryLeads({ ...filters.value })).records
+      list.value = (await queryLeads({ ...filters.value, current: 1, size: 5000 })).records
     } finally {
       loading.value = false
     }

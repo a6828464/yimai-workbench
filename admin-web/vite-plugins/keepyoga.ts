@@ -2,7 +2,7 @@
  * KeepYoga 只读接入（开发期服务端代理）
  * - POST /api/ky/session ：用 .env.local 中的凭据服务端登录，返回 access_token
  * - /ky/**              ：透传到 cloud.keepyoga.com（前端携带 token 调用）
- * 阶段1由 Laravel Integration 模块替换本文件。
+ * 生产环境使用 Laravel 服务端同步；本插件仅保留给本地兼容模式。
  */
 import type { Plugin } from 'vite'
 import crypto from 'node:crypto'

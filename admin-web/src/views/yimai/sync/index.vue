@@ -121,17 +121,17 @@
       </ElCol>
     </ElRow>
 
-    <!-- 历史批次（示例结构） -->
+    <!-- 历史同步批次 -->
     <ElCard shadow="never">
       <template #header>
         <div class="flex-cb">
           <span class="font-500">历史同步批次</span>
-          <span class="text-xs text-gray-400">示例批次结构；真实批次由后端同步任务生成</span>
+          <span class="text-xs text-gray-400">会员、卡项和出勤多表同步记录</span>
         </div>
       </template>
       <ArtTableHeader :columns="[]" :loading="loading">
         <template #left>
-          <ElButton plain disabled>重试失败批次</ElButton>
+          <span class="text-xs text-gray-400">失败批次请重新执行对应门店同步</span>
         </template>
       </ArtTableHeader>
 
@@ -229,20 +229,37 @@
     importResult.value = ''
     let created = 0
     let updated = 0
+    let unchanged = 0
+    let skipped = 0
     let total = 0
+    let cards = 0
+    let bookings = 0
+    let signedBookings = 0
+    let attendancePeriod = ''
+    const failedStores: string[] = []
     try {
       for (const store of Object.keys(KY_STORES) as ('绿地店' | '东部店')[]) {
         try {
           const r = await importKyMembersToPool(store)
           created += r.created
           updated += r.updated
+          unchanged += r.unchanged
+          skipped += r.skipped
           total += r.total
+          cards += r.cards
+          bookings += r.bookings
+          signedBookings += r.signedBookings
+          attendancePeriod = `${r.attendancePeriod.m1} / ${r.attendancePeriod.m2} / ${r.attendancePeriod.m3}`
         } catch (e) {
+          failedStores.push(store)
           ElMessage.error(`${store} 导入失败：${String(e).slice(0, 80)}`)
         }
       }
-      importResult.value = `导入完成：共读取 ${total} 位会员，新增客资 ${created} 条，更新档案 ${updated} 条（已按外部ID去重）`
-      ElMessage.success(importResult.value)
+      const status = failedStores.length ? `部分失败（${failedStores.join('、')}）` : '成功'
+      importResult.value = `多表同步${status}：会员 ${total}，卡项 ${cards}，预约 ${bookings}，有效签到 ${signedBookings}；新增 ${created}，更新 ${updated}，未变化 ${unchanged}，跳过 ${skipped}；出勤月份 ${attendancePeriod}`
+      await refreshData()
+      if (skipped > 0 || failedStores.length) ElMessage.warning(importResult.value)
+      else ElMessage.success(importResult.value)
     } finally {
       importing.value = false
     }
@@ -258,15 +275,18 @@
 
   async function loadCounts() {
     countLoading.value = true
+    const failures: string[] = []
     try {
       for (const store of Object.keys(KY_STORES)) {
         try {
           counts.value[store] = await fetchKyCounts(store)
-        } catch {
-          /* keep dash */
+          if (Object.values(counts.value[store]).every((value) => value === '-')) failures.push(store)
+        } catch (e) {
+          failures.push(`${store}：${String(e).slice(0, 60)}`)
         }
       }
       countsFetchedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      if (failures.length) ElMessage.warning(`实时数据获取失败：${failures.join('；')}`)
     } finally {
       countLoading.value = false
     }
@@ -367,6 +387,7 @@
     columns,
     data,
     pagination,
+    refreshData,
     handleSizeChange,
     handleCurrentChange
   } = useTable({
@@ -426,7 +447,7 @@
   })
 
   function showErrors(row: YimaiSyncJob) {
-    ElMessage.info(`批次 ${row.batchNo} 错误明细在阶段1交付（external_id 定位）`)
+    ElMessage.info(`批次 ${row.batchNo} 包含 ${row.failCount} 条未处理记录，请重新同步该门店`)
   }
 
   onMounted(() => {

@@ -51,19 +51,35 @@ export function computeMemberLists(c: YimaiCustomer): MemberListKey[] {
   const m3 = c.attendM3 ?? 0
   const out: MemberListKey[] = []
 
-  if (m3 > 0 && c.remainTimes !== null && c.remainTimes < rules.renewalThreshold) out.push('待续课')
-  if (rules.declineMode === 'strict' ? m1 > m2 && m2 > m3 : m2 > m3) out.push('出勤降低')
-  if ((c.totalPurchased ?? 0) > rules.vipThreshold) out.push('VIP')
-
   const days = lastVisitDays(c.lastVisit)
-  if ((m2 > 0 && m3 === 0) || (days >= 15 && days <= 30)) out.push('预流失')
-  if (days > 30 && c.mainCard !== '—') out.push('待复活')
+  const hasAsset = Boolean(c.mainCard && !['—', '待同步卡项'].includes(c.mainCard))
+  const expireDays = c.expireDate
+    ? Math.floor((new Date(c.expireDate).getTime() - Date.now()) / 86400000)
+    : null
+  const revive = Boolean(c.inRevive) || (days !== null && days > 30 && hasAsset)
+  const preLoss = !revive && days !== null && ((m2 > 0 && m3 === 0) || (days >= 15 && days <= 30))
+  const declining =
+    !revive &&
+    !preLoss &&
+    (rules.declineMode === 'strict' ? m1 > m2 && m2 > m3 : m2 > m3)
+
+  if (
+    hasAsset &&
+    ((m3 > 0 && c.remainTimes !== null && c.remainTimes <= rules.renewalThreshold) ||
+      (expireDays !== null && expireDays >= 0 && expireDays <= 30))
+  ) {
+    out.push('待续课')
+  }
+  if (declining) out.push('出勤降低')
+  if ((c.totalPurchased ?? 0) >= rules.vipThreshold) out.push('VIP')
+  if (preLoss) out.push('预流失')
+  if (revive) out.push('待复活')
 
   return out
 }
 
-function lastVisitDays(date: string | null): number {
-  if (!date) return 9999
+function lastVisitDays(date: string | null): number | null {
+  if (!date) return null
   return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
 }
 
@@ -244,10 +260,12 @@ export function queryCustomers(
   if (USE_BACKEND) {
     return apiGet<{ records: YimaiCustomer[]; total: number }>('/customers', {
       name: params.name, venue: params.venue, layer: params.layer, list: params.list,
+      type: params.type,
       haveCourse: params.haveCourse || undefined,
       remainMax: params.remainRange || undefined,
+      current: params.current,
       size: params.size
-    } as Record<string, unknown>).then((d) => ({ ...d, current: 1, size: params.size ?? 20 }))
+    } as Record<string, unknown>).then((d) => ({ ...d, current: params.current ?? 1, size: params.size ?? 20 }))
   }
   const a = actor()
   let list: YimaiCustomer[] = allCustomers().filter((c) => inScope(c.venue, a.scopeVenue))
@@ -398,8 +416,8 @@ const TASKS: YimaiTask[] = [
 
 export function queryTasks(params: PageParams & { status?: string; venue?: string }) {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiTask[]; total: number }>('/tasks', params as Record<string, unknown>)
-      .then((d) => ({ records: d.records ?? [], total: d.records?.length ?? 0, current: 1, size: params.size ?? 20 }))
+    return apiGet<{ records: YimaiTask[]; total: number; current?: number; size?: number }>('/tasks', params as Record<string, unknown>)
+      .then((d) => ({ records: d.records ?? [], total: d.total ?? 0, current: d.current ?? params.current ?? 1, size: d.size ?? params.size ?? 20 }))
   }
   const a = actor()
   let list = TASKS.filter((t) => inScope(t.venue, a.scopeVenue))
@@ -421,8 +439,8 @@ const APPROVALS: YimaiApproval[] = [
 
 export function queryApprovals(params: PageParams & { status?: string }) {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiApproval[]; total: number }>('/approvals', params as Record<string, unknown>)
-      .then((d) => ({ records: d.records ?? [], total: d.records?.length ?? 0, current: 1, size: params.size ?? 20 }))
+    return apiGet<{ records: YimaiApproval[]; total: number; current?: number; size?: number }>('/approvals', params as Record<string, unknown>)
+      .then((d) => ({ records: d.records ?? [], total: d.total ?? 0, current: d.current ?? params.current ?? 1, size: d.size ?? params.size ?? 20 }))
   }
   let list = [...APPROVALS]
   if (params.status) list = list.filter((x) => x.status === params.status)
@@ -437,7 +455,7 @@ export function decideApproval(id: number, decision: '初审通过' | '终审通
   return Promise.resolve(true)
 }
 
-// ==================== 数据同步批次（示例结构） ====================
+// ==================== 数据同步批次 ====================
 
 const SYNC_JOBS: YimaiSyncJob[] = [
   { id: 1, batchNo: 'IMP-20260826-001', dataType: '会员基础表', venue: '双店', dateRange: '全量', totalCount: 1820, successCount: 1820, failCount: 0, status: '成功', finishedAt: '2026-08-26 06:12' },
@@ -450,14 +468,16 @@ const SYNC_JOBS: YimaiSyncJob[] = [
 
 export function querySyncJobs(params: PageParams & { status?: string; dataType?: string }) {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiSyncJob[]; total: number }>('/sync-jobs', {
+    return apiGet<{ records: YimaiSyncJob[]; total: number; current?: number; size?: number }>('/sync-jobs', {
       status: params.status,
-      dataType: params.dataType
+      dataType: params.dataType,
+      current: params.current,
+      size: params.size
     } as Record<string, unknown>).then((d) => ({
       records: d.records ?? [],
       total: d.total ?? (d.records?.length ?? 0),
-      current: params.current ?? 1,
-      size: params.size ?? 20
+      current: d.current ?? params.current ?? 1,
+      size: d.size ?? params.size ?? 20
     }))
   }
   const a = actor()
@@ -468,13 +488,25 @@ export function querySyncJobs(params: PageParams & { status?: string; dataType?:
 }
 
 /** KeepYoga 全量导入：服务端拉取门店全部会员并按外部ID幂等合并（大请求不经过浏览器） */
-export async function importKyMembersToPool(storeKey: '绿地店' | '东部店'): Promise<{ created: number; updated: number; total: number }> {
+export interface KyImportResult {
+  created: number
+  updated: number
+  unchanged: number
+  skipped: number
+  total: number
+  cards: number
+    bookings: number
+  signedBookings: number
+  attendancePeriod: { m1: string; m2: string; m3: string }
+}
+
+export async function importKyMembersToPool(storeKey: '绿地店' | '东部店'): Promise<KyImportResult> {
   if (USE_BACKEND) {
-    const res = await apiPost<{ created: number; updated: number; total: number }>('/ky/import', {
-      venue: storeKey,
-      venueId: KY_STORES[storeKey]
-    })
-    return { created: res.created, updated: res.updated, total: res.total }
+    return apiPost<KyImportResult>(
+      '/ky/import',
+      { venue: storeKey, venueId: KY_STORES[storeKey] },
+      300000
+    )
   }
 
   const rows = await fetchKyMembers(storeKey, '', 99999)
@@ -499,7 +531,16 @@ export async function importKyMembersToPool(storeKey: '绿地店' | '东部店')
   }))
   const res = useYimaiStore().upsertImportedCustomers(mapped)
   useYimaiStore().auditImport(storeKey, res.created, res.updated)
-  return { ...res, total: rows.length }
+  return {
+    ...res,
+    unchanged: 0,
+    skipped: 0,
+    total: rows.length,
+    cards: 0,
+    bookings: 0,
+    signedBookings: 0,
+    attendancePeriod: { m1: '', m2: '', m3: '' }
+  }
 }
 
 // ==================== 数据看板 ====================

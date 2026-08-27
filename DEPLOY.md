@@ -1,6 +1,6 @@
 # 部署指南（宝塔面板 · 安装包方式）
 
-> 推荐流程：本地跑 `./make-release.sh` 生成安装包 → 宝塔上传解压 → 浏览器向导安装
+> 推荐流程：本地跑 `./make-release.sh` 生成安装包 → 宝塔上传解压 → 配置站点和数据库 → 执行受控迁移
 > 微信内打开 H5 分享页必须 HTTPS，请务必配置 SSL 证书
 
 ## 一、宝塔环境要求
@@ -33,7 +33,7 @@ PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
 
 ```
 /www/wwwroot/yimai-workbench/
-├── backend/      # 后端（含 vendor、public/install.php）
+├── backend/      # 后端（含 vendor；安装器仅限首次受控安装）
 └── frontend/     # 前端构建产物
 ```
 
@@ -47,9 +47,8 @@ PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
    - **面板建库**：数据库菜单创建 `yimai` 库+用户（推荐）
    - 安装向导里填 root 也可自动建库
 3. SSL：Let's Encrypt 一键签发 → 开启「强制 HTTPS」
-4. **浏览器打开 `https://oaapi.yourdomain.com/install.php`**：
-   - 环境检测全绿 → 填数据库信息 → （可选）填随心瑜账号 → 开始安装
-   - 完成后自动锁定向导；建议顺手删掉 `backend/public/install.php`
+4. 首次部署应在受限网络中完成数据库配置和迁移；安装完成后立即删除 `backend/public/install.php`，禁止将安装器长期暴露在公网。
+5. 不要使用 `migrate:fresh` 初始化已有生产数据库；后续发布只执行 `php artisan migrate --force`。
 
 验证：访问 `https://oaapi.yourdomain.com/up` 返回 ok 即正常。
 
@@ -80,9 +79,9 @@ location / {
      ```
    改完刷新浏览器即生效，无需重新构建。
 
-## 六、测试账号
+## 六、测试账号（仅本地演示）
 
-密码统一 `yimai123`
+密码统一 `yimai123`，禁止直接用于公网生产环境；生产安装后应立即轮换。
 
 | 账号 | 角色 |
 |------|------|
@@ -93,7 +92,7 @@ location / {
 
 ## 七、日常更新
 
-- **后端**：后台「系统管理→版本更新」一键更新；或重新打包覆盖 backend（保留 .env 与 storage）
+- **后端**：使用受控发布流程覆盖代码，保留 `.env`、`storage` 和 `bootstrap/cache`，然后执行 `php artisan migrate --force`；不要依赖 Web 请求直接覆盖生产代码。
 - **前端**：重新打包取 frontend 目录整体覆盖（config.js 记得保留或重配）
 
 ## 八、常见问题
@@ -102,6 +101,6 @@ location / {
 |------|------|
 | install.php 环境检测红叉 | 装对应 PHP 扩展；目录权限改 www 可写 |
 | 登录报网络错误 | config.js 的接口地址与实际不符；或后端站点 SSL 未配 |
-| KeepYoga 同步 502 | 安装时未填随心瑜凭据 → 补到 backend/.env 后保存 |
+| KeepYoga 同步失败 | 检查后台“登录账号设置”；数据库配置优先于 `backend/.env`，再查看 Laravel 当日日志 |
 | 页面刷新 404 | 前端伪静态未配 try_files index.html |
 | 接口 500 | 看 `backend/storage/logs/` 当天日志；多为权限或 .env 配置问题 |

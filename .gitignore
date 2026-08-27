@@ -29,3 +29,7 @@ admin-web/src/types/import/components.d.ts
 .idea/
 .vscode/settings.json
 releases/
+
+# Framework demo content removed from the product repository
+admin-web/.vite/
+admin-web/src/mock/

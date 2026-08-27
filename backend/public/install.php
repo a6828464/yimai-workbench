@@ -1,11 +1,11 @@
 <?php
 /**
- * 一麦工作台 · 宝塔安装向导（阶段1测试版）
+ * 一麦工作台 · 宝塔首次安装向导
  *
  * 使用：解压上传后，浏览器访问 http://你的API域名/install.php
  * 流程：环境检测 → 填数据库（+随心瑜凭据，可跳过）→ 自动建库/导入数据 → 完成
  *
- * 安全：安装完成后生成 storage/install.lock，本页面自动失效。
+ * 安全：安装完成后生成 storage/install.lock；生产环境安装后必须删除本文件。
  */
 declare(strict_types=1);
 error_reporting(E_ALL & ~E_DEPRECATED);
@@ -20,7 +20,7 @@ function ym_h(string $s): string { return htmlspecialchars($s, ENT_QUOTES, 'UTF-
 function ym_post(string $k, string $d = ''): string { return isset($_POST[$k]) ? trim((string)$_POST[$k]) : $d; }
 
 // 已安装则拒绝
-if (is_file($LOCK) && !isset($_GET['force-view'])) {
+if (is_file($LOCK)) {
     http_response_code(403);
     exit('<meta charset="utf-8"><body style="font-family:sans-serif;padding:40px;line-height:2">系统已安装完成。如需重装请删除 <b>backend/storage/install.lock</b></body>');
 }
@@ -48,8 +48,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $allPass && ym_post('action') === '
     $dbPass = $_POST['db_pass'] ?? '';
     $kyPhone = ym_post('ky_phone');
     $kyPass  = ym_post('ky_password');
+    $adminUser = ym_post('admin_user', 'admin');
+    $adminPass = (string) ($_POST['admin_password'] ?? '');
+    if (! preg_match('/^[A-Za-z][A-Za-z0-9_.-]{2,31}$/', $adminUser)) {
+        $log[] = '超管账号必须是 3-32 位字母开头的字母、数字或 _.- 组合';
+        $result = 'FAIL';
+    } elseif (strlen($adminPass) < 12) {
+        $log[] = '超管密码至少需要 12 位';
+        $result = 'FAIL';
+    }
 
-    try {
+    if ($result !== 'FAIL') try {
         // 1. 连接并建库（无建库权限时允许使用面板预建的库）
         try {
             $pdo = new PDO("mysql:host={$dbHost};port={$dbPort};charset=utf8mb4", $dbUser, $dbPass, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT => 8]);
@@ -71,7 +80,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $allPass && ym_post('action') === '
         foreach ([
             'APP_NAME' => '"一麦工作台"', 'APP_ENV' => 'production', 'APP_KEY' => $key,
             'APP_DEBUG' => 'false', 'APP_URL' => $appUrl,
-            'APP_LOCALE' => 'zh_CN', 'APP_FALLBACK_LOCALE' => 'en',
+            'APP_LOCALE' => 'zh_CN', 'APP_FALLBACK_LOCALE' => 'en', 'APP_TIMEZONE' => 'Asia/Shanghai',
             'LOG_CHANNEL' => 'daily', 'LOG_LEVEL' => 'warning',
             'DB_CONNECTION' => 'mysql', 'DB_HOST' => $dbHost, 'DB_PORT' => $dbPort,
             'DB_DATABASE' => $dbName, 'DB_USERNAME' => $dbUser, 'DB_PASSWORD' => $dbPass,
@@ -92,12 +101,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $allPass && ym_post('action') === '
         require $ROOT . '/vendor/autoload.php';
         $app = require $ROOT . '/bootstrap/app.php';
         $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
-        Artisan::call('migrate:fresh', ['--force' => true, '--seed' => true]);
+        Artisan::call('migrate', ['--force' => true]);
         $mOut = trim(Artisan::output());
         if (stripos($mOut, 'DONE') === false && stripos($mOut, 'FAIL') !== false) {
             throw new RuntimeException('迁移失败: ' . mb_substr($mOut, -300));
         }
-        $log[] = '数据库表结构与演示数据初始化完成';
+            \App\Models\User::updateOrCreate(
+                ['username' => $adminUser],
+                [
+                    'name' => $adminUser,
+                    'password' => \Illuminate\Support\Facades\Hash::make($adminPass),
+                    'role' => 'R_SUPER',
+                    'venue' => null,
+                    'venues' => ['绿地店', '东部店'],
+                    'email' => $adminUser.'@local.invalid',
+                    'email_verified_at' => now(),
+                ]
+            );
+        $log[] = '数据库表结构与初始超管账号创建完成';
 
         // 4. 上锁
         file_put_contents($LOCK, 'installed at ' . date('c'));
@@ -143,7 +164,7 @@ button:disabled{background:#aab5b0;cursor:not-allowed}
 <div class="wrap">
   <div class="card">
     <h1>🌿 一麦工作台 · 安装向导</h1>
-    <div class="sub">双店内部经营与服务执行平台 · 阶段1测试版</div>
+    <div class="sub">双店内部经营与服务执行平台 · 首次安装</div>
 
 <?php if ($result === 'OK'): ?>
     <div class="ok-box">
@@ -151,9 +172,8 @@ button:disabled{background:#aab5b0;cursor:not-allowed}
       <div class="acc">
         <b>前端访问</b>：前端站点域名（dist 已部署）<br>
         <b>接口地址</b>：<?= ym_h($appUrl) ?><br>
-        <b>超管账号</b>：nange / yimai123<br>
-        <b>其他角色</b>：wangdz·lidz（店长）huangmin·tingting（老师）ayu（新媒体）密码同为 yimai123<br><br>
-        <span style="color:#d43c33">安全提示：建议删除本文件（public/install.php）</span>
+        <b>超管账号</b>：<?= ym_h($adminUser) ?><br>
+        <span style="color:#d43c33">安全提示：安装后请立即删除本文件（public/install.php），并妥善保存刚设置的密码。</span>
       </div>
     </div>
     <pre class="log"><?= ym_h(implode("\n", $log)) ?></pre>
@@ -164,7 +184,7 @@ button:disabled{background:#aab5b0;cursor:not-allowed}
     <button onclick="location.reload()">重新填写</button>
 
 <?php else: ?>
-    <h2>① 环境检测</h2>
+     <h2>① 环境检测</h2>
     <table class="checks">
       <?php foreach ($checks as $name => $pass): ?>
       <tr><td><?= ym_h($name) ?></td><td style="text-align:right"><?= ym_ok($pass) ?></td></tr>
@@ -189,14 +209,20 @@ button:disabled{background:#aab5b0;cursor:not-allowed}
         <div><label>数据库密码</label><input type="password" name="db_pass" value=""></div>
       </div>
 
-      <h2>③ 随心瑜 KeepYoga（可选，用于会员同步）</h2>
+      <h2>③ 初始超管账号</h2>
+      <div class="row">
+        <div><label>登录账号</label><input type="text" name="admin_user" value="<?= ym_h(ym_post('admin_user','admin')) ?>" autocomplete="username"></div>
+        <div><label>登录密码（至少12位）</label><input type="password" name="admin_password" value="" autocomplete="new-password"></div>
+      </div>
+
+      <h2>④ 随心瑜 KeepYoga（可选，用于会员同步）</h2>
       <div class="row">
         <div><label>登录手机号</label><input type="text" name="ky_phone" value="<?= ym_h(ym_post('ky_phone')) ?>" placeholder="留空跳过"></div>
         <div><label>登录密码</label><input type="password" name="ky_password" value=""></div>
       </div>
 
-      <button type="submit" <?= $allPass ? '' : 'disabled' ?>>开始安装（建库 · 初始化数据）</button>
-      <p class="tip" style="margin-top:10px">会执行全新初始化（清空重建数据表）。安装完成后自动锁定本向导。</p>
+      <button type="submit" <?= $allPass ? '' : 'disabled' ?>>开始安装（建库 · 执行迁移）</button>
+      <p class="tip" style="margin-top:10px">只执行未运行的数据库迁移，不会清空已有数据。安装完成后自动锁定本向导。</p>
     </form>
 <?php endif; endif; ?>
   </div>
