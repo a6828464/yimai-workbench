@@ -29,7 +29,7 @@ jobs:
         working-directory: admin-web
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        run: pnpm build
+        run: pnpm exec vite build
 
       - name: Assemble release package
         run: |
