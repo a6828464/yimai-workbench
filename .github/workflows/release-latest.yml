@@ -23,8 +23,10 @@ jobs:
 
       - name: Build frontend
         working-directory: admin-web
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
-          pnpm install --frozen-lockfile --reporter=append-only
+          pnpm install --no-frozen-lockfile --reporter=append-only
           pnpm build
 
       - name: Assemble release package
