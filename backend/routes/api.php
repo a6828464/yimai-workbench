@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/auth/login', [App\Http\Controllers\AuthController::class, 'login']);
+Route::post('/auth/register', [App\Http\Controllers\AuthController::class, 'register']);
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [App\Http\Controllers\AuthController::class, 'me']);
@@ -111,6 +112,28 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(camel($c));
     });
 
+    // 客户360：主档 + 会员工作流留痕 + 按手机号关联的前端客资
+    Route::get('/customers/{id}', function (Request $r, int $id) {
+        $c = Customer::findOrFail($id);
+        $u = $r->user();
+        if ($u->role === 'R_MANAGER' && $c->venue !== $u->venue) abort(403, '无权查看其它门店');
+        if ($u->role === 'R_TEACHER' && ($c->owner !== $u->name && ($u->venue ? $c->venue !== $u->venue : true))) abort(403, '无权查看');
+
+        $logs = AuditLog::where('module', '会员管理')
+            ->where('target_id', (string) $c->id)
+            ->orderByDesc('id')->get()->map(fn ($x) => camel($x));
+
+        $leads = $c->phone !== ''
+            ? Lead::where('phone', $c->phone)->orderByDesc('id')->get()->map(fn ($x) => camel($x))
+            : [];
+
+        return ok([
+            'customer' => camel($c),
+            'logs' => $logs,
+            'leads' => $leads,
+        ]);
+    });
+
     Route::get('/member-rules', fn (Request $r) => ok(rules()));
     Route::put('/member-rules', function (Request $r) {
         setRules($r->all());
@@ -132,7 +155,38 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
     });
 
-    Route::get('/approvals', function (Request $r) {
+    Route::post('/tasks', function (Request $r) {
+        $d = $r->validate([
+            'title' => 'required|string|max:50',
+            'customerName' => 'required|string|max:20',
+            'venue' => 'required|string|in:绿地店,东部店',
+            'owner' => 'nullable|string|max:20',
+            'priority' => 'nullable|in:高,中,低',
+            'deadline' => 'nullable|string|max:24',
+            'standard' => 'nullable|string|max:200',
+        ]);
+        $task = Task::create([
+            'title' => $d['title'],
+            'customer_name' => $d['customerName'],
+            'venue' => $d['venue'],
+            'owner' => $d['owner'] ?? '未分配',
+            'priority' => $d['priority'] ?? '中',
+            'deadline' => $d['deadline'] ?? '',
+            'standard' => $d['standard'] ?? '',
+            'status' => '待接收',
+        ]);
+        audit($r, '新增', '任务中心', $task->id, "{$task->title}·{$task->customer_name}", $task->venue, "创建任务，负责人[{$task->owner}]，验收标准[{$task->standard}]");
+        return ok(camel($task));
+    });
+
+    Route::patch('/tasks/{id}', function (Request $r, int $id) {
+        $task = Task::findOrFail($id);
+        $allowed = ['title', 'customer_name', 'venue', 'owner', 'priority', 'deadline', 'standard', 'status'];
+        $task->update(collect(camelToSnake($r->all()))->only($allowed)->all());
+        audit($r, $r->input('_action', '修改'), '任务中心', $task->id, "{$task->title}·{$task->customer_name}", $task->venue, '任务流转：'.($r->input('status') ?: '字段更新'));
+        return ok(camel($task));
+    });
+        Route::get('/approvals', function (Request $r) {
         $u = $r->user();
         abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER']), 403);
         $current = max(1, (int) $r->query('current', 1));
@@ -143,10 +197,38 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
     });
 
+    Route::post('/approvals', function (Request $r) {
+        if (! in_array($r->user()->role, ['R_SUPER', 'R_MANAGER'], true)) {
+            return response()->json(['code' => 1, 'message' => '仅店长及以上可发起价格审批'], 403);
+        }
+        $d = $r->validate([
+            'customerName' => 'required|string|max:20',
+            'cardName' => 'required|string|max:40',
+            'standardPrice' => 'required|numeric|min:0',
+            'requestPrice' => 'required|numeric|min:0',
+            'reason' => 'nullable|string|max:200',
+        ]);
+        if ((float) $d['requestPrice'] >= (float) $d['standardPrice']) {
+            return response()->json(['code' => 1, 'message' => '申请价应低于标准价'], 422);
+        }
+        $a = Approval::create([
+            'customer_name' => $d['customerName'],
+            'applicant' => $r->user()->name,
+            'card_name' => $d['cardName'],
+            'standard_price' => (int) $d['standardPrice'],
+            'request_price' => (int) $d['requestPrice'],
+            'reason' => $d['reason'] ?? '',
+            'status' => '待店长初审',
+            'apply_time' => now()->format('Y-m-d H:i'),
+        ]);
+        audit($r, '发起', '价格审批', $a->id, "价格审批单 #{$a->id}", '双店', "申请[{$a->card_name}] {$a->apply_time} 特价{$a->request_price}/标准{$a->standard_price}");
+        return ok(camel($a));
+    });
+
     Route::post('/approvals/{id}/decide', function (Request $r, int $id) {
         $a = Approval::findOrFail($id);
         $decision = $r->input('decision');
-        $map = ['初审通过' => '待老板终审', '终审通过' => '已通过', '驳回' => '已驳回'];
+        $map = ['初审通过' => '待老板终审', '终审通过' => '已通过', '驳回' => '已驳回', '关联成交' => '已关联成交'];
         abort_unless(isset($map[$decision]), 422, '未知决定');
         $a->update(['status' => $map[$decision]]);
         audit($r, $decision, '价格审批', $id, "价格审批单 #{$id}", '双店', "审批决定：{$decision}");
@@ -346,20 +428,96 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(array_merge($d, ['apiKey' => '', 'configured' => ! empty($ai['apiKey'])]));
     });
 
-    // ---------- 人员管理 ----------
+    // ---------- 人员管理（仅超管） ----------
     Route::get('/accounts', function (Request $r) {
         abort_unless($r->user()->role === 'R_SUPER', 403);
         $roleMap = ['R_SUPER' => '超管', 'R_MANAGER' => '店长', 'R_TEACHER' => '老师', 'R_MEDIA' => '新媒体'];
+        $selfName = $r->user()->name;
 
-        return ok(User::orderBy('id')->get()->map(fn ($u) => [
-            'key' => $u->username,
-            'userName' => $u->name,
-            'roleCode' => $u->role,
-            'roleLabel' => $roleMap[$u->role] ?? $u->role,
-            'venues' => $u->venues ?? [],
-            'email' => $u->email,
+        return ok(User::orderBy('id')->get()->map(function ($u) use ($roleMap, $selfName) {
+            return [
+                'key' => $u->username,
+                'userName' => $u->name,
+                'roleCode' => $u->role,
+                'roleLabel' => $roleMap[$u->role] ?? $u->role,
+                'venues' => $u->venues ?? [],
+                'email' => $u->email,
+                'status' => $u->status ?? '启用',
+                'self' => $u->name === $selfName,
+            ];
+        }));
+    });
+
+    Route::post('/accounts', function (Request $r) {
+        requireSuper($r);
+        $d = $r->validate([
+            'userName' => 'required|string|max:20',
+            'roleCode' => 'required|string|in:R_SUPER,R_MANAGER,R_TEACHER,R_MEDIA',
+            'venues' => 'required|array|min:1',
+            'venues.*' => 'string|in:绿地店,东部店',
+            'email' => 'nullable|email|max:60',
+            'password' => 'required|string|min:8|max:64',
+        ]);
+        abort_unless(User::where('username', $d['userName'])->doesntExist(), 422, '登录名已存在');
+
+        $venues = $d['venues'];
+        $venue = $d['roleCode'] === 'R_MANAGER' ? $venues[0] : ($d['roleCode'] === 'R_TEACHER' ? $venues[0] : null);
+        $user = User::create([
+            'name' => $d['userName'],
+            'username' => $d['userName'],
+            'email' => $d['email'] ?? ($d['userName'].'@yimai.local'),
+            'password' => $d['password'],
+            'role' => $d['roleCode'],
+            'venue' => $venue,
+            'venues' => $venues,
             'status' => '启用',
-        ]));
+        ]);
+        $roleMap = ['R_SUPER' => '超管', 'R_MANAGER' => '店长', 'R_TEACHER' => '老师', 'R_MEDIA' => '新媒体'];
+        $roleLabel = $roleMap[$d['roleCode']] ?? $d['roleCode'];
+        audit($r, '新增', '人员管理', $user->id, $user->name, is_string($venue) ? $venue : '双店', "开通账号：{$user->name} ({$roleLabel}) / 门店[".implode('、', $venues).']');
+
+        return ok(['key' => $user->username]);
+    });
+
+    // 停用 / 启用 / 改角色 / 重置密码（同一接口按动作处理）
+    Route::patch('/accounts/{key}', function (Request $r, string $key) {
+        requireSuper($r);
+        $user = User::where('username', $key)->firstOrFail();
+        if ($user->name === $r->user()->name) abort(422, '不能修改自己的账号');
+
+        $action = $r->input('action', 'update');
+        $allowed = ['update', 'disable', 'enable', 'resetPassword'];
+        abort_unless(in_array($action, $allowed, true), 422, '未知操作');
+
+        $d = $r->validate([
+            'roleCode' => 'nullable|string|in:R_SUPER,R_MANAGER,R_TEACHER,R_MEDIA',
+            'venues' => 'nullable|array|min:1',
+            'venues.*' => 'string|in:绿地店,东部店',
+            'password' => 'nullable|string|min:8|max:64',
+        ]);
+        $detail = '';
+        if ($action === 'disable' || $action === 'enable') {
+            $user->update(['status' => $action === 'disable' ? '停用' : '启用']);
+            $detail = $action === 'disable' ? '停用账号' : '启用账号';
+        } elseif ($action === 'resetPassword') {
+            abort_unless(! empty($d['password']), 422, '请输入新密码');
+            $user->update(['password' => $d['password']]);
+            $detail = '重置密码';
+        } else {
+            $patch = [];
+            if (! empty($d['roleCode']) && $d['roleCode'] !== $user->role) {
+                $patch['role'] = $d['roleCode'];
+                // 店长/老师必须有门店范围；超管/新媒体为双店
+                $patch['venue'] = in_array($d['roleCode'], ['R_MANAGER', 'R_TEACHER'], true) ? (($d['venues'] ?? $user->venues)[0] ?? null) : null;
+                $detail = '角色调整';
+            }
+            if (! empty($d['venues'])) $patch['venues'] = $d['venues'];
+            if (! empty($patch)) $user->update($patch);
+            $detail = $detail ?: '资料更新';
+        }
+        audit($r, $action === 'resetPassword' ? '重置' : '修改', '人员管理', $user->id, $user->name, is_string($user->venue) ? $user->venue : '双店', $detail);
+
+        return ok(['ok' => true]);
     });
 
     // ---------- 训练计划（按人持久化，整表同步） ----------
@@ -492,6 +650,81 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
     });
 
+    // 经营看板趋势（真实数据版）：按日留资新增 + 成交转化；按最近三个月的签到聚合
+    Route::get('/analytics/trends', function (Request $r) {
+        $u = $r->user();
+        $leadQ = Lead::query();
+        if ($u->role !== 'R_SUPER' && $u->venue) $leadQ->where('venue', $u->venue);
+
+        $start = $r->query('start') ?: now()->startOfMonth()->toDateString();
+        $end = $r->query('end') ?: now()->toDateString();
+        $leads = $leadQ->whereBetween('created_at', [$start.' 00:00:00', $end.' 23:59:59'])->get();
+
+        $byDate = [];
+        $bucket = function (string $date, string $venue, $l) use (&$byDate): void {
+            $byDate[$date][$venue]['leads'] = ($byDate[$date][$venue]['leads'] ?? 0) + 1;
+            if ($l->status === '已成交') $byDate[$date][$venue]['deals'] = ($byDate[$date][$venue]['deals'] ?? 0) + 1;
+            if ($l->deal_amount) $byDate[$date][$venue]['amount'] = ($byDate[$date][$venue]['amount'] ?? 0) + (int) $l->deal_amount;
+        };
+        foreach ($leads as $l) {
+            $d = $l->created_at ? $l->created_at->toDateString() : $l->lead_date;
+            $bucket($d, $l->venue ?: '双店', $l);
+        }
+
+        // 客户到店分布（最近30天有到店记录）
+        $custQ = Customer::query();
+        if ($u->role !== 'R_SUPER') $custQ->where('venue', $u->venue);
+        $visitQ = (clone $custQ)->where('last_visit', '>=', now()->subDays(30)->toDateString());
+        $visit30 = $visitQ->count();
+        $activeCustomers = (clone $custQ)->where('attend_m3', '>', 0)->count();
+
+        return ok([
+            'daily' => array_values(collect($byDate)->sortKeys()->map(function ($venues, $date) {
+                $out = ['date' => $date];
+                foreach ($venues as $v => $c) {
+                    $out[$v] = [
+                        'leads' => $c['leads'] ?? 0,
+                        'deals' => $c['deals'] ?? 0,
+                        'amount' => $c['amount'] ?? 0,
+                    ];
+                }
+                return $out;
+            })->all()),
+            'visit30' => $visit30,
+            'activeCustomers' => $activeCustomers,
+            'attendanceSummary' => [
+                'm1' => (clone $custQ)->where('attend_m1', '>', 0)->count(),
+                'm2' => (clone $custQ)->where('attend_m2', '>', 0)->count(),
+                'm3' => $activeCustomers,
+            ],
+            'period' => ['start' => $start, 'end' => $end],
+        ]);
+    });
+
+    // 经营看板来源分布（真实数据版）：按留资来源渠道统计
+    Route::get('/analytics/channels', function (Request $r) {
+        $u = $r->user();
+        $leadQ = Lead::query();
+        if ($u->role !== 'R_SUPER' && $u->venue) $leadQ->where('venue', $u->venue);
+        $start = $r->query('start') ?: now()->startOfMonth()->toDateString();
+        $end = $r->query('end') ?: now()->toDateString();
+        $leads = $leadQ->whereBetween('created_at', [$start.' 00:00:00', $end.' 23:59:59'])->get();
+
+        $channels = [];
+        foreach ($leads as $l) {
+            $src = trim((string) $l->source) !== '' ? $l->source : '其他';
+            $channels[$src] = ($channels[$src] ?? 0) + 1;
+        }
+        arsort($channels);
+
+        $rows = [];
+        foreach ($channels as $name => $leadsCount) {
+            $rows[] = ['channel' => $name, 'leads' => $leadsCount];
+        }
+
+        return ok(['rows' => $rows, 'total' => $leads->count()]);
+    });
+
     Route::get('/today/summary', function (Request $r) {
         $u = $r->user();
 
@@ -619,10 +852,13 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($remote['remote']['error'] !== '') return response()->json(['code' => 1, 'message' => '远端不可达：'.$remote['remote']['error']], 503);
         if ($remote['upToDate']) return ok(['updated' => false, 'message' => '当前已是最新版本']);
         $script = base_path('../update.sh');
-        abort_unless(is_file($script), 503, '服务器未配置受控更新脚本，请先安装 update.sh');
+        if (! is_file($script)) return response()->json(['code' => 1, 'message' => '服务器未配置受控更新脚本（/www/wwwroot/oa.nbyimai.com/update.sh 不存在），请先安装 update.sh'], 503);
         $result = runShell('bash '.escapeshellarg($script), 900);
-        if (! $result['ok']) return response()->json(['code' => 1, 'message' => '更新失败', 'output' => $result['output']], 500);
-        audit($r, '更新', '版本更新', 0, '系统版本', '双店', implode('；', $result['output']));
+        if (! $result['ok']) {
+            $lines = array_slice($result['output'], -15);
+            return response()->json(['code' => 1, 'message' => '更新脚本执行失败', 'output' => $lines], 500);
+        }
+        audit($r, '更新', '版本更新', 0, '系统版本', '双店', implode('；', array_slice($result['output'], -30)));
         return ok(['updated' => true, 'output' => $result['output']]);
     });
 });

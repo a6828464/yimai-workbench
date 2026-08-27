@@ -25,6 +25,9 @@ export interface AiConfig {
   temperature: number
 }
 
+/** 后端模式下密钥在服务端数据库，前端用该占位符表示「已配置」 */
+export const SERVER_CONFIGURED_PLACEHOLDER = 'server-configured'
+
 export interface FavoriteItem {
   id: number
   platform: string
@@ -65,11 +68,13 @@ export const useAiConfigStore = defineStore('aiConfigStore', () => {
   }
 
   function isReady(): boolean {
-    return config.value.enabled && !!config.value.baseUrl && !!config.value.apiKey && !!config.value.model
+    // 后端模式密钥由服务端保管：水合后 apiKey 为占位符（server-configured），视为已配置
+    return config.value.enabled && !!config.value.baseUrl && !!config.value.model && !!config.value.apiKey
   }
 
   function maskKey(): string {
     const k = config.value.apiKey
+    if (k === SERVER_CONFIGURED_PLACEHOLDER) return '已配置（服务端数据库保管）'
     if (!k) return '未配置'
     if (k.length <= 10) return k.slice(0, 2) + '****'
     return `${k.slice(0, 6)}****${k.slice(-4)}`

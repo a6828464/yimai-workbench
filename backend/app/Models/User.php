@@ -21,6 +21,7 @@ class User extends Authenticatable
         'role',
         'venue',
         'venues',
+        'status',
     ];
 
     protected $hidden = [
@@ -47,6 +48,7 @@ class User extends Authenticatable
             'venues' => $this->venues ?? [],
             'buttons' => [],
             'email' => $this->email,
+            'status' => $this->status ?? '启用',
         ];
     }
 }

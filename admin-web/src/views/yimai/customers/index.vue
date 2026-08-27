@@ -47,14 +47,60 @@
         @pagination:current-change="handleCurrentChange"
       />
     </ElCard>
+
+    <!-- 客户360详情 -->
+    <ElDrawer v-model="detail.visible" size="600px" :title="`客户360 · ${detail.customer?.name ?? ''}`">
+      <div v-loading="detail.loading">
+        <template v-if="detail.customer">
+          <ElDescriptions :column="2" border size="small" class="mb-4">
+            <ElDescriptionsItem label="姓名">{{ detail.customer.name }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="手机号">{{ maskPhone(detail.customer.phone) }} </ElDescriptionsItem>
+            <ElDescriptionsItem label="门店">{{ detail.customer.venue }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="来源">{{ detail.customer.source }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="分层">
+              <ElTag size="small" :type="LAYER_TAG_TYPE[detail.customer.layer]">{{ detail.customer.layer }} {{ LAYER_LABELS[detail.customer.layer] }}</ElTag>
+            </ElDescriptionsItem>
+            <ElDescriptionsItem label="负责人">{{ detail.customer.owner }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="主卡">{{ detail.customer.mainCard }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="剩余/到期">
+              {{ detail.customer.remainTimes ?? '—' }}次{{ detail.customer.expireDate ? ` · ${detail.customer.expireDate}` : '' }}
+            </ElDescriptionsItem>
+            <ElDescriptionsItem label="出勤 M1/M2/M3">{{ detail.customer.attendM1 ?? 0 }}/{{ detail.customer.attendM2 ?? 0 }}/{{ detail.customer.attendM3 ?? 0 }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="最近到店">{{ detail.customer.lastVisit ? `${daysAgo(detail.customer.lastVisit)}天前` : '—' }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="下次动作" :span="2">{{ detail.customer.nextAction }}（{{ detail.customer.nextActionTime }}）</ElDescriptionsItem>
+          </ElDescriptions>
+
+          <div class="text-sm font-500 mb-2">工作流留痕</div>
+          <ElTimeline v-if="detail.logs?.length" class="mb-4">
+            <ElTimelineItem v-for="(log, i) in detail.logs" :key="i" :timestamp="log.time" placement="top">
+              <div class="text-sm">
+                <ElTag size="small" effect="plain">{{ log.action }}</ElTag>
+                <span class="ml-2 text-gray-500">{{ log.operatorName }}({{ log.operatorRole }})</span>
+              </div>
+              <div class="text-xs text-gray-400 mt-1">{{ log.detail }}</div>
+            </ElTimelineItem>
+          </ElTimeline>
+          <ElEmpty v-else description="暂无留痕记录" :image-size="50" class="mb-4" />
+
+          <div class="text-sm font-500 mb-2">关联前端客资（按手机号）</div>
+          <ElTable :data="detail.leads" size="small" border v-if="detail.leads?.length">
+            <ElTableColumn prop="leadDate" label="日期" width="100" />
+            <ElTableColumn prop="source" label="来源" width="110" />
+            <ElTableColumn prop="status" label="状态" width="100" />
+            <ElTableColumn prop="demand" label="需求" min-width="140" show-overflow-tooltip />
+          </ElTable>
+          <ElEmpty v-else description="无关联留资" :image-size="50" />
+        </template>
+      </div>
+    </ElDrawer>
   </div>
 </template>
 
 <script setup lang="ts">
   import ArtButtonTable from '@/components/core/forms/art-button-table/index.vue'
   import { useTable } from '@/hooks/core/useTable'
-  import { queryCustomers } from '@/api/yimai'
-  import type { YimaiCustomer } from '@/api/yimai'
+  import { queryCustomers, getCustomerDetail } from '@/api/yimai'
+  import type { YimaiCustomer, YimaiAuditLog, YimaiLead } from '@/api/yimai'
   import { ElMessage, ElTag } from 'element-plus'
   import { useUserStore } from '@/store/modules/user'
 
@@ -105,7 +151,7 @@
   }
 
   /** 内部工作台展示完整手机号 */
-  function maskPhone(p: string): string {
+  function maskPhone(p: string | undefined | null): string {
     const v = String(p ?? '').trim()
     return v || '—'
   }
@@ -243,7 +289,30 @@
     getData()
   }
 
-  function showDetail(_row: YimaiCustomer) {
-    ElMessage.info('客户360详情（时间线/卡项/跟进）在阶段1交付')
+  function showDetail(row: YimaiCustomer) {
+    detail.customer = row
+    detail.visible = true
+    detail.loading = true
+    getCustomerDetail(row.id)
+      .then((d) => {
+        detail.customer = d.customer
+        detail.logs = d.logs ?? []
+        detail.leads = d.leads ?? []
+      })
+      .catch((e) => {
+        ElMessage.error(`加载详情失败：${String(e).slice(0, 100)}`)
+        detail.visible = false
+      })
+      .finally(() => {
+        detail.loading = false
+      })
   }
+
+  const detail = reactive<{
+    visible: boolean
+    loading: boolean
+    customer: YimaiCustomer | null
+    logs: YimaiAuditLog[]
+    leads: YimaiLead[]
+  }>({ visible: false, loading: false, customer: null, logs: [], leads: [] })
 </script>

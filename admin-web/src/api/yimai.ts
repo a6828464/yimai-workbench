@@ -91,6 +91,29 @@ export function updateMemberFields(id: number, patch: Partial<YimaiCustomer>, ac
   return useYimaiStore().updateMember(id, patch, actionLabel)
 }
 
+/** 客户360：主档 + 会员工作流留痕 + 按手机号关联的前端客资 */
+export interface CustomerDetail {
+  customer: YimaiCustomer
+  logs: YimaiAuditLog[]
+  leads: YimaiLead[]
+}
+
+export async function getCustomerDetail(id: number): Promise<CustomerDetail> {
+  if (USE_BACKEND) {
+    return apiGet<CustomerDetail>(`/customers/${id}`)
+  }
+  const a = actor()
+  const pool = allCustomers()
+  const customer = pool.find((c) => c.id === id) ?? ({} as YimaiCustomer)
+  return Promise.resolve({
+    customer,
+    logs: useYimaiStore().getLeadHistory(id),
+    leads: useYimaiStore().state.leads
+      .filter((l) => customer.phone && l.phone === customer.phone)
+      .filter((l) => inScope(l.venue, a.scopeVenue))
+  })
+}
+
 export interface YimaiCustomer extends StoreCustomer {
   externalId?: string
 }
@@ -427,6 +450,34 @@ export function queryTasks(params: PageParams & { status?: string; venue?: strin
   return Promise.resolve({ records: paginate(list, params), total: list.length, current: params.current ?? 1, size: params.size ?? 20 })
 }
 
+export async function createTask(data: Partial<YimaiTask> & { title: string; customerName: string; venue: '绿地店' | '东部店' }): Promise<YimaiTask> {
+  if (USE_BACKEND) {
+    return apiPost<YimaiTask>('/tasks', data as unknown as Record<string, unknown>)
+  }
+  const task: YimaiTask = {
+    id: TASKS.length + 1000,
+    title: data.title,
+    customerName: data.customerName,
+    venue: data.venue,
+    owner: data.owner || '未分配',
+    priority: data.priority || '中',
+    deadline: data.deadline || '',
+    status: '待接收',
+    standard: data.standard || ''
+  }
+  TASKS.unshift(task)
+  return Promise.resolve(task)
+}
+
+export async function updateTask(id: number, patch: Partial<YimaiTask>, actionLabel = '修改'): Promise<YimaiTask> {
+  if (USE_BACKEND) {
+    return apiPatch<YimaiTask>(`/tasks/${id}`, { ...patch, _action: actionLabel } as Record<string, unknown>)
+  }
+  const idx = TASKS.findIndex((t) => t.id === id)
+  if (idx >= 0) TASKS[idx] = { ...TASKS[idx], ...patch }
+  return Promise.resolve(TASKS[idx] ?? ({} as YimaiTask))
+}
+
 // ==================== 价格审批 ====================
 
 const APPROVALS: YimaiApproval[] = [
@@ -447,12 +498,37 @@ export function queryApprovals(params: PageParams & { status?: string }) {
   return Promise.resolve({ records: paginate(list, params), total: list.length, current: params.current ?? 1, size: params.size ?? 20 })
 }
 
-export function decideApproval(id: number, decision: '初审通过' | '终审通过' | '驳回') {
+export function decideApproval(id: number, decision: '初审通过' | '终审通过' | '驳回' | '关联成交') {
   if (USE_BACKEND) {
     return apiPost<boolean>(`/approvals/${id}/decide`, { decision })
   }
-  useYimaiStore().decideApproval(id, decision)
+  useYimaiStore().decideApproval(id, decision as '初审通过' | '终审通过' | '驳回')
   return Promise.resolve(true)
+}
+
+export async function createApproval(data: {
+  customerName: string
+  cardName: string
+  standardPrice: number
+  requestPrice: number
+  reason?: string
+}): Promise<YimaiApproval> {
+  if (USE_BACKEND) {
+    return apiPost<YimaiApproval>('/approvals', data as unknown as Record<string, unknown>)
+  }
+  const item: YimaiApproval = {
+    id: APPROVALS.length + 100,
+    customerName: data.customerName,
+    applicant: actor().userName,
+    cardName: data.cardName,
+    standardPrice: data.standardPrice,
+    requestPrice: data.requestPrice,
+    reason: data.reason ?? '',
+    status: '待店长初审',
+    applyTime: new Date().toLocaleString('zh-CN', { hour12: false })
+  }
+  APPROVALS.unshift(item)
+  return Promise.resolve(item)
 }
 
 // ==================== 数据同步批次 ====================

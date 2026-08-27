@@ -42,12 +42,12 @@
 
             <ElAlert
               title="配置说明"
-              type="warning"
+              type="success"
               show-icon
               :closable="false"
               class="mb-4"
             >
-              当前页面不会展示完整密钥。生产模式下请求由 Laravel 后端代理转发；演示模式才会由浏览器直连，请勿在演示模式填写生产密钥。
+              配置会保存到服务器数据库，不同电脑/手机登录后都会自动使用同一份配置；API Key 只写入服务端，页面永不展示完整密钥。首次配置建议填写新 Key；接口地址和模型变更后保存即可全局生效。
             </ElAlert>
 
             <div class="flex gap-2">
@@ -88,10 +88,10 @@
 </template>
 
 <script setup lang="ts">
-  import { AI_PROVIDER_PRESETS, useAiConfigStore } from '@/store/modules/ai-config'
+  import { AI_PROVIDER_PRESETS, SERVER_CONFIGURED_PLACEHOLDER, useAiConfigStore } from '@/store/modules/ai-config'
   import { useYimaiStore } from '@/store/modules/yimai'
-  import { fetchAvailableModels } from '@/api/ai'
-  import { USE_BACKEND, apiGet, apiPost, apiPut } from '@/api/backend'
+  import { fetchAvailableModels, initAiConfig } from '@/api/ai'
+  import { USE_BACKEND, apiPost, apiPut } from '@/api/backend'
   import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'YimaiAiConfig' })
@@ -109,9 +109,9 @@
   onMounted(async () => {
     if (!USE_BACKEND) return
     try {
-      const saved = await apiGet<Partial<typeof form> & { configured?: boolean }>('/ai/config')
-      Object.assign(form, saved)
-      if (saved.configured) form.apiKey = 'server-configured'
+      await initAiConfig()
+      Object.assign(form, aiStore.config)
+      if (form.apiKey !== SERVER_CONFIGURED_PLACEHOLDER) form.apiKey = ''
     } catch {
       // Keep the local form usable when the server has not been migrated yet.
     }
@@ -126,6 +126,10 @@
   const modelOptions = computed(() => (fetchedModels.value.length ? fetchedModels.value : presetModels.value))
 
   async function loadModels() {
+    if (form.apiKey === SERVER_CONFIGURED_PLACEHOLDER) {
+      ElMessage.warning('当前使用服务端已保存的 Key，无法在页面上复用；如需拉取模型列表请先填写新 Key')
+      return
+    }
     if (!form.baseUrl || !form.apiKey) {
       ElMessage.warning('请先填写接口地址和 API Key')
       return

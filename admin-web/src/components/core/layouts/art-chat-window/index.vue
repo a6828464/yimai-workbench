@@ -174,6 +174,8 @@
     // 调用大模型回答
     const aiStore = useAiConfigStore()
     const { USE_BACKEND, apiPost } = await import('@/api/backend')
+    const { initAiConfig } = await import('@/api/ai')
+    await initAiConfig()
     if (!aiStore.isReady()) {
       messages.value.push({
         id: messageId.value++,

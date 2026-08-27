@@ -60,6 +60,15 @@
           <template #title>无法连接远端仓库：{{ remoteError }}</template>
         </ElAlert>
 
+        <ElAlert v-if="updateError" type="error" :closable="false" class="mt-4">
+          <template #title>{{ updateError }}</template>
+          <template #default v-if="updateOutput.length">
+            <div class="mt-2 max-h-60 overflow-auto rounded bg-black/70 p-3 font-mono text-xs text-green-300 leading-6">
+              <div v-for="(line, i) in updateOutput" :key="i">{{ line }}</div>
+            </div>
+          </template>
+        </ElAlert>
+
       </template>
     </div>
 
@@ -94,6 +103,8 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
   const version = ref<VersionInfo | null>(null)
   const changelogHtml = ref('')
   const changelogError = ref('')
+  const updateError = ref('')
+  const updateOutput = ref<string[]>([])
 
   const remoteError = computed(() => version.value?.remote.error || '')
   const upToDate = computed(() => version.value?.upToDate ?? true)
@@ -132,12 +143,18 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
 
   async function applyUpdate() {
     updating.value = true
+    updateError.value = ''
+    updateOutput.value = []
     try {
       const r = await apiPost<{ updated: boolean; message?: string; output?: string[] }>('/system/update', {})
+      if (r.output?.length) updateOutput.value = r.output
       ElMessage.success(r.message || (r.updated ? '更新已执行，请稍候刷新页面' : '当前已是最新版本'))
       if (r.updated) setTimeout(() => window.location.reload(), 2500)
     } catch (e) {
-      ElMessage.error(`更新失败：${String(e).slice(0, 120)}`)
+      const anyE = e as { response?: { data?: { message?: string; output?: string[] } }; message?: string }
+      updateError.value = anyE.response?.data?.message || anyE.message || '更新失败'
+      if (anyE.response?.data?.output?.length) updateOutput.value = anyE.response.data.output
+      ElMessage.error(`更新失败：${updateError.value}`)
     } finally {
       updating.value = false
     }

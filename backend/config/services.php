@@ -46,4 +46,10 @@ return [
         'token' => env('GITEE_TOKEN'),
     ],
 
+    // 自助注册（默认关闭；开启后请同时设置 REGISTRATION_CODE 邀请码兜底）
+    'registration' => [
+        'enabled' => env('REGISTRATION_ENABLED', false),
+        'code' => env('REGISTRATION_CODE', ''),
+    ],
+
 ];

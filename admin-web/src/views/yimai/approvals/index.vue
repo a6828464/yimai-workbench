@@ -6,6 +6,8 @@
           <ElOption v-for="s in STATUSES" :key="s" :label="s" :value="s" />
         </ElSelect>
         <ElButton @click="handleReset">重置</ElButton>
+        <div class="flex-1" />
+        <ElButton type="primary" plain @click="openCreate">发起价格审批</ElButton>
       </div>
 
       <ArtTableHeader v-model:columns="columnChecks" :loading="loading" @refresh="refreshData">
@@ -23,13 +25,33 @@
         @pagination:current-change="handleCurrentChange"
       />
     </ElCard>
+
+    <!-- 发起价格审批 -->
+    <ElDialog v-model="createDlg" title="发起价格审批" width="480px" destroy-on-close>
+      <ElForm label-width="96px">
+        <ElFormItem label="客户姓名"><ElInput v-model="applyForm.customerName" placeholder="客户姓名" maxlength="20" /></ElFormItem>
+        <ElFormItem label="卡项名称"><ElInput v-model="applyForm.cardName" placeholder="如：VIP私教50节" maxlength="40" /></ElFormItem>
+        <ElFormItem label="标准 / 申请价">
+          <div class="flex items-center gap-2">
+            <ElInputNumber v-model="applyForm.standardPrice" :min="0" :step="100" controls-position="right" class="!w-36" placeholder="标准价" />
+            <span class="text-gray-400">→</span>
+            <ElInputNumber v-model="applyForm.requestPrice" :min="0" :step="100" controls-position="right" class="!w-36" placeholder="申请价" />
+          </div>
+        </ElFormItem>
+        <ElFormItem label="申请原因"><ElInput v-model="applyForm.reason" type="textarea" :rows="2" maxlength="200" placeholder="写清让价背景，利于审批" /></ElFormItem>
+      </ElForm>
+      <template #footer>
+        <ElButton @click="createDlg = false">取消</ElButton>
+        <ElButton type="primary" :loading="applySaving" @click="doCreate">提交审批</ElButton>
+      </template>
+    </ElDialog>
   </div>
 </template>
 
 <script setup lang="ts">
   import ArtButtonTable from '@/components/core/forms/art-button-table/index.vue'
   import { useTable } from '@/hooks/core/useTable'
-  import { queryApprovals, decideApproval } from '@/api/yimai'
+  import { queryApprovals, decideApproval, createApproval } from '@/api/yimai'
   import type { YimaiApproval } from '@/api/yimai'
   import { ElMessage, ElTag } from 'element-plus'
   import { useUserStore } from '@/store/modules/user'
@@ -136,6 +158,12 @@ const isBoss = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_BO
               h(ArtButtonTable, { type: 'delete', title: '驳回', onClick: () => act(row, false) })
             ])
           }
+          if (row.status === '已通过') {
+            return h(
+              ArtButtonTable,
+              { type: 'edit', title: '关联成交', onClick: () => linkDeal(row) }
+            )
+          }
           return h('span', { class: 'text-xs text-gray-400' }, '—')
         }
         }
@@ -158,6 +186,39 @@ const isBoss = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_BO
     await decideApproval(row.id, stage === '初审' ? '初审通过' : '终审通过')
     refreshData()
     ElMessage.success(`${stage}通过，决定已写入留痕日志`)
+  }
+
+  async function linkDeal(row: YimaiApproval) {
+    await decideApproval(row.id, '关联成交')
+    refreshData()
+    ElMessage.success(`${row.customerName} 已标记「已关联成交」`)
+  }
+
+  // ---------- 发起价格审批 ----------
+  const createDlg = ref(false)
+  const applySaving = ref(false)
+  const applyForm = reactive({ customerName: '', cardName: '', standardPrice: 3200, requestPrice: 3000, reason: '' })
+
+  function openCreate() {
+    Object.assign(applyForm, { customerName: '', cardName: '', standardPrice: 3200, requestPrice: 3000, reason: '' })
+    createDlg.value = true
+  }
+
+  async function doCreate() {
+    if (!applyForm.customerName.trim()) return ElMessage.warning('请填写客户姓名')
+    if (!applyForm.cardName.trim()) return ElMessage.warning('请填写卡项名称')
+    if (applyForm.requestPrice >= applyForm.standardPrice) return ElMessage.warning('申请价应低于标准价')
+    applySaving.value = true
+    try {
+      await createApproval({ ...applyForm })
+      ElMessage.success('审批单已提交，进入店长初审')
+      createDlg.value = false
+      await refreshData()
+    } catch (e) {
+      ElMessage.error(String((e as { message?: string }).message ?? e).slice(0, 120))
+    } finally {
+      applySaving.value = false
+    }
   }
 
   function handleSearch() {

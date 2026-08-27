@@ -49,6 +49,21 @@
               />
             </ElFormItem>
 
+            <ElFormItem prop="venue">
+              <ElSelect v-model="formData.venue" class="!w-full" placeholder="选择归属门店">
+                <ElOption label="绿地店" value="绿地店" />
+                <ElOption label="东部店" value="东部店" />
+              </ElSelect>
+            </ElFormItem>
+
+            <ElFormItem prop="code">
+              <ElInput
+                class="custom-height"
+                v-model.trim="formData.code"
+                placeholder="邀请码（如需）"
+              />
+            </ElFormItem>
+
             <ElFormItem prop="agreement">
               <ElCheckbox v-model="formData.agreement">
                 {{ $t('register.agreeText') }}
@@ -87,6 +102,8 @@
 
 <script setup lang="ts">
   import { useI18n } from 'vue-i18n'
+  import { useUserStore } from '@/store/modules/user'
+  import { apiPost, setBackendToken, USE_BACKEND } from '@/api/backend'
   import type { FormInstance, FormRules } from 'element-plus'
 
   defineOptions({ name: 'Register' })
@@ -95,6 +112,8 @@
     username: string
     password: string
     confirmPassword: string
+    venue: string
+    code: string
     agreement: boolean
   }
 
@@ -105,6 +124,7 @@
 
   const { t, locale } = useI18n()
   const router = useRouter()
+  const userStore = useUserStore()
   const formRef = ref<FormInstance>()
 
   const loading = ref(false)
@@ -119,6 +139,8 @@
     username: '',
     password: '',
     confirmPassword: '',
+    venue: '',
+    code: '',
     agreement: false
   })
 
@@ -188,6 +210,7 @@
       { min: PASSWORD_MIN_LENGTH, message: t('register.rule.passwordLength'), trigger: 'blur' }
     ],
     confirmPassword: [{ required: true, validator: validateConfirmPassword, trigger: 'blur' }],
+    venue: [{ required: true, message: '请选择归属门店', trigger: 'change' }],
     agreement: [{ validator: validateAgreement, trigger: 'change' }]
   }))
 
@@ -202,36 +225,36 @@
       await formRef.value.validate()
       loading.value = true
 
-      // TODO: 替换为真实 API 调用
-      // const params = {
-      //   username: formData.username,
-      //   password: formData.password
-      // }
-      // const res = await AuthService.register(params)
-      // if (res.code === ApiStatus.success) {
-      //   ElMessage.success('注册成功')
-      //   toLogin()
-      // }
+      if (!USE_BACKEND) {
+        ElMessage.error('演示模式不支持自助注册，请在启用后端模式后使用')
+        return
+      }
 
-      // 模拟注册请求
-      setTimeout(() => {
-        loading.value = false
-        ElMessage.success('注册成功')
-        toLogin()
-      }, REDIRECT_DELAY)
+      try {
+        const data = await apiPost<{ token: string; userInfo: Api.Auth.UserInfo }>('/auth/register', {
+          name: formData.username,
+          userName: formData.username,
+          password: formData.password,
+          venue: formData.venue,
+          code: formData.code || undefined
+        })
+        setBackendToken(data.token)
+        userStore.setUserInfo(data.userInfo)
+        ElMessage.success('注册成功，已为你登录')
+        setTimeout(() => {
+          router.push('/yimai')
+        }, REDIRECT_DELAY)
+      } catch (e) {
+        const msg =
+          (e as { response?: { data?: { message?: string } } }).response?.data?.message ??
+          ((e as { message?: string }).message ?? '注册失败')
+        ElMessage.error(msg)
+      }
     } catch (error) {
       console.error('表单验证失败:', error)
+    } finally {
       loading.value = false
     }
-  }
-
-  /**
-   * 跳转到登录页面
-   */
-  const toLogin = () => {
-    setTimeout(() => {
-      router.push({ name: 'Login' })
-    }, REDIRECT_DELAY)
   }
 </script>
 

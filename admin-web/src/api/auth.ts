@@ -1,6 +1,6 @@
 import { HttpError } from '@/utils/http/error'
 import { useUserStore } from '@/store/modules/user'
-import { USE_BACKEND, apiGet, apiPost, setBackendToken } from './backend'
+import { USE_BACKEND, apiGet, apiPost, apiPatch, setBackendToken } from './backend'
 
 /**
  * 认证：VITE_USE_BACKEND=true 走 Laravel 后端，否则本地模拟
@@ -77,7 +77,8 @@ export interface AccountRow {
   roleCode: string
   venues: string[]
   email: string
-  status: '启用'
+  status: '启用' | '停用'
+  self?: boolean
 }
 
 export async function listAccounts(): Promise<AccountRow[]> {
@@ -93,4 +94,29 @@ export async function listAccounts(): Promise<AccountRow[]> {
     email: a.email,
     status: '启用'
   }))
+}
+
+/** 新增账号（仅超管，凭据由服务端保管） */
+export async function createAccount(data: {
+  userName: string
+  roleCode: string
+  venues: string[]
+  email?: string
+  password: string
+}): Promise<{ key: string }> {
+  if (!USE_BACKEND) throw new Error('演示模式不支持新增账号')
+  return apiPost<{ key: string }>('/accounts', { ...data } as Record<string, unknown>)
+}
+
+/** 停用/启用/改角色/重置密码（仅超管） */
+export async function updateAccount(
+  key: string,
+  action: 'update' | 'disable' | 'enable' | 'resetPassword',
+  data?: { roleCode?: string; venues?: string[]; password?: string }
+): Promise<{ ok: boolean }> {
+  if (!USE_BACKEND) throw new Error('演示模式不支持账号变更')
+  return apiPatch<{ ok: boolean }>(`/accounts/${encodeURIComponent(key)}`, {
+    action,
+    ...data
+  } as Record<string, unknown>)
 }

@@ -1,6 +1,48 @@
-import { useAiConfigStore } from '@/store/modules/ai-config'
+import { useAiConfigStore, SERVER_CONFIGURED_PLACEHOLDER } from '@/store/modules/ai-config'
 import { useYimaiStore } from '@/store/modules/yimai'
-import { USE_BACKEND, apiPost } from './backend'
+import { USE_BACKEND, apiGet, apiPost } from './backend'
+
+// ==================== AI 配置水合（多设备共用服务端配置） ====================
+
+let aiHydrated = false
+
+/**
+ * 把保存在服务端数据库的 AI 配置载入前端 store。
+ * 服务端不计密钥明文，用占位符表示已配置；任何设备打开工作台都会先水合，
+ * 故首页 AI 助手、营销工具、训练计划都能直接使用同一份配置。
+ */
+export async function initAiConfig(force = false): Promise<void> {
+  if (aiHydrated && !force) return
+  if (!USE_BACKEND) {
+    aiHydrated = true
+    return
+  }
+  try {
+    const saved = await apiGet<
+      { enabled?: boolean; providerLabel?: string; baseUrl?: string; model?: string; temperature?: number; apiKey?: string; configured?: boolean }
+    >('/ai/config')
+    const store = useAiConfigStore()
+    if (saved) {
+      Object.assign(store.config, {
+        enabled: Boolean(saved.enabled),
+        providerLabel: saved.providerLabel ?? store.config.providerLabel,
+        baseUrl: saved.baseUrl ?? store.config.baseUrl,
+        model: saved.model ?? store.config.model,
+        temperature: typeof saved.temperature === 'number' ? saved.temperature : store.config.temperature,
+        apiKey: saved.configured ? SERVER_CONFIGURED_PLACEHOLDER : ''
+      })
+    }
+  } catch {
+    // 未登录 / 非超管：保留本地默认即可
+  } finally {
+    aiHydrated = true
+  }
+}
+
+/** 是否已水合（供页面选择展示时机） */
+export function isAiHydrated(): boolean {
+  return aiHydrated
+}
 
 // ==================== 朋友圈：选项口径（报告 7.3-7.4） ====================
 
@@ -159,6 +201,7 @@ interface ChatMessage {
  * - 演示模式：浏览器直连（仅对支持CORS的服务商可用）
  */
 async function callLLM(messages: ChatMessage[]): Promise<string> {
+  await initAiConfig()
   const store = useAiConfigStore()
   if (!store.isReady()) throw new Error('AI_NOT_CONFIGURED')
   const c = store.config
