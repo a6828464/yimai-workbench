@@ -19,12 +19,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Build frontend
         working-directory: admin-web
         run: |
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --reporter=append-only
           pnpm build
 
       - name: Assemble release package
