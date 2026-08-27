@@ -82,6 +82,7 @@ class KyMemberSyncService
                 $name = self::pick($row, ['name', 'member_name']) ?: '会员';
                 $phone = preg_replace('/\D+/', '', self::pick($row, ['phone', 'mobile'])) ?? '';
                 $source = self::pick($row, ['source_title', 'source']) ?: 'KeepYoga';
+                $consultant = self::pick($row, ['consultant_name', 'consultant', 'adviser_name', 'advisor_name', 'member_consultant']);
                 $cardSummary = self::summarizeCards($cardsByMember[$memberId] ?? []);
                 $visitSummary = $attendance[$memberId] ?? [];
 
@@ -91,6 +92,7 @@ class KyMemberSyncService
                     'phone_tail' => substr($phone, -4),
                     'venue' => $venue,
                     'source' => $source,
+                    'consultant' => $consultant,
                     'main_card' => $cardSummary['main_card'],
                     'remain_times' => $cardSummary['remain_times'],
                     'expire_date' => $cardSummary['expire_date'],
@@ -104,7 +106,7 @@ class KyMemberSyncService
                 $customer = Customer::where('external_id', $externalId)->first();
                 if (! $customer) {
                     Customer::create($changes + [
-                        'layer' => 'P4', 'status' => '待完善', 'owner' => '未分配',
+                        'layer' => 'P4', 'status' => '待完善', 'owner' => $consultant ?: '未分配',
                         'next_action' => '分配负责人并完善会员档案', 'external_id' => $externalId,
                     ]);
                     $created++;
@@ -112,7 +114,7 @@ class KyMemberSyncService
                 }
 
                 if ($customer->layer === 'P5' && $customer->main_card === '待同步卡项') {
-                    $changes += ['layer' => 'P4', 'status' => '待完善', 'next_action' => '分配负责人并完善会员档案'];
+                    $changes += ['layer' => 'P4', 'status' => '待完善', 'owner' => $consultant ?: '未分配', 'next_action' => '分配负责人并完善会员档案'];
                 }
                 $customer->fill($changes);
                 if ($customer->isDirty()) {

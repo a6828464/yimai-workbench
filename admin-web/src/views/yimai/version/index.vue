@@ -40,16 +40,20 @@
           {{ version.local.message }}
         </div>
 
-         <!-- 有更新时，生产版本通过受控发布流程部署 -->
+         <!-- 有更新时仅允许服务器预置的受控脚本执行更新 -->
         <ElAlert
           v-if="!upToDate && !remoteError"
           type="warning"
           :closable="false"
           class="mt-4"
         >
-          <template #title>
-            远端存在新提交 {{ short(version.remote.commit) }}，请按受控发布流程更新
-          </template>
+           <template #title>远端存在新提交 {{ short(version.remote.commit) }}</template>
+           <template #default>
+             <div class="flex-cb gap-3 flex-wrap">
+               <span>可由服务器上的受控更新脚本完成更新，更新期间服务可能短暂重启。</span>
+               <ElButton type="warning" size="small" :loading="updating" @click="applyUpdate">立即更新</ElButton>
+             </div>
+           </template>
         </ElAlert>
 
         <ElAlert v-if="remoteError" type="error" :closable="false" class="mt-4">
@@ -73,7 +77,7 @@
 </template>
 
 <script setup lang="ts">
-  import { apiGet, USE_BACKEND } from '@/api/backend'
+import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
   import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'YimaiVersion' })
@@ -85,6 +89,7 @@
   }
   const loading = ref(true)
   const checking = ref(false)
+  const updating = ref(false)
   const version = ref<VersionInfo | null>(null)
   const changelogHtml = ref('')
 
@@ -119,6 +124,19 @@
       ElMessage.error(`检查失败：${String(e).slice(0, 80)}`)
     } finally {
       checking.value = false
+    }
+  }
+
+  async function applyUpdate() {
+    updating.value = true
+    try {
+      const r = await apiPost<{ updated: boolean; message?: string; output?: string[] }>('/system/update', {})
+      ElMessage.success(r.message || (r.updated ? '更新已执行，请稍候刷新页面' : '当前已是最新版本'))
+      if (r.updated) setTimeout(() => window.location.reload(), 2500)
+    } catch (e) {
+      ElMessage.error(`更新失败：${String(e).slice(0, 120)}`)
+    } finally {
+      updating.value = false
     }
   }
 

@@ -104,10 +104,9 @@
     return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
   }
 
-  /** 手机号脱敏：138****2073；非11位原样返回 */
+  /** 内部工作台展示完整手机号 */
   function maskPhone(p: string): string {
     const v = String(p ?? '').trim()
-    if (/^1\d{10}$/.test(v)) return `${v.slice(0, 3)}****${v.slice(-4)}`
     return v || '—'
   }
 
@@ -158,6 +157,12 @@
               { size: 'small', type: LAYER_TAG_TYPE[row.layer], effect: 'dark' },
               () => `${row.layer} ${LAYER_LABELS[row.layer]}`
             )
+        },
+        {
+          prop: 'consultant',
+          label: '会籍顾问',
+          width: 110,
+          formatter: (row: YimaiCustomer) => row.consultant || h(ElTag, { size: 'small', type: 'danger' }, () => '待分配')
         },
         {
           prop: 'mainCard',

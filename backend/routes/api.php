@@ -251,10 +251,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/ai/chat', function (Request $r) {
         $d = $r->validate([
             'baseUrl' => 'required|url',
-            'apiKey' => 'required|string',
+            'apiKey' => 'nullable|string',
             'model' => 'required|string',
             'messages' => 'required|array',
         ]);
+        $saved = (array) (AppSetting::first()?->ai ?? []);
+        $d['apiKey'] = ($d['apiKey'] && $d['apiKey'] !== 'server-configured') ? $d['apiKey'] : ($saved['apiKey'] ?? '');
+        if ($d['apiKey'] === '') return response()->json(['code' => 1, 'message' => '尚未配置 API Key'], 422);
         if (! str_starts_with($d['baseUrl'], 'https://')) return response()->json(['code' => 1, 'message' => '接口地址必须为 https'], 422);
 
         // 推理模型（reasoner / r1 / o1 / o3 / thinking）不支持 temperature，
@@ -320,6 +323,27 @@ Route::middleware('auth:sanctum')->group(function () {
         sort($ids, SORT_NATURAL | SORT_FLAG_CASE);
 
         return ok(['models' => $ids]);
+    });
+
+    Route::get('/ai/config', function (Request $r) {
+        requireSuper($r);
+        $ai = (array) (AppSetting::first()?->ai ?? []);
+        return ok(collect($ai)->except('apiKey')->put('configured', ! empty($ai['apiKey']))->all());
+    });
+
+    Route::put('/ai/config', function (Request $r) {
+        requireSuper($r);
+        $d = $r->validate([
+            'enabled' => 'required|boolean', 'providerLabel' => 'required|string',
+            'baseUrl' => 'required|url', 'apiKey' => 'nullable|string|max:500',
+            'model' => 'required|string', 'temperature' => 'required|numeric|min:0|max:2',
+        ]);
+        $s = AppSetting::firstOrCreate([]);
+        $ai = (array) ($s->ai ?? []);
+        if (! empty($d['apiKey']) && $d['apiKey'] !== 'server-configured') $ai['apiKey'] = $d['apiKey'];
+        unset($d['apiKey']);
+        $s->update(['ai' => array_merge($ai, $d)]);
+        return ok(array_merge($d, ['apiKey' => '', 'configured' => ! empty($ai['apiKey'])]));
     });
 
     // ---------- 人员管理 ----------
@@ -430,8 +454,9 @@ Route::middleware('auth:sanctum')->group(function () {
         $custQ = Customer::query();
         if ($u->role !== 'R_SUPER') $custQ->where('venue', $u->venue);
         $customers = $custQ->get();
-        $totalMembers = $customers->where('layer', '!=', 'P5')->count();
-        $unassigned = $customers->where('owner', '未分配')->count();
+        $totalMembers = $customers->filter(fn ($c) => $c->layer !== 'P5' || str_starts_with((string) $c->external_id, 'ky:'))->count();
+        // 待分配以随心瑜顾问字段为准，本地负责人只是后续执行归属。
+        $unassigned = $customers->filter(fn ($c) => trim((string) $c->consultant) === '')->count();
 
         $leadQ = Lead::query();
         if ($u->role !== 'R_SUPER' && $u->venue) $leadQ->where('venue', $u->venue);
@@ -588,7 +613,16 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('/system/update', function (Request $r) {
-        abort(410, '在线更新已停用，请使用受控发布流程部署版本');
+        requireSuper($r);
+        $remote = systemVersionInfo();
+        if ($remote['remote']['error'] !== '') return response()->json(['code' => 1, 'message' => '远端不可达：'.$remote['remote']['error']], 503);
+        if ($remote['upToDate']) return ok(['updated' => false, 'message' => '当前已是最新版本']);
+        $script = base_path('../update.sh');
+        abort_unless(is_file($script), 503, '服务器未配置受控更新脚本，请先安装 update.sh');
+        $result = runShell('bash '.escapeshellarg($script), 900);
+        if (! $result['ok']) return response()->json(['code' => 1, 'message' => '更新失败', 'output' => $result['output']], 500);
+        audit($r, '更新', '版本更新', 0, '系统版本', '双店', implode('；', $result['output']));
+        return ok(['updated' => true, 'output' => $result['output']]);
     });
 });
 

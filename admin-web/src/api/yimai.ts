@@ -271,7 +271,7 @@ export function queryCustomers(
   let list: YimaiCustomer[] = allCustomers().filter((c) => inScope(c.venue, a.scopeVenue))
   if (a.isMedia) list = list.filter((c) => c.layer === 'P5')
   if (a.isTeacher) {
-    list = list.filter((c) => c.owner === a.userName)
+    list = list.filter((c) => c.owner === a.userName || c.consultant === a.userName)
     if (params.type === 'member') list = list.filter((c) => c.layer !== 'P5')
   }
   if (params.type === 'member') list = list.filter((c) => c.layer !== 'P5' && c.mainCard !== '—')

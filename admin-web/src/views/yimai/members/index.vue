@@ -36,7 +36,7 @@
         <ElTableColumn label="会员" min-width="130" fixed="left">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
-            <div class="text-xs text-gray-400">{{ row.phone || '尾号' + row.phoneTail }} · {{ row.owner }}</div>
+            <div class="text-xs text-gray-400">{{ row.phone || '尾号' + row.phoneTail }} · 顾问 {{ row.consultant || '待分配' }}</div>
           </template>
         </ElTableColumn>
 
@@ -127,7 +127,7 @@
       </ElTable>
 
       <div class="mt-4 flex justify-end">
-        <ElPagination v-model:current-page="page.current" :page-size="page.size" :total="filteredList.length" layout="total, prev, pager, next" />
+        <ElPagination v-model:current-page="page.current" v-model:page-size="page.size" :page-sizes="[10, 20, 50, 100]" :total="filteredList.length" layout="total, sizes, prev, pager, next" />
       </div>
     </ElCard>
 
@@ -297,7 +297,7 @@
     let list = all.value
     if (isTeacher.value) {
       // 老师在总览看自己的；五清单页签同样只看自己名下
-      if (activeTab.value !== 'all') list = list.filter((c) => c.owner === userStore.getUserInfo.userName)
+      if (activeTab.value !== 'all') list = list.filter((c) => c.owner === userStore.getUserInfo.userName || c.consultant === userStore.getUserInfo.userName)
     }
     if (activeTab.value !== 'all') {
       list = list.filter((c) => computeMemberLists(c).includes(TAB_KEY_TO_LIST[activeTab.value]))

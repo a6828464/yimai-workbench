@@ -111,6 +111,7 @@ export const useAiConfigStore = defineStore('aiConfigStore', () => {
 }, {
   persist: {
     key: 'yimai-ai-config',
-    storage: localStorage
+    storage: localStorage,
+    pick: ['marketing', 'usageLog']
   }
 })

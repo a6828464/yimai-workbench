@@ -48,6 +48,8 @@ export interface YimaiCustomer {
   phoneTail: string
   venue: '绿地店' | '东部店'
   source: string
+  /** 随心瑜导出数据中的会籍顾问；为空才是待分配 */
+  consultant?: string
   mainCard: string
   remainTimes: number | null
   expireDate: string | null
@@ -129,7 +131,7 @@ function seedCustomers(): YimaiCustomer[] {
     { id: 11, name: '冯悦', phoneTail: '6821', venue: '绿地店', source: '小红书', mainCard: '精品团课年卡', remainTimes: 30, expireDate: '2026-12-11', lastVisit: '2026-08-23', layer: 'P0', status: '跟进中', owner: '娟子', nextAction: '60天到期启动续费铺垫', nextActionTime: '2026-08-28', attendM1: 7, attendM2: 7, attendM3: 6, totalPurchased: 95 },
     { id: 12, name: '许静姝', phoneTail: '9913', venue: '东部店', source: '朋友介绍', mainCard: 'VIP私教月卡', remainTimes: 0, expireDate: '2026-08-31', lastVisit: '2026-08-15', layer: 'P0', status: '跟进中', owner: '苏米', nextAction: '临期沟通续费窗口', nextActionTime: '2026-08-27', attendM1: 8, attendM2: 4, attendM3: 4, totalPurchased: 35 }
   ]
-  return base.map((c: YimaiCustomer, i: number): YimaiCustomer => ({ ...c, phone: c.phone ?? ('1' + [3, 5, 7, 8][i % 4] + String(50612300 + c.id * 13579).padStart(9, '1').slice(-9)) }))
+  return base.map((c: YimaiCustomer, i: number): YimaiCustomer => ({ ...c, consultant: c.consultant ?? (c.owner === '未分配' ? '' : c.owner), phone: c.phone ?? ('1' + [3, 5, 7, 8][i % 4] + String(50612300 + c.id * 13579).padStart(9, '1').slice(-9)) }))
 }
 
 function now() {

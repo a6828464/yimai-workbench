@@ -41,13 +41,13 @@
             </ElFormItem>
 
             <ElAlert
-              title="安全提示"
+              title="配置说明"
               type="warning"
               show-icon
               :closable="false"
               class="mb-4"
             >
-              大模型调用经 Laravel 后端代理转发（规避浏览器跨域）。密钥当前保存在本地浏览器，仅内部使用；可随时在此更换服务商与模型。
+              当前页面不会展示完整密钥。生产模式下请求由 Laravel 后端代理转发；演示模式才会由浏览器直连，请勿在演示模式填写生产密钥。
             </ElAlert>
 
             <div class="flex gap-2">
@@ -91,7 +91,7 @@
   import { AI_PROVIDER_PRESETS, useAiConfigStore } from '@/store/modules/ai-config'
   import { useYimaiStore } from '@/store/modules/yimai'
   import { fetchAvailableModels } from '@/api/ai'
-  import { USE_BACKEND, apiPost } from '@/api/backend'
+  import { USE_BACKEND, apiGet, apiPost, apiPut } from '@/api/backend'
   import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'YimaiAiConfig' })
@@ -105,6 +105,17 @@
   const testResult = ref('')
   const loadingModels = ref(false)
   const fetchedModels = ref<string[]>([])
+
+  onMounted(async () => {
+    if (!USE_BACKEND) return
+    try {
+      const saved = await apiGet<Partial<typeof form> & { configured?: boolean }>('/ai/config')
+      Object.assign(form, saved)
+      if (saved.configured) form.apiKey = 'server-configured'
+    } catch {
+      // Keep the local form usable when the server has not been migrated yet.
+    }
+  })
 
   const presetModels = computed(() => {
     const preset = AI_PROVIDER_PRESETS.find((p) => p.label === form.providerLabel)
@@ -143,7 +154,10 @@
   async function save() {
     saving.value = true
     try {
-      Object.assign(aiStore.config, form)
+       if (USE_BACKEND) {
+         await apiPut('/ai/config', form as unknown as Record<string, unknown>)
+       }
+       Object.assign(aiStore.config, form)
       yimaiStore.writeAudit(
         '修改',
         '模型配置',

@@ -172,6 +172,12 @@ export const yimaiRoutes: AppRouteRecord[] = [
         meta: { title: '人员管理', icon: 'ri:team-line', roles: SUPER, keepAlive: false }
       },
       {
+        path: '/yimai/profile',
+        name: 'YimaiProfile',
+        component: '/yimai/profile',
+        meta: { title: '个人中心', icon: 'ri:user-3-line', roles: ALL, isHide: true, keepAlive: false }
+      },
+      {
         path: '/yimai/ai-config',
         name: 'YimaiAiConfig',
         component: '/yimai/ai-config',

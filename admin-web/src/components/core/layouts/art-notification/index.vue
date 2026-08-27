@@ -105,14 +105,10 @@
 <script setup lang="ts">
   import { computed, ref, watch, type Ref, type ComputedRef } from 'vue'
   import { useI18n } from 'vue-i18n'
+  import { useRouter } from 'vue-router'
 
   // 导入头像图片
   import avatar1 from '@/assets/images/avatar/avatar1.webp'
-  import avatar2 from '@/assets/images/avatar/avatar2.webp'
-  import avatar3 from '@/assets/images/avatar/avatar3.webp'
-  import avatar4 from '@/assets/images/avatar/avatar4.webp'
-  import avatar5 from '@/assets/images/avatar/avatar5.webp'
-  import avatar6 from '@/assets/images/avatar/avatar6.webp'
 
   defineOptions({ name: 'ArtNotification' })
 
@@ -158,6 +154,7 @@
   type NoticeType = 'email' | 'message' | 'collection' | 'user' | 'notice'
 
   const { t } = useI18n()
+  const router = useRouter()
 
   const props = defineProps<{
     value: boolean
@@ -174,74 +171,20 @@
   const useNotificationData = () => {
     // 通知数据
     const noticeList = ref<NoticeItem[]>([
-      {
-        title: '新增国际化',
-        time: '2024-6-13 0:10',
-        type: 'notice'
-      },
-      {
-        title: '冷月呆呆给你发了一条消息',
-        time: '2024-4-21 8:05',
-        type: 'message'
-      },
-      {
-        title: '小肥猪关注了你',
-        time: '2020-3-17 21:12',
-        type: 'collection'
-      },
-      {
-        title: '新增使用文档',
-        time: '2024-02-14 0:20',
-        type: 'notice'
-      },
-      {
-        title: '小肥猪给你发了一封邮件',
-        time: '2024-1-20 0:15',
-        type: 'email'
-      },
-      {
-        title: '菜单mock本地真实数据',
-        time: '2024-1-17 22:06',
-        type: 'notice'
-      }
+      { title: '会员数据同步完成，请检查新增与更新数量', time: 'KeepYoga同步', type: 'notice' },
+      { title: '模型配置和营销助手均已适配一麦工作台', time: '系统通知', type: 'notice' }
     ])
 
     // 消息数据
     const msgList = ref<MessageItem[]>([
-      {
-        title: '池不胖 关注了你',
-        time: '2021-2-26 23:50',
-        avatar: avatar1
-      },
-      {
-        title: '唐不苦 关注了你',
-        time: '2021-2-21 8:05',
-        avatar: avatar2
-      },
-      {
-        title: '中小鱼 关注了你',
-        time: '2020-1-17 21:12',
-        avatar: avatar3
-      },
-      {
-        title: '何小荷 关注了你',
-        time: '2021-01-14 0:20',
-        avatar: avatar4
-      },
-      {
-        title: '誶誶淰 关注了你',
-        time: '2020-12-20 0:15',
-        avatar: avatar5
-      },
-      {
-        title: '冷月呆呆 关注了你',
-        time: '2020-12-17 22:06',
-        avatar: avatar6
-      }
+      { title: '工作台通知：新的客户经营动作待处理', time: '客户经营', avatar: avatar1 }
     ])
 
     // 待办数据
-    const pendingList = ref<PendingItem[]>([])
+    const pendingList = ref<PendingItem[]>([
+      { title: '查看待续课会员清单', time: '续费预警' },
+      { title: '查看待分配客户', time: '客户经营' }
+    ])
 
     // 标签栏数据
     const barList = computed<BarItem[]>(() => [
@@ -374,19 +317,16 @@
 
   // 业务逻辑处理
   const useBusinessLogic = () => {
-    const handleNoticeAll = () => {
-      // 处理查看全部通知
-      console.log('查看全部通知')
-    }
+    const handleNoticeAll = () => router.push('/yimai/sync')
 
     const handleMsgAll = () => {
       // 处理查看全部消息
-      console.log('查看全部消息')
+      router.push('/yimai/today')
     }
 
     const handlePendingAll = () => {
       // 处理查看全部待办
-      console.log('查看全部待办')
+      router.push('/yimai/members')
     }
 
     return {
