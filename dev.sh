@@ -18,6 +18,6 @@ screen -dmS yimai-backend /bin/bash -c "cd '$ROOT/backend' && exec php artisan s
 screen -dmS yimai-frontend /bin/bash -c "cd '$ROOT/admin-web' && exec pnpm dev"
 
 sleep 5
-echo "前端: http://localhost:3006   (测试账号 nange / yimai123)"
+echo "前端: http://localhost:3006"
 echo "后端: http://127.0.0.1:8000"
 echo "查看日志: screen -r yimai-backend / yimai-frontend   (退出按 Ctrl+A 再按 D)"

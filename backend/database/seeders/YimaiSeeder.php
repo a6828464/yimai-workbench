@@ -15,17 +15,17 @@ class YimaiSeeder extends Seeder
 {
     public function run(): void
     {
+        $demoPassword = (string) env('DEMO_PASSWORD', '');
         $accounts = [
-            ['username' => 'nange', 'password' => 'yimai123', 'name' => '南哥', 'role' => 'R_SUPER', 'venue' => null, 'venues' => ['绿地店', '东部店'], 'email' => 'nange@yimai.local'],
-            ['username' => 'wangdz', 'password' => 'yimai123', 'name' => '王店长', 'role' => 'R_MANAGER', 'venue' => '绿地店', 'venues' => ['绿地店'], 'email' => 'wangdz@yimai.local'],
-            ['username' => 'lidz', 'password' => 'yimai123', 'name' => '李店长', 'role' => 'R_MANAGER', 'venue' => '东部店', 'venues' => ['东部店'], 'email' => 'lidz@yimai.local'],
-            ['username' => 'huangmin', 'password' => 'yimai123', 'name' => '黄敏', 'role' => 'R_TEACHER', 'venue' => null, 'venues' => ['绿地店', '东部店'], 'email' => 'huangmin@yimai.local'],
-            ['username' => 'tingting', 'password' => 'yimai123', 'name' => '婷婷', 'role' => 'R_TEACHER', 'venue' => '绿地店', 'venues' => ['绿地店'], 'email' => 'tingting@yimai.local'],
-            ['username' => 'ayu', 'password' => 'yimai123', 'name' => '阿玉', 'role' => 'R_MEDIA', 'venue' => null, 'venues' => ['绿地店', '东部店'], 'email' => 'ayu@yimai.local'],
+            ['username' => 'owner', 'name' => '演示超管', 'role' => 'R_SUPER', 'venue' => null, 'venues' => ['绿地店', '东部店'], 'email' => 'owner@example.invalid'],
+            ['username' => 'manager-green', 'name' => '绿地店长', 'role' => 'R_MANAGER', 'venue' => '绿地店', 'venues' => ['绿地店'], 'email' => 'manager-green@example.invalid'],
+            ['username' => 'manager-east', 'name' => '东部店长', 'role' => 'R_MANAGER', 'venue' => '东部店', 'venues' => ['东部店'], 'email' => 'manager-east@example.invalid'],
+            ['username' => 'teacher', 'name' => '演示老师', 'role' => 'R_TEACHER', 'venue' => '绿地店', 'venues' => ['绿地店'], 'email' => 'teacher@example.invalid'],
+            ['username' => 'media', 'name' => '演示新媒体', 'role' => 'R_MEDIA', 'venue' => null, 'venues' => ['绿地店', '东部店'], 'email' => 'media@example.invalid'],
         ];
         $this->command->info('seed: users');
-        foreach ($accounts as $a) {
-            User::create($a + ['email_verified_at' => now(), 'password' => Hash::make($a['password'])]);
+        if ($demoPassword !== '') foreach ($accounts as $a) {
+            User::create($a + ['email_verified_at' => now(), 'password' => Hash::make($demoPassword)]);
         }
 
         $this->command->info('seed: customers');

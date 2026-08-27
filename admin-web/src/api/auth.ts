@@ -6,18 +6,18 @@ import { USE_BACKEND, apiGet, apiPost, setBackendToken } from './backend'
  * 认证：VITE_USE_BACKEND=true 走 Laravel 后端，否则本地模拟
  */
 interface LocalAccount extends Api.Auth.UserInfo {
-  password: string
   key: string
   roleLabel: string
 }
 
+const DEMO_PASSWORD = import.meta.env.VITE_DEMO_PASSWORD ?? ''
+
 export const LOCAL_ACCOUNTS: LocalAccount[] = [
-  { key: 'nange', password: 'yimai123', userId: 1001, userName: '南哥', roles: ['R_SUPER'], buttons: [], email: 'nange@yimai.local', venue: null, venues: ['绿地店', '东部店'], roleLabel: '超管' },
-  { key: 'wangdz', password: 'yimai123', userId: 1002, userName: '王店长', roles: ['R_MANAGER'], buttons: [], email: 'wangdz@yimai.local', venue: '绿地店', venues: ['绿地店'], roleLabel: '店长' },
-  { key: 'lidz', password: 'yimai123', userId: 1003, userName: '李店长', roles: ['R_MANAGER'], buttons: [], email: 'lidz@yimai.local', venue: '东部店', venues: ['东部店'], roleLabel: '店长' },
-  { key: 'huangmin', password: 'yimai123', userId: 1004, userName: '黄敏', roles: ['R_TEACHER'], buttons: [], email: 'huangmin@yimai.local', venue: null, venues: ['绿地店', '东部店'], roleLabel: '老师' },
-  { key: 'tingting', password: 'yimai123', userId: 1005, userName: '婷婷', roles: ['R_TEACHER'], buttons: [], email: 'tingting@yimai.local', venue: '绿地店', venues: ['绿地店'], roleLabel: '老师' },
-  { key: 'ayu', password: 'yimai123', userId: 1006, userName: '阿玉', roles: ['R_MEDIA'], buttons: [], email: 'ayu@yimai.local', venue: null, venues: ['绿地店', '东部店'], roleLabel: '新媒体' }
+  { key: 'owner', userId: 1001, userName: '演示超管', roles: ['R_SUPER'], buttons: [], email: 'owner@example.invalid', venue: null, venues: ['绿地店', '东部店'], roleLabel: '超管' },
+  { key: 'manager-green', userId: 1002, userName: '绿地店长', roles: ['R_MANAGER'], buttons: [], email: 'manager-green@example.invalid', venue: '绿地店', venues: ['绿地店'], roleLabel: '店长' },
+  { key: 'manager-east', userId: 1003, userName: '东部店长', roles: ['R_MANAGER'], buttons: [], email: 'manager-east@example.invalid', venue: '东部店', venues: ['东部店'], roleLabel: '店长' },
+  { key: 'teacher', userId: 1004, userName: '演示老师', roles: ['R_TEACHER'], buttons: [], email: 'teacher@example.invalid', venue: '绿地店', venues: ['绿地店'], roleLabel: '老师' },
+  { key: 'media', userId: 1005, userName: '演示新媒体', roles: ['R_MEDIA'], buttons: [], email: 'media@example.invalid', venue: null, venues: ['绿地店', '东部店'], roleLabel: '新媒体' }
 ]
 
 function findAccount(predicate: (a: LocalAccount) => boolean): LocalAccount | null {
@@ -43,7 +43,7 @@ export async function fetchLogin(params: Api.Auth.LoginParams): Promise<Api.Auth
 
   const name = params.userName.trim()
   const account = findAccount((a) => a.userName === name || a.key === name.toLowerCase())
-  if (!account || account.password !== params.password) {
+  if (!DEMO_PASSWORD || !account || DEMO_PASSWORD !== params.password) {
     throw new HttpError('账号或密码错误', 400)
   }
   return {
@@ -65,7 +65,7 @@ export function fetchGetUserInfo(): Promise<Api.Auth.UserInfo> {
     userStore.logOut()
     return Promise.reject(new HttpError('登录状态无效，请重新登录', 401))
   }
-  const { password: _password, key: _key, roleLabel: _roleLabel, ...userInfo } = account
+  const { key: _key, roleLabel: _roleLabel, ...userInfo } = account
   return Promise.resolve(userInfo)
 }
 
