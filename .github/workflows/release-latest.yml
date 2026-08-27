@@ -23,7 +23,7 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         run: |
           npm install --global pnpm@11
-          pnpm install --no-frozen-lockfile --reporter=append-only
+          pnpm install --no-frozen-lockfile --ignore-scripts --reporter=append-only
 
       - name: Typecheck and build frontend
         working-directory: admin-web
