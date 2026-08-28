@@ -67,8 +67,10 @@ php artisan optimize:clear
 
 # 统一文件属主：无论本次更新由后台按钮(www)还是计划任务(root)执行，
 # 更新完成后整体归回 www:www，保证下次任意方式都能覆盖写入，避免 rsync 权限失败。
-chown -R www:www "$APP_ROOT"
-chmod -R 755 "$APP_ROOT"
+# 注意：`.user.ini` 被宝塔以 chattr +i 锁定（防篡改），root 也无法改属主，
+# 属主整理需对其容错（storage/bootstrap-cache 仍严格归主）。
+chown -R www:www "$APP_ROOT" 2>/dev/null || true
+chmod -R 755 "$APP_ROOT" 2>/dev/null || true
 chown -R www:www "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
 chmod -R 775 "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
 

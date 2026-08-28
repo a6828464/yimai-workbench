@@ -1,5 +1,10 @@
 ﻿# 更新日志
 
+## 2026-08-28 ｜ fix: v3.1.4 升级脚本兼容宝塔锁定文件
+
+- `update.sh` 收尾属主整理对 `.user.ini` 等被宝塔 `chattr +i` 锁定的文件容错（storage/bootstrap-cache 仍严格归主），修复「更新脚本执行失败 chown: Operation not permitted」。
+- 站点文件属主统一为 `www:www`，后台按钮(www)与计划任务(root)均可正常覆盖升级。
+
 ## 2026-08-28 ｜ feat: v3.1.3 在线升级可用 + 更新日志/文档随版本同步
 
 - 修复后台「版本更新 → 立即更新」报 500：生产 PHP 的 `disable_functions` 禁用了 `proc_open`，Symfony Process 无法拉起更新脚本，已解除该限制（详见 DEPLOY.md 部署前置说明）。
