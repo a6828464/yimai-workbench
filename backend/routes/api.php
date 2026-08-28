@@ -84,6 +84,13 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($ly = $r->query('layer')) $q->where('layer', $ly);
         if ($o = $r->query('owner')) $q->where('owner', $o);
         if ($s = $r->query('status')) $q->where('status', $s);
+        if ($c = trim((string) $r->query('consultant', ''))) {
+            if ($c === '待分配') {
+                $q->where(fn ($w) => $w->whereNull('consultant')->orWhere('consultant', ''));
+            } else {
+                $q->where('consultant', $c);
+            }
+        }
         if ($src = $r->query('source')) $q->where('source', 'like', "%{$src}%");
         if ($r->query('type') === 'member') {
             $q->where(fn ($w) => $w->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%'));

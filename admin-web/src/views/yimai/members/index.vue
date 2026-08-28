@@ -25,6 +25,10 @@
         <ElSelect v-model="searchForm.list" placeholder="运营清单" clearable class="!w-36" @change="load">
           <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
         </ElSelect>
+        <ElSelect v-model="searchForm.consultant" placeholder="顾问" clearable class="!w-36" @change="load">
+          <ElOption value="待分配" label="待分配" />
+          <ElOption v-for="c in consultantOptions" :key="c" :label="c" :value="c" />
+        </ElSelect>
         <ElButton type="primary" plain @click="load">查询</ElButton>
       </div>
 
@@ -36,7 +40,14 @@
         <ElTableColumn label="会员" min-width="130" fixed="left">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
-            <div class="text-xs text-gray-400">{{ row.phone || '尾号' + row.phoneTail }} · 顾问 {{ row.consultant || '待分配' }}</div>
+            <div class="text-xs text-gray-400">{{ row.phone || '尾号' + row.phoneTail }}</div>
+          </template>
+        </ElTableColumn>
+
+        <ElTableColumn label="顾问" min-width="90">
+          <template #default="{ row }">
+            <span v-if="row.consultant" class="text-sm">{{ row.consultant }}</span>
+            <ElTag v-else size="small" type="danger" effect="plain">待分配</ElTag>
           </template>
         </ElTableColumn>
 
@@ -266,10 +277,20 @@
 
   const loading = ref(false)
   const activeTab = ref('all')
-  const searchForm = ref({ name: '', list: '' })
+  const searchForm = ref({ name: '', list: '', consultant: '' })
   const page = ref({ current: 1, size: 20 })
   const all = ref<YimaiCustomer[]>([])
   const rules = ref(getMemberRules())
+
+  /** 顾问下拉选项：来自在册会员的去重顾问名单 */
+  const consultantOptions = computed<string[]>(() => {
+    const set = new Set<string>()
+    for (const c of all.value) {
+      const name = (c.consultant ?? '').trim()
+      if (name) set.add(name)
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, 'zh'))
+  })
 
   function memberLists(row: YimaiCustomer): MemberListKey[] {
     return computeMemberLists(row)
@@ -308,6 +329,10 @@
   const filteredList = computed(() => {
     let list = filteredBase()
     if (searchForm.value.name) list = list.filter((c) => c.name.includes(searchForm.value.name))
+    if (searchForm.value.consultant) {
+      const target = searchForm.value.consultant
+      list = list.filter((c) => (c.consultant || '待分配') === target)
+    }
     return list
   })
 
@@ -325,6 +350,7 @@
       const res = await queryCustomers({
         name: searchForm.value.name,
         list: listFilter,
+        consultant: searchForm.value.consultant || undefined,
         type: 'member',
         current: 1,
         size: 5000

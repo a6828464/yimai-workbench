@@ -278,7 +278,7 @@ export function queryAuditLogs(params: PageParams & { operator?: string; module?
 // ==================== 客户经营池 ====================
 
 export function queryCustomers(
-  params: PageParams & { name?: string; venue?: string; layer?: string; type?: 'all' | 'member' | 'lead'; list?: MemberListKey; owner?: string; haveCourse?: string; remainRange?: string }
+  params: PageParams & { name?: string; venue?: string; layer?: string; type?: 'all' | 'member' | 'lead'; list?: MemberListKey; owner?: string; consultant?: string; haveCourse?: string; remainRange?: string }
 ): Promise<{ records: YimaiCustomer[]; total: number; current: number; size: number }> {
   if (USE_BACKEND) {
     return apiGet<{ records: YimaiCustomer[]; total: number }>('/customers', {
@@ -286,6 +286,7 @@ export function queryCustomers(
       type: params.type,
       haveCourse: params.haveCourse || undefined,
       remainMax: params.remainRange || undefined,
+      consultant: params.consultant || undefined,
       current: params.current,
       size: params.size
     } as Record<string, unknown>).then((d) => ({ ...d, current: params.current ?? 1, size: params.size ?? 20 }))
@@ -301,6 +302,10 @@ export function queryCustomers(
   if (params.type === 'lead') list = list.filter((c) => c.layer === 'P5')
   if (params.list) list = list.filter((c) => computeMemberLists(c).includes(params.list as MemberListKey))
   if (params.name) list = list.filter((c) => c.name.includes(String(params.name)))
+  if (params.consultant) {
+    const target = params.consultant === '待分配' ? '' : params.consultant
+    list = list.filter((c) => (c.consultant || '') === target)
+  }
   if (params.venue) list = list.filter((c) => c.venue === params.venue)
   if (params.layer) list = list.filter((c) => c.layer === params.layer)
   if (params.haveCourse === 'true') list = list.filter((c) => c.mainCard && c.mainCard !== '—')
