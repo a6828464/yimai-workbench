@@ -37,8 +37,35 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($n = $r->query('name')) $q->where('name', 'like', "%{$n}%");
         if ($v = $r->query('venue')) $q->where('venue', $v);
         if ($s = $r->query('status')) $q->where('status', $s);
+        // 联系方式：手机号 / 电话尾号 / 微信
+        if ($c = trim((string) $r->query('phone', ''))) {
+            $q->where(function ($w) use ($c) {
+                $w->where('phone', 'like', "%{$c}%")
+                    ->orWhere('wechat', 'like', "%{$c}%");
+            });
+        }
+        // 留资日期范围
+        if ($df = $r->query('dateFrom')) $q->where('lead_date', '>=', $df);
+        if ($dt = $r->query('dateTo')) $q->where('lead_date', '<=', $dt);
         $rows = $q->orderByDesc('id')->get()->map(fn ($x) => camel($x));
         return ok(['records' => array_slice($rows->toArray(), 0, (int) ($r->query('size', 500))), 'total' => $rows->count()]);
+    });
+
+    // 新增留资时校验手机号是否已命中会员 / 已有留资
+    Route::get('/leads/check', function (Request $r) {
+        $phone = trim((string) $r->query('phone', ''));
+        if ($phone === '') return ok(['exists' => false, 'matches' => []]);
+
+        $matches = [];
+        foreach (Customer::where('phone', $phone)->get() as $c) {
+            $layer = $c->layer === 'P5' ? '留资' : '会员';
+            $matches[] = ['kind' => $layer, 'name' => $c->name, 'venue' => $c->venue, 'detail' => trim((string) $c->main_card) !== '' && $c->main_card !== '—' ? $c->main_card : '尚未购卡'];
+        }
+        foreach (Lead::where('phone', $phone)->orderByDesc('id')->get() as $l) {
+            $matches[] = ['kind' => '已有留资', 'name' => $l->name, 'venue' => $l->venue, 'detail' => $l->status, 'id' => $l->id];
+        }
+
+        return ok(['exists' => count($matches) > 0, 'matches' => $matches]);
     });
 
     Route::post('/leads', function (Request $r) {
@@ -438,7 +465,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::get('/ai/config', function (Request $r) {
-        requireSuper($r);
+        // 读取接口对全部登录角色开放（不含密钥明文），保证各角色工作台都能水合同一份 AI 配置
         $ai = (array) (AppSetting::first()?->ai ?? []);
         return ok(collect($ai)->except('apiKey')->put('configured', ! empty($ai['apiKey']))->all());
     });
@@ -785,6 +812,38 @@ Route::middleware('auth:sanctum')->group(function () {
         }
 
         return ok(['rows' => $rows, 'total' => $leads->count()]);
+    });
+
+    // 经营看板平台金额：按下单平台（缺失时回退来源渠道）聚合核销/成交金额，并给出本月成交与核销汇总
+    Route::get('/analytics/platforms', function (Request $r) {
+        $u = $r->user();
+        $leadQ = Lead::query();
+        if ($u->role !== 'R_SUPER' && $u->venue) $leadQ->where('venue', $u->venue);
+        $start = $r->query('start') ?: now()->startOfMonth()->toDateString();
+        $end = $r->query('end') ?: now()->toDateString();
+        $leads = $leadQ->whereBetween('created_at', [$start.' 00:00:00', $end.' 23:59:59'])->get();
+
+        $platforms = [];
+        foreach ($leads as $l) {
+            $platform = trim((string) $l->order_platform) !== '' ? $l->order_platform : (trim((string) $l->source) !== '' ? $l->source : '其他');
+            $platforms[$platform] = $platforms[$platform] ?? ['redeem' => 0, 'deal' => 0, 'leads' => 0];
+            $platforms[$platform]['redeem'] += (int) $l->redeem_amount;
+            $platforms[$platform]['deal'] += (int) $l->deal_amount;
+            $platforms[$platform]['leads'] += 1;
+        }
+
+        $rows = [];
+        foreach ($platforms as $name => $v) {
+            $rows[] = ['platform' => $name, 'redeem' => $v['redeem'], 'deal' => $v['deal'], 'leads' => $v['leads']];
+        }
+        usort($rows, fn ($a, $b) => $b['deal'] + $b['redeem'] <=> $a['deal'] + $a['redeem']);
+
+        return ok([
+            'rows' => $rows,
+            'totalDeal' => (int) $leads->sum('deal_amount'),
+            'totalRedeem' => (int) $leads->sum('redeem_amount'),
+            'dealCount' => $leads->where('status', '已成交')->count(),
+        ]);
     });
 
     Route::get('/today/summary', function (Request $r) {

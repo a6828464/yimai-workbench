@@ -33,7 +33,15 @@ export const yimaiRoutes: AppRouteRecord[] = [
         path: 'store-select',
         name: 'YimaiStoreSelect',
         component: '/yimai/store-select',
-        meta: { title: '选择门店', icon: 'ri:door-open-line', roles: ALL, isHide: true, isHideTab: true, isFullPage: true, keepAlive: false }
+        meta: {
+          title: '选择门店',
+          icon: 'ri:door-open-line',
+          roles: ALL,
+          isHide: true,
+          isHideTab: true,
+          isFullPage: true,
+          keepAlive: false
+        }
       }
     ]
   },
@@ -172,12 +180,6 @@ export const yimaiRoutes: AppRouteRecord[] = [
         meta: { title: '人员管理', icon: 'ri:team-line', roles: SUPER, keepAlive: false }
       },
       {
-        path: '/yimai/profile',
-        name: 'YimaiProfile',
-        component: '/yimai/profile',
-        meta: { title: '个人中心', icon: 'ri:user-3-line', roles: ALL, isHide: true, keepAlive: false }
-      },
-      {
         path: '/yimai/ai-config',
         name: 'YimaiAiConfig',
         component: '/yimai/ai-config',
@@ -194,7 +196,35 @@ export const yimaiRoutes: AppRouteRecord[] = [
         name: 'YimaiVersion',
         component: '/yimai/version',
         meta: { title: '版本更新', icon: 'ri:install-line', roles: SUPER, keepAlive: false }
-      },
+      }
+    ]
+  },
+
+  // ---------- 个人中心（免权限直达 · 不显示在菜单） ----------
+  {
+    name: 'Personal',
+    path: '/personal',
+    component: '/index/index',
+    meta: {
+      title: '个人中心',
+      icon: 'ri:user-3-line',
+      roles: ALL,
+      isHide: true,
+      isHideTab: true
+    },
+    children: [
+      {
+        path: '/yimai/profile',
+        name: 'YimaiProfile',
+        component: '/yimai/profile',
+        meta: {
+          title: '个人中心',
+          icon: 'ri:user-3-line',
+          roles: ALL,
+          isHide: true,
+          keepAlive: false
+        }
+      }
     ]
   }
 ]

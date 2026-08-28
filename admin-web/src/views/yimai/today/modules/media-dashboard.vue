@@ -8,13 +8,18 @@
         <ElRadioButton value="绿地店">绿地店</ElRadioButton>
         <ElRadioButton value="东部店">东部店</ElRadioButton>
       </ElRadioGroup>
-      <DateRangeControl :start="range[0]" :end="range[1]" :shortcuts="shortcuts" @change="onRangeChange" />
+      <DateRangeControl
+        :start="range[0]"
+        :end="range[1]"
+        :shortcuts="shortcuts"
+        @change="onRangeChange"
+      />
       <div class="flex-1" />
       <span class="text-xs text-gray-400">默认为本月1号至今</span>
     </div>
 
     <!-- KPI -->
-    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
       <YimaiKpiCard v-for="k in kpis" :key="k.label" v-bind="k" />
     </div>
 
@@ -55,6 +60,46 @@
       </ElCol>
     </ElRow>
 
+    <!-- 各平台金额 -->
+    <ElRow :gutter="16" class="mb-4">
+      <ElCol :xs="24" :lg="12" class="mb-4">
+        <ElCard shadow="never">
+          <template #header>
+            <div class="flex-cb">
+              <span class="font-500">各平台成交金额（树状图）</span>
+              <ElTag size="small" effect="plain">¥ 元</ElTag>
+            </div>
+          </template>
+          <div style="height: 300px">
+            <ArtTreeMapChart
+              v-if="platformRows.length"
+              height="300px"
+              :data="platformRows.map((x) => ({ name: x.platform, value: x.deal }))"
+            />
+            <ElEmpty v-else description="该时间段暂无成交数据" :image-size="60" />
+          </div>
+        </ElCard>
+      </ElCol>
+      <ElCol :xs="24" :lg="12" class="mb-4">
+        <ElCard shadow="never">
+          <template #header><span class="font-500">各平台核销金额</span></template>
+          <ArtBarChart
+            height="300px"
+            :data="platformRows.map((x) => x.redeem)"
+            :x-axis-data="platformLabels"
+            bar-width="26"
+            :border-radius="6"
+            show-split-line
+          />
+          <ElEmpty
+            v-if="!platformRows.length"
+            description="该时间段暂无核销数据"
+            :image-size="60"
+          />
+        </ElCard>
+      </ElCol>
+    </ElRow>
+
     <!-- 转化漏斗 -->
     <ElRow :gutter="16">
       <ElCol :span="24" class="mb-4">
@@ -65,18 +110,16 @@
             <ElTableColumn label="数量" width="220">
               <template #default="{ row }">
                 <div class="w-full max-w-50">
-                  <ElProgress
-                    :percentage="row.percent"
-                    :stroke-width="16"
-                    :format="() => ''"
-                  />
+                  <ElProgress :percentage="row.percent" :stroke-width="16" :format="() => ''" />
                 </div>
               </template>
             </ElTableColumn>
             <ElTableColumn label="" min-width="200">
               <template #default="{ row }">
                 <span class="font-500">{{ row.value }}</span> 人
-                <span v-if="row.rateText" class="ml-3 text-xs text-gray-400">{{ row.rateText }}</span>
+                <span v-if="row.rateText" class="ml-3 text-xs text-gray-400">{{
+                  row.rateText
+                }}</span>
               </template>
             </ElTableColumn>
           </ElTable>
@@ -88,9 +131,22 @@
 
 <script setup lang="ts">
   import YimaiKpiCard from './kpi-card.vue'
-  import { getDashboardSeries, getChannelBreakdown } from '@/api/yimai'
-  import type { DashboardDayPoint, DashboardSummary, ChannelLeadItem } from '@/api/yimai'
-  import { DataLine, UserFilled, Position, ShoppingBag, Coin, Odometer } from '@element-plus/icons-vue'
+  import { getDashboardSeries, getChannelBreakdown, getPlatformAmounts } from '@/api/yimai'
+  import type {
+    DashboardDayPoint,
+    DashboardSummary,
+    ChannelLeadItem,
+    PlatformAmountItem
+  } from '@/api/yimai'
+  import {
+    DataLine,
+    UserFilled,
+    Position,
+    ShoppingBag,
+    Coin,
+    Odometer,
+    Money
+  } from '@element-plus/icons-vue'
   import type { LineDataItem } from '@/types/component/chart'
   import DateRangeControl from './date-range-control.vue'
 
@@ -102,6 +158,8 @@
   const daily = ref<DashboardDayPoint[]>([])
   const summary = ref<DashboardSummary | null>(null)
   const channels = ref<ChannelLeadItem[]>([])
+  const platforms = ref<PlatformAmountItem[]>([])
+  const platformTotal = ref<{ deal: number; redeem: number }>({ deal: 0, redeem: 0 })
 
   function defaultRange(): [string, string] {
     const now = new Date()
@@ -114,9 +172,28 @@
   }
 
   const shortcuts = [
-    { text: '本月', value: () => [new Date(new Date().getFullYear(), new Date().getMonth(), 1), new Date()] },
-    { text: '上周', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 7); return [s, e] } },
-    { text: '近30天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 30); return [s, e] } }
+    {
+      text: '本月',
+      value: () => [new Date(new Date().getFullYear(), new Date().getMonth(), 1), new Date()]
+    },
+    {
+      text: '上周',
+      value: () => {
+        const e = new Date()
+        const s = new Date()
+        s.setDate(s.getDate() - 7)
+        return [s, e]
+      }
+    },
+    {
+      text: '近30天',
+      value: () => {
+        const e = new Date()
+        const s = new Date()
+        s.setDate(s.getDate() - 30)
+        return [s, e]
+      }
+    }
   ]
 
   const labels = computed(() => daily.value.map((p) => p.label))
@@ -126,14 +203,58 @@
   ])
   const channelLabels = computed(() => channels.value.map((c) => c.channel))
   const channelSeries = computed(() => channels.value.map((c) => c.leads))
+  const platformLabels = computed(() => platforms.value.map((p) => p.platform))
+  const platformRows = computed(() => platforms.value.filter((p) => p.deal > 0 || p.redeem > 0))
 
   const kpis = computed(() => [
-    { label: '留资人数', value: summary.value?.leadCount ?? '-', icon: markRaw(DataLine), accent: '#409EFF' },
-    { label: '转私域人数', value: summary.value?.privateDomainCount ?? '-', icon: markRaw(Position), accent: '#E6A23C' },
-    { label: '到店人数', value: summary.value?.visitCount ?? '-', icon: markRaw(UserFilled), accent: '#9C27B0' },
-    { label: '成交人数', value: summary.value?.dealCount ?? '-', icon: markRaw(ShoppingBag), accent: '#67C23A' },
-    { label: '成交率', value: summary.value ? `${summary.value.dealRate}` : '-', suffix: '%', hint: '成交 ÷ 到店', icon: markRaw(Odometer), accent: '#F56C6C' },
-    { label: '核销金额', value: summary.value?.redeemAmount ?? '-', prefix: '¥', hint: '平台团购券核销', icon: markRaw(Coin), accent: '#FF9800' }
+    {
+      label: '留资人数',
+      value: summary.value?.leadCount ?? '-',
+      icon: markRaw(DataLine),
+      accent: '#409EFF'
+    },
+    {
+      label: '转私域人数',
+      value: summary.value?.privateDomainCount ?? '-',
+      icon: markRaw(Position),
+      accent: '#E6A23C'
+    },
+    {
+      label: '到店人数',
+      value: summary.value?.visitCount ?? '-',
+      icon: markRaw(UserFilled),
+      accent: '#9C27B0'
+    },
+    {
+      label: '成交人数',
+      value: summary.value?.dealCount ?? '-',
+      icon: markRaw(ShoppingBag),
+      accent: '#67C23A'
+    },
+    {
+      label: '成交率',
+      value: summary.value ? `${summary.value.dealRate}` : '-',
+      suffix: '%',
+      hint: '成交 ÷ 到店',
+      icon: markRaw(Odometer),
+      accent: '#F56C6C'
+    },
+    {
+      label: '本月成交金额',
+      value: platformTotal.value.deal > 0 ? platformTotal.value.deal : '-',
+      prefix: '¥',
+      hint: `${summary.value?.dealCount ?? 0} 人成交`,
+      icon: markRaw(Money),
+      accent: '#67C23A'
+    },
+    {
+      label: '核销金额',
+      value: platformTotal.value.redeem > 0 ? platformTotal.value.redeem : '-',
+      prefix: '¥',
+      hint: '平台团购券核销',
+      icon: markRaw(Coin),
+      accent: '#FF9800'
+    }
   ])
 
   const funnelRows = computed(() => {
@@ -142,9 +263,24 @@
     const pct = (v: number) => (s.leadCount > 0 ? Math.round((v / s.leadCount) * 100) : 0)
     return [
       { stage: '留资', value: s.leadCount, percent: 100, rateText: '' },
-      { stage: '添加私域', value: s.privateDomainCount, percent: pct(s.privateDomainCount), rateText: `留资转化 ${pct(s.privateDomainCount)}%` },
-      { stage: '到店', value: s.visitCount, percent: pct(s.visitCount), rateText: `留资→到店 ${s.leadToVisitRate}%` },
-      { stage: '成交', value: s.dealCount, percent: pct(s.dealCount), rateText: `整体成交率 ${s.dealRate}%` }
+      {
+        stage: '添加私域',
+        value: s.privateDomainCount,
+        percent: pct(s.privateDomainCount),
+        rateText: `留资转化 ${pct(s.privateDomainCount)}%`
+      },
+      {
+        stage: '到店',
+        value: s.visitCount,
+        percent: pct(s.visitCount),
+        rateText: `留资→到店 ${s.leadToVisitRate}%`
+      },
+      {
+        stage: '成交',
+        value: s.dealCount,
+        percent: pct(s.dealCount),
+        rateText: `整体成交率 ${s.dealRate}%`
+      }
     ]
   })
 
@@ -156,13 +292,16 @@
   async function reload() {
     loading.value = true
     try {
-      const [dash, ch] = await Promise.all([
+      const [dash, ch, plat] = await Promise.all([
         getDashboardSeries(range.value[0], range.value[1], venueScope.value),
-        getChannelBreakdown(range.value[0], range.value[1], venueScope.value)
+        getChannelBreakdown(range.value[0], range.value[1], venueScope.value),
+        getPlatformAmounts(range.value[0], range.value[1], venueScope.value)
       ])
       daily.value = dash.daily
       summary.value = dash.summary
       channels.value = ch
+      platforms.value = plat.rows
+      platformTotal.value = { deal: plat.totalDeal, redeem: plat.totalRedeem }
     } finally {
       loading.value = false
     }

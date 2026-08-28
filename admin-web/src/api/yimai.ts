@@ -2,11 +2,23 @@ import { useUserStore } from '@/store/modules/user'
 import { useYimaiStore } from '@/store/modules/yimai'
 import { fetchKyMembers, KY_STORES } from './keepyoga'
 import { USE_BACKEND, apiGet, apiPost, apiPatch, apiPut } from './backend'
-import type { YimaiLead, YimaiAuditLog, YimaiCustomer as StoreCustomer, MemberRules } from '@/store/modules/yimai'
+import type {
+  YimaiLead,
+  YimaiAuditLog,
+  YimaiCustomer as StoreCustomer,
+  MemberRules
+} from '@/store/modules/yimai'
 
 export type { YimaiLead, YimaiAuditLog, MemberRules }
 
-let rulesCache: MemberRules = { renewalThreshold: 10, vipThreshold: 100, declineMode: 'strict', predropMin: 15, predropMax: 30, reviveDays: 30 }
+let rulesCache: MemberRules = {
+  renewalThreshold: 10,
+  vipThreshold: 100,
+  declineMode: 'strict',
+  predropMin: 15,
+  predropMax: 30,
+  reviveDays: 30
+}
 
 export async function refreshMemberRules(): Promise<MemberRules> {
   if (USE_BACKEND) {
@@ -27,9 +39,11 @@ export function getMemberRules(): MemberRules {
 
 export function setMemberRules(rules: MemberRules): void {
   if (USE_BACKEND) {
-    void apiPut<MemberRules>('/member-rules', rules as unknown as Record<string, unknown>).then((r) => {
-      rulesCache = r
-    })
+    void apiPut<MemberRules>('/member-rules', rules as unknown as Record<string, unknown>).then(
+      (r) => {
+        rulesCache = r
+      }
+    )
     return
   }
   useYimaiStore().setMemberRules(rules)
@@ -60,11 +74,10 @@ export function computeMemberLists(c: YimaiCustomer): MemberListKey[] {
     ? Math.floor((new Date(c.expireDate).getTime() - Date.now()) / 86400000)
     : null
   const revive = Boolean(c.inRevive) || (days !== null && days > reviveDays && hasAsset)
-  const preLoss = !revive && days !== null && ((m2 > 0 && m3 === 0) || (days >= predropMin && days <= predropMax))
+  const preLoss =
+    !revive && days !== null && ((m2 > 0 && m3 === 0) || (days >= predropMin && days <= predropMax))
   const declining =
-    !revive &&
-    !preLoss &&
-    (rules.declineMode === 'strict' ? m1 > m2 && m2 > m3 : m2 > m3)
+    !revive && !preLoss && (rules.declineMode === 'strict' ? m1 > m2 && m2 > m3 : m2 > m3)
 
   if (
     hasAsset &&
@@ -86,9 +99,16 @@ function lastVisitDays(date: string | null): number | null {
   return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
 }
 
-export function updateMemberFields(id: number, patch: Partial<YimaiCustomer>, actionLabel?: string): boolean {
+export function updateMemberFields(
+  id: number,
+  patch: Partial<YimaiCustomer>,
+  actionLabel?: string
+): boolean {
   if (USE_BACKEND) {
-    void apiPatch(`/customers/${id}`, { ...patch, _action: actionLabel ?? '修改' } as Record<string, unknown>)
+    void apiPatch(`/customers/${id}`, { ...patch, _action: actionLabel ?? '修改' } as Record<
+      string,
+      unknown
+    >)
     return true
   }
   return useYimaiStore().updateMember(id, patch, actionLabel)
@@ -129,8 +149,8 @@ export async function getCustomerDetail(id: number): Promise<CustomerDetail> {
   return Promise.resolve({
     customer,
     logs: useYimaiStore().getLeadHistory(id),
-    leads: useYimaiStore().state.leads
-      .filter((l) => customer.phone && l.phone === customer.phone)
+    leads: useYimaiStore()
+      .state.leads.filter((l) => customer.phone && l.phone === customer.phone)
       .filter((l) => inScope(l.venue, a.scopeVenue))
   })
 }
@@ -186,7 +206,7 @@ function actor() {
   return {
     role: roles[0] ?? '',
     userName: u.userName ?? '',
-    scopeVenue: isManager || isTeacher ? u.venue ?? null : null,
+    scopeVenue: isManager || isTeacher ? (u.venue ?? null) : null,
     venues: u.venues ?? [],
     isBoss: roles.includes('R_SUPER'),
     isSuper: roles.includes('R_SUPER'),
@@ -223,9 +243,22 @@ function allCustomers(): YimaiCustomer[] {
 
 // ==================== 前端客资（留资） ====================
 
-export function queryLeads(params: PageParams & { name?: string; venue?: string; status?: string; source?: string }) {
+export function queryLeads(
+  params: PageParams & {
+    name?: string
+    venue?: string
+    status?: string
+    source?: string
+    phone?: string
+    dateFrom?: string
+    dateTo?: string
+  }
+) {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiLead[]; total: number }>('/leads', params as Record<string, unknown>)
+    return apiGet<{ records: YimaiLead[]; total: number }>(
+      '/leads',
+      params as Record<string, unknown>
+    )
   }
   ensureSeeded()
   const store = useYimaiStore()
@@ -236,15 +269,65 @@ export function queryLeads(params: PageParams & { name?: string; venue?: string;
   if (params.venue) list = list.filter((l) => l.venue === params.venue)
   if (params.status) list = list.filter((l) => l.status === params.status)
   if (params.source) list = list.filter((l) => l.source === params.source)
+  if (params.phone) {
+    const p = String(params.phone)
+    list = list.filter(
+      (l) =>
+        (l.phone ?? '').includes(p) ||
+        (l.wechat ?? '').includes(p) ||
+        (l.phoneTail ?? '').includes(p)
+    )
+  }
+  if (params.dateFrom) list = list.filter((l) => (l.leadDate ?? '') >= String(params.dateFrom))
+  if (params.dateTo) list = list.filter((l) => (l.leadDate ?? '') <= String(params.dateTo))
   const sorted = [...list].sort((x, y) => y.id - x.id)
   return Promise.resolve({ records: paginate(sorted, params), total: sorted.length })
 }
 
-export function addLead(data: Omit<YimaiLead, 'id' | 'status' | 'createdBy' | 'createdAt'> & { status?: YimaiLead['status'] }) {
+export function addLead(
+  data: Omit<YimaiLead, 'id' | 'status' | 'createdBy' | 'createdAt'> & {
+    status?: YimaiLead['status']
+  }
+) {
   if (USE_BACKEND) {
     return apiPost<{ id: number }>('/leads', data as unknown as Record<string, unknown>)
   }
   return Promise.resolve(useYimaiStore().addLead(data))
+}
+
+/** 新增留资时检测手机号是否已命中会员 / 留资数据 */
+export interface PhoneMatch {
+  kind: string
+  name: string
+  venue: string
+  detail: string
+  id?: number
+}
+
+export function checkLeadPhone(phone: string): Promise<{ exists: boolean; matches: PhoneMatch[] }> {
+  if (USE_BACKEND) {
+    return apiGet<{ exists: boolean; matches: PhoneMatch[] }>('/leads/check', { phone })
+  }
+  ensureSeeded()
+  const store = useYimaiStore()
+  const matches: PhoneMatch[] = []
+  for (const c of store.state.customers as YimaiCustomer[]) {
+    if (c.phone === phone) {
+      const isMember = c.layer !== 'P5'
+      matches.push({
+        kind: isMember ? '会员' : '留资',
+        name: c.name,
+        venue: c.venue,
+        detail: c.mainCard && c.mainCard !== '—' ? c.mainCard : '尚未购卡'
+      })
+    }
+  }
+  for (const l of store.state.leads) {
+    if (l.phone === phone) {
+      matches.push({ kind: '已有留资', name: l.name, venue: l.venue, detail: l.status, id: l.id })
+    }
+  }
+  return Promise.resolve({ exists: matches.length > 0, matches })
 }
 
 export function updateLead(id: number, patch: Partial<YimaiLead>) {
@@ -261,12 +344,18 @@ export function getLeadHistory(leadId: number): Promise<YimaiAuditLog[]> {
   return Promise.resolve(useYimaiStore().getLeadHistory(leadId))
 }
 
-export function canManageLead(lead: { venue: string; serviceTeacher?: string; createdBy?: string }): boolean {
+export function canManageLead(lead: {
+  venue: string
+  serviceTeacher?: string
+  createdBy?: string
+}): boolean {
   const a = actor()
   if (a.isManager) return lead.venue === a.scopeVenue
   if (a.isTeacher) {
     if (a.scopeVenue && lead.venue !== a.scopeVenue) return false
-    return lead.serviceTeacher === a.userName || lead.createdBy === a.userName || !lead.serviceTeacher
+    return (
+      lead.serviceTeacher === a.userName || lead.createdBy === a.userName || !lead.serviceTeacher
+    )
   }
   return a.isSuper || a.isMedia
 }
@@ -278,10 +367,14 @@ export function canAssignTeacher(): boolean {
 
 // ==================== 审计留痕 ====================
 
-export function queryAuditLogs(params: PageParams & { operator?: string; module?: string; action?: string }) {
+export function queryAuditLogs(
+  params: PageParams & { operator?: string; module?: string; action?: string }
+) {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiAuditLog[]; total: number }>('/audit-logs', params as Record<string, unknown>)
-      .then((d) => ({ records: d.records ?? [], total: d.records?.length ?? 0 }))
+    return apiGet<{ records: YimaiAuditLog[]; total: number }>(
+      '/audit-logs',
+      params as Record<string, unknown>
+    ).then((d) => ({ records: d.records ?? [], total: d.records?.length ?? 0 }))
   }
   const a = actor()
   if (!a.isSuper && !a.isBoss) {
@@ -289,7 +382,8 @@ export function queryAuditLogs(params: PageParams & { operator?: string; module?
   }
   const store = useYimaiStore()
   let list = store.state.auditLogs
-  if (a.isManager || a.isTeacher) list = list.filter((l) => !a.scopeVenue || l.venue === a.scopeVenue || l.venue === '双店')
+  if (a.isManager || a.isTeacher)
+    list = list.filter((l) => !a.scopeVenue || l.venue === a.scopeVenue || l.venue === '双店')
   if (params.operator) list = list.filter((l) => l.operatorName.includes(String(params.operator)))
   if (params.module) list = list.filter((l) => l.module === params.module)
   if (params.action) list = list.filter((l) => l.action === params.action)
@@ -299,18 +393,35 @@ export function queryAuditLogs(params: PageParams & { operator?: string; module?
 // ==================== 客户经营池 ====================
 
 export function queryCustomers(
-  params: PageParams & { name?: string; venue?: string; layer?: string; type?: 'all' | 'member' | 'lead'; list?: MemberListKey; owner?: string; consultant?: string; haveCourse?: string; remainRange?: string }
+  params: PageParams & {
+    name?: string
+    venue?: string
+    layer?: string
+    type?: 'all' | 'member' | 'lead'
+    list?: MemberListKey
+    owner?: string
+    consultant?: string
+    haveCourse?: string
+    remainRange?: string
+  }
 ): Promise<{ records: YimaiCustomer[]; total: number; current: number; size: number }> {
   if (USE_BACKEND) {
     return apiGet<{ records: YimaiCustomer[]; total: number }>('/customers', {
-      name: params.name, venue: params.venue, layer: params.layer, list: params.list,
+      name: params.name,
+      venue: params.venue,
+      layer: params.layer,
+      list: params.list,
       type: params.type,
       haveCourse: params.haveCourse || undefined,
       remainMax: params.remainRange || undefined,
       consultant: params.consultant || undefined,
       current: params.current,
       size: params.size
-    } as Record<string, unknown>).then((d) => ({ ...d, current: params.current ?? 1, size: params.size ?? 20 }))
+    } as Record<string, unknown>).then((d) => ({
+      ...d,
+      current: params.current ?? 1,
+      size: params.size ?? 20
+    }))
   }
   const a = actor()
   let list: YimaiCustomer[] = allCustomers().filter((c) => inScope(c.venue, a.scopeVenue))
@@ -321,7 +432,8 @@ export function queryCustomers(
   }
   if (params.type === 'member') list = list.filter((c) => c.layer !== 'P5' && c.mainCard !== '—')
   if (params.type === 'lead') list = list.filter((c) => c.layer === 'P5')
-  if (params.list) list = list.filter((c) => computeMemberLists(c).includes(params.list as MemberListKey))
+  if (params.list)
+    list = list.filter((c) => computeMemberLists(c).includes(params.list as MemberListKey))
   if (params.name) list = list.filter((c) => c.name.includes(String(params.name)))
   if (params.consultant) {
     const target = params.consultant === '待分配' ? '' : params.consultant
@@ -331,8 +443,14 @@ export function queryCustomers(
   if (params.layer) list = list.filter((c) => c.layer === params.layer)
   if (params.haveCourse === 'true') list = list.filter((c) => c.mainCard && c.mainCard !== '—')
   if (params.haveCourse === 'false') list = list.filter((c) => !c.mainCard || c.mainCard === '—')
-  if (params.remainRange) list = list.filter((c) => c.remainTimes !== null && c.remainTimes <= Number(params.remainRange))
-  return Promise.resolve({ records: paginate(list, params), total: list.length, current: params.current ?? 1, size: params.size ?? 20 })
+  if (params.remainRange)
+    list = list.filter((c) => c.remainTimes !== null && c.remainTimes <= Number(params.remainRange))
+  return Promise.resolve({
+    records: paginate(list, params),
+    total: list.length,
+    current: params.current ?? 1,
+    size: params.size ?? 20
+  })
 }
 
 // ==================== 30天续费评估（口径来源：卓越店长训练营评估表） ====================
@@ -454,29 +572,113 @@ export function evalTotalScore(answers: Record<string, number[]>): number {
 // ==================== 任务中心 ====================
 
 const TASKS: YimaiTask[] = [
-  { id: 1, title: '新客首次响应', customerName: '郑好', venue: '绿地店', owner: '未分配', priority: '高', deadline: '2026-08-26 18:00', status: '已逾期', standard: '留资后24小时内完成首联并记录意向' },
-  { id: 2, title: '预约确认', customerName: '赵一诺', venue: '绿地店', owner: '婷婷', priority: '高', deadline: '2026-08-27 12:00', status: '待接收', standard: '课前确认时间/课程/目标，发送到店准备' },
-  { id: 3, title: '体验后跟进', customerName: '刘思颖', venue: '东部店', owner: '苏米', priority: '高', deadline: '2026-08-26 20:00', status: '进行中', standard: '体验后24小时内有效跟进并生成下次动作' },
-  { id: 4, title: '临期沟通', customerName: '许静姝', venue: '东部店', owner: '苏米', priority: '中', deadline: '2026-08-28 18:00', status: '待验收', standard: '明确续费窗口并给出方案，记录客户反馈' },
-  { id: 5, title: '低频唤醒', customerName: '李梦', venue: '绿地店', owner: '冰璐', priority: '中', deadline: '2026-08-29 18:00', status: '进行中', standard: '以恢复节奏切入，验收标准为重新预约' },
-  { id: 6, title: '训练反馈补录', customerName: '陈晓芸', venue: '绿地店', owner: '娟子', priority: '低', deadline: '2026-08-30 18:00', status: '已退回', standard: '补全本次完成情况/客户感受/下次重点' },
-  { id: 7, title: '预约确认', customerName: '冯悦', venue: '绿地店', owner: '娟子', priority: '低', deadline: '2026-08-27 12:00', status: '已完成', standard: '课前确认时间/课程/目标' }
+  {
+    id: 1,
+    title: '新客首次响应',
+    customerName: '郑好',
+    venue: '绿地店',
+    owner: '未分配',
+    priority: '高',
+    deadline: '2026-08-26 18:00',
+    status: '已逾期',
+    standard: '留资后24小时内完成首联并记录意向'
+  },
+  {
+    id: 2,
+    title: '预约确认',
+    customerName: '赵一诺',
+    venue: '绿地店',
+    owner: '婷婷',
+    priority: '高',
+    deadline: '2026-08-27 12:00',
+    status: '待接收',
+    standard: '课前确认时间/课程/目标，发送到店准备'
+  },
+  {
+    id: 3,
+    title: '体验后跟进',
+    customerName: '刘思颖',
+    venue: '东部店',
+    owner: '苏米',
+    priority: '高',
+    deadline: '2026-08-26 20:00',
+    status: '进行中',
+    standard: '体验后24小时内有效跟进并生成下次动作'
+  },
+  {
+    id: 4,
+    title: '临期沟通',
+    customerName: '许静姝',
+    venue: '东部店',
+    owner: '苏米',
+    priority: '中',
+    deadline: '2026-08-28 18:00',
+    status: '待验收',
+    standard: '明确续费窗口并给出方案，记录客户反馈'
+  },
+  {
+    id: 5,
+    title: '低频唤醒',
+    customerName: '李梦',
+    venue: '绿地店',
+    owner: '冰璐',
+    priority: '中',
+    deadline: '2026-08-29 18:00',
+    status: '进行中',
+    standard: '以恢复节奏切入，验收标准为重新预约'
+  },
+  {
+    id: 6,
+    title: '训练反馈补录',
+    customerName: '陈晓芸',
+    venue: '绿地店',
+    owner: '娟子',
+    priority: '低',
+    deadline: '2026-08-30 18:00',
+    status: '已退回',
+    standard: '补全本次完成情况/客户感受/下次重点'
+  },
+  {
+    id: 7,
+    title: '预约确认',
+    customerName: '冯悦',
+    venue: '绿地店',
+    owner: '娟子',
+    priority: '低',
+    deadline: '2026-08-27 12:00',
+    status: '已完成',
+    standard: '课前确认时间/课程/目标'
+  }
 ]
 
 export function queryTasks(params: PageParams & { status?: string; venue?: string }) {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiTask[]; total: number; current?: number; size?: number }>('/tasks', params as Record<string, unknown>)
-      .then((d) => ({ records: d.records ?? [], total: d.total ?? 0, current: d.current ?? params.current ?? 1, size: d.size ?? params.size ?? 20 }))
+    return apiGet<{ records: YimaiTask[]; total: number; current?: number; size?: number }>(
+      '/tasks',
+      params as Record<string, unknown>
+    ).then((d) => ({
+      records: d.records ?? [],
+      total: d.total ?? 0,
+      current: d.current ?? params.current ?? 1,
+      size: d.size ?? params.size ?? 20
+    }))
   }
   const a = actor()
   let list = TASKS.filter((t) => inScope(t.venue, a.scopeVenue))
   if (a.isTeacher) list = list.filter((t) => t.owner === a.userName || t.owner === '未分配')
   if (params.status) list = list.filter((t) => t.status === params.status)
   if (params.venue) list = list.filter((t) => t.venue === params.venue)
-  return Promise.resolve({ records: paginate(list, params), total: list.length, current: params.current ?? 1, size: params.size ?? 20 })
+  return Promise.resolve({
+    records: paginate(list, params),
+    total: list.length,
+    current: params.current ?? 1,
+    size: params.size ?? 20
+  })
 }
 
-export async function createTask(data: Partial<YimaiTask> & { title: string; customerName: string; venue: '绿地店' | '东部店' }): Promise<YimaiTask> {
+export async function createTask(
+  data: Partial<YimaiTask> & { title: string; customerName: string; venue: '绿地店' | '东部店' }
+): Promise<YimaiTask> {
   if (USE_BACKEND) {
     return apiPost<YimaiTask>('/tasks', data as unknown as Record<string, unknown>)
   }
@@ -495,9 +697,16 @@ export async function createTask(data: Partial<YimaiTask> & { title: string; cus
   return Promise.resolve(task)
 }
 
-export async function updateTask(id: number, patch: Partial<YimaiTask>, actionLabel = '修改'): Promise<YimaiTask> {
+export async function updateTask(
+  id: number,
+  patch: Partial<YimaiTask>,
+  actionLabel = '修改'
+): Promise<YimaiTask> {
   if (USE_BACKEND) {
-    return apiPatch<YimaiTask>(`/tasks/${id}`, { ...patch, _action: actionLabel } as Record<string, unknown>)
+    return apiPatch<YimaiTask>(`/tasks/${id}`, { ...patch, _action: actionLabel } as Record<
+      string,
+      unknown
+    >)
   }
   const idx = TASKS.findIndex((t) => t.id === id)
   if (idx >= 0) TASKS[idx] = { ...TASKS[idx], ...patch }
@@ -507,24 +716,89 @@ export async function updateTask(id: number, patch: Partial<YimaiTask>, actionLa
 // ==================== 价格审批 ====================
 
 const APPROVALS: YimaiApproval[] = [
-  { id: 1, customerName: '刘思颖', applicant: '苏米', cardName: '全能小班年卡', standardPrice: 8800, requestPrice: 7980, reason: '体验当天成交，竞品对比价差敏感', status: '待店长初审', applyTime: '2026-08-26 10:24' },
-  { id: 2, customerName: '周雨彤', applicant: '冰璐', cardName: 'VIP私教50节', standardPrice: 22500, requestPrice: 19800, reason: '老客复购+过期余额折抵权益', status: '待老板终审', applyTime: '2026-08-25 16:40' },
-  { id: 3, customerName: '吴佳宁', applicant: '芷晴', cardName: '私教小班10节', standardPrice: 3200, requestPrice: 2980, reason: '团课高频会员转化首单让利', status: '已通过', applyTime: '2026-08-24 11:05' },
-  { id: 4, customerName: '孙美琪', applicant: '张青', cardName: '精品团课季卡', standardPrice: 1980, requestPrice: 1600, reason: '降频风险挽单特批', status: '已驳回', applyTime: '2026-08-23 14:32' },
-  { id: 5, customerName: '王雅琴', applicant: '婷婷', cardName: '精品白领年卡（3次/周）', standardPrice: 6800, requestPrice: 6500, reason: '续费窗口期早鸟权益', status: '已关联成交', applyTime: '2026-08-20 09:18' }
+  {
+    id: 1,
+    customerName: '刘思颖',
+    applicant: '苏米',
+    cardName: '全能小班年卡',
+    standardPrice: 8800,
+    requestPrice: 7980,
+    reason: '体验当天成交，竞品对比价差敏感',
+    status: '待店长初审',
+    applyTime: '2026-08-26 10:24'
+  },
+  {
+    id: 2,
+    customerName: '周雨彤',
+    applicant: '冰璐',
+    cardName: 'VIP私教50节',
+    standardPrice: 22500,
+    requestPrice: 19800,
+    reason: '老客复购+过期余额折抵权益',
+    status: '待老板终审',
+    applyTime: '2026-08-25 16:40'
+  },
+  {
+    id: 3,
+    customerName: '吴佳宁',
+    applicant: '芷晴',
+    cardName: '私教小班10节',
+    standardPrice: 3200,
+    requestPrice: 2980,
+    reason: '团课高频会员转化首单让利',
+    status: '已通过',
+    applyTime: '2026-08-24 11:05'
+  },
+  {
+    id: 4,
+    customerName: '孙美琪',
+    applicant: '张青',
+    cardName: '精品团课季卡',
+    standardPrice: 1980,
+    requestPrice: 1600,
+    reason: '降频风险挽单特批',
+    status: '已驳回',
+    applyTime: '2026-08-23 14:32'
+  },
+  {
+    id: 5,
+    customerName: '王雅琴',
+    applicant: '婷婷',
+    cardName: '精品白领年卡（3次/周）',
+    standardPrice: 6800,
+    requestPrice: 6500,
+    reason: '续费窗口期早鸟权益',
+    status: '已关联成交',
+    applyTime: '2026-08-20 09:18'
+  }
 ]
 
 export function queryApprovals(params: PageParams & { status?: string }) {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiApproval[]; total: number; current?: number; size?: number }>('/approvals', params as Record<string, unknown>)
-      .then((d) => ({ records: d.records ?? [], total: d.total ?? 0, current: d.current ?? params.current ?? 1, size: d.size ?? params.size ?? 20 }))
+    return apiGet<{ records: YimaiApproval[]; total: number; current?: number; size?: number }>(
+      '/approvals',
+      params as Record<string, unknown>
+    ).then((d) => ({
+      records: d.records ?? [],
+      total: d.total ?? 0,
+      current: d.current ?? params.current ?? 1,
+      size: d.size ?? params.size ?? 20
+    }))
   }
   let list = [...APPROVALS]
   if (params.status) list = list.filter((x) => x.status === params.status)
-  return Promise.resolve({ records: paginate(list, params), total: list.length, current: params.current ?? 1, size: params.size ?? 20 })
+  return Promise.resolve({
+    records: paginate(list, params),
+    total: list.length,
+    current: params.current ?? 1,
+    size: params.size ?? 20
+  })
 }
 
-export function decideApproval(id: number, decision: '初审通过' | '终审通过' | '驳回' | '关联成交') {
+export function decideApproval(
+  id: number,
+  decision: '初审通过' | '终审通过' | '驳回' | '关联成交'
+) {
   if (USE_BACKEND) {
     return apiPost<boolean>(`/approvals/${id}/decide`, { decision })
   }
@@ -560,24 +834,93 @@ export async function createApproval(data: {
 // ==================== 数据同步批次 ====================
 
 const SYNC_JOBS: YimaiSyncJob[] = [
-  { id: 1, batchNo: 'IMP-20260826-001', dataType: '会员基础表', venue: '双店', dateRange: '全量', totalCount: 1820, successCount: 1820, failCount: 0, status: '成功', finishedAt: '2026-08-26 06:12' },
-  { id: 2, batchNo: 'IMP-20260826-002', dataType: '会员卡表', venue: '双店', dateRange: '全量', totalCount: 3008, successCount: 3006, failCount: 2, status: '部分失败', finishedAt: '2026-08-26 06:25' },
-  { id: 3, batchNo: 'IMP-20260826-003', dataType: '团课预约记录', venue: '绿地店', dateRange: '2026-08-19 ~ 2026-08-25', totalCount: 52, successCount: 52, failCount: 0, status: '成功', finishedAt: '2026-08-26 06:31' },
-  { id: 4, batchNo: 'IMP-20260826-004', dataType: '私教预约记录', venue: '东部店', dateRange: '2026-08-19 ~ 2026-08-25', totalCount: 45, successCount: 45, failCount: 0, status: '成功', finishedAt: '2026-08-26 06:33' },
-  { id: 5, batchNo: 'IMP-20260825-011', dataType: '变更记录', venue: '双店', dateRange: '2026-08-18 ~ 2026-08-25', totalCount: 135, successCount: 133, failCount: 2, status: '失败', finishedAt: '2026-08-25 06:40' },
-  { id: 6, batchNo: 'IMP-20260826-005', dataType: '售卡统计', venue: '双店', dateRange: '2026-07-26 ~ 2026-08-25', totalCount: 41, successCount: 41, failCount: 0, status: '成功', finishedAt: '2026-08-26 06:47' }
+  {
+    id: 1,
+    batchNo: 'IMP-20260826-001',
+    dataType: '会员基础表',
+    venue: '双店',
+    dateRange: '全量',
+    totalCount: 1820,
+    successCount: 1820,
+    failCount: 0,
+    status: '成功',
+    finishedAt: '2026-08-26 06:12'
+  },
+  {
+    id: 2,
+    batchNo: 'IMP-20260826-002',
+    dataType: '会员卡表',
+    venue: '双店',
+    dateRange: '全量',
+    totalCount: 3008,
+    successCount: 3006,
+    failCount: 2,
+    status: '部分失败',
+    finishedAt: '2026-08-26 06:25'
+  },
+  {
+    id: 3,
+    batchNo: 'IMP-20260826-003',
+    dataType: '团课预约记录',
+    venue: '绿地店',
+    dateRange: '2026-08-19 ~ 2026-08-25',
+    totalCount: 52,
+    successCount: 52,
+    failCount: 0,
+    status: '成功',
+    finishedAt: '2026-08-26 06:31'
+  },
+  {
+    id: 4,
+    batchNo: 'IMP-20260826-004',
+    dataType: '私教预约记录',
+    venue: '东部店',
+    dateRange: '2026-08-19 ~ 2026-08-25',
+    totalCount: 45,
+    successCount: 45,
+    failCount: 0,
+    status: '成功',
+    finishedAt: '2026-08-26 06:33'
+  },
+  {
+    id: 5,
+    batchNo: 'IMP-20260825-011',
+    dataType: '变更记录',
+    venue: '双店',
+    dateRange: '2026-08-18 ~ 2026-08-25',
+    totalCount: 135,
+    successCount: 133,
+    failCount: 2,
+    status: '失败',
+    finishedAt: '2026-08-25 06:40'
+  },
+  {
+    id: 6,
+    batchNo: 'IMP-20260826-005',
+    dataType: '售卡统计',
+    venue: '双店',
+    dateRange: '2026-07-26 ~ 2026-08-25',
+    totalCount: 41,
+    successCount: 41,
+    failCount: 0,
+    status: '成功',
+    finishedAt: '2026-08-26 06:47'
+  }
 ]
 
 export function querySyncJobs(params: PageParams & { status?: string; dataType?: string }) {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiSyncJob[]; total: number; current?: number; size?: number }>('/sync-jobs', {
-      status: params.status,
-      dataType: params.dataType,
-      current: params.current,
-      size: params.size
-    } as Record<string, unknown>).then((d) => ({
+    return apiGet<{ records: YimaiSyncJob[]; total: number; current?: number; size?: number }>(
+      '/sync-jobs',
+      {
+        status: params.status,
+        dataType: params.dataType,
+        current: params.current,
+        size: params.size
+      } as Record<string, unknown>
+    ).then((d) => ({
       records: d.records ?? [],
-      total: d.total ?? (d.records?.length ?? 0),
+      total: d.total ?? d.records?.length ?? 0,
       current: d.current ?? params.current ?? 1,
       size: d.size ?? params.size ?? 20
     }))
@@ -586,7 +929,12 @@ export function querySyncJobs(params: PageParams & { status?: string; dataType?:
   let list = SYNC_JOBS.filter((s) => s.venue === '双店' || inScope(s.venue, a.scopeVenue))
   if (params.status) list = list.filter((s) => s.status === params.status)
   if (params.dataType) list = list.filter((s) => s.dataType.includes(String(params.dataType)))
-  return Promise.resolve({ records: paginate(list, params), total: list.length, current: params.current ?? 1, size: params.size ?? 20 })
+  return Promise.resolve({
+    records: paginate(list, params),
+    total: list.length,
+    current: params.current ?? 1,
+    size: params.size ?? 20
+  })
 }
 
 /** KeepYoga 全量导入：服务端拉取门店全部会员并按外部ID幂等合并（大请求不经过浏览器） */
@@ -597,12 +945,14 @@ export interface KyImportResult {
   skipped: number
   total: number
   cards: number
-    bookings: number
+  bookings: number
   signedBookings: number
   attendancePeriod: { m1: string; m2: string; m3: string }
 }
 
-export async function importKyMembersToPool(storeKey: '绿地店' | '东部店'): Promise<KyImportResult> {
+export async function importKyMembersToPool(
+  storeKey: '绿地店' | '东部店'
+): Promise<KyImportResult> {
   if (USE_BACKEND) {
     return apiPost<KyImportResult>(
       '/ky/import',
@@ -699,7 +1049,11 @@ function weekdayFactor(d: Date): number {
   return 1
 }
 
-function buildVenueDays(start: string, end: string, venue: '绿地店' | '东部店'): DashboardDayPoint[] {
+function buildVenueDays(
+  start: string,
+  end: string,
+  venue: '绿地店' | '东部店'
+): DashboardDayPoint[] {
   const scale = venue === '绿地店' ? 1 : 0.62
   const points: DashboardDayPoint[] = []
   const cur = new Date(`${start}T00:00:00`)
@@ -715,7 +1069,8 @@ function buildVenueDays(start: string, end: string, venue: '绿地店' | '东部
     const trials = Math.max(0, Math.round(visits * r('trial', 0.55, 0.9)))
     const deals = Math.round(trials * r('deal', 0.12, 0.42))
     const amount = deals > 0 ? Math.round(deals * r('amt', 1600, 5200)) : 0
-    const redeem = Math.round(amount * r('red', 0.15, 0.45)) + (seeded(`${iso}-${venue}-rc`) > 0.72 ? 299 : 0)
+    const redeem =
+      Math.round(amount * r('red', 0.15, 0.45)) + (seeded(`${iso}-${venue}-rc`) > 0.72 ? 299 : 0)
     points.push({
       date: iso,
       label: `${cur.getMonth() + 1}/${cur.getDate()}`,
@@ -755,8 +1110,11 @@ export async function getDashboardSeries(
     const venues = scope === '双店' ? null : [scope]
     const daily: DashboardDayPoint[] = (t.daily ?? []).map((day) => {
       const date = String(day.date ?? '')
-      const buckets = Object.entries(day).filter(([k]) => k !== 'date' && (!venues || venues.includes(k as '绿地店' | '东部店')))
-      const sum = (key: string) => buckets.reduce((s, [, b]) => s + (Number((b as Record<string, unknown>)?.[key]) || 0), 0)
+      const buckets = Object.entries(day).filter(
+        ([k]) => k !== 'date' && (!venues || venues.includes(k as '绿地店' | '东部店'))
+      )
+      const sum = (key: string) =>
+        buckets.reduce((s, [, b]) => s + (Number((b as Record<string, unknown>)?.[key]) || 0), 0)
       return {
         date,
         label: date.slice(5).replace('-', '/'),
@@ -788,7 +1146,10 @@ export async function getDashboardSeries(
   }
 
   // 演示模式：沿用本地演示序列
-  const venues = (a.isManager || a.isTeacher) && a.scopeVenue ? [a.scopeVenue as '绿地店' | '东部店'] : resolveDashboardVenues(scope)
+  const venues =
+    (a.isManager || a.isTeacher) && a.scopeVenue
+      ? [a.scopeVenue as '绿地店' | '东部店']
+      : resolveDashboardVenues(scope)
   const merged = new Map<string, DashboardDayPoint>()
   for (const v of venues) {
     for (const p of buildVenueDays(startDate, endDate, v)) {
@@ -847,20 +1208,77 @@ export async function getChannelBreakdown(
   const a = actor()
   // 后台模式：真实留资来源分布
   if (USE_BACKEND) {
-    const c = await apiGet<{ rows: ChannelLeadItem[] }>('/analytics/channels', { start: startDate, end: endDate })
+    const c = await apiGet<{ rows: ChannelLeadItem[] }>('/analytics/channels', {
+      start: startDate,
+      end: endDate
+    })
     return (c.rows ?? []).sort((x, y) => y.leads - x.leads)
   }
-  const venues = (a.isManager || a.isTeacher) && a.scopeVenue ? [a.scopeVenue as '绿地店' | '东部店'] : resolveDashboardVenues(scope)
+  const venues =
+    (a.isManager || a.isTeacher) && a.scopeVenue
+      ? [a.scopeVenue as '绿地店' | '东部店']
+      : resolveDashboardVenues(scope)
   const all: DashboardDayPoint[] = []
   for (const v of venues) all.push(...buildVenueDays(startDate, endDate, v))
   const totalLeads = all.reduce((s, p) => s + p.leads, 0)
   return Promise.resolve(
     CHANNELS.map((channel, i) => {
       const jitter = 0.85 + seeded(`${startDate}-${endDate}-${scope}-${channel}`) * 0.3
-      const weight = i === CHANNEL_WEIGHTS.length - 1 ? 1 - CHANNEL_WEIGHTS.slice(0, -1).reduce((x, y) => x + y, 0) : CHANNEL_WEIGHTS[i]
+      const weight =
+        i === CHANNEL_WEIGHTS.length - 1
+          ? 1 - CHANNEL_WEIGHTS.slice(0, -1).reduce((x, y) => x + y, 0)
+          : CHANNEL_WEIGHTS[i]
       return { channel, leads: Math.max(0, Math.round(totalLeads * weight * jitter)) }
     }).sort((x, y) => y.leads - x.leads)
   )
+}
+
+// ==================== 老师工作台概览 ====================
+
+export interface PlatformAmountItem {
+  platform: string
+  redeem: number
+  deal: number
+  leads: number
+}
+
+export interface PlatformAmounts {
+  rows: PlatformAmountItem[]
+  totalDeal: number
+  totalRedeem: number
+  dealCount: number
+}
+
+/** 各平台核销/成交金额（后台模式走真实留资聚合；演示模式复用渠道模拟数据） */
+export async function getPlatformAmounts(
+  startDate: string,
+  endDate: string,
+  scope: '双店' | '绿地店' | '东部店' = '双店'
+): Promise<PlatformAmounts> {
+  if (USE_BACKEND) {
+    return apiGet<PlatformAmounts>('/analytics/platforms', { start: startDate, end: endDate })
+  }
+  const a = actor()
+  const venues =
+    (a.isManager || a.isTeacher) && a.scopeVenue
+      ? [a.scopeVenue as '绿地店' | '东部店']
+      : resolveDashboardVenues(scope)
+  const rows: PlatformAmountItem[] = CHANNELS.map((channel, i) => {
+    const jitter = 0.85 + seeded(`${startDate}-${endDate}-amt-${scope}-${channel}`) * 0.3
+    const weight = CHANNEL_WEIGHTS[i] ?? 0.1
+    return {
+      platform: channel,
+      leads: Math.max(0, Math.round(venues.length * 60 * weight * jitter)),
+      redeem: Math.max(0, Math.round(venues.length * 1200 * weight * jitter)),
+      deal: Math.max(0, Math.round(venues.length * 4200 * weight * jitter))
+    }
+  }).sort((x, y) => y.deal - x.deal)
+  return {
+    rows,
+    totalDeal: rows.reduce((s, x) => s + x.deal, 0),
+    totalRedeem: rows.reduce((s, x) => s + x.redeem, 0),
+    dealCount: rows.reduce((s, x) => s + x.leads, 0)
+  }
 }
 
 // ==================== 老师工作台概览 ====================
@@ -873,7 +1291,10 @@ export interface TeacherOverview {
   servedCount: number
 }
 
-export async function getTeacherOverview(startDate: string, endDate: string): Promise<TeacherOverview> {
+export async function getTeacherOverview(
+  startDate: string,
+  endDate: string
+): Promise<TeacherOverview> {
   const a = actor()
 
   if (USE_BACKEND) {
@@ -883,7 +1304,9 @@ export async function getTeacherOverview(startDate: string, endDate: string): Pr
       queryLeads({ size: 9999 })
     ])
     const myMembers = members.records.filter((c) => c.owner === a.userName && c.layer !== 'P5')
-    const myLeads = leads.records.filter((l) => (l as unknown as { serviceTeacher?: string }).serviceTeacher === a.userName)
+    const myLeads = leads.records.filter(
+      (l) => (l as unknown as { serviceTeacher?: string }).serviceTeacher === a.userName
+    )
     const poolLeads = leads.records.filter(
       (l) => !(l as unknown as { serviceTeacher?: string }).serviceTeacher && l.status === '新留资'
     )
@@ -926,7 +1349,12 @@ export interface MarketingCopyResult {
   tags: string[]
 }
 
-const HOOKS = ['你有没有发现', '练了很久却没变化？可能是方法不对。', '别再盲目跟练了，', '很多姐妹问我：']
+const HOOKS = [
+  '你有没有发现',
+  '练了很久却没变化？可能是方法不对。',
+  '别再盲目跟练了，',
+  '很多姐妹问我：'
+]
 const BODIES = [
   '{topic}不是靠蛮力，而是靠正确的发力顺序和呼吸配合。',
   '坚持{topic}一个月，身体会先于体重告诉你答案。',
@@ -940,19 +1368,40 @@ const CTAS = [
   '点击主页联系方式，来店里练一节感受下。'
 ]
 
-export function generateMarketingCopy(platform: string, topic: string, point: string): Promise<MarketingCopyResult> {
+export function generateMarketingCopy(
+  platform: string,
+  topic: string,
+  point: string
+): Promise<MarketingCopyResult> {
   const seedBase = `${Date.now()}-${topic}`
-  const pick = (arr: string[], salt: string) => arr[Math.floor(seeded(seedBase + salt) * arr.length) % arr.length]
-  const body = pick(BODIES, 'b').replace('{topic}', topic || '瑜伽练习').replace('{point}', point || topic || '核心激活')
+  const pick = (arr: string[], salt: string) =>
+    arr[Math.floor(seeded(seedBase + salt) * arr.length) % arr.length]
+  const body = pick(BODIES, 'b')
+    .replace('{topic}', topic || '瑜伽练习')
+    .replace('{point}', point || topic || '核心激活')
   let content: string
   if (platform === '小红书') {
-    content = [`${pick(HOOKS, 'h')}${body}`, '', `${point ? `今日重点：${point}。` : ''}${pick(CTAS, 'c')}`].join('\n')
+    content = [
+      `${pick(HOOKS, 'h')}${body}`,
+      '',
+      `${point ? `今日重点：${point}。` : ''}${pick(CTAS, 'c')}`
+    ].join('\n')
   } else {
     content = `${pick(HOOKS, 'h')}${body}${point ? `\n${point}。` : ''}\n${pick(CTAS, 'c')}`
   }
-  const tags = ['#一麦瑜伽', topic ? `#${topic.replace(/\s/g, '')}` : '#日常练习', platform === '小红书' ? '#瑜伽日常' : '']
-    .filter(Boolean)
-  useYimaiStore().writeAudit('生成', '营销工具', 0, `${platform} · ${topic || '自由创作'}`, '双店', `生成${platform}文案草稿：主题[${topic || '无'}]`)
+  const tags = [
+    '#一麦瑜伽',
+    topic ? `#${topic.replace(/\s/g, '')}` : '#日常练习',
+    platform === '小红书' ? '#瑜伽日常' : ''
+  ].filter(Boolean)
+  useYimaiStore().writeAudit(
+    '生成',
+    '营销工具',
+    0,
+    `${platform} · ${topic || '自由创作'}`,
+    '双店',
+    `生成${platform}文案草稿：主题[${topic || '无'}]`
+  )
   return Promise.resolve({ content, tags })
 }
 
@@ -969,7 +1418,11 @@ export async function syncTrainingPlansCloud(plans: unknown[]): Promise<void> {
 }
 
 /** 发布对外分享快照（H5 跨设备访问） */
-export function publishShare(type: string, token: string, payload: Record<string, unknown>): Promise<void> {
+export function publishShare(
+  type: string,
+  token: string,
+  payload: Record<string, unknown>
+): Promise<void> {
   if (!USE_BACKEND) return Promise.resolve()
   return apiPost('/shares/publish', { type, token, payload }).then(() => undefined)
 }
@@ -1001,7 +1454,9 @@ export function getTodaySummary(): Promise<{
   const snap = useYimaiStore().state.snapshot
 
   return Promise.resolve({
-    newLeads: scopedCustomers.filter((c) => c.layer === 'P5').length + leads.filter((l) => l.status === '新留资').length,
+    newLeads:
+      scopedCustomers.filter((c) => c.layer === 'P5').length +
+      leads.filter((l) => l.status === '新留资').length,
     pendingFollowup: scopedCustomers.filter((c) => c.nextActionTime <= '2026-08-27').length,
     expiringMembers: scopedCustomers.filter((c) => computeMemberLists(c).includes('待续课')).length,
     riskCount:
@@ -1051,26 +1506,61 @@ export function getFollowupQueue(): Promise<(YimaiCustomer & { lastVisitDays: nu
   )
 }
 
-export function getRiskAlerts(): Promise<{ id: number; level: string; text: string; action: string }[]> {
-  if (USE_BACKEND) return apiGet<{ id: number; level: string; text: string; action: string }[]>('/today/alerts')
+export function getRiskAlerts(): Promise<
+  { id: number; level: string; text: string; action: string }[]
+> {
+  if (USE_BACKEND)
+    return apiGet<{ id: number; level: string; text: string; action: string }[]>('/today/alerts')
 
   const a = actor()
   const userVenue = a.scopeVenue
   const scopedTasks = TASKS.filter((t) => inScope(t.venue, userVenue))
   ensureSeeded()
-  const newLeads = useYimaiStore().state.leads.filter((l) => l.status === '新留资' && inScope(l.venue, userVenue))
+  const newLeads = useYimaiStore().state.leads.filter(
+    (l) => l.status === '新留资' && inScope(l.venue, userVenue)
+  )
 
   const alerts: { id: number; level: string; text: string; action: string }[] = []
   for (const l of newLeads.slice(0, 2)) {
-    alerts.push({ id: 9000 + l.id, level: '高', text: `[${l.venue}] 新客资 ${l.name} 待首响（${l.source}）`, action: '24小时内完成首轮联系' })
+    alerts.push({
+      id: 9000 + l.id,
+      level: '高',
+      text: `[${l.venue}] 新客资 ${l.name} 待首响（${l.source}）`,
+      action: '24小时内完成首轮联系'
+    })
   }
-  alerts.push({ id: 1, level: '高', text: '郑好 留资超24小时未分配负责人', action: '立即分配首接老师' })
-  alerts.push({ id: 2, level: '高', text: '变更记录批次 IMP-20260825-011 有2条失败', action: '查看错误明细并重试' })
+  alerts.push({
+    id: 1,
+    level: '高',
+    text: '郑好 留资超24小时未分配负责人',
+    action: '立即分配首接老师'
+  })
+  alerts.push({
+    id: 2,
+    level: '高',
+    text: '变更记录批次 IMP-20260825-011 有2条失败',
+    action: '查看错误明细并重试'
+  })
   for (const t of scopedTasks.filter((t) => t.status === '已逾期')) {
-    alerts.push({ id: 100 + t.id, level: '中', text: `任务「${t.title}-${t.customerName}」已逾期`, action: '提醒责任人完成闭环' })
+    alerts.push({
+      id: 100 + t.id,
+      level: '中',
+      text: `任务「${t.title}-${t.customerName}」已逾期`,
+      action: '提醒责任人完成闭环'
+    })
   }
-  alerts.push({ id: 4, level: '中', text: '许静姝 卡项3天后到期，尚无续费动作', action: '确认续费窗口沟通结果' })
-  alerts.push({ id: 5, level: '低', text: '李梦 54天未到店且无未来预约', action: '检查服务断档原因' })
+  alerts.push({
+    id: 4,
+    level: '中',
+    text: '许静姝 卡项3天后到期，尚无续费动作',
+    action: '确认续费窗口沟通结果'
+  })
+  alerts.push({
+    id: 5,
+    level: '低',
+    text: '李梦 54天未到店且无未来预约',
+    action: '检查服务断档原因'
+  })
 
   return Promise.resolve(alerts)
 }

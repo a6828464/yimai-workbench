@@ -210,6 +210,20 @@ export interface RingChartProps extends BaseChartProps, InteractionProps {
   showLabel?: boolean
 }
 
+// 矩形树图数据项接口
+export interface TreeMapDataItem {
+  /** 数值 */
+  value: number
+  /** 名称 */
+  name: string
+}
+
+// 矩形树图 Props 接口（树状图）
+export interface TreeMapChartProps extends BaseChartProps, InteractionProps {
+  /** 图表数据 */
+  data: TreeMapDataItem[]
+}
+
 // K线图数据项接口
 export interface KLineDataItem {
   /** 时间标签 */
