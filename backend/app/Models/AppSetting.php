@@ -7,6 +7,6 @@ use Illuminate\Database\Eloquent\Model;
 class AppSetting extends Model
 {
     protected $guarded = [];
-    protected $casts = ['rules' => 'array', 'snapshot' => 'array', 'ky' => 'array', 'ai' => 'array'];
+    protected $casts = ['rules' => 'array', 'snapshot' => 'array', 'ky' => 'array', 'ai' => 'array', 'sync_meta' => 'array'];
     protected $table = 'app_settings';
 }

@@ -295,13 +295,16 @@ async function readSse(resp: Response, onDelta?: (t: string) => void): Promise<s
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
+    // 同时按 \n 与 \r 分隔，兼容不同 SSE 实现
     let idx: number
-    while ((idx = buffer.indexOf('\n')) >= 0) {
+    while ((idx = buffer.search(/[\n\r]/)) >= 0) {
       const line = buffer.slice(0, idx).trim()
       buffer = buffer.slice(idx + 1)
       if (line) processLine(line)
     }
   }
+  // 结尾残余数据（无换行）也处理，避免漏掉最后一段
+  if (buffer.trim()) processLine(buffer.trim())
   if (!full) throw new Error('LLM_EMPTY_RESPONSE')
   return full
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\AppSetting;
 use App\Models\Customer;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -13,7 +14,7 @@ class KyMemberSyncService
 
     public static function sync(string $venue, string $venueId): array
     {
-        // 全量导入需拉取近两年预约，放宽内存与执行时间限制
+        // 全量导入需拉取大量预约，放宽内存与执行时间限制
         @ini_set('memory_limit', '512M');
         @set_time_limit(0);
 
@@ -35,7 +36,14 @@ class KyMemberSyncService
         $month3 = $today->startOfMonth()->subMonth();
         $month2 = $month3->subMonth();
         $month1 = $month2->subMonth();
-        $rangeStart = $today->subDays(730);
+
+        // 增量同步：出勤只拉「上次同步之后」的区间（首次无记录则拉近两年）。
+        // 五清单只依赖最近三个完整自然月；会员基础表/卡表每次全量（数据量小）。
+        $meta = (array) (AppSetting::first()?->sync_meta ?? []);
+        $lastSync = isset($meta[$venue]) && $meta[$venue] !== '' ? $meta[$venue] : null;
+        $rangeStart = $lastSync
+            ? CarbonImmutable::parse($lastSync)->subDays(3)
+            : $today->subDays(730);
 
         $attendance = [];
         $seenBookings = [];
@@ -117,6 +125,11 @@ class KyMemberSyncService
                     continue;
                 }
 
+                // 增量同步：本次区间内未到访的会员，保留其历史 last_visit，避免被误判为待复活
+                if (empty($changes['last_visit']) && $customer->last_visit) {
+                    $changes['last_visit'] = $customer->last_visit;
+                }
+
                 if ($customer->layer === 'P5' && $customer->main_card === '待同步卡项') {
                     $changes += ['layer' => 'P4', 'status' => '待完善', 'owner' => $consultant ?: '未分配', 'next_action' => '分配负责人并完善会员档案'];
                 }
@@ -129,6 +142,12 @@ class KyMemberSyncService
                 }
             }
         });
+
+        // 记录本次同步时间，供下次增量拉取出勤
+        $setting = AppSetting::firstOrCreate([]);
+        $meta = (array) ($setting->sync_meta ?? []);
+        $meta[$venue] = $today->toDateString();
+        $setting->update(['sync_meta' => $meta]);
 
         return [
             'created' => $created, 'updated' => $updated, 'unchanged' => $unchanged,

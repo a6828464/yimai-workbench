@@ -19,14 +19,14 @@
         <ElButton link type="primary" size="small" @click="rulesDlg = true">调整续费/流失阈值</ElButton>
       </div>
 
-      <!-- 总览筛选 -->
-      <div v-if="activeTab === 'all'" class="mb-3 flex flex-wrap items-center gap-3">
+      <!-- 筛选：总览与其他清单页签均生效 -->
+      <div class="mb-3 flex flex-wrap items-center gap-3">
         <ElInput v-model="searchForm.name" placeholder="会员姓名" clearable class="!w-40" @change="load" />
         <ElSelect v-model="searchForm.venue" placeholder="门店" clearable class="!w-28" @change="load">
           <ElOption label="绿地店" value="绿地店" />
           <ElOption label="东部店" value="东部店" />
         </ElSelect>
-        <ElSelect v-model="searchForm.list" placeholder="运营清单" clearable class="!w-36" @change="load">
+        <ElSelect v-if="activeTab === 'all'" v-model="searchForm.list" placeholder="运营清单" clearable class="!w-36" @change="load">
           <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
         </ElSelect>
         <ElSelect v-model="searchForm.consultant" placeholder="会籍顾问" clearable class="!w-36" @change="load">
@@ -45,6 +45,12 @@
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
             <div class="text-xs text-gray-400">{{ row.phone || '尾号' + row.phoneTail }}{{ row.source ? ` · ${row.source}` : '' }}</div>
+          </template>
+        </ElTableColumn>
+
+        <ElTableColumn label="门店" width="85">
+          <template #default="{ row }">
+            <ElTag size="small" effect="plain">{{ row.venue }}</ElTag>
           </template>
         </ElTableColumn>
 
@@ -227,16 +233,25 @@
     </ElDialog>
 
     <!-- 阈值设置 -->
-    <ElDialog v-model="rulesDlg" title="清单规则阈值" width="420px">
-      <ElForm label-width="120px">
-        <ElFormItem label="待续课阈值(节)"><ElInputNumber v-model="rulesForm.renewalThreshold" :min="1" :max="50" /></ElFormItem>
-        <ElFormItem label="VIP阈值(节)"><ElInputNumber v-model="rulesForm.vipThreshold" :min="10" :max="500" /></ElFormItem>
+    <ElDialog v-model="rulesDlg" title="清单规则阈值（保存后实时重算）" width="480px">
+      <ElForm label-width="140px">
+        <ElFormItem label="待续课阈值(节)"><ElInputNumber v-model="rulesForm.renewalThreshold" :min="1" :max="50" /><span class="ml-2 text-xs text-gray-400">剩余课时 ≤ 该值且最近月有出勤</span></ElFormItem>
+        <ElFormItem label="VIP阈值(节)"><ElInputNumber v-model="rulesForm.vipThreshold" :min="10" :max="1000" /><span class="ml-2 text-xs text-gray-400">累计购买私教课量 ≥ 该值</span></ElFormItem>
         <ElFormItem label="出勤下降口径">
           <ElRadioGroup v-model="rulesForm.declineMode">
             <ElRadio value="strict">连续三月递减</ElRadio>
             <ElRadio value="recent">最近两月下降</ElRadio>
           </ElRadioGroup>
         </ElFormItem>
+        <ElFormItem label="预流失(天)">
+          <div class="flex items-center gap-2">
+            <ElInputNumber v-model="rulesForm.predropMin" :min="1" :max="rulesForm.predropMax" />
+            <span class="text-gray-400">~</span>
+            <ElInputNumber v-model="rulesForm.predropMax" :min="rulesForm.predropMin" :max="180" />
+          </div>
+          <div class="text-xs text-gray-400 mt-1">或：上月在训、本月停训（M2&gt;0 且 M3=0）</div>
+        </ElFormItem>
+        <ElFormItem label="待复活(天)"><ElInputNumber v-model="rulesForm.reviveDays" :min="7" :max="365" /><span class="ml-2 text-xs text-gray-400">超过 N 天未到店且有卡项资产</span></ElFormItem>
       </ElForm>
       <template #footer>
         <ElButton @click="rulesDlg = false">取消</ElButton>
@@ -257,9 +272,14 @@
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
   const isTeacher = computed(() => roles.value.includes('R_TEACHER'))
+  /** 数据范围说明：随当前门店/清单/顾问筛选动态显示 */
   const scopeHint = computed(() => {
-    if (isTeacher.value) return `数据范围：我的会员（${userStore.getUserInfo.venue ?? '双店'}）`
-    return `数据范围：${userStore.getUserInfo.venue ?? '双店'}`
+    const venue = searchForm.value.venue || userStore.getUserInfo.venue || '双店'
+    const parts = [`数据范围：${venue}`]
+    if (activeTab.value !== 'all') parts.push(`清单：${TAB_KEY_TO_LIST[activeTab.value]}`)
+    else if (searchForm.value.list) parts.push(`清单：${searchForm.value.list}`)
+    if (searchForm.value.consultant) parts.push(`顾问：${searchForm.value.consultant}`)
+    return parts.join(' · ')
   })
 
   const LIST_KEYS: MemberListKey[] = ['待续课', '出勤降低', 'VIP', '预流失', '待复活']

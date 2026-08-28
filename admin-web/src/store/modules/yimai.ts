@@ -86,6 +86,11 @@ export interface MemberRules {
   renewalThreshold: number
   vipThreshold: number
   declineMode: 'strict' | 'recent'
+  /** 预流失：N-M 天未到店（默认 15-30） */
+  predropMin: number
+  predropMax: number
+  /** 待复活：超过 N 天未到店且有资产（默认 30） */
+  reviveDays: number
 }
 
 export interface YimaiSyncSnapshot {
@@ -113,7 +118,10 @@ const SEED_VERSION = 5
 const DEFAULT_RULES: MemberRules = {
   renewalThreshold: 10,
   vipThreshold: 100,
-  declineMode: 'strict'
+  declineMode: 'strict',
+  predropMin: 15,
+  predropMax: 30,
+  reviveDays: 30
 }
 
 function seedCustomers(): YimaiCustomer[] {

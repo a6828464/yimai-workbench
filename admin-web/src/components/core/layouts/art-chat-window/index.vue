@@ -47,11 +47,13 @@
                 </div>
                 <div
                   :class="[
-                    'rounded-md px-3.5 py-2.5 text-sm leading-[1.4] text-g-900',
+                    'rounded-md px-3.5 py-2.5 text-sm leading-[1.6] text-g-900',
                     message.isMe ? 'message-right bg-theme/15' : 'message-left bg-g-300/50'
                   ]"
-                  >{{ message.content }}</div
                 >
+                  <div v-if="message.isMe" class="whitespace-pre-wrap">{{ message.content }}</div>
+                  <div v-else class="bot-answer whitespace-pre-wrap" v-html="renderMd(message.content)"></div>
+                </div>
               </div>
             </div>
           </template>
@@ -153,6 +155,50 @@
     })
   }
 
+  /** 极简 Markdown 渲染（聊天回复排版）：换行/加粗/行内代码/无序列表 */
+  function renderMd(md: string): string {
+    if (!md) return ''
+    const esc = (s: string) =>
+      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const inline = (s: string) =>
+      esc(s)
+        .replace(/`([^`]+)`/g, '<code class="px-1 rounded bg-black/10 text-xs">$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+
+    const out: string[] = []
+    let inList = false
+    const closeList = () => {
+      if (inList) {
+        out.push('</ul>')
+        inList = false
+      }
+    }
+    for (const raw of md.split('\n')) {
+      const line = raw.trimEnd()
+      if (line.startsWith('- ')) {
+        if (!inList) {
+          out.push('<ul class="my-1 pl-4 list-disc space-y-1">')
+          inList = true
+        }
+        out.push(`<li>${inline(line.slice(2))}</li>`)
+      } else if (line.startsWith('## ')) {
+        closeList()
+        out.push(`<div class="mt-2 mb-1 font-semibold">${inline(line.slice(3))}</div>`)
+      } else if (line.startsWith('# ')) {
+        closeList()
+        out.push(`<div class="mt-2 mb-1 font-bold">${inline(line.slice(2))}</div>`)
+      } else if (line.trim() === '') {
+        closeList()
+      } else {
+        closeList()
+        out.push(`<p class="my-1">${inline(line)}</p>`)
+      }
+    }
+    closeList()
+    return out.join('')
+  }
+
   // 消息处理方法
   const sendMessage = async (): Promise<void> => {
     const text = messageText.value.trim()
@@ -188,15 +234,15 @@
       return
     }
 
-    // 简易"思考中"占位（流式输出逐字更新）
-    const thinking: ChatMessage = {
+    // 简易"思考中"占位（流式输出逐字更新；用 reactive 保证逐字更新触发渲染）
+    const thinking = reactive<ChatMessage>({
       id: messageId.value++,
       sender: BOT_NAME,
       content: '· · ·',
       time: formatCurrentTime(),
       isMe: false,
       avatar: aiAvatar
-    }
+    })
     messages.value.push(thinking)
     scrollToBottom()
 

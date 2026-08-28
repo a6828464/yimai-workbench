@@ -98,9 +98,9 @@ export class MenuProcessor {
         return item
       })
       .filter((item) => {
-        // 如果定义了 children 属性（即使是空数组），说明这是一个目录菜单，应该保留
+        // 目录菜单：子菜单过滤后为空则隐藏，避免角色下出现空父级菜单（如新媒体看到的空「业务执行」）
         if ('children' in item) {
-          return true
+          return Array.isArray(item.children) && item.children.length > 0
         }
 
         // 如果有外链或 iframe，保留

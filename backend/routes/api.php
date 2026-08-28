@@ -693,8 +693,17 @@ Route::middleware('auth:sanctum')->group(function () {
         $byDate = [];
         $bucket = function (string $date, string $venue, $l) use (&$byDate): void {
             $byDate[$date][$venue]['leads'] = ($byDate[$date][$venue]['leads'] ?? 0) + 1;
+            // 已约体验及以上 → 计入约客/预约
+            if (in_array($l->status, ['已约体验', '已体验', '已成交'], true)) {
+                $byDate[$date][$venue]['booked'] = ($byDate[$date][$venue]['booked'] ?? 0) + 1;
+            }
+            // 已体验/已成交 → 计入体验
+            if (in_array($l->status, ['已体验', '已成交'], true)) {
+                $byDate[$date][$venue]['experienced'] = ($byDate[$date][$venue]['experienced'] ?? 0) + 1;
+            }
             if ($l->status === '已成交') $byDate[$date][$venue]['deals'] = ($byDate[$date][$venue]['deals'] ?? 0) + 1;
             if ($l->deal_amount) $byDate[$date][$venue]['amount'] = ($byDate[$date][$venue]['amount'] ?? 0) + (int) $l->deal_amount;
+            if ($l->redeem_amount) $byDate[$date][$venue]['redeem'] = ($byDate[$date][$venue]['redeem'] ?? 0) + (int) $l->redeem_amount;
         };
         foreach ($leads as $l) {
             $d = $l->created_at ? $l->created_at->toDateString() : $l->lead_date;
@@ -707,6 +716,14 @@ Route::middleware('auth:sanctum')->group(function () {
         $visitQ = (clone $custQ)->where('last_visit', '>=', now()->subDays(30)->toDateString());
         $visit30 = $visitQ->count();
         $activeCustomers = (clone $custQ)->where('attend_m3', '>', 0)->count();
+        $memberTotal = (clone $custQ)->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%')->count();
+
+        $sumKey = fn ($k) => collect($byDate)->flatMap(fn ($vs) => collect($vs)->pluck($k))->sum();
+        $totalLeads = $sumKey('leads');
+        $totalBooked = $sumKey('booked');
+        $totalDeals = $sumKey('deals');
+        $totalAmount = $sumKey('amount');
+        $totalRedeem = $sumKey('redeem');
 
         return ok([
             'daily' => array_values(collect($byDate)->sortKeys()->map(function ($venues, $date) {
@@ -714,12 +731,27 @@ Route::middleware('auth:sanctum')->group(function () {
                 foreach ($venues as $v => $c) {
                     $out[$v] = [
                         'leads' => $c['leads'] ?? 0,
+                        'booked' => $c['booked'] ?? 0,
+                        'experienced' => $c['experienced'] ?? 0,
                         'deals' => $c['deals'] ?? 0,
                         'amount' => $c['amount'] ?? 0,
+                        'redeem' => $c['redeem'] ?? 0,
                     ];
                 }
                 return $out;
             })->all()),
+            'summary' => [
+                'memberTotal' => $memberTotal,
+                'leadCount' => $totalLeads,
+                'bookingCount' => $totalBooked,
+                'visitCount' => $totalBooked,
+                'trialCount' => $sumKey('experienced'),
+                'dealCount' => $totalDeals,
+                'dealAmount' => $totalAmount,
+                'redeemAmount' => $totalRedeem,
+                'dealRate' => $totalBooked > 0 ? round($totalDeals / $totalBooked * 100, 1) : 0,
+                'leadToVisitRate' => $totalLeads > 0 ? round($totalBooked / $totalLeads * 100, 1) : 0,
+            ],
             'visit30' => $visit30,
             'activeCustomers' => $activeCustomers,
             'attendanceSummary' => [
@@ -966,7 +998,7 @@ function audit(Request $r, string $action, string $module, int|string $targetId,
 function rules(): array
 {
     $s = AppSetting::first();
-    return $s?->rules ?? ['renewalThreshold' => 10, 'vipThreshold' => 100, 'declineMode' => 'strict'];
+    return $s?->rules ?? ['renewalThreshold' => 10, 'vipThreshold' => 100, 'declineMode' => 'strict', 'predropMin' => 15, 'predropMax' => 30, 'reviveDays' => 30];
 }
 
 function setRules(array $rules): void
@@ -982,16 +1014,19 @@ function filteredIds(string $list): array
     $threshold = $rules['renewalThreshold'] ?? 10;
     $vip = $rules['vipThreshold'] ?? 100;
     $strict = ($rules['declineMode'] ?? 'strict') === 'strict';
+    $predropMin = (int) ($rules['predropMin'] ?? 15);
+    $predropMax = (int) ($rules['predropMax'] ?? 30);
+    $reviveDays = (int) ($rules['reviveDays'] ?? 30);
     $days = fn ($d) => $d ? (int) ((time() - strtotime($d)) / 86400) : null;
 
     return Customer::query()->get()
-        ->filter(function (Customer $c) use ($list, $threshold, $vip, $strict, $days) {
+        ->filter(function (Customer $c) use ($list, $threshold, $vip, $strict, $predropMin, $predropMax, $reviveDays, $days) {
             $m1 = $c->attend_m1; $m2 = $c->attend_m2; $m3 = $c->attend_m3;
             $dd = $days($c->last_visit);
             $hasAsset = $c->main_card !== null && ! in_array($c->main_card, ['', '—', '待同步卡项'], true);
             $expireDays = $c->expire_date ? now()->startOfDay()->diffInDays($c->expire_date, false) : null;
-            $revive = (bool) $c->in_revive || ($dd !== null && $dd > 30 && $hasAsset);
-            $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= 15 && $dd <= 30));
+            $revive = (bool) $c->in_revive || ($dd !== null && $dd > $reviveDays && $hasAsset);
+            $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= $predropMin && $dd <= $predropMax));
             $declining = ! $revive && ! $preLoss && ($strict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3));
             return match ($list) {
                 '待续课' => $hasAsset && (($m3 > 0 && $c->remain_times !== null && $c->remain_times <= $threshold)

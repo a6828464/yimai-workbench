@@ -6,7 +6,7 @@ import type { YimaiLead, YimaiAuditLog, YimaiCustomer as StoreCustomer, MemberRu
 
 export type { YimaiLead, YimaiAuditLog, MemberRules }
 
-let rulesCache: MemberRules = { renewalThreshold: 10, vipThreshold: 100, declineMode: 'strict' }
+let rulesCache: MemberRules = { renewalThreshold: 10, vipThreshold: 100, declineMode: 'strict', predropMin: 15, predropMax: 30, reviveDays: 30 }
 
 export async function refreshMemberRules(): Promise<MemberRules> {
   if (USE_BACKEND) {
@@ -51,13 +51,16 @@ export function computeMemberLists(c: YimaiCustomer): MemberListKey[] {
   const m3 = c.attendM3 ?? 0
   const out: MemberListKey[] = []
 
+  const predropMin = rules.predropMin ?? 15
+  const predropMax = rules.predropMax ?? 30
+  const reviveDays = rules.reviveDays ?? 30
   const days = lastVisitDays(c.lastVisit)
   const hasAsset = Boolean(c.mainCard && !['—', '待同步卡项'].includes(c.mainCard))
   const expireDays = c.expireDate
     ? Math.floor((new Date(c.expireDate).getTime() - Date.now()) / 86400000)
     : null
-  const revive = Boolean(c.inRevive) || (days !== null && days > 30 && hasAsset)
-  const preLoss = !revive && days !== null && ((m2 > 0 && m3 === 0) || (days >= 15 && days <= 30))
+  const revive = Boolean(c.inRevive) || (days !== null && days > reviveDays && hasAsset)
+  const preLoss = !revive && days !== null && ((m2 > 0 && m3 === 0) || (days >= predropMin && days <= predropMax))
   const declining =
     !revive &&
     !preLoss &&
@@ -668,6 +671,7 @@ export interface DashboardSummary {
   privateDomainCount: number
   redeemAmount: number
   leadToVisitRate: number
+  memberTotal?: number
 }
 
 export interface ChannelLeadItem {
@@ -734,12 +738,56 @@ function resolveDashboardVenues(scope: '双店' | '绿地店' | '东部店'): ('
   return [scope]
 }
 
-export function getDashboardSeries(
+export async function getDashboardSeries(
   startDate: string,
   endDate: string,
   scope: '双店' | '绿地店' | '东部店' = '双店'
 ): Promise<{ daily: DashboardDayPoint[]; summary: DashboardSummary }> {
   const a = actor()
+
+  // 后台模式：真实数据（留资/会员口径）
+  if (USE_BACKEND) {
+    const t = await apiGet<{
+      daily: Array<Record<string, unknown>>
+      summary: Record<string, number>
+      visit30: number
+    }>('/analytics/trends', { start: startDate, end: endDate })
+    const venues = scope === '双店' ? null : [scope]
+    const daily: DashboardDayPoint[] = (t.daily ?? []).map((day) => {
+      const date = String(day.date ?? '')
+      const buckets = Object.entries(day).filter(([k]) => k !== 'date' && (!venues || venues.includes(k as '绿地店' | '东部店')))
+      const sum = (key: string) => buckets.reduce((s, [, b]) => s + (Number((b as Record<string, unknown>)?.[key]) || 0), 0)
+      return {
+        date,
+        label: date.slice(5).replace('-', '/'),
+        bookings: sum('booked'),
+        trials: sum('experienced'),
+        visits: sum('booked'),
+        deals: sum('deals'),
+        amount: sum('amount'),
+        leads: sum('leads'),
+        privateDomain: sum('leads'),
+        redeem: sum('redeem')
+      }
+    })
+    const s = t.summary ?? {}
+    const summary: DashboardSummary = {
+      bookingCount: s.bookingCount ?? 0,
+      trialCount: s.trialCount ?? 0,
+      visitCount: s.visitCount ?? 0,
+      dealCount: s.dealCount ?? 0,
+      dealAmount: s.dealAmount ?? 0,
+      dealRate: s.dealRate ?? 0,
+      leadCount: s.leadCount ?? 0,
+      privateDomainCount: s.leadCount ?? 0,
+      redeemAmount: s.redeemAmount ?? 0,
+      leadToVisitRate: s.leadToVisitRate ?? 0,
+      memberTotal: s.memberTotal ?? 0
+    }
+    return { daily, summary }
+  }
+
+  // 演示模式：沿用本地演示序列
   const venues = (a.isManager || a.isTeacher) && a.scopeVenue ? [a.scopeVenue as '绿地店' | '东部店'] : resolveDashboardVenues(scope)
   const merged = new Map<string, DashboardDayPoint>()
   for (const v of venues) {
@@ -788,15 +836,20 @@ export function getDashboardSeries(
     redeemAmount: sum((p) => p.redeem),
     leadToVisitRate: leadCount > 0 ? Number(((visitCount / leadCount) * 100).toFixed(1)) : 0
   }
-  return Promise.resolve({ daily, summary })
+  return { daily, summary }
 }
 
-export function getChannelBreakdown(
+export async function getChannelBreakdown(
   startDate: string,
   endDate: string,
   scope: '双店' | '绿地店' | '东部店' = '双店'
 ): Promise<ChannelLeadItem[]> {
   const a = actor()
+  // 后台模式：真实留资来源分布
+  if (USE_BACKEND) {
+    const c = await apiGet<{ rows: ChannelLeadItem[] }>('/analytics/channels', { start: startDate, end: endDate })
+    return (c.rows ?? []).sort((x, y) => y.leads - x.leads)
+  }
   const venues = (a.isManager || a.isTeacher) && a.scopeVenue ? [a.scopeVenue as '绿地店' | '东部店'] : resolveDashboardVenues(scope)
   const all: DashboardDayPoint[] = []
   for (const v of venues) all.push(...buildVenueDays(startDate, endDate, v))
