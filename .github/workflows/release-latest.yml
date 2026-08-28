@@ -107,9 +107,20 @@ jobs:
             --data-urlencode "target_commitish=$GITHUB_SHA")"
           # Gitee 创建 release 的响应不含 upload_url，需用返回的 id 拼附件上传地址
           rid="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-          curl --fail-with-body -sS -X POST "$GITEE_API/repos/$GITEE_REPO/releases/$rid/attach_files" \
-            -F "access_token=$GITEE_TOKEN" \
-            -F "file=@yimai-workbench-v${VERSION}.zip"
-          curl --fail-with-body -sS -X POST "$GITEE_API/repos/$GITEE_REPO/releases/$rid/attach_files" \
-            -F "access_token=$GITEE_TOKEN" \
-            -F "file=@yimai-workbench-latest.zip"
+          # Gitee 附件上传偶发网络失败，做 3 次重试（间隔 5s）
+          upload_file() {
+            local file="$1" attempt=1
+            while [ "$attempt" -le 3 ]; do
+              echo "  上传 $file（第 $attempt/3 次）"
+              if curl --http1.1 --fail-with-body -sS -X POST "$GITEE_API/repos/$GITEE_REPO/releases/$rid/attach_files" \
+                -F "access_token=$GITEE_TOKEN" -F "file=@$file" >/dev/null 2>&1; then
+                return 0
+              fi
+              attempt=$((attempt + 1))
+              [ "$attempt" -le 3 ] && sleep 5
+            done
+            echo "上传 $file 连续 3 次失败" >&2
+            return 1
+          }
+          upload_file "yimai-workbench-v${VERSION}.zip"
+          upload_file "yimai-workbench-latest.zip"
