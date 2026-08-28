@@ -4,26 +4,63 @@
       <div class="mb-4 flex flex-wrap items-center gap-3">
         <ElInput
           v-model="searchForm.name"
-          placeholder="客户姓名 / 尾号"
+          placeholder="客户姓名"
           clearable
-          class="!w-45"
+          class="!w-36"
           @change="handleSearch"
         />
-        <ElSelect v-model="searchForm.venue" placeholder="门店" clearable class="!w-32" @change="handleSearch">
+        <ElInput
+          v-model="searchForm.phone"
+          placeholder="手机号 / 尾号"
+          clearable
+          class="!w-40"
+          @change="handleSearch"
+        />
+        <ElSelect
+          v-model="searchForm.venue"
+          placeholder="门店"
+          clearable
+          class="!w-32"
+          @change="handleSearch"
+        >
           <ElOption label="绿地店" value="绿地店" />
           <ElOption label="东部店" value="东部店" />
         </ElSelect>
-        <ElSelect v-model="searchForm.layer" placeholder="经营分层" clearable class="!w-36" @change="handleSearch">
+        <ElSelect
+          v-model="searchForm.layer"
+          placeholder="经营分层"
+          clearable
+          class="!w-36"
+          @change="handleSearch"
+        >
           <ElOption v-for="(v, k) in LAYER_LABELS" :key="k" :label="`${k} ${v}`" :value="k" />
         </ElSelect>
-        <ElSelect v-model="searchForm.list" placeholder="运营清单" clearable class="!w-32" @change="handleSearch">
+        <ElSelect
+          v-model="searchForm.list"
+          placeholder="运营清单"
+          clearable
+          class="!w-32"
+          @change="handleSearch"
+        >
           <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
         </ElSelect>
-        <ElSelect v-model="searchForm.haveCourse" placeholder="有课卡" clearable class="!w-28" @change="handleSearch">
+        <ElSelect
+          v-model="searchForm.haveCourse"
+          placeholder="有课卡"
+          clearable
+          class="!w-28"
+          @change="handleSearch"
+        >
           <ElOption label="有课卡" value="true" />
           <ElOption label="无课卡" value="false" />
         </ElSelect>
-        <ElSelect v-model="searchForm.remainRange" placeholder="剩余课时" clearable class="!w-32" @change="handleSearch">
+        <ElSelect
+          v-model="searchForm.remainRange"
+          placeholder="剩余课时"
+          clearable
+          class="!w-32"
+          @change="handleSearch"
+        >
           <ElOption label="≤ 5 节" value="5" />
           <ElOption label="≤ 10 节" value="10" />
           <ElOption label="≤ 20 节" value="20" />
@@ -49,33 +86,60 @@
     </ElCard>
 
     <!-- 客户360详情 -->
-    <ElDrawer v-model="detail.visible" size="600px" :title="`客户360 · ${detail.customer?.name ?? ''}`">
+    <ElDrawer
+      v-model="detail.visible"
+      size="600px"
+      :title="`客户360 · ${detail.customer?.name ?? ''}`"
+    >
       <div v-loading="detail.loading">
         <template v-if="detail.customer">
           <ElDescriptions :column="2" border size="small" class="mb-4">
             <ElDescriptionsItem label="姓名">{{ detail.customer.name }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="手机号">{{ maskPhone(detail.customer.phone) }} </ElDescriptionsItem>
+            <ElDescriptionsItem label="手机号"
+              >{{ maskPhone(detail.customer.phone) }}
+            </ElDescriptionsItem>
             <ElDescriptionsItem label="门店">{{ detail.customer.venue }}</ElDescriptionsItem>
             <ElDescriptionsItem label="来源">{{ detail.customer.source }}</ElDescriptionsItem>
             <ElDescriptionsItem label="分层">
-              <ElTag size="small" :type="LAYER_TAG_TYPE[detail.customer.layer]">{{ detail.customer.layer }} {{ LAYER_LABELS[detail.customer.layer] }}</ElTag>
+              <ElTag size="small" :type="LAYER_TAG_TYPE[detail.customer.layer]"
+                >{{ detail.customer.layer }} {{ LAYER_LABELS[detail.customer.layer] }}</ElTag
+              >
             </ElDescriptionsItem>
             <ElDescriptionsItem label="负责人">{{ detail.customer.owner }}</ElDescriptionsItem>
             <ElDescriptionsItem label="主卡">{{ detail.customer.mainCard }}</ElDescriptionsItem>
             <ElDescriptionsItem label="剩余/到期">
-              {{ detail.customer.remainTimes ?? '—' }}次{{ detail.customer.expireDate ? ` · ${detail.customer.expireDate}` : '' }}
+              {{ detail.customer.remainTimes ?? '—' }}次{{
+                detail.customer.expireDate ? ` · ${detail.customer.expireDate}` : ''
+              }}
             </ElDescriptionsItem>
-            <ElDescriptionsItem label="出勤 M1/M2/M3">{{ detail.customer.attendM1 ?? 0 }}/{{ detail.customer.attendM2 ?? 0 }}/{{ detail.customer.attendM3 ?? 0 }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="最近到店">{{ detail.customer.lastVisit ? `${daysAgo(detail.customer.lastVisit)}天前` : '—' }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="下次动作" :span="2">{{ detail.customer.nextAction }}（{{ detail.customer.nextActionTime }}）</ElDescriptionsItem>
+            <ElDescriptionsItem label="出勤 M1/M2/M3"
+              >{{ detail.customer.attendM1 ?? 0 }}/{{ detail.customer.attendM2 ?? 0 }}/{{
+                detail.customer.attendM3 ?? 0
+              }}</ElDescriptionsItem
+            >
+            <ElDescriptionsItem label="最近到店">{{
+              detail.customer.lastVisit ? `${daysAgo(detail.customer.lastVisit)}天前` : '—'
+            }}</ElDescriptionsItem>
+            <ElDescriptionsItem label="下次动作" :span="2"
+              >{{ detail.customer.nextAction }}（{{
+                detail.customer.nextActionTime
+              }}）</ElDescriptionsItem
+            >
           </ElDescriptions>
 
           <div class="text-sm font-500 mb-2">工作流留痕</div>
           <ElTimeline v-if="detail.logs?.length" class="mb-4">
-            <ElTimelineItem v-for="(log, i) in detail.logs" :key="i" :timestamp="log.time" placement="top">
+            <ElTimelineItem
+              v-for="(log, i) in detail.logs"
+              :key="i"
+              :timestamp="log.time"
+              placement="top"
+            >
               <div class="text-sm">
                 <ElTag size="small" effect="plain">{{ log.action }}</ElTag>
-                <span class="ml-2 text-gray-500">{{ log.operatorName }}({{ log.operatorRole }})</span>
+                <span class="ml-2 text-gray-500"
+                  >{{ log.operatorName }}({{ log.operatorRole }})</span
+                >
               </div>
               <div class="text-xs text-gray-400 mt-1">{{ log.detail }}</div>
             </ElTimelineItem>
@@ -113,7 +177,8 @@
   const isManager = computed(() => roles.value.includes('R_MANAGER'))
   const isMedia = computed(() => roles.value.includes('R_MEDIA'))
   const scopeHint = computed(() => {
-    if (isManager.value) return `数据范围：本店（${userStore.getUserInfo.venue}）· 按手机号聚合全部卡项`
+    if (isManager.value)
+      return `数据范围：本店（${userStore.getUserInfo.venue}）· 按手机号聚合全部卡项`
     if (isMedia.value) return '数据范围：前端客资（P5新客转化层）· 成交后移交店长团队'
     return '数据范围：双店 · 按手机号聚合全部卡项，分层口径 P0-P5'
   })
@@ -138,6 +203,7 @@
 
   const searchForm = ref({
     name: '',
+    phone: '',
     venue: '',
     layer: '',
     list: '',
@@ -173,7 +239,9 @@
       apiFn: async (p: Parameters<typeof queryCustomers>[0]) => {
         const res = await queryCustomers(p)
         if (res.records?.length) {
-          const leadsRes = await queryLeads({ current: 1, size: 5000 }).catch(() => ({ records: [] as YimaiLead[] }))
+          const leadsRes = await queryLeads({ current: 1, size: 5000 }).catch(() => ({
+            records: [] as YimaiLead[]
+          }))
           res.records = matchConsultants(res.records, leadsRes.records)
         }
         return res
@@ -190,7 +258,11 @@
           formatter: (row: YimaiCustomer) =>
             h('div', [
               h('p', { class: 'font-500' }, row.name),
-              h('p', { class: 'text-xs text-gray-400' }, `${row.phone ? maskPhone(row.phone) : `尾号${row.phoneTail || '—'}`} · ${row.source}`)
+              h(
+                'p',
+                { class: 'text-xs text-gray-400' },
+                `${row.phone ? maskPhone(row.phone) : `尾号${row.phoneTail || '—'}`} · ${row.source}`
+              )
             ])
         },
         {
@@ -215,7 +287,8 @@
           prop: 'consultant',
           label: '会籍顾问',
           width: 110,
-          formatter: (row: YimaiCustomer) => row.consultant || h(ElTag, { size: 'small', type: 'danger' }, () => '待分配')
+          formatter: (row: YimaiCustomer) =>
+            row.consultant || h(ElTag, { size: 'small', type: 'danger' }, () => '待分配')
         },
         {
           prop: 'mainCard',
@@ -230,14 +303,10 @@
                   : ''
             return h('div', [
               h('p', {}, row.mainCard),
-              h(
-                'p',
-                { class: 'text-xs text-gray-400' },
-                [
-                  row.remainTimes === null ? '未购卡' : `剩余 ${row.remainTimes} 次`,
-                  expireText
-                ]
-              )
+              h('p', { class: 'text-xs text-gray-400' }, [
+                row.remainTimes === null ? '未购卡' : `剩余 ${row.remainTimes} 次`,
+                expireText
+              ])
             ])
           }
         },
@@ -257,7 +326,11 @@
           label: '状态',
           width: 90,
           formatter: (row: YimaiCustomer) =>
-            h(ElTag, { size: 'small', type: row.status === '跟进中' ? 'primary' : 'info' }, () => row.status)
+            h(
+              ElTag,
+              { size: 'small', type: row.status === '跟进中' ? 'primary' : 'info' },
+              () => row.status
+            )
         },
         {
           prop: 'nextAction',
@@ -266,7 +339,11 @@
           formatter: (row: YimaiCustomer) =>
             h('div', [
               h('p', {}, row.nextAction),
-              h('p', { class: 'text-xs text-gray-400' }, `${row.nextActionTime} · 负责人 ${row.owner}`)
+              h(
+                'p',
+                { class: 'text-xs text-gray-400' },
+                `${row.nextActionTime} · 负责人 ${row.owner}`
+              )
             ])
         },
         {
@@ -291,7 +368,15 @@
   }
 
   function handleReset() {
-    searchForm.value = { name: '', venue: '', layer: '', list: '', haveCourse: '', remainRange: '' }
+    searchForm.value = {
+      name: '',
+      phone: '',
+      venue: '',
+      layer: '',
+      list: '',
+      haveCourse: '',
+      remainRange: ''
+    }
     resetSearchParams()
     getData()
   }

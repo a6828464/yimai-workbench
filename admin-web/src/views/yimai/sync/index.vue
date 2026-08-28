@@ -4,17 +4,23 @@
     <ElCard shadow="never" class="mb-4">
       <div class="flex flex-wrap items-center gap-4">
         <div class="flex items-center gap-2">
-          <span class="inline-block w-2.5 h-2.5 rounded-full" :class="connected ? 'bg-green-500' : 'bg-gray-300'" />
+          <span
+            class="inline-block w-2.5 h-2.5 rounded-full"
+            :class="connected ? 'bg-green-500' : 'bg-gray-300'"
+          />
           <span class="font-500">KeepYoga / 随心瑜云 · 只读接入</span>
         </div>
         <ElTag size="small" effect="plain">品牌 108193 · 一麦瑜伽</ElTag>
         <ElTag v-if="sessionAt" size="small" type="success">会话 {{ sessionAt }}</ElTag>
         <div class="flex-1" />
         <ElButton size="small" @click="openKyConfig">登录账号设置</ElButton>
-        <ElButton type="primary" :loading="connecting" @click="connect">{{ connected ? '刷新会话' : '建立连接' }}</ElButton>
+        <ElButton type="primary" :loading="connecting" @click="connect">{{
+          connected ? '刷新会话' : '建立连接'
+        }}</ElButton>
       </div>
       <div class="mt-2 text-xs text-gray-400 leading-5">
-        凭据保存在服务器端 · 只读查询，不写回任何核心业务数据 · 全量导入由服务器直连随心瑜完成，不经过浏览器
+        凭据保存在服务器端 · 只读查询，不写回任何核心业务数据 ·
+        全量导入由服务器直连随心瑜完成，不经过浏览器
       </div>
 
       <!-- 随心瑜登录账号设置（仅超管可见） -->
@@ -24,7 +30,12 @@
             <ElInput v-model="kyForm.phone" placeholder="随心瑜后台登录手机号" />
           </ElFormItem>
           <ElFormItem label="登录密码">
-            <ElInput v-model="kyForm.password" type="password" show-password placeholder="留空则保持不变" />
+            <ElInput
+              v-model="kyForm.password"
+              type="password"
+              show-password
+              placeholder="留空则保持不变"
+            />
           </ElFormItem>
           <ElAlert type="info" :closable="false" class="mb-2">
             <template #title>
@@ -34,7 +45,9 @@
         </ElForm>
         <template #footer>
           <ElButton @click="kyCfgOpen = false">取消</ElButton>
-          <ElButton type="primary" :loading="kySaving" @click="saveKyConfig">保存并切换账号</ElButton>
+          <ElButton type="primary" :loading="kySaving" @click="saveKyConfig"
+            >保存并切换账号</ElButton
+          >
         </template>
       </ElDialog>
 
@@ -48,9 +61,18 @@
         >
           全量导入会员到客户池
         </ElButton>
-        <span class="text-xs text-gray-400">服务器直连随心瑜拉取双店会员，按外部ID去重合并（已有建档/负责人不被覆盖）</span>
+        <span class="text-xs text-gray-400"
+          >服务器直连随心瑜拉取双店会员，按外部ID去重合并（已有建档/负责人不被覆盖）</span
+        >
       </div>
-      <ElAlert v-if="importResult" :title="importResult" type="success" show-icon :closable="false" class="mt-3" />
+      <ElAlert
+        v-if="importResult"
+        :title="importResult"
+        type="success"
+        show-icon
+        :closable="false"
+        class="mt-3"
+      />
     </ElCard>
 
     <!-- 双店实时计数 -->
@@ -60,14 +82,34 @@
           <template #header>
             <div class="flex-cb">
               <span class="font-500">{{ store }} 实时数据</span>
-              <ElTag v-if="countsFetchedAt" size="small" effect="plain">{{ countsFetchedAt }}</ElTag>
+              <ElTag v-if="countsFetchedAt" size="small" effect="plain">{{
+                countsFetchedAt
+              }}</ElTag>
             </div>
           </template>
           <div v-loading="countLoading" class="grid grid-cols-4 gap-2 text-center py-1">
-            <div><div class="text-xl font-600">{{ row.members }}</div><div class="text-xs text-gray-400 mt-1">会员</div></div>
-            <div><div class="text-xl font-600">{{ row.visitors }}</div><div class="text-xs text-gray-400 mt-1">访客</div></div>
-            <div><div class="text-xl font-600">{{ row.mcards }}</div><div class="text-xs text-gray-400 mt-1">会员卡</div></div>
-            <div><div class="text-xl font-600">{{ row.contracts }}</div><div class="text-xs text-gray-400 mt-1">合同</div></div>
+            <div
+              ><div class="text-xl font-600">{{ row.members }}</div
+              ><div class="text-xs text-gray-400 mt-1">会员</div></div
+            >
+            <div
+              ><div class="text-xl font-600">{{ row.visitors }}</div
+              ><div class="text-xs text-gray-400 mt-1">访客</div></div
+            >
+            <div
+              ><div class="text-xl font-600">{{ row.mcards }}</div
+              ><div class="text-xs text-gray-400 mt-1">会员卡</div></div
+            >
+            <div
+              ><div class="text-xl font-600">{{ row.contracts }}</div
+              ><div class="text-xs text-gray-400 mt-1">合同</div></div
+            >
+          </div>
+          <div
+            v-if="countErrors[store]"
+            class="mt-2 rounded-md bg-red-50 dark:bg-red-500/10 px-3 py-2 text-xs text-red-500 leading-5 break-all"
+          >
+            {{ countErrors[store] }}
           </div>
         </ElCard>
       </ElCol>
@@ -79,15 +121,32 @@
         <ElCard shadow="never" class="h-full">
           <template #header><span class="font-500">今日预约快照</span></template>
           <div v-loading="todayLoading" class="grid grid-cols-2 gap-3 py-1">
-            <div v-for="(v, store) in today" :key="store" class="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/60 text-center">
+            <div
+              v-for="(v, store) in today"
+              :key="store"
+              class="p-3 rounded-lg bg-gray-50 dark:bg-gray-800/60 text-center"
+            >
               <div class="text-xs text-gray-400 mb-1">{{ store }}</div>
-              <div class="text-2xl font-600">{{ v.total }} <span class="text-sm font-400 text-gray-400">条预约</span></div>
-              <div class="mt-1 text-xs"><ElTag size="small" type="warning" effect="plain">新客体验 {{ v.trialHits }}</ElTag></div>
+              <div class="text-2xl font-600"
+                >{{ v.total }} <span class="text-sm font-400 text-gray-400">条预约</span></div
+              >
+              <div class="mt-1 text-xs"
+                ><ElTag size="small" type="warning" effect="plain"
+                  >新客体验 {{ v.trialHits }}</ElTag
+                ></div
+              >
             </div>
           </div>
           <div class="mt-3 flex items-center justify-between">
             <span class="text-xs text-gray-400">快照将同步至各角色工作台的「今日预约」指标</span>
-            <ElButton size="small" type="primary" plain :loading="todayLoading" @click="loadToday(true)">更新快照</ElButton>
+            <ElButton
+              size="small"
+              type="primary"
+              plain
+              :loading="todayLoading"
+              @click="loadToday(true)"
+              >更新快照</ElButton
+            >
           </div>
         </ElCard>
       </ElCol>
@@ -101,7 +160,13 @@
               <ElOption label="绿地店" value="绿地店" />
               <ElOption label="东部店" value="东部店" />
             </ElSelect>
-            <ElInput v-model="sampleCond" placeholder="姓名关键词，留空取最新" clearable class="!w-56" @keyup.enter="searchMembers" />
+            <ElInput
+              v-model="sampleCond"
+              placeholder="姓名关键词，留空取最新"
+              clearable
+              class="!w-56"
+              @keyup.enter="searchMembers"
+            />
             <ElButton :loading="memberLoading" @click="searchMembers">检索</ElButton>
             <span class="text-xs text-gray-400">内部系统全量显示手机号</span>
           </div>
@@ -113,7 +178,9 @@
             <ElTableColumn prop="createdAt" label="录入日期" width="105" />
             <ElTableColumn label="操作" width="120" fixed="right">
               <template #default="{ row }">
-                <ElButton link type="primary" size="small" @click="importLead(row)">导入客资</ElButton>
+                <ElButton link type="primary" size="small" @click="importLead(row)"
+                  >导入客资</ElButton
+                >
               </template>
             </ElTableColumn>
           </ElTable>
@@ -214,7 +281,13 @@
       await Promise.all([loadCounts(), loadToday(false)])
     } catch (e) {
       connected.value = false
-      ElMessage.error(`连接失败：${String(e).slice(0, 100)}`)
+      const msg = String((e as { message?: string }).message ?? e)
+      // 未配置凭据时给出明确指引，而非笼统的"连接失败"
+      if (msg.includes('KY_PHONE') || msg.includes('配置')) {
+        ElMessage.warning('尚未配置随心瑜登录账号，请点击「登录账号设置」填写手机号与密码')
+      } else {
+        ElMessage.error(`连接失败：${msg.slice(0, 100)}`)
+      }
     } finally {
       connecting.value = false
     }
@@ -272,21 +345,31 @@
     东部店: { members: '-', visitors: '-', mcards: '-', contracts: '-' }
   })
   const countsFetchedAt = ref('')
+  const countErrors = ref<Record<string, string>>({})
 
   async function loadCounts() {
     countLoading.value = true
     const failures: string[] = []
+    const errors: Record<string, string> = {}
     try {
       for (const store of Object.keys(KY_STORES)) {
         try {
           counts.value[store] = await fetchKyCounts(store)
-          if (Object.values(counts.value[store]).every((value) => value === '-')) failures.push(store)
+          if (Object.values(counts.value[store]).every((value) => value === '-')) {
+            failures.push(store)
+            errors[store] = '上游接口未返回计数'
+          }
         } catch (e) {
-          failures.push(`${store}：${String(e).slice(0, 60)}`)
+          const msg = String((e as { message?: string }).message ?? e).slice(0, 120)
+          failures.push(store)
+          errors[store] = msg
         }
       }
       countsFetchedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
-      if (failures.length) ElMessage.warning(`实时数据获取失败：${failures.join('；')}`)
+      countErrors.value = errors
+      if (failures.length) {
+        ElMessage.warning(`实时数据获取失败：${failures.join('；')}（详见卡片下方错误提示）`)
+      }
     } finally {
       countLoading.value = false
     }
@@ -314,8 +397,14 @@
           fetchedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
           fetchedBy: yimaiStore.currentActor().operatorName,
           counts: JSON.parse(JSON.stringify(counts.value)),
-          todayBookings: { 绿地店: today.value['绿地店'].total, 东部店: today.value['东部店'].total },
-          trialBookings: { 绿地店: today.value['绿地店'].trialHits, 东部店: today.value['东部店'].trialHits }
+          todayBookings: {
+            绿地店: today.value['绿地店'].total,
+            东部店: today.value['东部店'].total
+          },
+          trialBookings: {
+            绿地店: today.value['绿地店'].trialHits,
+            东部店: today.value['东部店'].trialHits
+          }
         }
         if (USE_BACKEND) {
           // 后端模式：快照落库，工作台/经营看板读取同一份
@@ -383,68 +472,78 @@
   }
 
   const loading = ref(false)
-  const {
-    columns,
-    data,
-    pagination,
-    refreshData,
-    handleSizeChange,
-    handleCurrentChange
-  } = useTable({
-    core: {
-      apiFn: querySyncJobs,
-      apiParams: { current: 1, size: 20 },
-      columnsFactory: () => [
-        {
-          prop: 'batchNo',
-          label: '批次号 / 类型',
-          minWidth: 170,
-          formatter: (row: YimaiSyncJob) =>
-            h('div', [
-              h('p', { class: 'font-500' }, row.batchNo),
-              h('p', { class: 'text-xs text-gray-400' }, row.dataType)
-            ])
-        },
-        {
-          prop: 'venue',
-          label: '门店',
-          width: 90,
-          formatter: (row: YimaiSyncJob) =>
-            h(ElTag, { size: 'small', effect: 'plain' }, () => row.venue)
-        },
-        { prop: 'dateRange', label: '数据范围', minWidth: 180 },
-        {
-          prop: 'totalCount',
-          label: '总数 / 成功 / 失败',
-          width: 150,
-          sortable: true,
-          formatter: (row: YimaiSyncJob) =>
-            h('div', [
-              h('span', {}, `${row.totalCount} / ${row.successCount} / `),
-              row.failCount > 0 ? h('span', { class: 'font-500 text-red-500' }, String(row.failCount)) : h('span', {}, '0')
-            ])
-        },
-        {
-          prop: 'status',
-          label: '状态',
-          width: 100,
-          formatter: (row: YimaiSyncJob) =>
-            h(ElTag, { size: 'small', type: STATUS_TAG[row.status] }, () => row.status)
-        },
-        { prop: 'finishedAt', label: '完成时间', width: 150, sortable: true },
-        {
-          prop: 'operation',
-          label: '操作',
-          width: 130,
-          fixed: 'right',
-          formatter: (row: YimaiSyncJob) =>
-            row.failCount > 0
-              ? h(ArtButtonTable, { type: 'view', title: '查看错误明细', onClick: () => showErrors(row) })
-              : h('span', { class: 'text-xs text-gray-400' }, '—')
-        }
-      ]
-    }
-  })
+  const { columns, data, pagination, refreshData, handleSizeChange, handleCurrentChange } =
+    useTable({
+      core: {
+        apiFn: querySyncJobs,
+        apiParams: { current: 1, size: 20 },
+        columnsFactory: () => [
+          {
+            prop: 'batchNo',
+            label: '批次号 / 类型',
+            minWidth: 170,
+            formatter: (row: YimaiSyncJob) =>
+              h('div', [
+                h('p', { class: 'font-500' }, row.batchNo),
+                h('p', { class: 'text-xs text-gray-400' }, row.dataType)
+              ])
+          },
+          {
+            prop: 'venue',
+            label: '门店',
+            width: 90,
+            formatter: (row: YimaiSyncJob) =>
+              h(ElTag, { size: 'small', effect: 'plain' }, () => row.venue)
+          },
+          { prop: 'dateRange', label: '数据范围', minWidth: 180 },
+          {
+            prop: 'detail',
+            label: '同步明细',
+            minWidth: 320,
+            showOverflowTooltip: true,
+            formatter: (row: YimaiSyncJob) =>
+              row.detail
+                ? h('span', { class: 'text-xs text-gray-500' }, row.detail)
+                : h('span', { class: 'text-xs text-gray-300' }, '—')
+          },
+          {
+            prop: 'totalCount',
+            label: '总数 / 成功 / 失败',
+            width: 150,
+            sortable: true,
+            formatter: (row: YimaiSyncJob) =>
+              h('div', [
+                h('span', {}, `${row.totalCount} / ${row.successCount} / `),
+                row.failCount > 0
+                  ? h('span', { class: 'font-500 text-red-500' }, String(row.failCount))
+                  : h('span', {}, '0')
+              ])
+          },
+          {
+            prop: 'status',
+            label: '状态',
+            width: 100,
+            formatter: (row: YimaiSyncJob) =>
+              h(ElTag, { size: 'small', type: STATUS_TAG[row.status] }, () => row.status)
+          },
+          { prop: 'finishedAt', label: '完成时间', width: 150, sortable: true },
+          {
+            prop: 'operation',
+            label: '操作',
+            width: 130,
+            fixed: 'right',
+            formatter: (row: YimaiSyncJob) =>
+              row.failCount > 0
+                ? h(ArtButtonTable, {
+                    type: 'view',
+                    title: '查看错误明细',
+                    onClick: () => showErrors(row)
+                  })
+                : h('span', { class: 'text-xs text-gray-400' }, '—')
+          }
+        ]
+      }
+    })
 
   function showErrors(row: YimaiSyncJob) {
     ElMessage.info(`批次 ${row.batchNo} 包含 ${row.failCount} 条未处理记录，请重新同步该门店`)

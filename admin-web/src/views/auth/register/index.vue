@@ -231,23 +231,29 @@
       }
 
       try {
-        const data = await apiPost<{ token: string; userInfo: Api.Auth.UserInfo }>('/auth/register', {
-          name: formData.username,
-          userName: formData.username,
-          password: formData.password,
-          venue: formData.venue,
-          code: formData.code || undefined
-        })
+        const data = await apiPost<{ token: string; userInfo: Api.Auth.UserInfo }>(
+          '/auth/register',
+          {
+            name: formData.username,
+            userName: formData.username,
+            password: formData.password,
+            venue: formData.venue,
+            code: formData.code || undefined
+          }
+        )
         setBackendToken(data.token)
+        userStore.setToken(data.token, data.token)
         userStore.setUserInfo(data.userInfo)
+        userStore.setLoginStatus(true)
         ElMessage.success('注册成功，已为你登录')
         setTimeout(() => {
-          router.push('/yimai')
+          router.push('/yimai/today')
         }, REDIRECT_DELAY)
       } catch (e) {
         const msg =
           (e as { response?: { data?: { message?: string } } }).response?.data?.message ??
-          ((e as { message?: string }).message ?? '注册失败')
+          (e as { message?: string }).message ??
+          '注册失败'
         ElMessage.error(msg)
       }
     } catch (error) {

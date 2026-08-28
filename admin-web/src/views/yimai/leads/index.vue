@@ -564,7 +564,7 @@
     if (isManager.value) return `数据范围：本店（${userStore.getUserInfo.venue}）`
     if (isTeacher.value)
       return `我的客资 + 本店待分配池（${userStore.getUserInfo.venue ?? '未选门店'}）`
-    return '数据范围：双店'
+    return filters.value.venue ? `数据范围：${filters.value.venue}` : '数据范围：双店'
   })
 
   const loading = ref(false)

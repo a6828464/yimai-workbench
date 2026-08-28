@@ -102,9 +102,13 @@ Route::middleware('auth:sanctum')->group(function () {
         }
         if ($u->role === 'R_MEDIA') $q->where('layer', 'P5');
         if ($n = trim((string) $r->query('name', ''))) {
-            $q->where(fn ($w) => $w->where('name', 'like', "%{$n}%")
-                ->orWhere('phone', 'like', "%{$n}%")
-                ->orWhere('phone_tail', 'like', "%{$n}%"));
+            $q->where('name', 'like', "%{$n}%");
+        }
+        if ($p = trim((string) $r->query('phone', ''))) {
+            $q->where(function ($w) use ($p) {
+                $w->where('phone', 'like', "%{$p}%")
+                    ->orWhere('phone_tail', 'like', "%{$p}%");
+            });
         }
         if ($v = $r->query('venue')) $q->where('venue', $v);
         if ($l = $r->query('list')) $q->whereIn('id', filteredIds($l));
@@ -349,16 +353,21 @@ Route::middleware('auth:sanctum')->group(function () {
         }
 
         $batch = 'IMP-'.now()->format('Ymd-His').'-'.substr((string) mt_rand(1000, 9999), 0, 4);
+        $detail = sprintf(
+            '导出表格：会员基础表 %d 条 · 会员卡表 %d 条 · 团课预约 %d 条 · 私教预约 %d 条（出勤口径月 %s / %s / %s）；导入落库：新增 %d · 更新 %d · 未变化 %d · 跳过 %d',
+            $result['total'], $result['cards'], $result['leagueBookings'] ?? 0, $result['privateBookings'] ?? 0,
+            $result['attendancePeriod']['m1'] ?? '-', $result['attendancePeriod']['m2'] ?? '-', $result['attendancePeriod']['m3'] ?? '-',
+            $result['created'], $result['updated'], $result['unchanged'], $result['skipped']
+        );
         SyncJob::create([
-            'batch_no' => $batch, 'data_type' => '会员全量', 'venue' => $venue,
+            'batch_no' => $batch, 'data_type' => '会员/卡项/出勤多表', 'venue' => $venue,
             'total_count' => $result['total'],
             'success_count' => $result['created'] + $result['updated'] + $result['unchanged'],
             'fail_count' => $result['skipped'],
             'status' => $result['skipped'] > 0 ? '部分失败' : '成功',
-            'operator' => $r->user()->name, 'finished_at' => now(),
+            'operator' => $r->user()->name, 'finished_at' => now(), 'detail' => $detail,
         ]);
-        audit($r, '导入', 'KeepYoga同步', 0, "批次{$batch}", $venue,
-            "会员{$result['total']} 卡项{$result['cards']} 预约{$result['bookings']} 签到{$result['signedBookings']}；新增{$result['created']} 更新{$result['updated']} 未变化{$result['unchanged']} 跳过{$result['skipped']}");
+        audit($r, '导入', 'KeepYoga同步', 0, "批次{$batch}", $venue, $detail);
 
         return ok($result + ['batchNo' => $batch]);
     });
@@ -1051,6 +1060,8 @@ function audit(Request $r, string $action, string $module, int|string $targetId,
         'action' => $action, 'module' => $module,
         'target_id' => (string) $targetId, 'target_label' => $targetLabel,
         'venue' => $venue, 'detail' => $detail,
+        'ip' => (string) $r->ip(),
+        'user_agent' => mb_substr((string) $r->header('User-Agent'), 0, 300),
     ]);
 }
 

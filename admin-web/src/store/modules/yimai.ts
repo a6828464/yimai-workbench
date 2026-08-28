@@ -57,6 +57,9 @@ export interface YimaiAuditLog {
   targetLabel: string
   venue: string
   detail: string
+  /** 操作来源 IP 与设备（后端记录） */
+  ip?: string
+  userAgent?: string
 }
 
 export interface YimaiCustomer {

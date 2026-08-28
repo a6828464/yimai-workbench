@@ -2,12 +2,29 @@
   <div class="audit-page art-full-height">
     <ElCard class="art-table-card">
       <div class="mb-4 flex flex-wrap items-center gap-3">
-        <ElInput v-model="filters.operator" placeholder="操作人" clearable class="!w-36" @change="load" />
-        <ElSelect v-model="filters.module" placeholder="模块" clearable class="!w-40" @change="load">
-          <ElOption label="前端客资" value="前端客资" />
-          <ElOption label="价格审批" value="价格审批" />
+        <ElInput
+          v-model="filters.operator"
+          placeholder="操作人"
+          clearable
+          class="!w-36"
+          @change="load"
+        />
+        <ElSelect
+          v-model="filters.module"
+          placeholder="模块"
+          clearable
+          class="!w-40"
+          @change="load"
+        >
+          <ElOption v-for="m in MODULES" :key="m" :label="m" :value="m" />
         </ElSelect>
-        <ElSelect v-model="filters.action" placeholder="动作" clearable class="!w-32" @change="load">
+        <ElSelect
+          v-model="filters.action"
+          placeholder="动作"
+          clearable
+          class="!w-32"
+          @change="load"
+        >
           <ElOption label="新增" value="新增" />
           <ElOption label="修改" value="修改" />
           <ElOption v-for="a in ACTIONS" :key="a" :label="a" :value="a" />
@@ -18,7 +35,9 @@
 
       <ArtTableHeader :columns="[]" :loading="loading">
         <template #left>
-          <span class="text-sm text-gray-400">所有修改类操作自动留痕，含操作人、时间、动作与字段级变更明细</span>
+          <span class="text-sm text-gray-400"
+            >所有修改类操作自动留痕，含操作人、时间、动作与字段级变更明细</span
+          >
         </template>
       </ArtTableHeader>
 
@@ -61,19 +80,19 @@
         <el-descriptions :column="1" border>
           <ElDescriptionsItem label="日志编号">{{ detail.row.id }}</ElDescriptionsItem>
           <ElDescriptionsItem label="操作时间">{{ detail.row.time }}</ElDescriptionsItem>
-          <ElDescriptionsItem label="操作人">{{ `${detail.row.operatorName}（${detail.row.operatorRole}）` }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="操作人">{{
+            `${detail.row.operatorName}（${detail.row.operatorRole}）`
+          }}</ElDescriptionsItem>
           <ElDescriptionsItem label="所属模块">{{ detail.row.module }}</ElDescriptionsItem>
           <ElDescriptionsItem label="动作">{{ detail.row.action }}</ElDescriptionsItem>
           <ElDescriptionsItem label="操作对象">{{ detail.row.targetLabel }}</ElDescriptionsItem>
           <ElDescriptionsItem label="关联门店">{{ detail.row.venue }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="操作IP">{{ detail.row.ip || '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="操作设备">{{
+            prettyDevice(detail.row.userAgent)
+          }}</ElDescriptionsItem>
           <ElDescriptionsItem label="变更明细">{{ detail.row.detail }}</ElDescriptionsItem>
         </el-descriptions>
-        <ElAlert
-          class="mt-4"
-          title="阶段1接入后端后，此处将补充IP、设备、会话ID与完整前后快照"
-          type="info"
-          :closable="false"
-        />
       </template>
     </ElDrawer>
   </div>
@@ -87,13 +106,28 @@
 
   const ACTIONS = ['初审通过', '终审通过', '驳回'] as const
 
+  const MODULES = [
+    '前端客资',
+    '会员管理',
+    '任务中心',
+    '价格审批',
+    '训练计划',
+    '营销工具',
+    'KeepYoga同步',
+    '人员管理',
+    '模型配置'
+  ]
+
   const loading = ref(false)
   const filters = ref({ operator: '', module: '', action: '' })
   const page = ref({ current: 1, size: 20 })
   const list = ref<YimaiAuditLog[]>([])
 
   const pagedList = computed(() =>
-    list.value.slice((page.value.current - 1) * page.value.size, page.value.current * page.value.size)
+    list.value.slice(
+      (page.value.current - 1) * page.value.size,
+      page.value.current * page.value.size
+    )
   )
 
   const detail = reactive({ visible: false, row: null as YimaiAuditLog | null })
@@ -104,7 +138,7 @@
       page.value.current = 1
       const res = await queryAuditLogs({ ...filters.value })
       list.value = res.records
-    } catch (error) {
+    } catch {
       list.value = []
     } finally {
       loading.value = false
@@ -119,6 +153,34 @@
   function showDetail(row: YimaiAuditLog) {
     detail.row = row
     detail.visible = true
+  }
+
+  /** 从 User-Agent 提炼设备信息 */
+  function prettyDevice(ua: string | undefined | null): string {
+    const s = String(ua ?? '').trim()
+    if (!s) return '—'
+    const isMobile = /Mobile|Android|iPhone|iPad/.test(s)
+    const os = /iPhone|iPad/.test(s)
+      ? 'iOS'
+      : /Android/.test(s)
+        ? 'Android'
+        : /Mac OS X/.test(s)
+          ? 'macOS'
+          : /Windows/.test(s)
+            ? 'Windows'
+            : /Linux/.test(s)
+              ? 'Linux'
+              : '未知系统'
+    const browser = /Edg\//.test(s)
+      ? 'Edge'
+      : /Chrome\//.test(s)
+        ? 'Chrome'
+        : /Firefox\//.test(s)
+          ? 'Firefox'
+          : /Safari\//.test(s)
+            ? 'Safari'
+            : '其他浏览器'
+    return `${isMobile ? '移动端' : '桌面端'} · ${os} · ${browser}`
   }
 
   function actionType(action: string): 'danger' | 'warning' | 'info' | 'success' | 'primary' {

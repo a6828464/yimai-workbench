@@ -48,6 +48,8 @@ class KyMemberSyncService
         $attendance = [];
         $seenBookings = [];
         $bookingCount = 0;
+        $leagueBookingCount = 0;
+        $privateBookingCount = 0;
         for ($start = $rangeStart; $start->lte($today); $start = $start->addDays(180)) {
             $candidateEnd = $start->addDays(179);
             $end = $candidateEnd->lte($today) ? $candidateEnd : $today;
@@ -62,12 +64,15 @@ class KyMemberSyncService
                 for ($page = 1; $page <= 100; $page++) {
                     $form['page_index'] = $page;
                     $batchRows = self::rows(KyClient::call($path, $form), ['reservations', 'list']);
+                    $count = count($batchRows);
+                    $bookingCount += $count;
+                    if (str_contains($path, 'league')) $leagueBookingCount += $count;
+                    else $privateBookingCount += $count;
                     foreach ($batchRows as $row) {
-                        $bookingCount++;
                         self::addAttendance($row, $path, $attendance, $seenBookings, $month1, $month2, $month3);
                     }
                     // Some KeepYoga endpoints ignore page_size and return the complete range.
-                    if (count($batchRows) < 5000 || count($batchRows) > 5000) break;
+                    if ($count < 5000 || $count > 5000) break;
                 }
             }
         }
@@ -153,6 +158,8 @@ class KyMemberSyncService
             'created' => $created, 'updated' => $updated, 'unchanged' => $unchanged,
             'skipped' => $skipped, 'total' => count($members),
             'cards' => count($cards), 'bookings' => $bookingCount,
+            'leagueBookings' => $leagueBookingCount,
+            'privateBookings' => $privateBookingCount,
             'signedBookings' => count($seenBookings),
             'attendancePeriod' => [
                 'm1' => $month1->format('Y-m'),

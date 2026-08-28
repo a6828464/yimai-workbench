@@ -194,6 +194,8 @@ export interface YimaiSyncJob {
   failCount: number
   status: '成功' | '部分失败' | '进行中' | '失败'
   finishedAt: string
+  /** 同步明细：导出的表格与导入落库统计 */
+  detail?: string
 }
 
 type UserInfo = ReturnType<typeof useUserStore>['getUserInfo']
@@ -395,6 +397,7 @@ export function queryAuditLogs(
 export function queryCustomers(
   params: PageParams & {
     name?: string
+    phone?: string
     venue?: string
     layer?: string
     type?: 'all' | 'member' | 'lead'
@@ -408,6 +411,7 @@ export function queryCustomers(
   if (USE_BACKEND) {
     return apiGet<{ records: YimaiCustomer[]; total: number }>('/customers', {
       name: params.name,
+      phone: params.phone,
       venue: params.venue,
       layer: params.layer,
       list: params.list,
@@ -435,6 +439,10 @@ export function queryCustomers(
   if (params.list)
     list = list.filter((c) => computeMemberLists(c).includes(params.list as MemberListKey))
   if (params.name) list = list.filter((c) => c.name.includes(String(params.name)))
+  if (params.phone) {
+    const p = String(params.phone)
+    list = list.filter((c) => (c.phone ?? '').includes(p) || (c.phoneTail ?? '').includes(p))
+  }
   if (params.consultant) {
     const target = params.consultant === '待分配' ? '' : params.consultant
     list = list.filter((c) => (c.consultant || '') === target)
