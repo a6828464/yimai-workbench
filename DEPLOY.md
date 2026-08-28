@@ -14,6 +14,14 @@
 PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
 `fileinfo` `opcache` `pdo_mysql` `mbstring` `curl` `zip` `gd` `bcmath`
 
+### 在线升级按钮依赖（重要）
+
+后台「版本更新 → 立即更新」通过 PHP 启动服务器更新脚本，需要满足：
+
+1. **PHP 未禁用 `proc_open` / `putenv`**：宝塔默认 `php.ini` 的 `disable_functions` 含 `proc_open,putenv`，需把它们从 `disable_functions` 中移除并重启对应 PHP 版本（否则点击更新会报 `Server Error` / 500，改用计划任务则可绕过）。
+   - 改法：`/www/server/php/{版本}/etc/php.ini` → `disable_functions = ...` 行删除 `proc_open,` 和 `putenv,` → 面板「软件商店 → PHP → 重启」或 `/system?action=ServiceAdmin`(`name=php-fpm-84`,`type=restart`)。
+2. **站点 `open_basedir` 放开到站点根**：`update.sh` 位于站点根目录，若 `backend/public/.user.ini` 的 `open_basedir` 只允许 `backend/`，PHP 无法访问 `../update.sh` 也会报错。改为 `open_basedir=/www/wwwroot/oa.nbyimai.com/:/tmp/`。
+
 - ❌ 不需要装 Composer（安装包已内置 vendor）
 - ❌ 不需要装 Node.js（前端已构建成静态文件）
 

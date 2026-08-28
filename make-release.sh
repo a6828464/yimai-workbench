@@ -26,8 +26,10 @@ DATE="$(git log -1 --pretty=%ci 2>/dev/null || echo '')"
 cat > "$STAGE/version.json" << PVEOF
 {"branch":"$BRANCH","commit":"$COMMIT","message":"$MSG","date":"$DATE"}
 PVEOF
-# 把更新日志一并复制进后端站（版本更新页展示）
+# 把更新日志一并复制进后端站（版本更新页展示），并放入 backend 内随升级同步
 [ -f "$ROOT/CHANGELOG.md" ] && cp "$ROOT/CHANGELOG.md" "$STAGE/CHANGELOG.md"
+mkdir -p "$STAGE/backend"
+[ -f "$ROOT/CHANGELOG.md" ] && cp "$ROOT/CHANGELOG.md" "$STAGE/backend/CHANGELOG.md"
 
 echo "── 2/4 后端生产依赖..."
 cd "$ROOT/backend"

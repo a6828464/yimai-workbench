@@ -37,6 +37,8 @@ jobs:
           set -euo pipefail
           mkdir -p stage/app
           git archive --format=tar --worktree-attributes HEAD backend CHANGELOG.md | tar -x -C stage/app
+          # 更新日志放入后端站内，保证每次升级后「版本更新」页日志与版本同步
+          [ -f CHANGELOG.md ] && cp CHANGELOG.md stage/app/backend/CHANGELOG.md
           rm -rf stage/app/backend/public/assets stage/app/backend/public/index.html
           cp -R admin-web/dist/assets stage/app/backend/public/assets
           cp admin-web/dist/index.html stage/app/backend/public/index.html
