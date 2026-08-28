@@ -90,11 +90,7 @@ jobs:
           VERSION="$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -1 | tr -d 'v')"
           NOTES="$(awk 'BEGIN{n=0} /^## /{n++; if(n==1) next; if(n==2) exit} n==1{print}' CHANGELOG.md | sed '/^[[:space:]]*$/d')"
           TAG="v${VERSION}"
-          BODY="# 一麦工作台 v${VERSION}
-
-$(printf '%s' "$NOTES")
----
-由 main 分支提交 ${GITHUB_SHA} 自动构建。后台更新请使用该发行包。"
+          BODY="$(printf '# 一麦工作台 v%s\n\n%s\n---\n由 main 分支提交 %s 自动构建。后台更新请使用该发行包。' "$VERSION" "$NOTES" "$GITHUB_SHA")"
           existing="$(curl --fail-with-body -sS -G "$GITEE_API/repos/$GITEE_REPO/releases" \
             --data-urlencode "access_token=$GITEE_TOKEN" \
             --data-urlencode "page=1" --data-urlencode "per_page=100")"
