@@ -105,8 +105,11 @@ jobs:
             --data-urlencode "name=一麦工作台 $TAG" \
             --data-urlencode "body=$BODY" \
             --data-urlencode "target_commitish=$GITHUB_SHA")"
-          upload_url="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')"
-          curl --fail-with-body -sS -X POST "${upload_url}?access_token=$GITEE_TOKEN" \
+          # Gitee 创建 release 的响应不含 upload_url，需用返回的 id 拼附件上传地址
+          rid="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+          curl --fail-with-body -sS -X POST "$GITEE_API/repos/$GITEE_REPO/releases/$rid/attach_files" \
+            -F "access_token=$GITEE_TOKEN" \
             -F "file=@yimai-workbench-v${VERSION}.zip"
-          curl --fail-with-body -sS -X POST "${upload_url}?access_token=$GITEE_TOKEN" \
+          curl --fail-with-body -sS -X POST "$GITEE_API/repos/$GITEE_REPO/releases/$rid/attach_files" \
+            -F "access_token=$GITEE_TOKEN" \
             -F "file=@yimai-workbench-latest.zip"
