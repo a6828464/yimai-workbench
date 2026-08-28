@@ -87,16 +87,18 @@ window.__YIMAI_API_BASE__ = '/api'
 ### 推荐流程：提交仓库后后台更新
 
 1. 本地修改代码并完成 `pnpm exec vue-tsc --noEmit && pnpm build`。
-2. 提交并推送到 `main`，GitHub Actions 自动构建 `auto-latest` 包，并创建同一提交对应的 Gitee Release。
+2. 提交并推送到 `main`，GitHub Actions 自动构建安装包，并创建 GitHub `auto-latest` / `v<版本>` 与 Gitee `v<版本>` Release。
 3. 在后台「版本更新」点击「检查更新」，确认远端提交后点击「立即更新」。
 4. 服务器下载已构建的 Release 包，只替换应用代码和前端资源，保留线上 `.env`、`storage`、`vendor` 和数据库。
 5. 更新脚本执行 `php artisan migrate --force` 和 `php artisan optimize:clear`，完成后自动刷新页面。
+
+发行包命名：版本号取自 `CHANGELOG.md` 首个版本标题（如 `v3.1.8`），安装包为 `yimai-workbench-v3.1.8.zip`，并额外生成 `yimai-workbench-latest.zip` 供 `update.sh` 固定名下载；Release 标题/备注含版本号与更新日志。
 
 Gitee Release 自动发布需要在 GitHub 仓库配置 Actions Secret：`GITEE_TOKEN`。Token 至少需要仓库 Release 的创建和上传权限。Token 只用于创建发行包，不写入代码。服务器更新脚本优先读取 Gitee 最新 Release 中的 `yimai-workbench-latest.zip`，Gitee 暂时不可用时回退到 GitHub 的 `auto-latest` 包。
 
 配置 Secret：GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret，名称填 `GITEE_TOKEN`。配置后重新推送一次 `main`，或在 Actions 中手动运行工作流，Gitee 会出现对应 Release 和发布包。
 
-如果没有配置 `GITEE_TOKEN`，工作流不会伪造 Gitee 发行包，服务器会自动回退到 GitHub `auto-latest`。这是当前 Gitee 页面没有发行包的直接原因，不是构建失败。
+如果没有配置 `GITEE_TOKEN`，工作流会跳过 Gitee 发布（不影响 GitHub 发行包），服务器会自动回退到 GitHub `auto-latest`。
 
 更新脚本位于仓库根目录 `update.sh`，服务器路径为 `/www/wwwroot/oa.nbyimai.com/update.sh`。生产服务器不安装 Node.js、不运行前端构建，也不通过 Web 请求直接执行任意 Shell 命令。
 
