@@ -1,6 +1,6 @@
 import { useAiConfigStore, SERVER_CONFIGURED_PLACEHOLDER } from '@/store/modules/ai-config'
 import { useYimaiStore } from '@/store/modules/yimai'
-import { USE_BACKEND, apiGet, apiPost } from './backend'
+import { USE_BACKEND, API_BASE, getBackendToken, apiGet, apiPost } from './backend'
 
 // ==================== AI 配置水合（多设备共用服务端配置） ====================
 
@@ -197,29 +197,17 @@ interface ChatMessage {
 
 /**
  * 大模型调用统一入口
- * - 后端模式：经 Laravel /ai/chat 代理转发，规避浏览器跨域限制（推荐）
+ * - 后端模式：经 Laravel /ai/chat 代理转发，流式输出（中转站对 stream 请求才结算 token）
  * - 演示模式：浏览器直连（仅对支持CORS的服务商可用）
  */
 async function callLLM(messages: ChatMessage[]): Promise<string> {
+  if (USE_BACKEND) {
+    return chatLLMStream(messages)
+  }
   await initAiConfig()
   const store = useAiConfigStore()
   if (!store.isReady()) throw new Error('AI_NOT_CONFIGURED')
   const c = store.config
-
-  if (USE_BACKEND) {
-    const d = await apiPost<{ content?: string; code?: number; message?: string }>('/ai/chat', {
-      baseUrl: c.baseUrl,
-      apiKey: c.apiKey,
-      model: c.model,
-      messages,
-      temperature: c.temperature
-    })
-    if (d && d.code !== undefined && d.code !== 0) {
-      throw new Error(d.message || 'LLM_HTTP_ERROR')
-    }
-    if (!d?.content) throw new Error('LLM_EMPTY_RESPONSE')
-    return String(d.content)
-  }
 
   const resp = await fetch(`${c.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
@@ -241,6 +229,81 @@ async function callLLM(messages: ChatMessage[]): Promise<string> {
   const content = data?.choices?.[0]?.message?.content
   if (!content) throw new Error('LLM_EMPTY_RESPONSE')
   return String(content)
+}
+
+/**
+ * 后端代理流式对话（SSE）。中转站等仅对 stream 请求返回用量/结算 token，
+ * 因此统一走流式并本地累积。onDelta 用于逐字更新 UI。
+ */
+export async function chatLLMStream(
+  messages: ChatMessage[],
+  opts?: { onDelta?: (t: string) => void; maxTokens?: number }
+): Promise<string> {
+  await initAiConfig()
+  const store = useAiConfigStore()
+  if (!store.isReady()) throw new Error('AI_NOT_CONFIGURED')
+  const c = store.config
+
+  const resp = await fetch(`${API_BASE}/ai/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${getBackendToken()}`
+    },
+    body: JSON.stringify({
+      baseUrl: c.baseUrl,
+      apiKey: c.apiKey,
+      model: c.model,
+      messages,
+      temperature: c.temperature,
+      maxTokens: opts?.maxTokens,
+      stream: true
+    })
+  })
+  return readSse(resp, opts?.onDelta)
+}
+
+/** 解析 SSE 流，累积并回调逐字内容 */
+async function readSse(resp: Response, onDelta?: (t: string) => void): Promise<string> {
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '')
+    throw new Error(`AI_HTTP_${resp.status}: ${text.slice(0, 200)}`)
+  }
+  const reader = resp.body?.getReader()
+  if (!reader) throw new Error('AI_NO_STREAM')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let full = ''
+  const processLine = (line: string): void => {
+    if (!line.startsWith('data:')) return
+    const data = line.slice(5).trim()
+    if (data === '[DONE]' || data === '') return
+    try {
+      const obj = JSON.parse(data) as { choices?: { delta?: { content?: string }; message?: { content?: string } }[] }
+      const delta = obj?.choices?.[0]?.delta?.content ?? obj?.choices?.[0]?.message?.content ?? ''
+      if (delta) {
+        full += delta
+        onDelta?.(delta)
+      }
+    } catch {
+      /* 忽略心跳/空行 */
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx).trim()
+      buffer = buffer.slice(idx + 1)
+      if (line) processLine(line)
+    }
+  }
+  if (!full) throw new Error('LLM_EMPTY_RESPONSE')
+  return full
 }
 
 /** 获取服务商可用模型列表（OpenAI 兼容 /models），走 Laravel 代理 */

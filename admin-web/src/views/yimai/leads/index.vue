@@ -145,17 +145,25 @@
             </ElFormItem>
           </ElCol>
           <ElCol :span="8">
-            <ElFormItem label="客户分级">
-              <ElSelect v-model="dialog.form.grade" clearable class="!w-full" placeholder="A/B/C">
-                <ElOption label="A（高价值）" value="A" />
-                <ElOption label="B（次卡低频）" value="B" />
-                <ElOption label="C（日常活跃）" value="C" />
+            <ElFormItem label="体验课类型">
+              <ElSelect v-model="dialog.form.grade" clearable class="!w-full" placeholder="选择体验课类型">
+                <ElOption v-for="t in TRIAL_TYPES" :key="t" :label="t" :value="t" />
               </ElSelect>
             </ElFormItem>
           </ElCol>
-          <ElCol v-if="canAssign" :span="8">
+          <ElCol :span="8">
             <ElFormItem label="会籍顾问">
-              <ElInput v-model="dialog.form.serviceTeacher" placeholder="店长/老板分配" />
+              <ElSelect
+                v-model="dialog.form.serviceTeacher"
+                filterable
+                allow-create
+                default-first-option
+                clearable
+                class="!w-full"
+                placeholder="选择或输入会籍顾问"
+              >
+                <ElOption v-for="c in consultantOptions" :key="c" :label="c" :value="c" />
+              </ElSelect>
             </ElFormItem>
           </ElCol>
         </ElRow>
@@ -215,7 +223,7 @@
 </template>
 
 <script setup lang="ts">
-  import { addLead, canAssignTeacher, canManageLead, getLeadHistory, queryLeads, updateLead } from '@/api/yimai'
+  import { addLead, canManageLead, getLeadHistory, queryLeads, queryCustomers, updateLead } from '@/api/yimai'
   import type { YimaiLead } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { ElMessage } from 'element-plus'
@@ -225,6 +233,9 @@
   const STATUS_LIST = ['新留资', '已联系', '已约体验', '已体验', '已成交', '已流失'] as const
 
   const SOURCE_OPTIONS = ['大众点评', '美团', '抖音', '抖音直播', '抖音私信', '视频号', '小红书', '电话咨询', '转介绍', '会员转介绍', '自然到店', '潜客激活']
+
+  /** 体验课类型（替代原客户分级） */
+  const TRIAL_TYPES = ['定制私教', '私教小班', '精品团课', '其他']
 
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
@@ -236,12 +247,27 @@
     if (isTeacher.value) return `我的客资 + 本店待分配池（${userStore.getUserInfo.venue ?? '未选门店'}）`
     return '数据范围：双店'
   })
-  const canAssign = computed(() => !roles.value.includes('R_MEDIA') && !isTeacher.value)
 
   const loading = ref(false)
   const filters = ref({ name: '', venue: '', status: '' })
   const page = ref({ current: 1, size: 20 })
   const list = ref<YimaiLead[]>([])
+
+  /** 会籍顾问选项：从在册会员的会籍顾问去重得到 */
+  const consultantOptions = ref<string[]>([])
+  async function loadConsultants() {
+    try {
+      const res = await queryCustomers({ type: 'member', current: 1, size: 5000 })
+      const set = new Set<string>()
+      for (const c of res.records ?? []) {
+        const name = (c.consultant ?? '').trim()
+        if (name) set.add(name)
+      }
+      consultantOptions.value = [...set].sort((a, b) => a.localeCompare(b, 'zh'))
+    } catch {
+      /* 静默失败，允许手输 */
+    }
+  }
 
   const filteredList = computed(() => list.value)
   const pagedList = computed(() =>
@@ -363,7 +389,10 @@
     return map[status] ?? 'info'
   }
 
-  onMounted(load)
+  onMounted(() => {
+    load()
+    loadConsultants()
+  })
 </script>
 
 <style scoped lang="scss">

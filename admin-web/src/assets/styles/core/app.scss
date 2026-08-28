@@ -185,15 +185,17 @@
 
   .el-card__body {
     height: 100%;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 }
 
-// 容器全高
+// 容器全高（内容超高时允许整页滚动，避免底部被裁切无法查看）
 .art-full-height {
   height: var(--art-full-height);
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
 
   @media (max-width: 640px) {
     height: auto;

@@ -173,8 +173,7 @@
 
     // 调用大模型回答
     const aiStore = useAiConfigStore()
-    const { USE_BACKEND, apiPost } = await import('@/api/backend')
-    const { initAiConfig } = await import('@/api/ai')
+    const { initAiConfig, chatLLMStream } = await import('@/api/ai')
     await initAiConfig()
     if (!aiStore.isReady()) {
       messages.value.push({
@@ -189,7 +188,7 @@
       return
     }
 
-    // 简易"思考中"占位
+    // 简易"思考中"占位（流式输出逐字更新）
     const thinking: ChatMessage = {
       id: messageId.value++,
       sender: BOT_NAME,
@@ -202,37 +201,13 @@
     scrollToBottom()
 
     try {
-      const c = aiStore.config
-      let reply = ''
-      if (USE_BACKEND) {
-        const d = await apiPost<{ content?: string; code?: number; message?: string }>('/ai/chat', {
-          baseUrl: c.baseUrl,
-          apiKey: c.apiKey,
-          model: c.model,
-          messages: [
-            { role: 'system', content: '你是一麦瑜伽普拉提馆的内部AI助手，回答简洁、专业、口语化。' },
-            { role: 'user', content: text }
-          ],
-          temperature: c.temperature
-        })
-        if (d && d.code !== undefined && d.code !== 0) throw new Error(d.message || 'AI_ERROR')
-        reply = d?.content ?? ''
-      } else {
-        const resp = await fetch(`${c.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${c.apiKey}` },
-          body: JSON.stringify({
-            model: c.model,
-            messages: [
-              { role: 'system', content: '你是一麦瑜伽普拉提馆的内部AI助手，回答简洁、专业、口语化。' },
-              { role: 'user', content: text }
-            ],
-            temperature: c.temperature
-          })
-        })
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-        reply = (await resp.json())?.choices?.[0]?.message?.content ?? ''
-      }
+      const reply = await chatLLMStream(
+        [
+          { role: 'system', content: '你是一麦瑜伽普拉提馆的内部AI助手，回答简洁、专业、口语化。' },
+          { role: 'user', content: text }
+        ],
+        { onDelta: (t) => { thinking.content += t; scrollToBottom() } }
+      )
       thinking.content = reply || '（模型未返回内容，请重试）'
     } catch (e) {
       thinking.content = `回答失败：${String(e).slice(0, 160)}`

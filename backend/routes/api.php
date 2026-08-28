@@ -365,10 +365,14 @@ Route::middleware('auth:sanctum')->group(function () {
             $mt = (int) $r->input('maxTokens');
             $payload['max_tokens'] = $isReasoning ? max(2048, $mt) : max(16, $mt);
         }
+        // 流式输出（中转站对 stream 请求才结算 token，否则可能不返回用量）
+        $stream = (bool) $r->input('stream', false);
+        if ($stream) $payload['stream'] = true;
 
         try {
             $resp = Http::withToken($d['apiKey'])
-                ->timeout(90)
+                ->timeout(120)
+                ->withOptions($stream ? ['stream' => true] : [])
                 ->post(rtrim($d['baseUrl'], '/').'/chat/completions', $payload);
         } catch (\Throwable $e) {
             return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
@@ -376,6 +380,25 @@ Route::middleware('auth:sanctum')->group(function () {
         if (! $resp->successful()) {
             return response()->json(['code' => 1, 'message' => '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 250)]);
         }
+
+        if ($stream) {
+            // 转发上游 SSE 流（X-Accel-Buffering:no 关闭 nginx 缓冲）
+            $upstream = $resp->toPsrResponse()->getBody();
+            return response()->stream(function () use ($upstream) {
+                while (! $upstream->eof()) {
+                    $chunk = $upstream->read(1024);
+                    if ($chunk === '') break;
+                    echo $chunk;
+                    if (ob_get_level() > 0) { ob_flush(); }
+                    flush();
+                }
+            }, 200, [
+                'Content-Type' => 'text/event-stream; charset=utf-8',
+                'Cache-Control' => 'no-cache',
+                'X-Accel-Buffering' => 'no',
+            ]);
+        }
+
         $content = $resp->json('choices.0.message.content');
         if ($content === null) return response()->json(['code' => 1, 'message' => '大模型响应缺少内容: '.mb_substr($resp->body(), 0, 150)]);
 
