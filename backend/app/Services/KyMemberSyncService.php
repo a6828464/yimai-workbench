@@ -13,6 +13,10 @@ class KyMemberSyncService
 
     public static function sync(string $venue, string $venueId): array
     {
+        // 全量导入需拉取近两年预约，放宽内存与执行时间限制
+        @ini_set('memory_limit', '512M');
+        @set_time_limit(0);
+
         $members = self::pagedRows('member/api/getmembersbycondwithpager', [
             'cond' => '', 'consultant_id' => -1, 'venue_id' => $venueId,
         ], ['members', 'list']);
@@ -170,8 +174,11 @@ class KyMemberSyncService
             $title = self::pick($card, ['card_title', 'card_name']);
             if (! str_contains($title, '私教') || preg_match('/(体验|员工|测试|赠)/u', $title)) continue;
             if ((string) ($card['status'] ?? '') === '29' || (string) ($card['is_taste'] ?? '0') === '1') continue;
-            if ((string) ($card['type'] ?? '') === '1' && is_numeric($card['initial_amount'] ?? null)) {
-                $totalPurchased += max(0, (int) floor((float) $card['initial_amount']));
+            // 累计购买私教课量 = 该次卡当前绑定节数(剩余) + 已用节数。
+            // 注意：initial_amount 为「N次」字符串且含义为赠送次数，不可作为累计购买口径。
+            if ((string) ($card['type'] ?? '') === '1') {
+                $bound = self::toNum($card['residue_amount'] ?? 0) + self::toNum($card['usage_total'] ?? 0);
+                if ($bound > 0) $totalPurchased += (int) floor($bound);
             }
         }
 
@@ -181,6 +188,15 @@ class KyMemberSyncService
             'expire_date' => $main ? self::date($main['deadline'] ?? null) : null,
             'total_purchased' => $totalPurchased,
         ];
+    }
+
+    /** 提取字段中的首个数值（兼容 "110"、"0.00"、"36节" 等格式） */
+    private static function toNum(mixed $value): float
+    {
+        if (is_numeric($value)) return (float) $value;
+        $m = [];
+        preg_match('/-?\d+(\.\d+)?/', (string) $value, $m);
+        return isset($m[0]) ? (float) $m[0] : 0.0;
     }
 
     private static function addAttendance(

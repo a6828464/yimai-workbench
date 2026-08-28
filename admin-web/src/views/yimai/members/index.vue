@@ -22,6 +22,10 @@
       <!-- 总览筛选 -->
       <div v-if="activeTab === 'all'" class="mb-3 flex flex-wrap items-center gap-3">
         <ElInput v-model="searchForm.name" placeholder="会员姓名" clearable class="!w-40" @change="load" />
+        <ElSelect v-model="searchForm.venue" placeholder="门店" clearable class="!w-28" @change="load">
+          <ElOption label="绿地店" value="绿地店" />
+          <ElOption label="东部店" value="东部店" />
+        </ElSelect>
         <ElSelect v-model="searchForm.list" placeholder="运营清单" clearable class="!w-36" @change="load">
           <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
         </ElSelect>
@@ -277,7 +281,7 @@
 
   const loading = ref(false)
   const activeTab = ref('all')
-  const searchForm = ref({ name: '', list: '', consultant: '' })
+  const searchForm = ref({ name: '', list: '', consultant: '', venue: '' })
   const page = ref({ current: 1, size: 20 })
   const all = ref<YimaiCustomer[]>([])
   const rules = ref(getMemberRules())
@@ -329,6 +333,7 @@
   const filteredList = computed(() => {
     let list = filteredBase()
     if (searchForm.value.name) list = list.filter((c) => c.name.includes(searchForm.value.name))
+    if (searchForm.value.venue) list = list.filter((c) => c.venue === searchForm.value.venue)
     if (searchForm.value.consultant) {
       const target = searchForm.value.consultant
       list = list.filter((c) => (c.consultant || '待分配') === target)
@@ -351,6 +356,7 @@
         queryCustomers({
           name: searchForm.value.name,
           list: listFilter,
+          venue: searchForm.value.venue || undefined,
           consultant: searchForm.value.consultant || undefined,
           type: 'member',
           current: 1,

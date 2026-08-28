@@ -1,5 +1,11 @@
 ﻿# 更新日志
 
+## 2026-08-28 ｜ feat: v3.1.5 会员数据洗板修复 + 门店筛选
+
+- 修复「累计购买」恒为 0：随心瑜卡表 `initial_amount` 是「N次」字符串且含义为赠送次数，改用私教**次数卡**的 `剩余节数 + 已用节数` 作为累计购买私教课量，VIP 清单、会员管理累计购买列随之生效。
+- 修复全量导入内存溢出：`KyMemberSyncService::sync()` 放宽 `memory_limit=512M` 并 `set_time_limit(0)`，两年预约流水不再 OOM。
+- 会员管理新增「门店」筛选（绿地店/东部店），客户经营栏目三页均支持门店筛选。
+
 ## 2026-08-28 ｜ fix: v3.1.4 升级脚本兼容宝塔锁定文件
 
 - `update.sh` 收尾属主整理对 `.user.ini` 等被宝塔 `chattr +i` 锁定的文件容错（storage/bootstrap-cache 仍严格归主），修复「更新脚本执行失败 chown: Operation not permitted」。
