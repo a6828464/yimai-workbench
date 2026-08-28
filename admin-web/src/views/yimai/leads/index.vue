@@ -80,34 +80,34 @@
             <span v-else class="text-gray-300">—</span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="券码 / 剩余" min-width="130">
+        <ElTableColumn label="体验课 / 券码" min-width="170">
           <template #default="{ row }">
-            <div v-if="row.couponName" class="text-xs">{{ row.couponName }}</div>
-            <div v-if="row.voucherCode" class="text-xs text-gray-500">{{ row.voucherCode }}</div>
-            <div v-if="row.couponTotal !== null && row.couponTotal !== undefined" class="text-xs">
-              <span class="text-orange-600 font-500">{{
-                row.couponRemaining ?? row.couponTotal
-              }}</span>
-              <span class="text-gray-400">/{{ row.couponTotal }} 次</span>
-            </div>
-            <div v-if="row.trialCards?.length" class="text-xs text-gray-400">
-              体验课 {{ row.trialCards.length }} 节：<template
-                v-for="(t, i) in row.trialCards"
-                :key="i"
-                >{{ t.voucherCode || '无券码'
-                }}<template v-if="i < row.trialCards.length - 1">、</template></template
-              >
-            </div>
-            <span
-              v-if="
-                !row.couponName &&
-                !row.voucherCode &&
-                !(row.couponTotal ?? null) &&
-                !row.trialCards?.length
-              "
-              class="text-gray-300"
-              >—</span
-            >
+            <template v-if="row.trialCards?.length">
+              <div v-for="(t, i) in row.trialCards" :key="i" class="text-xs leading-4">
+                <span class="text-gray-500">第{{ t.session }}节</span>
+                <template v-if="t.time || t.topic || t.teacher">
+                  <span class="text-gray-400"> · </span>
+                  <span>{{
+                    [t.time?.slice(5, 16), t.topic, t.teacher].filter(Boolean).join(' ')
+                  }}</span>
+                </template>
+                <div class="text-gray-400">
+                  <template v-if="t.couponName">{{ t.couponName }} </template>
+                  <template v-if="t.voucherCode">{{ t.voucherCode }}</template>
+                  <template v-if="t.total !== null && t.total !== undefined">
+                    <span class="text-orange-600 font-500">{{ t.remaining ?? t.total }}</span
+                    >/{{ t.total }}次
+                  </template>
+                </div>
+              </div>
+            </template>
+            <template v-else>
+              <div v-if="row.couponName || row.voucherCode" class="text-xs">
+                <div v-if="row.couponName" class="text-gray-500">{{ row.couponName }}</div>
+                <div v-if="row.voucherCode" class="text-gray-400">{{ row.voucherCode }}</div>
+              </div>
+              <span v-if="!row.couponName && !row.voucherCode" class="text-gray-300">—</span>
+            </template>
           </template>
         </ElTableColumn>
         <ElTableColumn prop="venue" label="门店" width="85">
@@ -313,72 +313,6 @@
         </ElRow>
         <ElRow :gutter="12">
           <ElCol :span="12">
-            <ElFormItem label="体验课时间">
-              <ElDatePicker
-                v-model="dialog.form.trialTime"
-                type="datetime"
-                format="YYYY-MM-DD HH:mm"
-                value-format="YYYY-MM-DD HH:mm"
-                class="!w-full"
-              />
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="12">
-            <ElFormItem label="体验课主题">
-              <ElInput v-model="dialog.form.trialTopic" placeholder="如：内观流/核心床小班" />
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="12">
-            <ElFormItem label="上课老师"
-              ><ElInput v-model="dialog.form.trialTeacher" placeholder="体验课/上课老师"
-            /></ElFormItem>
-          </ElCol>
-          <ElCol :span="12">
-            <ElFormItem label="券名称">
-              <ElInput
-                v-model="dialog.form.couponName"
-                placeholder="平台购买的券，如：体验课单次券"
-              />
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="12">
-            <ElFormItem label="券码总次数">
-              <ElInputNumber
-                v-model="dialog.form.couponTotal"
-                :min="0"
-                controls-position="right"
-                class="!w-full"
-                placeholder="券码共有几次"
-              />
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="12">
-            <ElFormItem label="券码剩余次数">
-              <ElInputNumber
-                v-model="dialog.form.couponRemaining"
-                :min="0"
-                controls-position="right"
-                class="!w-full"
-                placeholder="还剩几次"
-              />
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="12">
-            <ElFormItem label="平台券码">
-              <ElInput v-model="dialog.form.voucherCode" placeholder="团购券码" />
-            </ElFormItem>
-          </ElCol>
-          <ElCol :span="12">
-            <ElFormItem label="核销金额"
-              ><ElInputNumber
-                v-model="dialog.form.redeemAmount"
-                :min="0"
-                controls-position="right"
-                class="!w-full"
-                placeholder="团单核销"
-            /></ElFormItem>
-          </ElCol>
-          <ElCol :span="12">
             <ElFormItem label="成交卡项"
               ><ElInput v-model="dialog.form.dealCard" placeholder="成交时填写"
             /></ElFormItem>
@@ -395,16 +329,20 @@
           </ElCol>
         </ElRow>
 
-        <!-- 体验课卡片：第一节课/第二节课 各自券码 -->
+        <!-- 体验课卡片：每一节体验课单独记录（上课时间/主题/老师 + 使用的券） -->
         <ElCard shadow="never" class="!rounded-lg mb-4">
           <template #header>
             <div class="flex-cb">
-              <span class="font-500">体验课券码</span>
+              <span class="font-500">体验课</span>
               <ElButton type="primary" link size="small" @click="addTrialCard">
                 <i class="ri-add-line" /> 新增一节
               </ElButton>
             </div>
           </template>
+          <div class="text-xs text-gray-400 mb-3 leading-5">
+            每一节体验课填写上课时间、主题、上课老师以及核销用的券信息（下单平台 / 券名称 / 券码 /
+            次数）。
+          </div>
           <div v-if="dialog.form.trialCards.length" class="space-y-3">
             <div
               v-for="(card, idx) in dialog.form.trialCards"
@@ -412,7 +350,7 @@
               class="border border-dashed border-gray-300 rounded-lg p-3"
             >
               <div class="flex-cb mb-2">
-                <span class="text-sm font-500">第 {{ card.session }} 节课</span>
+                <span class="text-sm font-500">第 {{ card.session }} 节体验课</span>
                 <ElButton
                   link
                   type="danger"
@@ -425,8 +363,24 @@
               </div>
               <ElRow :gutter="12">
                 <ElCol :span="12">
-                  <ElFormItem label="券名称" class="!mb-2">
-                    <ElInput v-model="card.couponName" placeholder="如：体验课次卡" />
+                  <ElFormItem label="上课时间" class="!mb-2">
+                    <ElDatePicker
+                      v-model="card.time"
+                      type="datetime"
+                      format="YYYY-MM-DD HH:mm"
+                      value-format="YYYY-MM-DD HH:mm"
+                      class="!w-full"
+                    />
+                  </ElFormItem>
+                </ElCol>
+                <ElCol :span="12">
+                  <ElFormItem label="主题" class="!mb-2">
+                    <ElInput v-model="card.topic" placeholder="如：内观流/核心床小班" />
+                  </ElFormItem>
+                </ElCol>
+                <ElCol :span="12">
+                  <ElFormItem label="上课老师" class="!mb-2">
+                    <ElInput v-model="card.teacher" placeholder="本节上课老师" />
                   </ElFormItem>
                 </ElCol>
                 <ElCol :span="12">
@@ -434,6 +388,11 @@
                     <ElSelect v-model="card.platform" clearable class="!w-full">
                       <ElOption v-for="p in PLATFORM_OPTIONS" :key="p" :label="p" :value="p" />
                     </ElSelect>
+                  </ElFormItem>
+                </ElCol>
+                <ElCol :span="12">
+                  <ElFormItem label="券名称" class="!mb-2">
+                    <ElInput v-model="card.couponName" placeholder="如：体验课次卡" />
                   </ElFormItem>
                 </ElCol>
                 <ElCol :span="12">
@@ -461,10 +420,21 @@
                     />
                   </ElFormItem>
                 </ElCol>
+                <ElCol :span="12">
+                  <ElFormItem label="核销金额" class="!mb-0">
+                    <ElInputNumber
+                      v-model="card.redeem"
+                      :min="0"
+                      controls-position="right"
+                      class="!w-full"
+                      placeholder="本节券码核销金额"
+                    />
+                  </ElFormItem>
+                </ElCol>
               </ElRow>
             </div>
           </div>
-          <ElEmpty v-else description="点击「新增一节」录入第一节课券码" :image-size="40" />
+          <ElEmpty v-else description="点击「新增一节」录入第一节体验课信息" :image-size="40" />
         </ElCard>
 
         <ElFormItem label="备注">
@@ -619,16 +589,9 @@
       serviceTeacher: '',
       status: '新留资' as YimaiLead['status'],
       grade: '' as YimaiLead['grade'],
-      trialTime: '',
-      trialTopic: '',
-      trialTeacher: '',
       dealCard: '',
       dealAmount: null as number | null,
       redeemAmount: null as number | null,
-      voucherCode: '',
-      couponName: '',
-      couponTotal: null as number | null,
-      couponRemaining: null as number | null,
       trialCards: [] as NonNullable<YimaiLead['trialCards']>,
       remark: ''
     }
@@ -665,11 +628,15 @@
     const session = dialog.form.trialCards.length + 1
     dialog.form.trialCards.push({
       session,
+      time: '',
+      topic: '',
+      teacher: '',
       couponName: '',
-      voucherCode: '',
       platform: dialog.form.orderPlatform || '',
+      voucherCode: '',
       total: null,
-      remaining: null
+      remaining: null,
+      redeem: null
     })
   }
 
@@ -723,14 +690,6 @@
       status: row.status,
       trialCards: Array.isArray(row.trialCards) ? [...row.trialCards] : []
     } as unknown as ReturnType<typeof emptyForm>
-    if (form.couponTotal === null && row.couponTotal !== null && row.couponTotal !== undefined)
-      form.couponTotal = row.couponTotal
-    if (
-      form.couponRemaining === null &&
-      row.couponRemaining !== null &&
-      row.couponRemaining !== undefined
-    )
-      form.couponRemaining = row.couponRemaining
     dialog.form = form
     phoneChecked.value = false
     phoneCheck.value.matches = []
@@ -744,8 +703,20 @@
     }
     // 清理空的体验课卡片（未填任何内容不提交）
     dialog.form.trialCards = dialog.form.trialCards.filter(
-      (c) => c.couponName || c.voucherCode || c.platform || c.total || c.remaining
+      (c) =>
+        c.couponName ||
+        c.voucherCode ||
+        c.platform ||
+        c.total ||
+        c.remaining ||
+        c.redeem ||
+        c.time ||
+        c.topic ||
+        c.teacher
     )
+    // 核销金额汇总各节体验课，保证经营看板/平台统计口径一致
+    const redeemSum = dialog.form.trialCards.reduce((s, c) => s + (Number(c.redeem) || 0), 0)
+    dialog.form.redeemAmount = redeemSum > 0 ? redeemSum : null
     dialog.saving = true
     try {
       if (dialog.isCreate) {

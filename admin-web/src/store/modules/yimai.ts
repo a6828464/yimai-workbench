@@ -18,28 +18,33 @@ export interface YimaiLead {
   serviceTeacher: string
   status: '新留资' | '已联系' | '已约体验' | '已体验' | '已成交' | '已流失' | '爽约'
   grade: '' | 'A' | 'B' | 'C'
-  trialTime: string
-  trialTopic: string
-  trialTeacher: string
+  /** 历史单节体验课字段（已并入 trialCards 体验课卡片，仅兼容旧数据） */
+  trialTime?: string
+  trialTopic?: string
+  trialTeacher?: string
   dealCard: string
   dealAmount: number | null
-  /** 团单核销金额 */
+  /** 团单核销金额（多节体验课自动汇总） */
   redeemAmount: number | null
-  voucherCode: string
+  voucherCode?: string
   /** 平台购买的券名称 */
   couponName?: string
   /** 券码总次数 */
   couponTotal?: number | null
   /** 券码剩余次数 */
   couponRemaining?: number | null
-  /** 体验课节次卡片：第一节课/第二节课 各自券码等 */
+  /** 体验课节次卡片：每一节体验课（上课时间/主题/老师）与其核销券信息 */
   trialCards?: Array<{
     session: number
+    time: string
+    topic: string
+    teacher: string
     couponName: string
     voucherCode: string
     platform: string
     total?: number | null
     remaining?: number | null
+    redeem?: number | null
   }>
   remark: string
   createdBy: string
