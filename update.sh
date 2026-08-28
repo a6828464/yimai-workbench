@@ -23,10 +23,8 @@ if command -v python3 >/dev/null 2>&1; then
   PACKAGE_URL="$(curl --fail --silent --show-error --location --connect-timeout 15 --max-time 30 "$GITEE_API" \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name")=="yimai-workbench-latest.zip"), ""))' || true)"
 else
-  # 无 python3 时用 grep/sed 粗解析（不匹配则回退 GitHub）
   PACKAGE_URL="$(curl --fail --silent --show-error --location --connect-timeout 15 --max-time 30 "$GITEE_API" \
     | grep -o '"browser_download_url":"[^"]*yimai-workbench-latest\.zip"' | head -n1 | sed 's/.*":"//' || true)"
-  # 非 ASCII 字符会被 \u 转义，简单还原为纯英文路径（文件名不含中文，可忽略）
 fi
 
 echo "── 下载发行包来源：${PACKAGE_URL:-GitHub auto-latest}"
@@ -66,6 +64,12 @@ rsync -a \
 cd "$APP_ROOT"
 php artisan migrate --force
 php artisan optimize:clear
+
+# 统一文件属主：无论本次更新由后台按钮(www)还是计划任务(root)执行，
+# 更新完成后整体归回 www:www，保证下次任意方式都能覆盖写入，避免 rsync 权限失败。
+chown -R www:www "$APP_ROOT"
+chmod -R 755 "$APP_ROOT"
 chown -R www:www "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
+chmod -R 775 "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
 
 echo "更新完成"

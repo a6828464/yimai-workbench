@@ -3,6 +3,7 @@
 ## 2026-08-28 ｜ feat: v3.1.3 在线升级可用 + 更新日志/文档随版本同步
 
 - 修复后台「版本更新 → 立即更新」报 500：生产 PHP 的 `disable_functions` 禁用了 `proc_open`，Symfony Process 无法拉起更新脚本，已解除该限制（详见 DEPLOY.md 部署前置说明）。
+- 修复升级 rsync 权限失败：站点文件属主统一为 `www:www`；`update.sh` 更新完成后整体 `chown -R www:www` 并给 storage/bootstrap-cache 加写权限，保证后台按钮(www)与计划任务(root)后续都能覆盖写入。
 - 更新日志同步：构建产物把 `CHANGELOG.md` 一并放入 `backend/`，每次升级完成后「版本更新」页日志与版本保持一致；`make-release.sh` 与 GitHub Actions 同步调整。
 - 文档留痕：README 新增「版本记录」表，功能模块与当前实现对齐；DEPLOY.md 补充在线升级按钮的 PHP/open_basedir 前置要求。
 - 版本号同步更新（`VITE_VERSION` 3.1.3）。
