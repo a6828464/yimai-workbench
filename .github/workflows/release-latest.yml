@@ -35,6 +35,9 @@ jobs:
       - name: Assemble release package
         run: |
           set -euo pipefail
+          # 版本号以 CHANGELOG.md 首个版本标题为准，保证「版本号 / 更新日志 / 安装包名」三者一致
+          VERSION="$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -1 | tr -d 'v')"
+          echo "version=$VERSION"
           mkdir -p stage/app
           git archive --format=tar --worktree-attributes HEAD backend CHANGELOG.md | tar -x -C stage/app
           # 更新日志放入后端站内，保证每次升级后「版本更新」页日志与版本同步
@@ -48,17 +51,29 @@ jobs:
           printf '{"branch":"main","commit":"%s","message":"%s","date":"%s"}\n' "$(git rev-parse HEAD)" "$(git log -1 --pretty=%s)" "$(git log -1 --pretty=%ci)" > stage/app/backend/version.json
           rm -f stage/app/backend/public/install.php
           cd stage
-          zip -qr ../yimai-workbench-latest.zip app -x '*.DS_Store'
+          # 版本化安装包 + 固定名安装包（服务器 update.sh 依赖 yimai-workbench-latest.zip）
+          zip -qr "../yimai-workbench-v${VERSION}.zip" app -x '*.DS_Store'
+          cp "../yimai-workbench-v${VERSION}.zip" "../yimai-workbench-latest.zip"
 
       - name: Publish auto-latest release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          VERSION="$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -1 | tr -d 'v')"
+          # 取首个版本标题下的更新日志正文（到下一个版本标题为止）
+          NOTES="$(awk 'BEGIN{n=0} /^## /{n++; if(n==1) next; if(n==2) exit} n==1{print}' CHANGELOG.md | sed '/^[[:space:]]*$/d')"
           gh release delete auto-latest --yes 2>/dev/null || true
           gh release create auto-latest yimai-workbench-latest.zip \
             --target "$GITHUB_SHA" \
-            --title "自动构建 $GITHUB_SHA" \
-            --notes "由 main 分支最新提交自动构建。"
+            --title "一麦工作台 v${VERSION}" \
+            --notes "$(printf '%s' "$NOTES")"
+          # 版本化 tag release：与历史手工发布（v3.1.x）一致，带版本号与更新日志
+          gh release delete "v${VERSION}" --yes 2>/dev/null || true
+          gh release create "v${VERSION}" "yimai-workbench-v${VERSION}.zip" \
+            --target "$GITHUB_SHA" \
+            --title "一麦工作台 v${VERSION}" \
+            --notes "$(printf '%s' "$NOTES")"
 
       - name: Publish Gitee release
         # GitHub Actions 不允许在 if 条件里读 secrets/env，因此改为脚本内判断：未配置 Token 时直接跳过
@@ -72,8 +87,14 @@ jobs:
             echo "GITEE_TOKEN 未配置，跳过 Gitee 发布"
             exit 0
           fi
-          TAG="build-${GITHUB_SHA::7}"
-          BODY="由 main 分支提交 ${GITHUB_SHA} 自动构建。后台更新请使用该发行包。"
+          VERSION="$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -1 | tr -d 'v')"
+          NOTES="$(awk 'BEGIN{n=0} /^## /{n++; if(n==1) next; if(n==2) exit} n==1{print}' CHANGELOG.md | sed '/^[[:space:]]*$/d')"
+          TAG="v${VERSION}"
+          BODY="# 一麦工作台 v${VERSION}
+
+$(printf '%s' "$NOTES")
+---
+由 main 分支提交 ${GITHUB_SHA} 自动构建。后台更新请使用该发行包。"
           existing="$(curl --fail-with-body -sS -G "$GITEE_API/repos/$GITEE_REPO/releases" \
             --data-urlencode "access_token=$GITEE_TOKEN" \
             --data-urlencode "page=1" --data-urlencode "per_page=100")"
@@ -89,5 +110,7 @@ jobs:
             --data-urlencode "body=$BODY" \
             --data-urlencode "target_commitish=$GITHUB_SHA")"
           upload_url="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')"
+          curl --fail-with-body -sS -X POST "${upload_url}?access_token=$GITEE_TOKEN" \
+            -F "file=@yimai-workbench-v${VERSION}.zip"
           curl --fail-with-body -sS -X POST "${upload_url}?access_token=$GITEE_TOKEN" \
             -F "file=@yimai-workbench-latest.zip"
