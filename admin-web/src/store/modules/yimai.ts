@@ -169,7 +169,7 @@ const LEAD_LABELS: Record<string, string> = {
   demand: '需求/痛点',
   source: '来源',
   venue: '门店',
-  serviceTeacher: '服务老师',
+  serviceTeacher: '会籍顾问',
   status: '状态',
   grade: '客户分级',
   trialTime: '体验课时间',

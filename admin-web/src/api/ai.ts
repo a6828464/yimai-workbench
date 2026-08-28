@@ -78,7 +78,7 @@ export interface MomentsPersona {
   audiences: string[]
 }
 
-export const PERSONA_ROLES = ['瑜伽普拉提教练', '健身教练', '康复教练', '场馆主', '管理层', '销售顾问', '培训师']
+export const PERSONA_ROLES = ['瑜伽普拉提教练', '健身教练', '康复教练', '场馆主', '管理层', '会籍顾问', '培训师']
 export const AUDIENCE_OPTIONS = ['上班族', '宝妈', '零基础女性', '想减脂的人', '久坐肩颈人群', '产后妈妈', '想改善体态的人', '有训练经验但没效果的人']
 
 export interface MomentsInput {

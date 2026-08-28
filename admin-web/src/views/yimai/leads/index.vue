@@ -39,7 +39,7 @@
             <ElTag size="small" effect="plain">{{ row.venue }}</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="服务老师" width="95">
+        <ElTableColumn label="会籍顾问" width="95">
           <template #default="{ row }">
             <span v-if="row.serviceTeacher">{{ row.serviceTeacher }}</span>
             <ElTag v-else size="small" type="danger">待分配</ElTag>
@@ -154,7 +154,7 @@
             </ElFormItem>
           </ElCol>
           <ElCol v-if="canAssign" :span="8">
-            <ElFormItem label="服务老师">
+            <ElFormItem label="会籍顾问">
               <ElInput v-model="dialog.form.serviceTeacher" placeholder="店长/老板分配" />
             </ElFormItem>
           </ElCol>

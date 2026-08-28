@@ -25,7 +25,7 @@
         <ElSelect v-model="searchForm.list" placeholder="运营清单" clearable class="!w-36" @change="load">
           <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
         </ElSelect>
-        <ElSelect v-model="searchForm.consultant" placeholder="顾问" clearable class="!w-36" @change="load">
+        <ElSelect v-model="searchForm.consultant" placeholder="会籍顾问" clearable class="!w-36" @change="load">
           <ElOption value="待分配" label="待分配" />
           <ElOption v-for="c in consultantOptions" :key="c" :label="c" :value="c" />
         </ElSelect>
@@ -40,11 +40,11 @@
         <ElTableColumn label="会员" min-width="130" fixed="left">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
-            <div class="text-xs text-gray-400">{{ row.phone || '尾号' + row.phoneTail }}</div>
+            <div class="text-xs text-gray-400">{{ row.phone || '尾号' + row.phoneTail }}{{ row.source ? ` · ${row.source}` : '' }}</div>
           </template>
         </ElTableColumn>
 
-        <ElTableColumn label="顾问" min-width="90">
+        <ElTableColumn label="会籍顾问" min-width="100">
           <template #default="{ row }">
             <span v-if="row.consultant" class="text-sm">{{ row.consultant }}</span>
             <ElTag v-else size="small" type="danger" effect="plain">待分配</ElTag>
@@ -243,8 +243,8 @@
 </template>
 
 <script setup lang="ts">
-  import { queryCustomers, getMemberRules, setMemberRules, refreshMemberRules, computeMemberLists, updateMemberFields, EVAL_DIMENSIONS, evalTotalScore } from '@/api/yimai'
-  import type { YimaiCustomer, MemberListKey } from '@/api/yimai'
+  import { queryCustomers, getMemberRules, setMemberRules, refreshMemberRules, computeMemberLists, updateMemberFields, queryLeads, matchConsultants, EVAL_DIMENSIONS, evalTotalScore } from '@/api/yimai'
+  import type { YimaiCustomer, MemberListKey, YimaiLead } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { ElMessage, ElTag } from 'element-plus'
 
@@ -282,7 +282,7 @@
   const all = ref<YimaiCustomer[]>([])
   const rules = ref(getMemberRules())
 
-  /** 顾问下拉选项：来自在册会员的去重顾问名单 */
+  /** 会籍顾问下拉选项：来自在册会员（含手机号匹配留资）的去重会籍顾问名单 */
   const consultantOptions = computed<string[]>(() => {
     const set = new Set<string>()
     for (const c of all.value) {
@@ -347,15 +347,18 @@
       await refreshMemberRules()
       rules.value = getMemberRules()
       const listFilter = searchForm.value.list ? (searchForm.value.list as MemberListKey) : undefined
-      const res = await queryCustomers({
-        name: searchForm.value.name,
-        list: listFilter,
-        consultant: searchForm.value.consultant || undefined,
-        type: 'member',
-        current: 1,
-        size: 5000
-      })
-      all.value = res.records
+      const [res, leadsRes] = await Promise.all([
+        queryCustomers({
+          name: searchForm.value.name,
+          list: listFilter,
+          consultant: searchForm.value.consultant || undefined,
+          type: 'member',
+          current: 1,
+          size: 5000
+        }),
+        queryLeads({ current: 1, size: 5000 }).catch(() => ({ records: [] as YimaiLead[] }))
+      ])
+      all.value = matchConsultants(res.records ?? [], leadsRes.records ?? [])
     } finally {
       loading.value = false
     }

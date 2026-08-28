@@ -109,7 +109,7 @@
             <ElTableColumn prop="name" label="姓名" width="110" />
             <ElTableColumn prop="phone" label="手机号" width="120" />
             <ElTableColumn prop="source" label="来源" min-width="110" show-overflow-tooltip />
-            <ElTableColumn prop="consultant" label="顾问" width="90" />
+            <ElTableColumn prop="consultant" label="会籍顾问" width="90" />
             <ElTableColumn prop="createdAt" label="录入日期" width="105" />
             <ElTableColumn label="操作" width="120" fixed="right">
               <template #default="{ row }">

@@ -98,6 +98,24 @@ export interface CustomerDetail {
   leads: YimaiLead[]
 }
 
+/**
+ * 全系统统一口径：「会籍顾问」。
+ * 会员档案的会籍顾问优先取 KeepYoga 推的 consultant；为空时按手机号匹配留资里的服务老师，
+ * 避免同为「待分配」。返回新数组，不修改入参。
+ */
+export function matchConsultants(customers: YimaiCustomer[], leads: YimaiLead[]): YimaiCustomer[] {
+  const teacherByPhone = new Map<string, string>()
+  for (const l of leads) {
+    if (l.serviceTeacher && l.phone) teacherByPhone.set(l.phone, l.serviceTeacher)
+  }
+  return customers.map((c) => {
+    if ((c.consultant ?? '').trim() === '' && c.phone && teacherByPhone.has(c.phone)) {
+      return { ...c, consultant: teacherByPhone.get(c.phone) ?? '' }
+    }
+    return c
+  })
+}
+
 export async function getCustomerDetail(id: number): Promise<CustomerDetail> {
   if (USE_BACKEND) {
     return apiGet<CustomerDetail>(`/customers/${id}`)
