@@ -68,7 +68,9 @@ touch "$STAGE/storage/logs/.gitkeep"
 
 echo "── 4/4 压缩..."
 cd "$(dirname "$STAGE_ROOT")"
-ZIP="$REL/yimai-workbench-$(date +%Y%m%d-%H%M).zip"
+# 版本号以 CHANGELOG.md 首个版本标题为准，与线上发行包命名一致（如 yimai-workbench-v3.1.8.zip）
+VERSION="$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' "$ROOT/CHANGELOG.md" | head -1 | tr -d 'v')"
+ZIP="$REL/yimai-workbench-v${VERSION}.zip"
 zip -rq "$ZIP" "$(basename "$STAGE_ROOT")" -x '*.DS_Store'
 du -sh "$ZIP" | awk '{print "完成: "$1}'
 echo "安装包: $ZIP"
