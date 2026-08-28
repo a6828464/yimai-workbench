@@ -61,14 +61,17 @@ jobs:
             --notes "由 main 分支最新提交自动构建。"
 
       - name: Publish Gitee release
-        # 注意：step 级 if 条件拿不到本 step 的 env，只能用 secrets 上下文判断
-        if: ${{ secrets.GITEE_TOKEN != '' }}
+        # GitHub Actions 不允许在 if 条件里读 secrets/env，因此改为脚本内判断：未配置 Token 时直接跳过
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_API: https://gitee.com/api/v5
           GITEE_REPO: meng-taoo/yimai-workbench
         run: |
           set -euo pipefail
+          if [ -z "${GITEE_TOKEN:-}" ]; then
+            echo "GITEE_TOKEN 未配置，跳过 Gitee 发布"
+            exit 0
+          fi
           TAG="build-${GITHUB_SHA::7}"
           BODY="由 main 分支提交 ${GITHUB_SHA} 自动构建。后台更新请使用该发行包。"
           existing="$(curl --fail-with-body -sS -G "$GITEE_API/repos/$GITEE_REPO/releases" \
