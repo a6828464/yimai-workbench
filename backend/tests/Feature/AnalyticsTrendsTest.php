@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\KyBooking;
 use App\Models\Lead;
+use App\Models\Task;
 use App\Models\User;
 use App\Services\KyClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -26,6 +27,17 @@ class AnalyticsTrendsTest extends TestCase
             'venue' => '绿地店',
             'status' => '已体验',
         ]);
+        Lead::create([
+            'lead_date' => '2026-08-29',
+            'name' => '线上成交客',
+            'venue' => '绿地店',
+            'source' => '美团',
+            'order_platform' => '美团',
+            'status' => '已成交',
+            'deal_card' => '私教卡',
+            'deal_amount' => 3000,
+            'deal_at' => '2026-08-29 12:00:00',
+        ]);
         $this->booking('green-booked', '绿地店', '13800000001', 'booked');
         $this->booking('green-signed', '绿地店', '13800000002', 'signed');
         $this->booking('east-cancelled', '东部店', '13800000003', 'cancelled');
@@ -33,8 +45,13 @@ class AnalyticsTrendsTest extends TestCase
         $this->getJson('/api/analytics/trends?start=2026-08-29&end=2026-08-29&venue='.urlencode('绿地店'))
             ->assertOk()
             ->assertJsonPath('data.summary.bookingCount', 2)
-            ->assertJsonPath('data.summary.trialCount', 1)
-            ->assertJsonPath('data.summary.visitCount', 1);
+            ->assertJsonPath('data.summary.trialCount', 2)
+            ->assertJsonPath('data.summary.visitCount', 2)
+            ->assertJsonPath('data.summary.classCount', 1)
+            ->assertJsonPath('data.summary.cardSalesCount', 1)
+            ->assertJsonPath('data.summary.dealAmount', 3000)
+            ->assertJsonPath('data.summary.onlineLeadCount', 1)
+            ->assertJsonPath('data.summary.onlineDealRate', 100);
 
         $this->getJson('/api/analytics/trends?start=2026-08-29&end=2026-08-29&venue='.urlencode('东部店'))
             ->assertOk()
@@ -51,6 +68,27 @@ class AnalyticsTrendsTest extends TestCase
 
         $this->assertSame(3, $response['data']['total']);
         Http::assertSent(fn ($request) => $request->url() === KyClient::BASE.'/member/api/getvisitors');
+
+        Task::create([
+            'title' => '本店待办',
+            'customer_name' => '客户',
+            'venue' => '绿地店',
+            'owner' => '未分配',
+            'priority' => '中',
+            'deadline' => '2026-08-30 18:00',
+            'status' => '待接收',
+            'standard' => '完成处理',
+        ]);
+        $this->getJson('/api/notifications')
+            ->assertOk()
+            ->assertJsonPath('data.unreadCount', 1)
+            ->assertJsonPath('data.items.0.path', '/yimai/tasks');
+        $this->patchJson('/api/notifications/tasks-1/read')->assertOk();
+        $this->getJson('/api/notifications')->assertJsonPath('data.unreadCount', 0);
+
+        $this->assertSame('incomplete', contractPartyState(['customer_sign_status' => '待会员签署'], 'customer'));
+        $this->assertSame('completed', contractPartyState(['venue_sign_time' => '2026-08-29 10:00:00'], 'venue'));
+        $this->assertSame('unknown', contractPartyState([], 'customer'));
     }
 
     private function booking(string $key, string $venue, string $phone, string $status): void

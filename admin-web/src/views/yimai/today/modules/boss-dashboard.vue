@@ -38,9 +38,9 @@
     <!-- 门店经营 KPI（店长视角） -->
     <div class="text-sm font-500 mb-3 flex items-center gap-2">
       <span>门店经营</span>
-      <span class="text-xs font-400 text-gray-400">约课 · 体验 · 成交 · 金额</span>
+      <span class="text-xs font-400 text-gray-400">约课 · 上课班次 · 售卡 · 金额</span>
     </div>
-    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
       <YimaiKpiCard v-for="k in storeKpis" :key="k.label" v-bind="k" />
     </div>
 
@@ -48,7 +48,7 @@
     <ElRow :gutter="16" class="mb-5">
       <ElCol :xs="24" :lg="10" class="mb-4">
         <ElCard shadow="never">
-          <template #header><span class="font-500">双店成交对比（人数）</span></template>
+          <template #header><span class="font-500">双店门店经营对比</span></template>
           <ArtBarChart
             height="260px"
             :data="compareSeries"
@@ -61,7 +61,7 @@
       </ElCol>
       <ElCol :xs="24" :lg="14" class="mb-4">
         <ElCard shadow="never">
-          <template #header><span class="font-500">成交金额趋势（元）</span></template>
+          <template #header><span class="font-500">登记售卡金额趋势（元）</span></template>
           <ArtLineChart
             height="260px"
             :data="amountSeries"
@@ -77,7 +77,7 @@
     <!-- 新媒体运营 KPI -->
     <div class="text-sm font-500 mb-3 flex items-center gap-2">
       <span>新媒体运营</span>
-      <span class="text-xs font-400 text-gray-400">留资 · 私域 · 到店 · 核销</span>
+      <span class="text-xs font-400 text-gray-400">留资 · 到店 · 线上成交率 · 核销</span>
     </div>
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
       <YimaiKpiCard v-for="k in mediaKpis" :key="k.label" v-bind="k" />
@@ -117,17 +117,53 @@
         </ElCard>
       </ElCol>
     </ElRow>
+
+    <ElCard shadow="never" class="mt-1">
+      <template #header>
+        <div class="flex-cb">
+          <span class="font-500">未完成合同签署</span>
+          <span class="text-xs text-gray-400">{{ contractsFetchedAt || '尚未读取' }}</span>
+        </div>
+      </template>
+      <div v-if="contractError" class="text-sm text-orange-500">{{ contractError }}</div>
+      <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div
+          v-for="(item, venue) in contractVenues"
+          :key="venue"
+          class="rounded-lg bg-gray-50 dark:bg-gray-800 p-3"
+        >
+          <div class="font-500 mb-2">{{ venue }}</div>
+          <div class="flex gap-4 text-sm">
+            <span
+              >待会员签署 <b class="text-orange-500">{{ item.pendingCustomer }}</b></span
+            >
+            <span
+              >待场馆签署 <b class="text-red-500">{{ item.pendingVenue }}</b></span
+            >
+          </div>
+          <div v-if="!item.fieldConfirmed" class="mt-2 text-xs text-gray-400"
+            >暂无可确认的双方签署字段；未知 {{ item.unknown }} 条，不计入未签</div
+          >
+        </div>
+      </div>
+    </ElCard>
   </div>
 </template>
 
 <script setup lang="ts">
   import YimaiKpiCard from './kpi-card.vue'
-  import { getDashboardSeries, getChannelBreakdown, getTodaySummary } from '@/api/yimai'
+  import {
+    getDashboardSeries,
+    getChannelBreakdown,
+    getTodaySummary,
+    getPendingContracts
+  } from '@/api/yimai'
   import type {
     DashboardDayPoint,
     DashboardSummary,
     ChannelLeadItem,
-    TodaySummary
+    TodaySummary,
+    PendingContracts
   } from '@/api/yimai'
   import {
     Ticket,
@@ -135,7 +171,6 @@
     ShoppingBag,
     Wallet,
     DataLine,
-    Position,
     Coin,
     Odometer
   } from '@element-plus/icons-vue'
@@ -206,13 +241,13 @@
   const channelLabels = computed(() => channels.value.map((c) => c.channel))
   const channelSeries = computed(() => channels.value.map((c) => c.leads))
 
-  const compareLabels = ['成交人数', '体验人数', '约课人数']
+  const compareLabels = ['售卡张数', '上课班次', '约课人数']
   const compareSeries = computed(() => [
     {
       name: '绿地店',
       data: [
-        ldSummary.value?.dealCount ?? 0,
-        ldSummary.value?.trialCount ?? 0,
+        ldSummary.value?.cardSalesCount ?? 0,
+        ldSummary.value?.classCount ?? 0,
         ldSummary.value?.bookingCount ?? 0
       ],
       stack: undefined
@@ -220,8 +255,8 @@
     {
       name: '东部店',
       data: [
-        dbSummary.value?.dealCount ?? 0,
-        dbSummary.value?.trialCount ?? 0,
+        dbSummary.value?.cardSalesCount ?? 0,
+        dbSummary.value?.classCount ?? 0,
         dbSummary.value?.bookingCount ?? 0
       ]
     }
@@ -247,30 +282,24 @@
       accent: '#409EFF'
     },
     {
-      label: '体验人数',
-      value: summary.value?.trialCount ?? '-',
+      label: '上课班次',
+      value: summary.value?.classCount ?? '-',
+      hint: '随心瑜已签到，按课程/老师/时间去重',
       icon: markRaw(User),
       accent: '#E6A23C'
     },
     {
-      label: '成交人数',
-      value: summary.value?.dealCount ?? '-',
+      label: '售卡张数',
+      value: summary.value?.cardSalesCount ?? '-',
+      hint: '工作台已成交且登记卡项',
       icon: markRaw(ShoppingBag),
       accent: '#67C23A'
     },
     {
-      label: '成交率',
-      value: summary.value ? `${summary.value.dealRate}` : '-',
-      suffix: '%',
-      hint: '成交 ÷ 到店体验',
-      icon: markRaw(Odometer),
-      accent: '#F56C6C'
-    },
-    {
-      label: '成交金额',
+      label: '售卡金额',
       value: summary.value?.dealAmount ?? '-',
       prefix: '¥',
-      hint: '工作台登记口径',
+      hint: '工作台登记售卡口径，非财务实收',
       icon: markRaw(Wallet),
       accent: '#9C27B0'
     }
@@ -284,9 +313,11 @@
       accent: '#409EFF'
     },
     {
-      label: '转私域人数',
-      value: summary.value?.privateDomainCount ?? '-',
-      icon: markRaw(Position),
+      label: '线上新客成交率',
+      value: summary.value ? `${summary.value.onlineDealRate}` : '-',
+      suffix: '%',
+      hint: `${summary.value?.onlineDealCount ?? 0}/${summary.value?.onlineLeadCount ?? 0} 人`,
+      icon: markRaw(Odometer),
       accent: '#E6A23C'
     },
     {
@@ -304,6 +335,10 @@
       accent: '#FF9800'
     }
   ])
+
+  const contractVenues = ref<Awaited<ReturnType<typeof getPendingContracts>>['venues']>({})
+  const contractsFetchedAt = ref('')
+  const contractError = ref('')
 
   function onRangeChange(v: [string, string]) {
     range.value = v
@@ -331,16 +366,22 @@
         ldSummary.value = null
         dbSummary.value = null
       }
-      const [dash, ch, today] = await Promise.all([
+      const [dash, ch, today, contracts] = await Promise.all([
         getDashboardSeries(range.value[0], range.value[1], venueScope.value),
         getChannelBreakdown(range.value[0], range.value[1], venueScope.value),
         getTodaySummary(),
+        getPendingContracts().catch((error) => {
+          contractError.value = `合同读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
+          return { venues: {} as PendingContracts['venues'], fetchedAt: '' }
+        }),
         ...requests
       ])
       daily.value = dash.daily
       summary.value = dash.summary
       channels.value = ch
       todaySummary.value = today
+      contractVenues.value = contracts.venues
+      contractsFetchedAt.value = contracts.fetchedAt
     } finally {
       loading.value = false
     }

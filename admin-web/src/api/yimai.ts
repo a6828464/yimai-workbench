@@ -1091,6 +1091,8 @@ export interface DashboardDayPoint {
   leads: number
   privateDomain: number
   redeem: number
+  classes: number
+  cardSales: number
 }
 
 export interface DashboardSummary {
@@ -1105,6 +1107,11 @@ export interface DashboardSummary {
   redeemAmount: number
   leadToVisitRate: number
   memberTotal?: number
+  classCount: number
+  cardSalesCount: number
+  onlineLeadCount: number
+  onlineDealCount: number
+  onlineDealRate: number
 }
 
 export interface ChannelLeadItem {
@@ -1164,7 +1171,9 @@ function buildVenueDays(
       trials,
       deals,
       amount,
-      redeem
+      redeem,
+      classes: Math.max(0, Math.round(bookings * 0.6)),
+      cardSales: deals
     })
     cur.setDate(cur.getDate() + 1)
   }
@@ -1212,7 +1221,9 @@ export async function getDashboardSeries(
         amount: sum('amount'),
         leads: sum('leads'),
         privateDomain: sum('leads'),
-        redeem: sum('redeem')
+        redeem: sum('redeem'),
+        classes: sum('classes'),
+        cardSales: sum('cardSales')
       }
     })
     const s = t.summary ?? {}
@@ -1227,7 +1238,12 @@ export async function getDashboardSeries(
       privateDomainCount: s.leadCount ?? 0,
       redeemAmount: s.redeemAmount ?? 0,
       leadToVisitRate: s.leadToVisitRate ?? 0,
-      memberTotal: s.memberTotal ?? 0
+      memberTotal: s.memberTotal ?? 0,
+      classCount: s.classCount ?? 0,
+      cardSalesCount: s.cardSalesCount ?? 0,
+      onlineLeadCount: s.onlineLeadCount ?? 0,
+      onlineDealCount: s.onlineDealCount ?? 0,
+      onlineDealRate: s.onlineDealRate ?? 0
     }
     return { daily, summary }
   }
@@ -1252,6 +1268,8 @@ export async function getDashboardSeries(
         m.leads += p.leads
         m.privateDomain += p.privateDomain
         m.redeem += p.redeem
+        m.classes += p.classes
+        m.cardSales += p.cardSales
       }
     }
   }
@@ -1266,6 +1284,8 @@ export async function getDashboardSeries(
       p.leads = Math.round(p.leads * 0.28)
       p.privateDomain = Math.round(p.privateDomain * 0.28)
       p.redeem = Math.round(p.redeem * 0.28)
+      p.classes = Math.round(p.classes * 0.28)
+      p.cardSales = Math.round(p.cardSales * 0.28)
     }
   }
   const sum = (fn: (p: DashboardDayPoint) => number) => daily.reduce((s, p) => s + fn(p), 0)
@@ -1282,7 +1302,12 @@ export async function getDashboardSeries(
     leadCount,
     privateDomainCount: sum((p) => p.privateDomain),
     redeemAmount: sum((p) => p.redeem),
-    leadToVisitRate: leadCount > 0 ? Number(((visitCount / leadCount) * 100).toFixed(1)) : 0
+    leadToVisitRate: leadCount > 0 ? Number(((visitCount / leadCount) * 100).toFixed(1)) : 0,
+    classCount: sum((p) => p.classes),
+    cardSalesCount: sum((p) => p.cardSales),
+    onlineLeadCount: leadCount,
+    onlineDealCount: dealCount,
+    onlineDealRate: leadCount > 0 ? Number(((dealCount / leadCount) * 100).toFixed(1)) : 0
   }
   return { daily, summary }
 }
@@ -1579,6 +1604,65 @@ export function getTodaySummary(): Promise<TodaySummary> {
     scopeLabel: a.scopeVenue ? `本店 · ${a.scopeVenue}` : '双店',
     snapshotTime: a.isManager || a.isBoss ? (snap?.fetchedAt ?? '') : ''
   })
+}
+
+export interface PendingContractItem {
+  id: string
+  name: string
+  memberName: string
+  venue: '绿地店' | '东部店'
+  customerState: 'completed' | 'incomplete' | 'unknown'
+  venueState: 'completed' | 'incomplete' | 'unknown'
+  statusRaw: string
+}
+
+export interface PendingContracts {
+  venues: Record<
+    string,
+    {
+      pendingCustomer: number
+      pendingVenue: number
+      unknown: number
+      fieldConfirmed: boolean
+      items: PendingContractItem[]
+    }
+  >
+  fetchedAt: string
+}
+
+export function getPendingContracts(): Promise<PendingContracts> {
+  if (USE_BACKEND) return apiGet('/ky/pending-contracts')
+  return Promise.resolve({ venues: {}, fetchedAt: '' })
+}
+
+export interface BusinessNotification {
+  key: string
+  category: 'notice' | 'message' | 'todo'
+  level: 'info' | 'warning' | 'high'
+  title: string
+  detail: string
+  path: string
+  read: boolean
+}
+
+export function getNotifications(): Promise<{
+  items: BusinessNotification[]
+  unreadCount: number
+  refreshedAt: string
+}> {
+  return USE_BACKEND
+    ? apiGet('/notifications')
+    : Promise.resolve({ items: [], unreadCount: 0, refreshedAt: '' })
+}
+
+export function readNotification(key: string): Promise<unknown> {
+  return USE_BACKEND
+    ? apiPatch(`/notifications/${encodeURIComponent(key)}/read`, {})
+    : Promise.resolve()
+}
+
+export function readAllNotifications(): Promise<unknown> {
+  return USE_BACKEND ? apiPost('/notifications/read-all') : Promise.resolve()
 }
 
 function calcDays(date: string | null): number {

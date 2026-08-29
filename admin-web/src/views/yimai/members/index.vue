@@ -133,7 +133,7 @@
         </ElTableColumn>
 
         <!-- 出勤三列：所有清单通用展示 -->
-        <ElTableColumn label="M1/M2/M3出勤" width="120" align="center">
+        <ElTableColumn v-if="activeTab !== 'vip'" label="M1/M2/M3出勤" width="120" align="center">
           <template #default="{ row }">
             <span :class="declining(row) ? 'font-500 text-red-500' : ''">
               {{ row.attendM1 ?? '-' }} / {{ row.attendM2 ?? '-' }} / {{ row.attendM3 ?? '-' }}
@@ -141,7 +141,12 @@
           </template>
         </ElTableColumn>
 
-        <ElTableColumn label="剩余课时" width="90" align="center">
+        <ElTableColumn
+          v-if="activeTab === 'all' || activeTab === 'renewal'"
+          label="剩余课时"
+          width="90"
+          align="center"
+        >
           <template #default="{ row }">
             <span
               :class="
@@ -155,11 +160,16 @@
           </template>
         </ElTableColumn>
 
-        <ElTableColumn label="累计购买" width="90" align="center">
+        <ElTableColumn
+          v-if="activeTab === 'all' || activeTab === 'vip'"
+          label="累计购买"
+          width="90"
+          align="center"
+        >
           <template #default="{ row }">{{ row.totalPurchased ?? '—' }}</template>
         </ElTableColumn>
 
-        <ElTableColumn label="续费评估" width="145">
+        <ElTableColumn v-if="activeTab === 'renewal'" label="续费评估" width="145">
           <template #default="{ row }">
             <div v-if="row.evalScore !== null && row.evalScore !== undefined">
               <div class="flex items-center gap-1">
@@ -182,7 +192,7 @@
           </template>
         </ElTableColumn>
 
-        <ElTableColumn label="下一步动作" min-width="165">
+        <ElTableColumn v-if="activeTab !== 'all'" label="下一步动作" min-width="165">
           <template #default="{ row }">
             <div v-if="row.nextAction">
               <div class="text-sm font-500">{{ row.nextAction }}</div>
@@ -616,6 +626,11 @@
   const page = ref({ current: 1, size: 20 })
   const all = ref<YimaiCustomer[]>([])
   const rules = ref(getMemberRules())
+
+  watch(activeTab, (tab) => {
+    if (tab !== 'all') searchForm.value.list = ''
+    load()
+  })
 
   /** 会籍顾问下拉选项：来自在册会员（含手机号匹配留资）的去重会籍顾问名单 */
   const consultantOptions = computed<string[]>(() => {

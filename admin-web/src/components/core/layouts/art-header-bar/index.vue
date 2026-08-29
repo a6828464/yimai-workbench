@@ -116,7 +116,10 @@
           class="notice-button relative"
           @click="visibleNotice"
         >
-          <div class="absolute top-2 right-2 size-1.5 !bg-danger rounded-full"></div>
+          <div
+            v-if="noticeUnread > 0"
+            class="absolute top-2 right-2 min-w-1.5 h-1.5 !bg-danger rounded-full"
+          ></div>
         </ArtIconButton>
 
         <!-- 聊天按钮 -->
@@ -164,7 +167,11 @@
     <ArtWorkTab />
 
     <!-- 通知 -->
-    <ArtNotification v-model:value="showNotice" ref="notice" />
+    <ArtNotification
+      v-model:value="showNotice"
+      ref="notice"
+      @unread-change="noticeUnread = $event"
+    />
   </div>
 </template>
 
@@ -220,6 +227,7 @@
   const { menuList } = storeToRefs(menuStore)
 
   const showNotice = ref(false)
+  const noticeUnread = ref(0)
   const notice = ref(null)
 
   // 菜单类型判断

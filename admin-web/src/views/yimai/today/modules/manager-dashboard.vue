@@ -32,7 +32,7 @@
     </div>
 
     <!-- KPI -->
-    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
       <YimaiKpiCard v-for="k in kpis" :key="k.label" v-bind="k" />
     </div>
 
@@ -40,7 +40,7 @@
     <ElRow :gutter="16" class="mb-4">
       <ElCol :xs="24" :lg="14" class="mb-4">
         <ElCard shadow="never">
-          <template #header><span class="font-500">成交金额趋势（元）</span></template>
+          <template #header><span class="font-500">登记售卡金额趋势（元）</span></template>
           <ArtLineChart
             height="280px"
             :data="amountSeries"
@@ -55,10 +55,10 @@
         <ElCard shadow="never">
           <template #header>
             <div class="flex-cb">
-              <span class="font-500">约课 / 体验 / 成交（人）</span>
+              <span class="font-500">约课 / 上课班次 / 售卡（张）</span>
               <div class="flex gap-3 text-xs text-gray-400">
-                <span>— 约课</span><span style="color: var(--el-color-primary)">— 体验</span
-                ><span style="color: var(--el-color-success)">— 成交</span>
+                <span>— 约课</span><span style="color: var(--el-color-primary)">— 上课</span
+                ><span style="color: var(--el-color-success)">— 售卡</span>
               </div>
             </div>
           </template>
@@ -73,6 +73,22 @@
       </ElCol>
     </ElRow>
 
+    <ElCard shadow="never" class="mb-4">
+      <template #header><span class="font-500">未完成合同签署</span></template>
+      <div v-if="contractError" class="text-sm text-orange-500">{{ contractError }}</div>
+      <div v-else-if="contractVenue" class="flex flex-wrap gap-5 text-sm">
+        <span
+          >待会员签署 <b class="text-orange-500">{{ contractVenue.pendingCustomer }}</b></span
+        >
+        <span
+          >待场馆签署 <b class="text-red-500">{{ contractVenue.pendingVenue }}</b></span
+        >
+        <span v-if="!contractVenue.fieldConfirmed" class="text-xs text-gray-400"
+          >上游签署字段尚未确认，未知 {{ contractVenue.unknown }} 条未计入</span
+        >
+      </div>
+    </ElCard>
+
     <!-- 待办区 -->
     <ElRow :gutter="16">
       <ElCol :xs="24" :lg="14" class="mb-4">
@@ -80,8 +96,8 @@
           <template #header>
             <div class="flex items-center justify-between">
               <span class="font-500">待跟进队列</span>
-              <ElButton link type="primary" @click="$router.push('/yimai/customers')"
-                >进入客户经营池</ElButton
+              <ElButton link type="primary" @click="$router.push('/yimai/members')"
+                >进入会员管理</ElButton
               >
             </div>
           </template>
@@ -147,16 +163,23 @@
 
 <script setup lang="ts">
   import YimaiKpiCard from './kpi-card.vue'
-  import { getDashboardSeries, getFollowupQueue, getRiskAlerts, getTodaySummary } from '@/api/yimai'
+  import {
+    getDashboardSeries,
+    getFollowupQueue,
+    getRiskAlerts,
+    getTodaySummary,
+    getPendingContracts
+  } from '@/api/yimai'
   import type {
     YimaiCustomer,
     DashboardDayPoint,
     DashboardSummary,
-    TodaySummary
+    TodaySummary,
+    PendingContracts
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import DateRangeControl from './date-range-control.vue'
-  import { User, Ticket, ShoppingBag, Wallet, Odometer } from '@element-plus/icons-vue'
+  import { User, Ticket, ShoppingBag, Wallet } from '@element-plus/icons-vue'
   import type { LineDataItem } from '@/types/component/chart'
 
   defineOptions({ name: 'ManagerDashboard' })
@@ -212,8 +235,8 @@
   const amountSeries = computed(() => daily.value.map((p) => p.amount))
   const funnelSeries = computed<LineDataItem[]>(() => [
     { name: '约课', data: daily.value.map((p) => p.bookings) },
-    { name: '体验', data: daily.value.map((p) => p.trials) },
-    { name: '成交', data: daily.value.map((p) => p.deals) }
+    { name: '上课班次', data: daily.value.map((p) => p.classes) },
+    { name: '售卡', data: daily.value.map((p) => p.cardSales) }
   ])
   const todayBookingCount = computed(() => {
     const venue = userStore.getUserInfo.venue as '绿地店' | '东部店'
@@ -232,34 +255,32 @@
       accent: '#409EFF'
     },
     {
-      label: '体验人数',
-      value: summary.value?.trialCount ?? '-',
+      label: '上课班次',
+      value: summary.value?.classCount ?? '-',
+      hint: '随心瑜已签到，按课程/老师/时间去重',
       icon: markRaw(User),
       accent: '#E6A23C'
     },
     {
-      label: '成交人数',
-      value: summary.value?.dealCount ?? '-',
+      label: '售卡张数',
+      value: summary.value?.cardSalesCount ?? '-',
+      hint: '工作台已成交且登记卡项',
       icon: markRaw(ShoppingBag),
       accent: '#67C23A'
     },
     {
-      label: '成交率',
-      value: summary.value ? `${summary.value.dealRate}` : '-',
-      suffix: '%',
-      hint: '成交 ÷ 到店体验',
-      icon: markRaw(Odometer),
-      accent: '#F56C6C'
-    },
-    {
-      label: '成交金额',
+      label: '售卡金额',
       value: summary.value?.dealAmount ?? '-',
       prefix: '¥',
-      hint: '统计口径：工作台登记成交',
+      hint: '工作台登记售卡口径，非财务实收',
       icon: markRaw(Wallet),
       accent: '#9C27B0'
     }
   ])
+  const contractVenue = ref<
+    Awaited<ReturnType<typeof getPendingContracts>>['venues'][string] | null
+  >(null)
+  const contractError = ref('')
 
   const layerConfig: Record<
     string,
@@ -281,17 +302,27 @@
   async function reload() {
     loading.value = true
     try {
-      const [dash, f, r, today] = await Promise.all([
-        getDashboardSeries(range.value[0], range.value[1], '双店'),
+      const [dash, f, r, today, contracts] = await Promise.all([
+        getDashboardSeries(
+          range.value[0],
+          range.value[1],
+          userStore.getUserInfo.venue as '绿地店' | '东部店'
+        ),
         getFollowupQueue(),
         getRiskAlerts(),
-        getTodaySummary()
+        getTodaySummary(),
+        getPendingContracts().catch((error) => {
+          contractError.value = `合同读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
+          return { venues: {} as PendingContracts['venues'], fetchedAt: '' }
+        })
       ])
       daily.value = dash.daily
       summary.value = dash.summary
       followups.value = f
       risks.value = r
       todaySummary.value = today
+      const venue = userStore.getUserInfo.venue as '绿地店' | '东部店'
+      contractVenue.value = contracts.venues[venue] ?? null
     } finally {
       loading.value = false
     }

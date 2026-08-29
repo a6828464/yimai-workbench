@@ -15,6 +15,7 @@ use App\Models\TrainingPlan;
 use App\Models\User;
 use App\Services\KyClient;
 use App\Services\KyMemberSyncService;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -95,7 +96,14 @@ Route::middleware('auth:sanctum')->group(function () {
         $d = $r->validate([
             'name' => 'required|string', 'source' => 'required|string', 'venue' => 'required|string',
         ]);
-        $lead = Lead::create(camelToSnake($r->all()) + ['created_by' => $r->user()->name, 'status' => $r->input('status', '新留资')]);
+        $values = camelToSnake($r->all()) + ['created_by' => $r->user()->name, 'status' => $r->input('status', '新留资')];
+        if ($values['status'] === '已成交') {
+            $values['deal_at'] = now();
+        }
+        if ((int) ($values['redeem_amount'] ?? 0) > 0) {
+            $values['redeemed_at'] = now();
+        }
+        $lead = Lead::create($values);
         audit($r, '新增', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue, '录入客资');
 
         return ok(['id' => $lead->id]);
@@ -104,7 +112,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/leads/{id}', function (Request $r, int $id) {
         $lead = Lead::findOrFail($id);
         $before = camel($lead)->toJson();
-        $lead->update(camelToSnake($r->all()));
+        $changes = camelToSnake($r->all());
+        if (($changes['status'] ?? null) === '已成交' && ! $lead->deal_at) {
+            $changes['deal_at'] = now();
+        }
+        if ((int) ($changes['redeem_amount'] ?? 0) > 0 && ! $lead->redeemed_at) {
+            $changes['redeemed_at'] = now();
+        }
+        $lead->update($changes);
         audit($r, '修改', '前端客资', $id, "{$lead->name}（{$lead->source}）", $lead->venue, '字段更新');
 
         return ok(['before' => json_decode($before), 'after' => camel($lead)]);
@@ -501,6 +516,54 @@ Route::middleware('auth:sanctum')->group(function () {
         } catch (Throwable $e) {
             return response()->json(['code' => 1, 'message' => $e->getMessage()]);
         }
+    });
+
+    Route::get('/ky/pending-contracts', function (Request $r) {
+        abort_unless(in_array($r->user()->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可查看合同');
+        $stores = ['绿地店' => '1', '东部店' => '4250'];
+        if ($r->user()->role === 'R_MANAGER') {
+            $stores = [$r->user()->venue => $stores[$r->user()->venue]];
+        }
+        $result = [];
+        foreach ($stores as $venue => $venueId) {
+            $response = KyClient::call('venue/api/getallcontractlist', [
+                'venue_id' => $venueId,
+                'page_index' => 1,
+                'page_size' => 200,
+                'contract_status' => '0',
+                'contract_name' => '',
+                'initiator_emp_name' => '',
+                'venue_signatory_emp_name' => '',
+                'customer_signatory_search' => '',
+                'initiator_start_date' => '',
+                'initiator_end_date' => '',
+            ]);
+            $rows = contractRows($response);
+            $items = collect($rows)->map(function ($row) use ($venue) {
+                $customer = contractPartyState($row, 'customer');
+                $venueState = contractPartyState($row, 'venue');
+
+                return [
+                    'id' => (string) ($row['id'] ?? $row['contract_id'] ?? $row['contract_no'] ?? ''),
+                    'name' => (string) ($row['contract_name'] ?? $row['name'] ?? '未命名合同'),
+                    'memberName' => (string) ($row['member_name'] ?? $row['customer_name'] ?? $row['m_name'] ?? ''),
+                    'venue' => $venue,
+                    'customerState' => $customer,
+                    'venueState' => $venueState,
+                    'statusRaw' => (string) ($row['contract_status_desc'] ?? $row['status_desc'] ?? $row['status'] ?? ''),
+                ];
+            });
+            $pending = $items->filter(fn ($item) => in_array('incomplete', [$item['customerState'], $item['venueState']], true))->values();
+            $result[$venue] = [
+                'pendingCustomer' => $pending->where('customerState', 'incomplete')->count(),
+                'pendingVenue' => $pending->where('venueState', 'incomplete')->count(),
+                'unknown' => $items->filter(fn ($item) => in_array('unknown', [$item['customerState'], $item['venueState']], true))->count(),
+                'items' => $pending->take(20)->all(),
+                'fieldConfirmed' => $items->contains(fn ($item) => ! in_array('unknown', [$item['customerState'], $item['venueState']], true)),
+            ];
+        }
+
+        return ok(['venues' => $result, 'fetchedAt' => now()->format('Y-m-d H:i:s')]);
     });
 
     // ---------- 随心瑜账号配置（仅超管，存数据库，可切换） ----------
@@ -959,7 +1022,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         $start = $r->query('start') ?: now()->startOfMonth()->toDateString();
         $end = $r->query('end') ?: now()->toDateString();
-        $leads = $leadQ->whereBetween('lead_date', [$start, $end])->get();
+        $leads = (clone $leadQ)->whereBetween('lead_date', [$start, $end])->get();
 
         $byDate = [];
         $bucket = function (string $date, string $venue, $l) use (&$byDate): void {
@@ -972,24 +1035,41 @@ Route::middleware('auth:sanctum')->group(function () {
             if (in_array($l->status, ['已体验', '已成交'], true)) {
                 $byDate[$date][$venue]['experienced'] = ($byDate[$date][$venue]['experienced'] ?? 0) + 1;
             }
-            if ($l->status === '已成交') {
-                $byDate[$date][$venue]['deals'] = ($byDate[$date][$venue]['deals'] ?? 0) + 1;
-            }
-            if ($l->deal_amount) {
-                $byDate[$date][$venue]['amount'] = ($byDate[$date][$venue]['amount'] ?? 0) + (int) $l->deal_amount;
-            }
-            if ($l->redeem_amount) {
-                $byDate[$date][$venue]['redeem'] = ($byDate[$date][$venue]['redeem'] ?? 0) + (int) $l->redeem_amount;
-            }
         };
         foreach ($leads as $l) {
             $d = (string) $l->lead_date;
             $bucket($d, $l->venue ?: '双店', $l);
         }
 
+        // 售卡按成交发生时间统计；历史数据没有事件时间时兼容回退留资日期。
+        $sales = (clone $leadQ)->where('status', '已成交')->get()->filter(function ($lead) use ($start, $end) {
+            $date = $lead->deal_at?->toDateString() ?: (string) $lead->lead_date;
+
+            return $date >= $start && $date <= $end;
+        });
+        foreach ($sales as $sale) {
+            $date = $sale->deal_at?->toDateString() ?: (string) $sale->lead_date;
+            $saleVenue = $sale->venue ?: '双店';
+            $byDate[$date][$saleVenue]['deals'] = ($byDate[$date][$saleVenue]['deals'] ?? 0) + 1;
+            $byDate[$date][$saleVenue]['card_sales'] = ($byDate[$date][$saleVenue]['card_sales'] ?? 0)
+                + (trim((string) $sale->deal_card) !== '' ? 1 : 0);
+            if (trim((string) $sale->deal_card) !== '') {
+                $byDate[$date][$saleVenue]['amount'] = ($byDate[$date][$saleVenue]['amount'] ?? 0) + (int) $sale->deal_amount;
+            }
+        }
+        $redeems = (clone $leadQ)->where('redeem_amount', '>', 0)->get()->filter(function ($lead) use ($start, $end) {
+            $date = $lead->redeemed_at?->toDateString() ?: (string) $lead->lead_date;
+
+            return $date >= $start && $date <= $end;
+        });
+        foreach ($redeems as $redeem) {
+            $date = $redeem->redeemed_at?->toDateString() ?: (string) $redeem->lead_date;
+            $redeemVenue = $redeem->venue ?: '双店';
+            $byDate[$date][$redeemVenue]['redeem'] = ($byDate[$date][$redeemVenue]['redeem'] ?? 0) + (int) $redeem->redeem_amount;
+        }
+
         // 随心瑜体验预约是实际排课事实；按日、门店、人员去重后补足 CRM 留资状态统计。
         $bookingQ = KyBooking::query()
-            ->where('is_trial', true)
             ->whereBetween('start_at', [$start.' 00:00:00', $end.' 23:59:59']);
         if ($u->role !== 'R_SUPER' && $u->venue) {
             $bookingQ->where('venue', $u->venue);
@@ -1007,7 +1087,17 @@ Route::middleware('auth:sanctum')->group(function () {
                 $kyByDate[$date][$booking->venue]['booked'][$identity] = true;
             }
             if ($booking->status === 'signed') {
-                $kyByDate[$date][$booking->venue]['experienced'][$identity] = true;
+                $session = implode('|', [
+                    $booking->venue,
+                    $booking->start_at?->format('Y-m-d H:i'),
+                    $booking->course_name,
+                    $booking->teacher_name,
+                    $booking->booking_type,
+                ]);
+                $kyByDate[$date][$booking->venue]['classes'][$session] = true;
+                if ($booking->is_trial) {
+                    $kyByDate[$date][$booking->venue]['experienced'][$identity] = true;
+                }
             }
         }
         foreach ($kyByDate as $date => $venues) {
@@ -1020,7 +1110,11 @@ Route::middleware('auth:sanctum')->group(function () {
                     $byDate[$date][$bookingVenue]['experienced'] ?? 0,
                     count($counts['experienced'] ?? [])
                 );
+                $byDate[$date][$bookingVenue]['classes'] = count($counts['classes'] ?? []);
             }
+        }
+        for ($date = CarbonImmutable::parse($start); $date->lte(CarbonImmutable::parse($end)); $date = $date->addDay()) {
+            $byDate[$date->toDateString()] = $byDate[$date->toDateString()] ?? [];
         }
 
         // 客户到店分布（最近30天有到店记录）
@@ -1042,6 +1136,8 @@ Route::middleware('auth:sanctum')->group(function () {
         $totalBooked = $sumKey('booked');
         $totalExperienced = $sumKey('experienced');
         $totalDeals = $sumKey('deals');
+        $totalCardSales = $sumKey('card_sales');
+        $totalClasses = $sumKey('classes');
         $totalAmount = $sumKey('amount');
         $totalRedeem = $sumKey('redeem');
 
@@ -1054,6 +1150,8 @@ Route::middleware('auth:sanctum')->group(function () {
                         'booked' => $c['booked'] ?? 0,
                         'experienced' => $c['experienced'] ?? 0,
                         'deals' => $c['deals'] ?? 0,
+                        'cardSales' => $c['card_sales'] ?? 0,
+                        'classes' => $c['classes'] ?? 0,
                         'amount' => $c['amount'] ?? 0,
                         'redeem' => $c['redeem'] ?? 0,
                     ];
@@ -1068,10 +1166,16 @@ Route::middleware('auth:sanctum')->group(function () {
                 'visitCount' => $totalExperienced,
                 'trialCount' => $totalExperienced,
                 'dealCount' => $totalDeals,
+                'cardSalesCount' => $totalCardSales,
+                'classCount' => $totalClasses,
                 'dealAmount' => $totalAmount,
                 'redeemAmount' => $totalRedeem,
                 'dealRate' => $totalExperienced > 0 ? round($totalDeals / $totalExperienced * 100, 1) : 0,
                 'leadToVisitRate' => $totalLeads > 0 ? min(100, round($totalExperienced / $totalLeads * 100, 1)) : 0,
+                'onlineLeadCount' => $leads->filter(fn ($lead) => isOnlineLead($lead))->count(),
+                'onlineDealCount' => $leads->filter(fn ($lead) => isOnlineLead($lead) && $lead->status === '已成交')->count(),
+                'onlineDealRate' => ($onlineLeads = $leads->filter(fn ($lead) => isOnlineLead($lead))->count()) > 0
+                    ? round($leads->filter(fn ($lead) => isOnlineLead($lead) && $lead->status === '已成交')->count() / $onlineLeads * 100, 1) : 0,
             ],
             'visit30' => $visit30,
             'activeCustomers' => $activeCustomers,
@@ -1127,15 +1231,33 @@ Route::middleware('auth:sanctum')->group(function () {
         }
         $start = $r->query('start') ?: now()->startOfMonth()->toDateString();
         $end = $r->query('end') ?: now()->toDateString();
-        $leads = $leadQ->whereBetween('lead_date', [$start, $end])->get();
+        $leadCohort = (clone $leadQ)->whereBetween('lead_date', [$start, $end])->get();
+        $sales = (clone $leadQ)->where('status', '已成交')->get()->filter(function ($lead) use ($start, $end) {
+            $date = $lead->deal_at?->toDateString() ?: (string) $lead->lead_date;
+
+            return $date >= $start && $date <= $end;
+        });
+        $redeems = (clone $leadQ)->where('redeem_amount', '>', 0)->get()->filter(function ($lead) use ($start, $end) {
+            $date = $lead->redeemed_at?->toDateString() ?: (string) $lead->lead_date;
+
+            return $date >= $start && $date <= $end;
+        });
 
         $platforms = [];
-        foreach ($leads as $l) {
+        foreach ($leadCohort as $l) {
             $platform = trim((string) $l->order_platform) !== '' ? $l->order_platform : (trim((string) $l->source) !== '' ? $l->source : '其他');
             $platforms[$platform] = $platforms[$platform] ?? ['redeem' => 0, 'deal' => 0, 'leads' => 0];
-            $platforms[$platform]['redeem'] += (int) $l->redeem_amount;
-            $platforms[$platform]['deal'] += (int) $l->deal_amount;
             $platforms[$platform]['leads'] += 1;
+        }
+        foreach ($sales as $sale) {
+            $platform = trim((string) $sale->order_platform) !== '' ? $sale->order_platform : (trim((string) $sale->source) !== '' ? $sale->source : '其他');
+            $platforms[$platform] = $platforms[$platform] ?? ['redeem' => 0, 'deal' => 0, 'leads' => 0];
+            $platforms[$platform]['deal'] += (int) $sale->deal_amount;
+        }
+        foreach ($redeems as $redeem) {
+            $platform = trim((string) $redeem->order_platform) !== '' ? $redeem->order_platform : (trim((string) $redeem->source) !== '' ? $redeem->source : '其他');
+            $platforms[$platform] = $platforms[$platform] ?? ['redeem' => 0, 'deal' => 0, 'leads' => 0];
+            $platforms[$platform]['redeem'] += (int) $redeem->redeem_amount;
         }
 
         $rows = [];
@@ -1146,9 +1268,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
         return ok([
             'rows' => $rows,
-            'totalDeal' => (int) $leads->sum('deal_amount'),
-            'totalRedeem' => (int) $leads->sum('redeem_amount'),
-            'dealCount' => $leads->where('status', '已成交')->count(),
+            'totalDeal' => (int) $sales->sum('deal_amount'),
+            'totalRedeem' => (int) $redeems->sum('redeem_amount'),
+            'dealCount' => $sales->count(),
         ]);
     });
 
@@ -1206,6 +1328,36 @@ Route::middleware('auth:sanctum')->group(function () {
             'scopeLabel' => $u->venue ? "本店 · {$u->venue}" : '双店',
             'snapshotTime' => in_array($u->role, ['R_SUPER', 'R_MANAGER'], true) ? (string) ($snap['fetchedAt'] ?? '') : '',
         ]);
+    });
+
+    Route::get('/notifications', function (Request $r) {
+        $items = businessNotifications($r->user());
+        $readKeys = DB::table('notification_reads')->where('user_id', $r->user()->id)->pluck('notification_key')->all();
+        $items = collect($items)->map(fn ($item) => $item + ['read' => in_array($item['key'], $readKeys, true)])->values();
+
+        return ok(['items' => $items, 'unreadCount' => $items->where('read', false)->count(), 'refreshedAt' => now()->format('Y-m-d H:i:s')]);
+    });
+
+    Route::post('/notifications/read-all', function (Request $r) {
+        $now = now();
+        foreach (businessNotifications($r->user()) as $item) {
+            DB::table('notification_reads')->updateOrInsert(
+                ['user_id' => $r->user()->id, 'notification_key' => $item['key']],
+                ['read_at' => $now]
+            );
+        }
+
+        return ok(['read' => true]);
+    });
+
+    Route::patch('/notifications/{key}/read', function (Request $r, string $key) {
+        abort_unless(collect(businessNotifications($r->user()))->contains('key', $key), 404);
+        DB::table('notification_reads')->updateOrInsert(
+            ['user_id' => $r->user()->id, 'notification_key' => $key],
+            ['read_at' => now()]
+        );
+
+        return ok(['read' => true]);
     });
 
     Route::get('/today/followups', function (Request $r) {
@@ -1366,6 +1518,98 @@ if (! function_exists('ok')) {
     function requireSuper(Request $request): void
     {
         abort_unless($request->user()?->role === 'R_SUPER', 403, '仅超管可执行此操作');
+    }
+
+    function isOnlineLead(Lead $lead): bool
+    {
+        $text = implode(' ', [(string) $lead->source, (string) $lead->order_platform]);
+
+        return (bool) preg_match('/美团|大众点评|抖音|小红书|视频号|线上|团购/u', $text);
+    }
+
+    function contractRows(array $response): array
+    {
+        $data = $response['data'] ?? [];
+        if (array_is_list($data)) {
+            return array_values(array_filter($data, 'is_array'));
+        }
+        foreach (['contracts', 'list', 'rows', 'items', 'data'] as $key) {
+            if (isset($data[$key]) && is_array($data[$key])) {
+                return array_values(array_filter($data[$key], 'is_array'));
+            }
+        }
+
+        return [];
+    }
+
+    function contractPartyState(array $row, string $party): string
+    {
+        $prefixes = $party === 'customer' ? ['customer', 'member', 'm'] : ['venue', 'gym'];
+        $complete = '/已签署|签署完成|已完成|completed|signed/i';
+        $incomplete = '/未签署|待签署|待会员签署|待场馆签署|签署中|incomplete|pending|unsigned/i';
+        foreach ($prefixes as $prefix) {
+            foreach (["{$prefix}_sign_status", "{$prefix}_signature_status", "{$prefix}_sign_status_desc"] as $key) {
+                $value = (string) ($row[$key] ?? '');
+                if ($value !== '' && preg_match($complete, $value)) {
+                    return 'completed';
+                }
+                if ($value !== '' && preg_match($incomplete, $value)) {
+                    return 'incomplete';
+                }
+            }
+            foreach (["{$prefix}_sign_time", "{$prefix}_signed_at", "{$prefix}_signature_id"] as $key) {
+                if (! empty($row[$key])) {
+                    return 'completed';
+                }
+            }
+        }
+
+        return 'unknown';
+    }
+
+    function businessNotifications(User $user): array
+    {
+        $items = [];
+        $taskQ = Task::query()->whereNotIn('status', ['已完成']);
+        if ($user->role === 'R_MANAGER') {
+            $taskQ->where('venue', $user->venue);
+        } elseif ($user->role === 'R_TEACHER') {
+            $taskQ->where('venue', $user->venue)->where('owner', $user->name);
+        } elseif ($user->role === 'R_MEDIA') {
+            $taskQ->where('owner', $user->name);
+        }
+        $taskCount = $taskQ->count();
+        if ($taskCount > 0) {
+            $items[] = ['key' => 'tasks-'.$taskCount, 'category' => 'todo', 'level' => 'warning', 'title' => "有 {$taskCount} 项任务待处理", 'detail' => $user->role === 'R_SUPER' ? '双店任务' : ($user->venue ?: '本人任务'), 'path' => '/yimai/tasks'];
+        }
+        if (in_array($user->role, ['R_SUPER', 'R_MANAGER', 'R_TEACHER'], true)) {
+            $customerQ = scopeCustomersForUser(Customer::query(), $user)->whereIn('id', filteredIds('待续课'));
+            $renewals = $customerQ->count();
+            if ($renewals > 0) {
+                $items[] = ['key' => 'renewals-'.$renewals, 'category' => 'todo', 'level' => 'high', 'title' => "有 {$renewals} 位会员进入待续课", 'detail' => '请完成评估并明确下一步动作', 'path' => '/yimai/members'];
+            }
+        }
+        if (in_array($user->role, ['R_SUPER', 'R_MANAGER'], true)) {
+            $approvalQ = Approval::where('status', 'like', '待%');
+            $approvals = $approvalQ->count();
+            if ($approvals > 0) {
+                $items[] = ['key' => 'approvals-'.$approvals, 'category' => 'notice', 'level' => 'warning', 'title' => "有 {$approvals} 项价格审批待处理", 'detail' => '审批中心', 'path' => '/yimai/approvals'];
+            }
+        }
+        if ($user->role === 'R_SUPER') {
+            $lastSync = SyncJob::where('status', '成功')->latest('finished_at')->first();
+            if ($lastSync) {
+                $items[] = ['key' => 'sync-'.$lastSync->id, 'category' => 'notice', 'level' => 'info', 'title' => '最近一次 KeepYoga 同步已完成', 'detail' => (string) $lastSync->finished_at, 'path' => '/yimai/sync'];
+            }
+        }
+        if ($user->role === 'R_MEDIA') {
+            $newLeads = Lead::where('created_by', $user->name)->where('status', '新留资')->count();
+            if ($newLeads > 0) {
+                $items[] = ['key' => 'media-leads-'.$newLeads, 'category' => 'message', 'level' => 'info', 'title' => "你录入的 {$newLeads} 条新客资待承接", 'detail' => '新媒体客资', 'path' => '/yimai/leads'];
+            }
+        }
+
+        return $items;
     }
 
     function scopeCustomersForUser($query, User $user)

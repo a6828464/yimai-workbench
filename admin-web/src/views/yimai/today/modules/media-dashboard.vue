@@ -138,15 +138,7 @@
     ChannelLeadItem,
     PlatformAmountItem
   } from '@/api/yimai'
-  import {
-    DataLine,
-    UserFilled,
-    Position,
-    ShoppingBag,
-    Coin,
-    Odometer,
-    Money
-  } from '@element-plus/icons-vue'
+  import { DataLine, UserFilled, ShoppingBag, Coin, Odometer, Money } from '@element-plus/icons-vue'
   import type { LineDataItem } from '@/types/component/chart'
   import DateRangeControl from './date-range-control.vue'
 
@@ -214,9 +206,11 @@
       accent: '#409EFF'
     },
     {
-      label: '转私域人数',
-      value: summary.value?.privateDomainCount ?? '-',
-      icon: markRaw(Position),
+      label: '线上新客成交率',
+      value: summary.value ? `${summary.value.onlineDealRate}` : '-',
+      suffix: '%',
+      hint: `${summary.value?.onlineDealCount ?? 0}/${summary.value?.onlineLeadCount ?? 0} 人`,
+      icon: markRaw(Odometer),
       accent: '#E6A23C'
     },
     {
@@ -232,15 +226,7 @@
       accent: '#67C23A'
     },
     {
-      label: '成交率',
-      value: summary.value ? `${summary.value.dealRate}` : '-',
-      suffix: '%',
-      hint: '成交 ÷ 到店',
-      icon: markRaw(Odometer),
-      accent: '#F56C6C'
-    },
-    {
-      label: '本月成交金额',
+      label: '所选周期成交金额',
       value: platformTotal.value.deal > 0 ? platformTotal.value.deal : '-',
       prefix: '¥',
       hint: `${summary.value?.dealCount ?? 0} 人成交`,
@@ -264,22 +250,16 @@
     return [
       { stage: '留资', value: s.leadCount, percent: 100, rateText: '' },
       {
-        stage: '添加私域',
-        value: s.privateDomainCount,
-        percent: pct(s.privateDomainCount),
-        rateText: `留资转化 ${pct(s.privateDomainCount)}%`
-      },
-      {
         stage: '到店',
         value: s.visitCount,
         percent: pct(s.visitCount),
         rateText: `留资→到店 ${s.leadToVisitRate}%`
       },
       {
-        stage: '成交',
-        value: s.dealCount,
-        percent: pct(s.dealCount),
-        rateText: `整体成交率 ${s.dealRate}%`
+        stage: '线上新客成交',
+        value: s.onlineDealCount,
+        percent: pct(s.onlineDealCount),
+        rateText: `线上新客成交率 ${s.onlineDealRate}%`
       }
     ]
   })
