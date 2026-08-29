@@ -369,6 +369,9 @@
                       type="datetime"
                       format="YYYY-MM-DD HH:mm"
                       value-format="YYYY-MM-DD HH:mm"
+                      placeholder="选择日期和时间"
+                      clearable
+                      prefix-icon="Calendar"
                       class="!w-full"
                     />
                   </ElFormItem>
@@ -728,6 +731,9 @@
       }
       dialog.visible = false
       await load()
+    } catch (e) {
+      console.error('[leads.save]', e)
+      ElMessage.error(e instanceof Error ? e.message : '保存失败，请稍后重试')
     } finally {
       dialog.saving = false
     }

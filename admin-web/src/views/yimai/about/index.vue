@@ -53,7 +53,7 @@
       <template #header><span class="font-500">常见使用</span></template>
       <ul class="text-sm leading-7 text-g-600 list-disc pl-5 space-y-1">
         <li>开始：登录后在左侧菜单进入各功能；右上角 AI 助手可随时提问。</li>
-        <li>会员：五清单自动归入，可调整续费/流失阈值；客户经营池做全景筛选。</li>
+        <li>会员：五清单自动归入，可调整标签阈值；客户经营池做全景筛选。</li>
         <li>留资：新媒体录入 → 店长分配 → 老师跟进，全流程留痕可溯源。</li>
         <li>营销：AI 生成朋友圈/小红书草稿，人工确认后发布；谈单分享页可在微信打开。</li>
         <li>同步：超管在「KeepYoga同步」配置账号并全量导入会员。</li>

@@ -13,7 +13,7 @@ export type { YimaiLead, YimaiAuditLog, MemberRules }
 
 let rulesCache: MemberRules = {
   renewalThreshold: 10,
-  vipThreshold: 100,
+  vipAmountThreshold: 30000,
   declineMode: 'strict',
   predropMin: 15,
   predropMax: 30,
@@ -54,7 +54,7 @@ export async function setMemberRules(rules: MemberRules): Promise<MemberRules> {
  * 清单归入引擎（口径来源：卓越店长训练营会员管理板块）
  * - 待续课：最近月有出勤 且 剩余课时 < 阈值（默认10，严格小于）
  * - 出勤降低：strict=M1>M2>M3 连续三月递减 / recent=M2>M3
- * - VIP：累计购买私教课量 > 阈值（默认100，严格大于）
+ * - VIP：会员卡实收金额 ≥ 阈值（默认 30000 元）
  * - 预流失：上月出勤、本月停训（M2>0且M3=0），或15-30天未到店
  * - 待复活：30天以上未到店但仍有卡项资产
  */
@@ -87,7 +87,7 @@ export function computeMemberLists(c: YimaiCustomer): MemberListKey[] {
     out.push('待续课')
   }
   if (declining) out.push('出勤降低')
-  if ((c.totalPurchased ?? 0) >= rules.vipThreshold) out.push('VIP')
+  if ((c.cardPaidAmount ?? 0) >= rules.vipAmountThreshold) out.push('VIP')
   if (preLoss) out.push('预流失')
   if (revive) out.push('待复活')
 

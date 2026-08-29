@@ -92,11 +92,13 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(['exists' => count($matches) > 0, 'matches' => $matches]);
     });
 
-    Route::post('/leads', function (Request $r) {
+    $leadFields = ['lead_date', 'name', 'phone', 'wechat', 'demand', 'source', 'order_platform', 'venue', 'service_teacher', 'status', 'grade', 'trial_time', 'trial_topic', 'trial_teacher', 'deal_card', 'deal_amount', 'redeem_amount', 'voucher_code', 'coupon_name', 'coupon_total', 'coupon_remaining', 'trial_cards', 'remark'];
+
+    Route::post('/leads', function (Request $r) use ($leadFields) {
         $d = $r->validate([
             'name' => 'required|string', 'source' => 'required|string', 'venue' => 'required|string',
         ]);
-        $values = camelToSnake($r->all()) + ['created_by' => $r->user()->name, 'status' => $r->input('status', '新留资')];
+        $values = array_intersect_key(camelToSnake($r->all()), array_flip($leadFields)) + ['created_by' => $r->user()->name, 'status' => $r->input('status', '新留资')];
         if ($values['status'] === '已成交') {
             $values['deal_at'] = now();
         }
@@ -109,10 +111,10 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(['id' => $lead->id]);
     });
 
-    Route::patch('/leads/{id}', function (Request $r, int $id) {
+    Route::patch('/leads/{id}', function (Request $r, int $id) use ($leadFields) {
         $lead = Lead::findOrFail($id);
         $before = camel($lead)->toJson();
-        $changes = camelToSnake($r->all());
+        $changes = array_intersect_key(camelToSnake($r->all()), array_flip($leadFields));
         if (($changes['status'] ?? null) === '已成交' && ! $lead->deal_at) {
             $changes['deal_at'] = now();
         }
@@ -326,7 +328,7 @@ Route::middleware('auth:sanctum')->group(function () {
         requireSuper($r);
         $data = $r->validate([
             'renewalThreshold' => 'required|integer|min:1|max:50',
-            'vipThreshold' => 'required|integer|min:10|max:1000',
+            'vipAmountThreshold' => 'required|integer|min:1000|max:1000000',
             'declineMode' => 'required|in:strict,recent',
             'predropMin' => 'required|integer|min:1|max:180',
             'predropMax' => 'required|integer|min:1|max:180|gte:predropMin',
@@ -1771,12 +1773,14 @@ if (! function_exists('ok')) {
     function rules(): array
     {
         $s = AppSetting::first();
+        $defaults = ['renewalThreshold' => 10, 'vipAmountThreshold' => 30000, 'declineMode' => 'strict', 'predropMin' => 15, 'predropMax' => 30, 'reviveDays' => 30];
 
-        return $s?->rules ?? ['renewalThreshold' => 10, 'vipThreshold' => 100, 'declineMode' => 'strict', 'predropMin' => 15, 'predropMax' => 30, 'reviveDays' => 30];
+        return array_merge($defaults, (array) ($s?->rules ?? []));
     }
 
     function setRules(array $rules): void
     {
+        unset($rules['vipThreshold']);
         $s = AppSetting::firstOrCreate([]);
         $s->update(['rules' => $rules]);
     }
@@ -1786,7 +1790,7 @@ if (! function_exists('ok')) {
     {
         $rules = rules();
         $threshold = $rules['renewalThreshold'] ?? 10;
-        $vip = $rules['vipThreshold'] ?? 100;
+        $vip = (float) ($rules['vipAmountThreshold'] ?? 30000);
         $strict = ($rules['declineMode'] ?? 'strict') === 'strict';
         $predropMin = (int) ($rules['predropMin'] ?? 15);
         $predropMax = (int) ($rules['predropMax'] ?? 30);
@@ -1809,7 +1813,7 @@ if (! function_exists('ok')) {
                     '待续课' => $hasAsset && (($m3 > 0 && $c->remain_times !== null && $c->remain_times <= $threshold)
                         || ($expireDays !== null && $expireDays >= 0 && $expireDays <= 30)),
                     '出勤降低' => $declining,
-                    'VIP' => $c->total_purchased >= $vip,
+                    'VIP' => (float) ($c->card_paid_amount ?? 0) >= $vip,
                     '预流失' => $preLoss,
                     '待复活' => $revive,
                     default => false,

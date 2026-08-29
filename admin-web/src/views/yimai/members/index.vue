@@ -19,7 +19,7 @@
       <div class="mb-3 flex flex-wrap items-center gap-3 text-xs text-gray-400">
         <span>{{ scopeHint }}</span>
         <ElButton v-if="isSuper" link type="primary" size="small" @click="rulesDlg = true"
-          >调整续费/流失阈值</ElButton
+          >调整标签阈值</ElButton
         >
       </div>
 
@@ -40,6 +40,7 @@
           @change="load"
         />
         <ElSelect
+          v-if="!isManager"
           v-model="searchForm.venue"
           placeholder="门店"
           clearable
@@ -162,11 +163,13 @@
 
         <ElTableColumn
           v-if="activeTab === 'all' || activeTab === 'vip'"
-          label="累计购买"
-          width="90"
+          label="累计购买金额"
+          width="120"
           align="center"
         >
-          <template #default="{ row }">{{ row.totalPurchased ?? '—' }}</template>
+          <template #default="{ row }">{{
+            row.cardPaidAmount != null ? `¥${formatMoney(row.cardPaidAmount)}` : '—'
+          }}</template>
         </ElTableColumn>
 
         <ElTableColumn v-if="activeTab === 'renewal'" label="续费评估" width="145">
@@ -512,11 +515,13 @@
             >剩余课时 ≤ 该值且最近月有出勤</span
           ></ElFormItem
         >
-        <ElFormItem label="VIP阈值(节)"
-          ><ElInputNumber v-model="rulesForm.vipThreshold" :min="10" :max="1000" /><span
-            class="ml-2 text-xs text-gray-400"
-            >累计购买私教课量 ≥ 该值</span
-          ></ElFormItem
+        <ElFormItem label="VIP阈值(元)"
+          ><ElInputNumber
+            v-model="rulesForm.vipAmountThreshold"
+            :min="1000"
+            :max="1000000"
+            :step="1000"
+          /><span class="ml-2 text-xs text-gray-400">会员卡实收金额 ≥ 该值</span></ElFormItem
         >
         <ElFormItem label="出勤下降口径">
           <ElRadioGroup v-model="rulesForm.declineMode">
@@ -581,6 +586,7 @@
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
   const isTeacher = computed(() => roles.value.includes('R_TEACHER'))
   const isSuper = computed(() => roles.value.includes('R_SUPER'))
+  const isManager = computed(() => roles.value.includes('R_MANAGER'))
   /** 数据范围说明：随当前门店/清单/顾问筛选动态显示 */
   const scopeHint = computed(() => {
     const venue = searchForm.value.venue || userStore.getUserInfo.venue || '双店'
@@ -590,6 +596,10 @@
     if (searchForm.value.consultant) parts.push(`顾问：${searchForm.value.consultant}`)
     return parts.join(' · ')
   })
+
+  function formatMoney(v: number): string {
+    return Number(v).toLocaleString('zh-CN')
+  }
 
   const LIST_KEYS: MemberListKey[] = ['待续课', '出勤降低', 'VIP', '预流失', '待复活']
   const EVALUATION_STATUSES = ['未评估', '高机会', '重点培育', '风险修复', '已过期']

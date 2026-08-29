@@ -12,6 +12,7 @@
           <ElOption v-for="s in STATUSES" :key="s" :label="s" :value="s" />
         </ElSelect>
         <ElSelect
+          v-if="!isManager"
           v-model="searchForm.venue"
           placeholder="门店"
           clearable

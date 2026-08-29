@@ -93,6 +93,8 @@ export interface YimaiCustomer {
   attendM2?: number
   attendM3?: number
   totalPurchased?: number | null
+  /** 会员卡实收金额合计（deal_price 求和，元） */
+  cardPaidAmount?: number | null
   /** —— 待续课工作流字段 —— */
   renewalPlan?: { time: string; amount: string; course: string; issue: string; intent: string }
   /** —— 出勤降低 —— */
@@ -113,7 +115,8 @@ export interface YimaiCustomer {
 /** 清单规则阈值（来源：卓越店长训练营，阈值可调） */
 export interface MemberRules {
   renewalThreshold: number
-  vipThreshold: number
+  /** VIP：会员卡实收金额 ≥ 阈值（默认 30000 元） */
+  vipAmountThreshold: number
   declineMode: 'strict' | 'recent'
   /** 预流失：N-M 天未到店（默认 15-30） */
   predropMin: number
@@ -154,7 +157,7 @@ const SEED_VERSION = 5
 
 const DEFAULT_RULES: MemberRules = {
   renewalThreshold: 10,
-  vipThreshold: 100,
+  vipAmountThreshold: 30000,
   declineMode: 'strict',
   predropMin: 15,
   predropMax: 30,
@@ -408,6 +411,7 @@ function seedCustomers(): YimaiCustomer[] {
     (c: YimaiCustomer, i: number): YimaiCustomer => ({
       ...c,
       consultant: c.consultant ?? (c.owner === '未分配' ? '' : c.owner),
+      cardPaidAmount: c.totalPurchased ? Math.round(c.totalPurchased * 280) : 0,
       phone:
         c.phone ??
         '1' +
@@ -870,7 +874,7 @@ export const useYimaiStore = defineStore(
         0,
         '清单规则阈值',
         '双店',
-        `待续课阈值[${rules.renewalThreshold}] VIP阈值[${rules.vipThreshold}] 出勤下降口径[${rules.declineMode === 'strict' ? '连续三月递减' : '最近两月下降'}]`
+        `待续课阈值[${rules.renewalThreshold}] VIP阈值[${rules.vipAmountThreshold}元] 出勤下降口径[${rules.declineMode === 'strict' ? '连续三月递减' : '最近两月下降'}]`
       )
     }
 

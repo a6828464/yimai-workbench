@@ -143,6 +143,7 @@ class KyMemberSyncService
                     'attend_m2' => $visitSummary['attend_m2'] ?? 0,
                     'attend_m3' => $visitSummary['attend_m3'] ?? 0,
                     'total_purchased' => $cardSummary['total_purchased'],
+                    'card_paid_amount' => $cardSummary['card_paid_amount'],
                 ];
 
                 $customer = Customer::where('external_id', $externalId)->first();
@@ -268,11 +269,31 @@ class KyMemberSyncService
             }
         }
 
+        $cardPaid = 0.0;
+        foreach ($cards as $card) {
+            $title = self::pick($card, ['card_title', 'card_name']);
+            if (preg_match('/(体验|员工|测试|赠)/u', $title)) {
+                continue;
+            }
+            if ((string) ($card['is_taste'] ?? '0') === '1') {
+                continue;
+            }
+            if ((string) ($card['status_format'] ?? '') === '退卡') {
+                continue;
+            }
+            // 会员卡实收金额 = 非体验/非退卡卡项的 deal_price（成交价）合计
+            $paid = self::toNum($card['deal_price'] ?? 0);
+            if ($paid > 0) {
+                $cardPaid += $paid;
+            }
+        }
+
         return [
             'main_card' => $main ? self::pick($main, ['card_title', 'card_name']) : '—',
             'remain_times' => $remain,
             'expire_date' => $main ? self::date($main['deadline'] ?? null) : null,
             'total_purchased' => $totalPurchased,
+            'card_paid_amount' => round($cardPaid, 2),
         ];
     }
 

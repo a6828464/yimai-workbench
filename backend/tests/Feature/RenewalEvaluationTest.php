@@ -68,7 +68,7 @@ class RenewalEvaluationTest extends TestCase
 
         $this->putJson('/api/member-rules', [
             'renewalThreshold' => 8,
-            'vipThreshold' => 100,
+            'vipAmountThreshold' => 30000,
             'declineMode' => 'strict',
             'predropMin' => 15,
             'predropMax' => 30,

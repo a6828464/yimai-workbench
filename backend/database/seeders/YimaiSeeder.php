@@ -2,8 +2,8 @@
 
 namespace Database\Seeders;
 
-use App\Models\AppSetting;
 use App\Models\Approval;
+use App\Models\AppSetting;
 use App\Models\Customer;
 use App\Models\Lead;
 use App\Models\Task;
@@ -24,8 +24,10 @@ class YimaiSeeder extends Seeder
             ['username' => 'media', 'name' => '演示新媒体', 'role' => 'R_MEDIA', 'venue' => null, 'venues' => ['绿地店', '东部店'], 'email' => 'media@example.invalid'],
         ];
         $this->command->info('seed: users');
-        if ($demoPassword !== '') foreach ($accounts as $a) {
-            User::create($a + ['email_verified_at' => now(), 'password' => Hash::make($demoPassword)]);
+        if ($demoPassword !== '') {
+            foreach ($accounts as $a) {
+                User::create($a + ['email_verified_at' => now(), 'password' => Hash::make($demoPassword)]);
+            }
         }
 
         $this->command->info('seed: customers');
@@ -76,6 +78,6 @@ class YimaiSeeder extends Seeder
         Approval::create(['customer_name' => '刘思颖', 'applicant' => '苏米', 'card_name' => '全能小班年卡', 'standard_price' => 8800, 'request_price' => 7980, 'reason' => '体验当天成交，竞品对比价差敏感', 'status' => '待店长初审', 'apply_time' => '2026-08-26 10:24']);
         Approval::create(['customer_name' => '周雨彤', 'applicant' => '冰璐', 'card_name' => 'VIP私教50节', 'standard_price' => 22500, 'request_price' => 19800, 'reason' => '老客复购+过期余额折抵权益', 'status' => '待老板终审', 'apply_time' => '2026-08-25 16:40']);
 
-        AppSetting::create(['rules' => ['renewalThreshold' => 10, 'vipThreshold' => 100, 'declineMode' => 'strict']]);
+        AppSetting::create(['rules' => ['renewalThreshold' => 10, 'vipAmountThreshold' => 30000, 'declineMode' => 'strict']]);
     }
 }

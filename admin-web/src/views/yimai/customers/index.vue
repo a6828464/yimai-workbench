@@ -17,6 +17,7 @@
           @change="handleSearch"
         />
         <ElSelect
+          v-if="!isManager"
           v-model="searchForm.venue"
           placeholder="门店"
           clearable
