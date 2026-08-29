@@ -7,6 +7,13 @@ use Illuminate\Database\Eloquent\Model;
 class Customer extends Model
 {
     protected $guarded = [];
-    protected $casts = ['renewal_plan' => 'array', 'decline' => 'array', 'needs_help' => 'boolean', 'in_revive' => 'boolean'];
+
+    protected $casts = ['renewal_plan' => 'array', 'decline' => 'array', 'needs_help' => 'boolean', 'in_revive' => 'boolean', 'eval_at' => 'date'];
+
     protected $table = 'customers';
+
+    public function renewalEvaluations()
+    {
+        return $this->hasMany(RenewalEvaluation::class);
+    }
 }

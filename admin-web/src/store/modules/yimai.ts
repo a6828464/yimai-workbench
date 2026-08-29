@@ -106,6 +106,8 @@ export interface YimaiCustomer {
   /** 30天续费评估 */
   evalScore?: number | null
   evalAt?: string
+  evalLevel?: 'high' | 'medium' | 'low' | null
+  evalBy?: string
 }
 
 /** 清单规则阈值（来源：卓越店长训练营，阈值可调） */

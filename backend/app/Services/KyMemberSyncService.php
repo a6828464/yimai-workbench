@@ -96,6 +96,8 @@ class KyMemberSyncService
                 }
             }
         }
+        // 每次都从预约事实表重算三个完整自然月，避免增量区间把历史出勤覆盖为零。
+        $attendance = self::attendanceFromFacts($venue, $month1, $month2, $month3);
 
         $cardsByMember = [];
         foreach ($cards as $card) {
@@ -321,6 +323,40 @@ class KyMemberSyncService
                 $attendance[$memberId][$key] = ($attendance[$memberId][$key] ?? 0) + 1;
             }
         }
+    }
+
+    private static function attendanceFromFacts(
+        string $venue,
+        CarbonImmutable $month1,
+        CarbonImmutable $month2,
+        CarbonImmutable $month3
+    ): array {
+        $attendance = [];
+        KyBooking::query()
+            ->where('venue', $venue)
+            ->where('status', 'signed')
+            ->whereNotNull('member_id')
+            ->where('member_id', '!=', '')
+            ->where('start_at', '>=', $month1->startOfMonth())
+            ->orderBy('id')
+            ->chunkById(1000, function ($bookings) use (&$attendance, $month1, $month2, $month3) {
+                foreach ($bookings as $booking) {
+                    $memberId = (string) $booking->member_id;
+                    $date = CarbonImmutable::parse($booking->start_at);
+                    $attendance[$memberId]['last_visit'] = max(
+                        $attendance[$memberId]['last_visit'] ?? '0000-00-00',
+                        $date->toDateString()
+                    );
+                    foreach ([$month1, $month2, $month3] as $index => $month) {
+                        if ($date->betweenIncluded($month->startOfMonth(), $month->endOfMonth())) {
+                            $key = 'attend_m'.($index + 1);
+                            $attendance[$memberId][$key] = ($attendance[$memberId][$key] ?? 0) + 1;
+                        }
+                    }
+                }
+            });
+
+        return $attendance;
     }
 
     private static function bookingFact(array $row, string $path, string $venue, string $venueId): array

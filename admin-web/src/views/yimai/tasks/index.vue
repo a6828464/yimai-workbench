@@ -2,10 +2,22 @@
   <div class="task-page art-full-height">
     <ElCard class="art-table-card">
       <div class="mb-4 flex flex-wrap items-center gap-3">
-        <ElSelect v-model="searchForm.status" placeholder="任务状态" clearable class="!w-36" @change="handleSearch">
+        <ElSelect
+          v-model="searchForm.status"
+          placeholder="任务状态"
+          clearable
+          class="!w-36"
+          @change="handleSearch"
+        >
           <ElOption v-for="s in STATUSES" :key="s" :label="s" :value="s" />
         </ElSelect>
-        <ElSelect v-model="searchForm.venue" placeholder="门店" clearable class="!w-32" @change="handleSearch">
+        <ElSelect
+          v-model="searchForm.venue"
+          placeholder="门店"
+          clearable
+          class="!w-32"
+          @change="handleSearch"
+        >
           <ElOption label="绿地店" value="绿地店" />
           <ElOption label="东部店" value="东部店" />
         </ElSelect>
@@ -32,7 +44,11 @@
     <ElDialog v-model="createDlg" title="新建任务" width="520px" destroy-on-close>
       <ElForm label-width="92px">
         <ElFormItem label="任务名称" required>
-          <ElInput v-model="taskForm.title" placeholder="如：新客首次响应 / 预约确认" maxlength="50" />
+          <ElInput
+            v-model="taskForm.title"
+            placeholder="如：新客首次响应 / 预约确认"
+            maxlength="50"
+          />
         </ElFormItem>
         <ElFormItem label="客户姓名" required>
           <ElInput v-model="taskForm.customerName" placeholder="会员/留资姓名" maxlength="20" />
@@ -44,7 +60,11 @@
           </ElRadioGroup>
         </ElFormItem>
         <ElFormItem label="负责人">
-          <ElInput v-model="taskForm.owner" placeholder="留空则进入待接收，由店长认领" maxlength="20" />
+          <ElInput
+            v-model="taskForm.owner"
+            placeholder="留空则进入待接收，由店长认领"
+            maxlength="20"
+          />
         </ElFormItem>
         <ElFormItem label="优先级">
           <ElSelect v-model="taskForm.priority" class="!w-28">
@@ -57,7 +77,13 @@
           <ElInput v-model="taskForm.deadline" placeholder="如：2026-09-01 18:00" maxlength="24" />
         </ElFormItem>
         <ElFormItem label="验收标准">
-          <ElInput v-model="taskForm.standard" type="textarea" :rows="2" maxlength="200" placeholder="定义完成口径，作为验收依据" />
+          <ElInput
+            v-model="taskForm.standard"
+            type="textarea"
+            :rows="2"
+            maxlength="200"
+            placeholder="定义完成口径，作为验收依据"
+          />
         </ElFormItem>
       </ElForm>
       <template #footer>
@@ -67,30 +93,69 @@
     </ElDialog>
 
     <!-- 任务详情 / 流转 -->
-    <ElDialog v-model="detailDlg.visible" :title="`任务详情 · ${detailDlg.row?.title ?? ''}`" width="520px" destroy-on-close>
+    <ElDialog
+      v-model="detailDlg.visible"
+      :title="`任务详情 · ${detailDlg.row?.title ?? ''}`"
+      width="520px"
+      destroy-on-close
+    >
       <template v-if="detailDlg.row">
         <ElDescriptions :column="2" border size="small" class="mb-3">
-          <ElDescriptionsItem label="客户">{{ detailDlg.row.customerName }} · {{ detailDlg.row.venue }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="客户"
+            >{{ detailDlg.row.customerName }} · {{ detailDlg.row.venue }}</ElDescriptionsItem
+          >
           <ElDescriptionsItem label="状态">
-            <ElTag size="small" :type="STATUS_TAG[detailDlg.row.status]">{{ detailDlg.row.status }}</ElTag>
+            <ElTag size="small" :type="STATUS_TAG[detailDlg.row.status]">{{
+              detailDlg.row.status
+            }}</ElTag>
           </ElDescriptionsItem>
           <ElDescriptionsItem label="负责人">{{ detailDlg.row.owner }}</ElDescriptionsItem>
           <ElDescriptionsItem label="优先级">{{ detailDlg.row.priority }}</ElDescriptionsItem>
-          <ElDescriptionsItem label="截止时间">{{ detailDlg.row.deadline || '—' }}</ElDescriptionsItem>
-          <ElDescriptionsItem label="验收标准">{{ detailDlg.row.standard || '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="截止时间">{{
+            detailDlg.row.deadline || '—'
+          }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="验收标准">{{
+            detailDlg.row.standard || '—'
+          }}</ElDescriptionsItem>
         </ElDescriptions>
-        <ElAlert
-          type="info"
-          :closable="false"
-          :title="flowHint"
-          class="mb-3"
-        />
+        <ElAlert type="info" :closable="false" :title="flowHint" class="mb-3" />
         <div class="flex flex-wrap gap-2">
-          <ElButton v-if="canStart" type="primary" size="small" @click="startTask">认领并开始执行</ElButton>
-          <ElButton type="primary" plain size="small" :disabled="!canAccept" @click="transit('待验收')">提报完成（待验收）</ElButton>
-          <ElButton v-if="isManager || isSuper" type="success" size="small" :disabled="!canVerify" @click="transit('已完成')">验收通过</ElButton>
-          <ElButton v-if="isManager || isSuper" type="danger" size="small" plain :disabled="!canVerify" @click="transit('已退回')">验收退回</ElButton>
-          <ElButton v-if="isManager || isSuper && detailDlg.row?.status === '待接收'" type="warning" size="small" plain @click="assignOwner">分配负责人</ElButton>
+          <ElButton v-if="canStart" type="primary" size="small" @click="startTask"
+            >认领并开始执行</ElButton
+          >
+          <ElButton
+            type="primary"
+            plain
+            size="small"
+            :disabled="!canAccept"
+            @click="transit('待验收')"
+            >提报完成（待验收）</ElButton
+          >
+          <ElButton
+            v-if="isManager || isSuper"
+            type="success"
+            size="small"
+            :disabled="!canVerify"
+            @click="transit('已完成')"
+            >验收通过</ElButton
+          >
+          <ElButton
+            v-if="isManager || isSuper"
+            type="danger"
+            size="small"
+            plain
+            :disabled="!canVerify"
+            @click="transit('已退回')"
+            >验收退回</ElButton
+          >
+          <ElButton
+            v-if="(isManager || isSuper) && detailDlg.row?.status === '待接收'"
+            type="warning"
+            size="small"
+            plain
+            @click="assignOwner"
+            >分配负责人</ElButton
+          >
         </div>
       </template>
     </ElDialog>
@@ -169,7 +234,14 @@
           label: '优先级',
           width: 80,
           formatter: (row: YimaiTask) =>
-            h(ElTag, { size: 'small', type: row.priority === '高' ? 'danger' : row.priority === '中' ? 'warning' : 'info' }, () => row.priority)
+            h(
+              ElTag,
+              {
+                size: 'small',
+                type: row.priority === '高' ? 'danger' : row.priority === '中' ? 'warning' : 'info'
+              },
+              () => row.priority
+            )
         },
         {
           prop: 'standard',
@@ -215,10 +287,26 @@
   // ---------- 新建任务 ----------
   const createDlg = ref(false)
   const saving = ref(false)
-  const taskForm = reactive({ title: '', customerName: '', venue: '绿地店' as '绿地店' | '东部店', owner: '', priority: '中', deadline: '', standard: '' })
+  const taskForm = reactive({
+    title: '',
+    customerName: '',
+    venue: '绿地店' as '绿地店' | '东部店',
+    owner: '',
+    priority: '中',
+    deadline: '',
+    standard: ''
+  })
 
   function openCreate() {
-    Object.assign(taskForm, { title: '', customerName: '', venue: '绿地店', owner: '', priority: '中', deadline: '', standard: '' })
+    Object.assign(taskForm, {
+      title: '',
+      customerName: '',
+      venue: '绿地店',
+      owner: '',
+      priority: '中',
+      deadline: '',
+      standard: ''
+    })
     createDlg.value = true
   }
 
@@ -247,7 +335,10 @@
   }
 
   // ---------- 任务详情 / 流转 ----------
-  const detailDlg = reactive<{ visible: boolean; row: YimaiTask | null }>({ visible: false, row: null })
+  const detailDlg = reactive<{ visible: boolean; row: YimaiTask | null }>({
+    visible: false,
+    row: null
+  })
 
   function openDetail(row: YimaiTask) {
     detailDlg.row = row
@@ -256,7 +347,8 @@
 
   const canAccept = computed(() => {
     const r = detailDlg.row
-    return !!r && r.status === '进行中'
+    if (!r || r.status !== '进行中') return false
+    return isManager.value || isSuper.value || r.owner === userStore.getUserInfo.userName
   })
   const canStart = computed(() => {
     const r = detailDlg.row
@@ -266,14 +358,16 @@
   })
   const canVerify = computed(() => {
     const r = detailDlg.row
-    return !!r && r.status === '待验收'
+    return !!r && r.status === '待验收' && (isManager.value || isSuper.value)
   })
   const flowHint = computed(() => {
     const r = detailDlg.row
     if (!r) return ''
-    if (r.status === '待接收') return '任务待认领：负责人可「认领并开始执行」，店长可「分配负责人」。'
+    if (r.status === '待接收')
+      return '任务待认领：负责人可「认领并开始执行」，店长可「分配负责人」。'
     if (r.status === '进行中') return '执行中：完成后由负责人「提报完成」，进入店长验收。'
-    if (r.status === '待验收') return `待验收：由店长验收。通过后任务闭环，退回则说明未达标。负责人：${r.owner}`
+    if (r.status === '待验收')
+      return `待验收：由店长验收。通过后任务闭环，退回则说明未达标。负责人：${r.owner}`
     if (r.status === '已完成') return '任务已闭环，谢谢！'
     if (r.status === '已退回') return '已退回：请按验收标准补充后再提报。'
     return '任务已逾期，请尽快处理。'
@@ -292,7 +386,11 @@
     const r = detailDlg.row
     if (!r) return
     const me = userStore.getUserInfo.userName
-    await updateTask(r.id, { status: '进行中', owner: r.owner === '未分配' ? me : r.owner }, '认领并开始')
+    await updateTask(
+      r.id,
+      { status: '进行中', owner: r.owner === '未分配' ? me : r.owner },
+      '认领并开始'
+    )
     ElMessage.success('已开始执行')
     detailDlg.visible = false
     await getData()

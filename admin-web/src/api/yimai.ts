@@ -37,17 +37,17 @@ export function getMemberRules(): MemberRules {
   return rulesCache
 }
 
-export function setMemberRules(rules: MemberRules): void {
+export async function setMemberRules(rules: MemberRules): Promise<MemberRules> {
   if (USE_BACKEND) {
-    void apiPut<MemberRules>('/member-rules', rules as unknown as Record<string, unknown>).then(
-      (r) => {
-        rulesCache = r
-      }
+    rulesCache = await apiPut<MemberRules>(
+      '/member-rules',
+      rules as unknown as Record<string, unknown>
     )
-    return
+    return rulesCache
   }
   useYimaiStore().setMemberRules(rules)
   rulesCache = rules
+  return rulesCache
 }
 
 /**
@@ -99,17 +99,16 @@ function lastVisitDays(date: string | null): number | null {
   return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
 }
 
-export function updateMemberFields(
+export async function updateMemberFields(
   id: number,
   patch: Partial<YimaiCustomer>,
   actionLabel?: string
-): boolean {
+): Promise<YimaiCustomer | boolean> {
   if (USE_BACKEND) {
-    void apiPatch(`/customers/${id}`, { ...patch, _action: actionLabel ?? '修改' } as Record<
-      string,
-      unknown
-    >)
-    return true
+    return apiPatch<YimaiCustomer>(`/customers/${id}`, {
+      ...patch,
+      _action: actionLabel ?? '修改'
+    } as Record<string, unknown>)
   }
   return useYimaiStore().updateMember(id, patch, actionLabel)
 }
@@ -169,6 +168,10 @@ export interface YimaiTask {
   deadline: string
   status: '待接收' | '进行中' | '待验收' | '已完成' | '已退回' | '已逾期'
   standard: string
+  customerId?: number | null
+  sourceType?: string
+  sourceId?: number | null
+  reviewRole?: string | null
 }
 
 export interface YimaiApproval {
@@ -406,6 +409,7 @@ export function queryCustomers(
     consultant?: string
     haveCourse?: string
     remainRange?: string
+    evaluationStatus?: string
   }
 ): Promise<{ records: YimaiCustomer[]; total: number; current: number; size: number }> {
   if (USE_BACKEND) {
@@ -419,6 +423,7 @@ export function queryCustomers(
       haveCourse: params.haveCourse || undefined,
       remainMax: params.remainRange || undefined,
       consultant: params.consultant || undefined,
+      evaluationStatus: params.evaluationStatus || undefined,
       current: params.current,
       size: params.size
     } as Record<string, unknown>).then((d) => ({
@@ -453,6 +458,14 @@ export function queryCustomers(
   if (params.haveCourse === 'false') list = list.filter((c) => !c.mainCard || c.mainCard === '—')
   if (params.remainRange)
     list = list.filter((c) => c.remainTimes !== null && c.remainTimes <= Number(params.remainRange))
+  if (params.evaluationStatus === '未评估') list = list.filter((c) => c.evalScore == null)
+  if (params.evaluationStatus === '高机会') list = list.filter((c) => c.evalLevel === 'high')
+  if (params.evaluationStatus === '重点培育') list = list.filter((c) => c.evalLevel === 'medium')
+  if (params.evaluationStatus === '风险修复') list = list.filter((c) => c.evalLevel === 'low')
+  if (params.evaluationStatus === '已过期')
+    list = list.filter(
+      (c) => Boolean(c.evalAt) && Date.now() - new Date(c.evalAt!).getTime() > 30 * 86400000
+    )
   return Promise.resolve({
     records: paginate(list, params),
     total: list.length,
@@ -461,120 +474,182 @@ export function queryCustomers(
   })
 }
 
-// ==================== 30天续费评估（口径来源：卓越店长训练营评估表） ====================
+// ==================== 30天续费经营评估 ====================
 
 export interface EvalOption {
+  key: string
   label: string
   score: number
 }
 
 export interface EvalDimension {
-  key: string
+  key: 'goal' | 'feedback' | 'wechat' | 'intent' | 'service'
   title: string
   hint: string
-  max?: number
   options: EvalOption[]
+}
+
+export type RenewalLevel = 'high' | 'medium' | 'low'
+
+export interface RenewalEvaluationAnswers {
+  goal: string
+  feedback: string
+  wechat: string
+  intent: string
+  service: string
+  risks: string[]
+  attendanceCount?: number
+  cardWindow?: number
+}
+
+export interface RenewalEvaluationContext {
+  attendanceCount: number
+  cardWindow: number
+  lastVisit: string | null
+  remainTimes: number | null
+  expireDate: string | null
+  attendM1: number
+  attendM2: number
+  attendM3: number
+  latest: {
+    id: number
+    score: number
+    level: RenewalLevel
+    answers: RenewalEvaluationAnswers
+    remark?: string
+    evaluatorName: string
+    evaluatedAt: string
+  } | null
+}
+
+export interface RenewalEvaluationResult {
+  evaluation: RenewalEvaluationContext['latest']
+  task: YimaiTask
+  context: RenewalEvaluationContext
 }
 
 export const EVAL_DIMENSIONS: EvalDimension[] = [
   {
-    key: 'attend',
-    title: '最近30天出勤',
-    hint: '确认方式：SaaS系统',
-    options: [
-      { label: '8次及以上', score: 25 },
-      { label: '6次及以上', score: 20 },
-      { label: '4次及以上', score: 10 },
-      { label: '4次以下', score: 5 },
-      { label: '0次', score: -10 }
-    ]
-  },
-  {
     key: 'goal',
-    title: '对后续训练有明确目标和期待',
-    hint: '确认方式：聊天记录',
+    title: '训练效果与目标进展（15分）',
+    hint: '根据训练计划、体测进展和客户认可程度单选',
     options: [
-      { label: '有书面计划并与客户讨论', score: 15 },
-      { label: '讨论并形成认可的目标（无书面）', score: 10 },
-      { label: '体测/评估/动作解锁并有进步', score: 5 },
-      { label: '无相关交流', score: 0 }
+      { key: 'written_plan', label: '有明确计划并与客户确认', score: 15 },
+      { key: 'agreed_goal', label: '已形成客户认可的阶段目标', score: 10 },
+      { key: 'visible_progress', label: '有可感知进步，但目标尚不清晰', score: 5 },
+      { key: 'none', label: '暂无明确目标或进展', score: 0 }
     ]
   },
   {
     key: 'feedback',
-    title: '训练后询问客户感受',
-    hint: '确认方式：聊天记录',
+    title: '课后反馈与满意度（15分）',
+    hint: '按最近30天实际课后反馈情况单选',
     options: [
-      { label: '询问3次以上且获得回复', score: 15 },
-      { label: '询问3次以上但未获回复', score: 5 },
-      { label: '未询问', score: 0 }
+      { key: 'replied', label: '多次询问且获得有效回复', score: 15 },
+      { key: 'no_reply', label: '已主动询问，但回复较少', score: 5 },
+      { key: 'none', label: '没有课后反馈记录', score: 0 }
     ]
   },
   {
-    key: 'moments',
-    title: '朋友圈互动（最高15分）',
-    hint: '确认方式：朋友圈截图',
-    max: 15,
+    key: 'wechat',
+    title: '企业微信有效沟通与客户回应（15分）',
+    hint: '有效沟通指客户表达感受、目标、困难、课程或续费问题',
     options: [
-      { label: '客户发了相关朋友圈', score: 5 },
-      { label: '评论互动每次+2', score: 2 },
-      { label: '点赞每次+1', score: 1 }
+      { key: 'proactive', label: '客户主动咨询或主动反馈', score: 15 },
+      { key: 'two_way', label: '近30天有两次以上有效双向沟通', score: 10 },
+      { key: 'shallow', label: '客户有回复，但沟通较浅', score: 5 },
+      { key: 'no_response', label: '多次联系无有效回应', score: 0 },
+      { key: 'refused', label: '明确拒绝继续沟通或续费', score: 0 }
     ]
   },
   {
-    key: 'daily',
-    title: '日常交流（最高15分）',
-    hint: '确认方式：聊天记录',
-    max: 15,
+    key: 'intent',
+    title: '续费意向信号（10分）',
+    hint: '是否主动或正向讨论课种、价格、档期与续费时间',
     options: [
-      { label: '有私人往来（吃饭/遛狗等）', score: 10 },
-      { label: '3句以上有效交流每次+2', score: 2 },
-      { label: '客户关心教练私人生活 +3', score: 3 }
+      { key: 'asked_plan', label: '主动询问方案、价格或档期', score: 10 },
+      { key: 'positive', label: '正向回应续费沟通', score: 8 },
+      { key: 'uncertain', label: '有意向但尚未明确', score: 4 },
+      { key: 'none', label: '暂无续费意向信号', score: 0 }
     ]
   },
   {
     key: 'service',
-    title: '服务动作（最高20分，可多选累计）',
-    hint: '确认方式：说明和截图',
-    max: 20,
+    title: '服务体验与问题处理（10分）',
+    hint: '选择最符合当前客户服务状态的一项',
     options: [
-      { label: '针对性解决客户意见建议', score: 10 },
-      { label: '提醒后获得服务（延期/请假等）', score: 8 },
-      { label: '参加店内社群活动', score: 8 },
-      { label: '任何形式小礼物', score: 8 }
-    ]
-  },
-  {
-    key: 'signal',
-    title: '互动与转介绍信号（最高15分）',
-    hint: '',
-    max: 15,
-    options: [
-      { label: '带朋友来训练（不要求成交）', score: 10 },
-      { label: '线上平台好评', score: 5 }
-    ]
-  },
-  {
-    key: 'minus',
-    title: '减分项（可多选累计）',
-    hint: '',
-    options: [
-      { label: '询问购买被推脱/拒绝', score: -20 },
-      { label: '客户只与一名教练交流', score: -10 },
-      { label: '问题或建议未被解决', score: -15 },
-      { label: '没有询问感受或回访记录', score: -15 }
+      { key: 'resolved', label: '针对性解决问题并获客户认可', score: 10 },
+      { key: 'handled', label: '已完成服务处理，等待后续反馈', score: 8 },
+      { key: 'normal', label: '暂无问题，服务过程正常', score: 5 },
+      { key: 'unresolved', label: '仍有待解决的问题或建议', score: 0 }
     ]
   }
 ]
 
-export function evalTotalScore(answers: Record<string, number[]>): number {
-  return EVAL_DIMENSIONS.reduce((sum, dim) => {
-    const picks = answers[dim.key] ?? []
-    let sub = picks.reduce((s, i) => s + (dim.options[i]?.score ?? 0), 0)
-    if (dim.max !== undefined) sub = Math.min(sub, dim.max)
-    if (sub > 0 && dim.max === undefined && dim.key === 'attend') sub = Math.min(sub, 25)
-    return sum + sub
-  }, 0)
+export const EVAL_RISKS: EvalOption[] = [
+  { key: 'purchase_refused', label: '明确推脱或拒绝购买', score: -10 },
+  { key: 'long_no_response', label: '长期联系无回应', score: -10 },
+  { key: 'complaint_unresolved', label: '投诉或服务问题尚未解决', score: -15 }
+]
+
+export function renewalLevel(score: number): RenewalLevel {
+  return score >= 70 ? 'high' : score >= 40 ? 'medium' : 'low'
+}
+
+export function renewalLevelLabel(level: RenewalLevel): string {
+  return { high: '高机会', medium: '重点培育', low: '风险修复' }[level]
+}
+
+export function evalTotalScore(answers: RenewalEvaluationAnswers): number {
+  const attendance = answers.attendanceCount ?? 0
+  const attendanceScore =
+    attendance >= 8 ? 25 : attendance >= 6 ? 20 : attendance >= 4 ? 10 : attendance > 0 ? 5 : 0
+  let score = attendanceScore + Math.min(10, Math.max(0, answers.cardWindow ?? 0))
+  for (const dim of EVAL_DIMENSIONS) {
+    score += dim.options.find((option) => option.key === answers[dim.key])?.score ?? 0
+  }
+  for (const risk of answers.risks ?? [])
+    score += EVAL_RISKS.find((item) => item.key === risk)?.score ?? 0
+  return Math.min(100, Math.max(0, score))
+}
+
+export function getRenewalEvaluation(customerId: number): Promise<RenewalEvaluationContext> {
+  if (USE_BACKEND) return apiGet(`/customers/${customerId}/renewal-evaluation`)
+  const customer = allCustomers().find((item) => item.id === customerId)
+  return Promise.resolve({
+    attendanceCount: customer?.attendM3 ?? 0,
+    cardWindow: (customer?.remainTimes ?? 999) <= 10 ? 10 : 0,
+    lastVisit: customer?.lastVisit ?? null,
+    remainTimes: customer?.remainTimes ?? null,
+    expireDate: customer?.expireDate ?? null,
+    attendM1: customer?.attendM1 ?? 0,
+    attendM2: customer?.attendM2 ?? 0,
+    attendM3: customer?.attendM3 ?? 0,
+    latest: null
+  })
+}
+
+export async function saveRenewalEvaluation(
+  customerId: number,
+  data: { answers: RenewalEvaluationAnswers; remark: string }
+): Promise<RenewalEvaluationResult> {
+  if (USE_BACKEND)
+    return apiPut(
+      `/customers/${customerId}/renewal-evaluation`,
+      data as unknown as Record<string, unknown>
+    )
+  const score = evalTotalScore(data.answers)
+  useYimaiStore().updateMember(customerId, {
+    evalScore: score,
+    evalLevel: renewalLevel(score),
+    evalAt: new Date().toLocaleDateString('sv-SE'),
+    evalBy: actor().userName
+  })
+  return {
+    evaluation: null,
+    task: {} as YimaiTask,
+    context: await getRenewalEvaluation(customerId)
+  }
 }
 
 // ==================== 任务中心 ====================

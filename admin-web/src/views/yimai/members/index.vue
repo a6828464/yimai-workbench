@@ -18,7 +18,7 @@
       <!-- 规则设置 -->
       <div class="mb-3 flex flex-wrap items-center gap-3 text-xs text-gray-400">
         <span>{{ scopeHint }}</span>
-        <ElButton link type="primary" size="small" @click="rulesDlg = true"
+        <ElButton v-if="isSuper" link type="primary" size="small" @click="rulesDlg = true"
           >调整续费/流失阈值</ElButton
         >
       </div>
@@ -68,6 +68,20 @@
         >
           <ElOption value="待分配" label="待分配" />
           <ElOption v-for="c in consultantOptions" :key="c" :label="c" :value="c" />
+        </ElSelect>
+        <ElSelect
+          v-model="searchForm.evaluationStatus"
+          placeholder="评估状态"
+          clearable
+          class="!w-32"
+          @change="load"
+        >
+          <ElOption
+            v-for="status in EVALUATION_STATUSES"
+            :key="status"
+            :label="status"
+            :value="status"
+          />
         </ElSelect>
         <ElButton type="primary" plain @click="load">查询</ElButton>
       </div>
@@ -143,6 +157,45 @@
 
         <ElTableColumn label="累计购买" width="90" align="center">
           <template #default="{ row }">{{ row.totalPurchased ?? '—' }}</template>
+        </ElTableColumn>
+
+        <ElTableColumn label="续费评估" width="145">
+          <template #default="{ row }">
+            <div v-if="row.evalScore !== null && row.evalScore !== undefined">
+              <div class="flex items-center gap-1">
+                <span class="text-lg font-600" :class="evaluationColor(row.evalScore)">{{
+                  row.evalScore
+                }}</span>
+                <ElTag size="small" :type="evaluationTag(row.evalScore)" effect="plain">
+                  {{ renewalLevelLabel(renewalLevel(row.evalScore)) }}
+                </ElTag>
+              </div>
+              <div
+                class="mt-1 text-xs"
+                :class="evaluationExpired(row) ? 'text-red-500' : 'text-gray-400'"
+              >
+                {{ row.evalAt || '日期未知' }}{{ evaluationExpired(row) ? ' · 已过期' : '' }}
+              </div>
+              <div v-if="row.evalBy" class="text-xs text-gray-400">评估人：{{ row.evalBy }}</div>
+            </div>
+            <ElTag v-else size="small" type="primary" effect="plain">待评估</ElTag>
+          </template>
+        </ElTableColumn>
+
+        <ElTableColumn label="下一步动作" min-width="165">
+          <template #default="{ row }">
+            <div v-if="row.nextAction">
+              <div class="text-sm font-500">{{ row.nextAction }}</div>
+              <div
+                class="mt-1 text-xs"
+                :class="actionOverdue(row) ? 'text-red-500' : 'text-gray-400'"
+              >
+                {{ row.owner || row.consultant || '待分配' }} ·
+                {{ row.nextActionTime || '待定时间' }}
+              </div>
+            </div>
+            <span v-else class="text-xs text-orange-500">待明确下一步动作</span>
+          </template>
         </ElTableColumn>
 
         <!-- 清单专属列 -->
@@ -252,8 +305,8 @@
       </div>
     </ElCard>
 
-    <!-- 30天续费评估 -->
-    <ElDrawer v-model="evalDlg.visible" size="560px" title="30天续费评估（仅统计最近30天）">
+    <!-- 30天续费经营评估 -->
+    <ElDrawer v-model="evalDlg.visible" size="620px" title="30天续费经营评估">
       <template v-if="evalDlg.row">
         <p class="text-sm mb-3">
           评估对象：<span class="font-600">{{ evalDlg.row.name }}</span>
@@ -263,15 +316,61 @@
             >上次：{{ evalDlg.row.evalScore }}分（{{ evalDlg.row.evalAt }}）</span
           >
         </p>
+        <ElAlert
+          title="系统数据自动计分，人工只判断系统无法读取的服务与沟通信号"
+          type="info"
+          :closable="false"
+          class="mb-3"
+        />
+        <div v-loading="evalDlg.loading" class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+          <div class="rounded-md bg-gray-50 dark:bg-gray-800 p-2 text-center">
+            <div class="text-lg font-600">{{ evalContext?.attendanceCount ?? '-' }}</div>
+            <div class="text-xs text-gray-400">近30天签到</div>
+          </div>
+          <div class="rounded-md bg-gray-50 dark:bg-gray-800 p-2 text-center">
+            <div class="text-lg font-600">{{ evalContext?.remainTimes ?? '—' }}</div>
+            <div class="text-xs text-gray-400">剩余课时</div>
+          </div>
+          <div class="rounded-md bg-gray-50 dark:bg-gray-800 p-2 text-center">
+            <div class="text-sm font-600">{{ evalContext?.expireDate ?? '—' }}</div>
+            <div class="text-xs text-gray-400">卡项到期</div>
+          </div>
+          <div class="rounded-md bg-gray-50 dark:bg-gray-800 p-2 text-center">
+            <div class="text-sm font-600">
+              {{
+                evalContext
+                  ? `${evalContext.attendM1}/${evalContext.attendM2}/${evalContext.attendM3}`
+                  : '-'
+              }}
+            </div>
+            <div class="text-xs text-gray-400">三月出勤</div>
+          </div>
+        </div>
         <div v-for="dim in EVAL_DIMENSIONS" :key="dim.key" class="mb-4">
           <div class="text-sm font-500 mb-1">{{ dim.title }}</div>
           <div v-if="dim.hint" class="text-xs text-gray-400 mb-1.5">{{ dim.hint }}</div>
-          <ElCheckboxGroup v-model="evalAnswers[dim.key]">
-            <ElCheckbox v-for="(op, oi) in dim.options" :key="oi" :value="oi"
-              >{{ op.label }}（{{ op.score > 0 ? '+' : '' }}{{ op.score }}）</ElCheckbox
-            >
+          <ElRadioGroup v-model="evalAnswers[dim.key]" class="flex flex-col items-start">
+            <ElRadio v-for="op in dim.options" :key="op.key" :value="op.key">
+              {{ op.label }}（{{ op.score > 0 ? '+' : '' }}{{ op.score }}）
+            </ElRadio>
+          </ElRadioGroup>
+        </div>
+        <div class="mb-4">
+          <div class="text-sm font-500 mb-1">风险减分项（可多选）</div>
+          <ElCheckboxGroup v-model="evalAnswers.risks" class="flex flex-col items-start">
+            <ElCheckbox v-for="risk in EVAL_RISKS" :key="risk.key" :value="risk.key">
+              {{ risk.label }}（{{ risk.score }}）
+            </ElCheckbox>
           </ElCheckboxGroup>
         </div>
+        <ElFormItem label="评估备注">
+          <ElInput
+            v-model="evalRemark"
+            type="textarea"
+            :rows="2"
+            placeholder="记录主要信号、客户顾虑和建议动作"
+          />
+        </ElFormItem>
         <div
           class="sticky bottom-0 bg-white dark:bg-[#1a1a1a] pt-3 pb-1 border-t border-gray-100 dark:border-gray-700 flex items-center justify-between"
         >
@@ -287,13 +386,15 @@
               "
               >{{ evalTotal }}</span
             >
-            <span class="text-xs text-gray-400 ml-2">分 · 规则分非真实概率</span>
+            <span class="text-xs text-gray-400 ml-2"
+              >分 · {{ renewalLevelLabel(renewalLevel(evalTotal)) }}</span
+            >
           </div>
           <div class="flex gap-2">
-            <span class="text-xs self-center text-gray-400"
-              >≥70高概率 · 40-69中等 · &lt;40低概率</span
+            <span class="text-xs self-center text-gray-400">保存后自动生成下一步任务</span>
+            <ElButton type="primary" :loading="evalDlg.saving" @click="saveEval"
+              >保存并生成任务</ElButton
             >
-            <ElButton type="primary" @click="saveEval">保存评估</ElButton>
           </div>
         </div>
       </template>
@@ -447,9 +548,20 @@
     queryLeads,
     matchConsultants,
     EVAL_DIMENSIONS,
-    evalTotalScore
+    EVAL_RISKS,
+    evalTotalScore,
+    getRenewalEvaluation,
+    saveRenewalEvaluation,
+    renewalLevel,
+    renewalLevelLabel
   } from '@/api/yimai'
-  import type { YimaiCustomer, MemberListKey, YimaiLead } from '@/api/yimai'
+  import type {
+    YimaiCustomer,
+    MemberListKey,
+    YimaiLead,
+    RenewalEvaluationAnswers,
+    RenewalEvaluationContext
+  } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { ElMessage, ElTag } from 'element-plus'
 
@@ -458,6 +570,7 @@
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
   const isTeacher = computed(() => roles.value.includes('R_TEACHER'))
+  const isSuper = computed(() => roles.value.includes('R_SUPER'))
   /** 数据范围说明：随当前门店/清单/顾问筛选动态显示 */
   const scopeHint = computed(() => {
     const venue = searchForm.value.venue || userStore.getUserInfo.venue || '双店'
@@ -469,6 +582,7 @@
   })
 
   const LIST_KEYS: MemberListKey[] = ['待续课', '出勤降低', 'VIP', '预流失', '待复活']
+  const EVALUATION_STATUSES = ['未评估', '高机会', '重点培育', '风险修复', '已过期']
   const TAB_KEY_TO_LIST: Record<string, MemberListKey> = {
     renewal: '待续课',
     decline: '出勤降低',
@@ -491,7 +605,14 @@
 
   const loading = ref(false)
   const activeTab = ref('all')
-  const searchForm = ref({ name: '', phone: '', list: '', consultant: '', venue: '' })
+  const searchForm = ref({
+    name: '',
+    phone: '',
+    list: '',
+    consultant: '',
+    venue: '',
+    evaluationStatus: ''
+  })
   const page = ref({ current: 1, size: 20 })
   const all = ref<YimaiCustomer[]>([])
   const rules = ref(getMemberRules())
@@ -535,12 +656,11 @@
     let list = all.value
     if (isTeacher.value) {
       // 老师在总览看自己的；五清单页签同样只看自己名下
-      if (activeTab.value !== 'all')
-        list = list.filter(
-          (c) =>
-            c.owner === userStore.getUserInfo.userName ||
-            c.consultant === userStore.getUserInfo.userName
-        )
+      list = list.filter(
+        (c) =>
+          c.owner === userStore.getUserInfo.userName ||
+          c.consultant === userStore.getUserInfo.userName
+      )
     }
     if (activeTab.value !== 'all') {
       list = list.filter((c) => computeMemberLists(c).includes(TAB_KEY_TO_LIST[activeTab.value]))
@@ -560,6 +680,15 @@
       const target = searchForm.value.consultant
       list = list.filter((c) => (c.consultant || '待分配') === target)
     }
+    if (searchForm.value.evaluationStatus === '未评估')
+      list = list.filter((c) => c.evalScore == null)
+    if (searchForm.value.evaluationStatus === '高机会')
+      list = list.filter((c) => c.evalLevel === 'high')
+    if (searchForm.value.evaluationStatus === '重点培育')
+      list = list.filter((c) => c.evalLevel === 'medium')
+    if (searchForm.value.evaluationStatus === '风险修复')
+      list = list.filter((c) => c.evalLevel === 'low')
+    if (searchForm.value.evaluationStatus === '已过期') list = list.filter(evaluationExpired)
     return list
   })
 
@@ -586,6 +715,7 @@
           list: listFilter,
           venue: searchForm.value.venue || undefined,
           consultant: searchForm.value.consultant || undefined,
+          evaluationStatus: searchForm.value.evaluationStatus || undefined,
           type: 'member',
           current: 1,
           size: 5000
@@ -612,6 +742,23 @@
     return daysAgo2(row.lastTouch) > 14
   }
 
+  function actionOverdue(row: YimaiCustomer): boolean {
+    if (!row.nextActionTime) return false
+    return new Date(row.nextActionTime.replace(' ', 'T')).getTime() < Date.now()
+  }
+
+  function evaluationExpired(row: YimaiCustomer): boolean {
+    return Boolean(row.evalAt) && daysAgo2(row.evalAt!) > 30
+  }
+
+  function evaluationColor(score: number): string {
+    return score >= 70 ? 'text-green-600' : score >= 40 ? 'text-orange-500' : 'text-red-500'
+  }
+
+  function evaluationTag(score: number): 'success' | 'warning' | 'danger' {
+    return score >= 70 ? 'success' : score >= 40 ? 'warning' : 'danger'
+  }
+
   // ---------- 续课计划 ----------
   const renewalDlg = reactive({
     visible: false,
@@ -631,9 +778,9 @@
     renewalDlg.visible = true
   }
 
-  function saveRenewal() {
+  async function saveRenewal() {
     if (!renewalDlg.row) return
-    updateMemberFields(renewalDlg.row.id, { renewalPlan: { ...renewalDlg.form } }, '续课预报')
+    await updateMemberFields(renewalDlg.row.id, { renewalPlan: { ...renewalDlg.form } }, '续课预报')
     renewalDlg.visible = false
     ElMessage.success('已保存，进入首周「先确认不销售」流程')
   }
@@ -654,9 +801,9 @@
     declineDlg.visible = true
   }
 
-  function saveDecline() {
+  async function saveDecline() {
     if (!declineDlg.row) return
-    updateMemberFields(declineDlg.row.id, { decline: { ...declineDlg.form } }, '下降处置')
+    await updateMemberFields(declineDlg.row.id, { decline: { ...declineDlg.form } }, '下降处置')
     declineDlg.visible = false
     ElMessage.success('已保存')
   }
@@ -674,10 +821,10 @@
     touchDlg.visible = true
   }
 
-  function saveTouch() {
+  async function saveTouch() {
     if (!touchDlg.row) return
     const today = new Date().toISOString().slice(0, 10)
-    updateMemberFields(
+    await updateMemberFields(
       touchDlg.row.id,
       {
         expectedReturn: touchDlg.form.expectedReturn,
@@ -691,8 +838,8 @@
   }
 
   // ---------- 预流失转待复活 ----------
-  function toRevive(row: YimaiCustomer) {
-    updateMemberFields(
+  async function toRevive(row: YimaiCustomer) {
+    await updateMemberFields(
       row.id,
       { inRevive: true, lastTouch: new Date().toISOString().slice(0, 10) },
       '转待复活'
@@ -702,31 +849,74 @@
   }
 
   // ---------- 30天评估 ----------
-  const evalDlg = reactive<{ visible: boolean; row: YimaiCustomer | null }>({
+  const evalDlg = reactive<{
+    visible: boolean
+    row: YimaiCustomer | null
+    loading: boolean
+    saving: boolean
+  }>({
     visible: false,
-    row: null
+    row: null,
+    loading: false,
+    saving: false
   })
-  const evalAnswers = reactive<Record<string, number[]>>({})
+  const evalAnswers = reactive<RenewalEvaluationAnswers>({
+    goal: 'none',
+    feedback: 'none',
+    wechat: 'no_response',
+    intent: 'none',
+    service: 'normal',
+    risks: []
+  })
+  const evalContext = ref<RenewalEvaluationContext | null>(null)
+  const evalRemark = ref('')
 
-  function openEval(row: YimaiCustomer) {
+  async function openEval(row: YimaiCustomer) {
     evalDlg.row = row
-    Object.keys(evalAnswers).forEach((k) => delete evalAnswers[k])
-    EVAL_DIMENSIONS.forEach((d) => (evalAnswers[d.key] = []))
     evalDlg.visible = true
+    evalDlg.loading = true
+    try {
+      evalContext.value = await getRenewalEvaluation(row.id)
+      const latest = evalContext.value.latest
+      Object.assign(
+        evalAnswers,
+        latest?.answers ?? {
+          goal: 'none',
+          feedback: 'none',
+          wechat: 'no_response',
+          intent: 'none',
+          service: 'normal',
+          risks: []
+        }
+      )
+      evalAnswers.attendanceCount = evalContext.value.attendanceCount
+      evalAnswers.cardWindow = evalContext.value.cardWindow
+      evalRemark.value = latest?.remark ?? ''
+    } catch (error) {
+      ElMessage.error(String((error as { message?: string }).message ?? error).slice(0, 120))
+    } finally {
+      evalDlg.loading = false
+    }
   }
 
   const evalTotal = computed(() => evalTotalScore(evalAnswers))
 
-  function saveEval() {
+  async function saveEval() {
     if (!evalDlg.row) return
-    updateMemberFields(
-      evalDlg.row.id,
-      { evalScore: evalTotal.value, evalAt: new Date().toISOString().slice(0, 10) },
-      '续费评估'
-    )
-    evalDlg.visible = false
-    ElMessage.success(`已保存：${evalDlg.row.name} 评估 ${evalTotal.value} 分`)
-    load()
+    evalDlg.saving = true
+    try {
+      const result = await saveRenewalEvaluation(evalDlg.row.id, {
+        answers: { ...evalAnswers, risks: [...evalAnswers.risks] },
+        remark: evalRemark.value
+      })
+      evalDlg.visible = false
+      ElMessage.success(
+        `评估已保存，已生成任务「${result.task.title}」，负责人：${result.task.owner}`
+      )
+      await load()
+    } finally {
+      evalDlg.saving = false
+    }
   }
 
   // ---------- 阈值 ----------
@@ -737,8 +927,8 @@
     if (v) Object.assign(rulesForm, getMemberRules())
   })
 
-  function applyRules() {
-    setMemberRules({ ...rulesForm })
+  async function applyRules() {
+    await setMemberRules({ ...rulesForm })
     rules.value = getMemberRules()
     rulesDlg.value = false
     load()

@@ -8,6 +8,7 @@ use App\Models\Customer;
 use App\Models\KyBooking;
 use App\Models\Lead;
 use App\Models\PublishedShare;
+use App\Models\RenewalEvaluation;
 use App\Models\SyncJob;
 use App\Models\Task;
 use App\Models\TrainingPlan;
@@ -119,16 +120,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // ---------- 会员/客户 ----------
     Route::get('/customers', function (Request $r) {
         $u = $r->user();
-        $q = Customer::query();
-        if ($u->role === 'R_MANAGER') {
-            $q->where('venue', $u->venue);
-        }
-        if ($u->role === 'R_TEACHER') {
-            if ($u->venue) {
-                $q->where('venue', $u->venue);
-            }
-            $q->where('owner', $u->name);
-        }
+        $q = scopeCustomersForUser(Customer::query(), $u);
         if ($u->role === 'R_MEDIA') {
             $q->where('layer', 'P5');
         }
@@ -181,6 +173,16 @@ Route::middleware('auth:sanctum')->group(function () {
         if (is_numeric($r->query('remainMax'))) {
             $q->where('remain_times', '<=', (int) $r->query('remainMax'));
         }
+        if ($evaluation = $r->query('evaluationStatus')) {
+            match ($evaluation) {
+                '未评估' => $q->whereNull('eval_score'),
+                '高机会' => $q->where('eval_level', 'high'),
+                '重点培育' => $q->where('eval_level', 'medium'),
+                '风险修复' => $q->where('eval_level', 'low'),
+                '已过期' => $q->whereNotNull('eval_at')->where('eval_at', '<', now()->subDays(30)->toDateString()),
+                default => null,
+            };
+        }
         $current = max(1, (int) $r->query('current', 1));
         $size = min(5000, max(1, (int) $r->query('size', 20)));
         $total = (clone $q)->count();
@@ -191,9 +193,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::patch('/customers/{id}', function (Request $r, int $id) {
         $c = Customer::findOrFail($id);
+        abort_unless(canAccessCustomer($r->user(), $c), 403, '无权修改该会员');
         $c->update(collect(camelToSnake($r->all()))->only([
             'renewal_plan', 'decline', 'stop_reason', 'expected_return',
-            'last_touch', 'needs_help', 'in_revive', 'eval_score', 'eval_at',
+            'last_touch', 'needs_help', 'in_revive',
         ])->all());
         audit($r, $r->input('_action', '修改'), '会员管理', $id, "{$c->name}（{$c->venue}）", $c->venue, '工作流字段更新');
 
@@ -203,13 +206,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // 客户360：主档 + 会员工作流留痕 + 按手机号关联的前端客资
     Route::get('/customers/{id}', function (Request $r, int $id) {
         $c = Customer::findOrFail($id);
-        $u = $r->user();
-        if ($u->role === 'R_MANAGER' && $c->venue !== $u->venue) {
-            abort(403, '无权查看其它门店');
-        }
-        if ($u->role === 'R_TEACHER' && ($c->owner !== $u->name && ($u->venue ? $c->venue !== $u->venue : true))) {
-            abort(403, '无权查看');
-        }
+        abort_unless(canAccessCustomer($r->user(), $c), 403, '无权查看该会员');
 
         $logs = AuditLog::where('module', '会员管理')
             ->where('target_id', (string) $c->id)
@@ -226,10 +223,102 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
     });
 
+    Route::get('/customers/{id}/renewal-evaluation', function (Request $r, int $id) {
+        $c = Customer::findOrFail($id);
+        abort_unless(canAccessCustomer($r->user(), $c), 403, '无权查看该会员评估');
+
+        return ok(renewalEvaluationContext($c));
+    });
+
+    Route::put('/customers/{id}/renewal-evaluation', function (Request $r, int $id) {
+        $c = Customer::findOrFail($id);
+        abort_unless(canAccessCustomer($r->user(), $c), 403, '无权评估该会员');
+        $data = $r->validate([
+            'answers' => 'required|array',
+            'answers.goal' => 'required|string|in:written_plan,agreed_goal,visible_progress,none',
+            'answers.feedback' => 'required|string|in:replied,no_reply,none',
+            'answers.wechat' => 'required|string|in:proactive,two_way,shallow,no_response,refused',
+            'answers.intent' => 'required|string|in:asked_plan,positive,uncertain,none',
+            'answers.service' => 'required|string|in:resolved,handled,normal,unresolved',
+            'answers.risks' => 'nullable|array|max:3',
+            'answers.risks.*' => 'string|in:purchase_refused,long_no_response,complaint_unresolved',
+            'remark' => 'nullable|string|max:500',
+        ]);
+        $result = DB::transaction(function () use ($r, $c, $data) {
+            $context = renewalEvaluationContext($c);
+            $answers = $data['answers'] + [
+                'attendanceCount' => $context['attendanceCount'],
+                'cardWindow' => $context['cardWindow'],
+            ];
+            $score = renewalEvaluationScore($answers);
+            $level = renewalLevel($score);
+            $evaluation = RenewalEvaluation::create([
+                'customer_id' => $c->id,
+                'answers' => $answers,
+                'score' => $score,
+                'level' => $level,
+                'remark' => $data['remark'] ?? '',
+                'evaluator_id' => $r->user()->id,
+                'evaluator_name' => $r->user()->name,
+                'evaluated_at' => now(),
+            ]);
+            $c->update([
+                'eval_score' => $score,
+                'eval_level' => $level,
+                'eval_at' => now()->toDateString(),
+                'eval_by' => $r->user()->name,
+            ]);
+            $taskSpec = renewalTaskSpec($c, $score);
+            $deadline = now()->addDays($taskSpec['days'])->format('Y-m-d 18:00');
+            $task = Task::query()
+                ->where('customer_id', $c->id)
+                ->where('source_type', 'renewal_evaluation')
+                ->whereNotIn('status', ['已完成'])
+                ->latest('id')->first();
+            $taskValues = [
+                'customer_id' => $c->id,
+                'customer_name' => $c->name,
+                'venue' => $c->venue,
+                'title' => $taskSpec['title'],
+                'owner' => $taskSpec['owner'],
+                'priority' => $taskSpec['priority'],
+                'deadline' => $deadline,
+                'status' => '待接收',
+                'standard' => $taskSpec['standard'],
+                'source_type' => 'renewal_evaluation',
+                'source_id' => $evaluation->id,
+                'review_role' => $taskSpec['reviewRole'],
+            ];
+            if ($task) {
+                $task->update($taskValues);
+            } else {
+                $task = Task::create($taskValues);
+            }
+            $c->update([
+                'next_action' => $taskSpec['title'],
+                'next_action_time' => $deadline,
+            ]);
+            audit($r, '评估', '会员管理', $c->id, "{$c->name}（{$c->venue}）", $c->venue, "续费经营评估 {$score} 分，联动任务 #{$task->id} [{$task->title}]");
+
+            return ['evaluation' => camel($evaluation), 'task' => camel($task), 'context' => $context];
+        });
+
+        return ok($result);
+    });
+
     Route::get('/member-rules', fn (Request $r) => ok(rules()));
     Route::put('/member-rules', function (Request $r) {
-        setRules($r->all());
-        audit($r, '修改', '会员管理', 0, '清单规则阈值', '双店', json_encode($r->all(), JSON_UNESCAPED_UNICODE));
+        requireSuper($r);
+        $data = $r->validate([
+            'renewalThreshold' => 'required|integer|min:1|max:50',
+            'vipThreshold' => 'required|integer|min:10|max:1000',
+            'declineMode' => 'required|in:strict,recent',
+            'predropMin' => 'required|integer|min:1|max:180',
+            'predropMax' => 'required|integer|min:1|max:180|gte:predropMin',
+            'reviveDays' => 'required|integer|min:7|max:365',
+        ]);
+        setRules($data);
+        audit($r, '修改', '会员管理', 0, '清单规则阈值', '双店', json_encode($data, JSON_UNESCAPED_UNICODE));
 
         return ok(rules());
     });
@@ -242,7 +331,15 @@ Route::middleware('auth:sanctum')->group(function () {
             $q->where('venue', $u->venue);
         }
         if ($u->role === 'R_TEACHER') {
-            $q->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+            $q->where('venue', $u->venue)
+                ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+        }
+        if ($status = $r->query('status')) {
+            $q->where('status', $status);
+        }
+        if ($venue = $r->query('venue')) {
+            abort_if($u->role !== 'R_SUPER' && $venue !== $u->venue, 403, '无权查看其它门店任务');
+            $q->where('venue', $venue);
         }
         $current = max(1, (int) $r->query('current', 1));
         $size = min(100, max(1, (int) $r->query('size', 20)));
@@ -253,6 +350,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('/tasks', function (Request $r) {
+        abort_unless(in_array($r->user()->role, ['R_SUPER', 'R_MANAGER', 'R_TEACHER'], true), 403, '无权创建任务');
         $d = $r->validate([
             'title' => 'required|string|max:50',
             'customerName' => 'required|string|max:20',
@@ -262,6 +360,10 @@ Route::middleware('auth:sanctum')->group(function () {
             'deadline' => 'nullable|string|max:24',
             'standard' => 'nullable|string|max:200',
         ]);
+        abort_if($r->user()->role !== 'R_SUPER' && $d['venue'] !== $r->user()->venue, 403, '无权创建其它门店任务');
+        if ($r->user()->role === 'R_TEACHER') {
+            $d['owner'] = $r->user()->name;
+        }
         $task = Task::create([
             'title' => $d['title'],
             'customer_name' => $d['customerName'],
@@ -279,6 +381,24 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::patch('/tasks/{id}', function (Request $r, int $id) {
         $task = Task::findOrFail($id);
+        $u = $r->user();
+        abort_if($u->role === 'R_MEDIA', 403, '无权操作任务');
+        abort_if($u->role === 'R_MANAGER' && $task->venue !== $u->venue, 403, '无权操作其它门店任务');
+        if ($u->role === 'R_TEACHER') {
+            abort_if($task->venue !== $u->venue || ! in_array($task->owner, [$u->name, '未分配'], true), 403, '只能操作本人任务');
+            $requested = (string) $r->input('status', $task->status);
+            $allowedTransitions = [
+                '待接收' => ['进行中'],
+                '进行中' => ['待验收'],
+                '已退回' => ['进行中', '待验收'],
+            ];
+            abort_unless($requested === $task->status || in_array($requested, $allowedTransitions[$task->status] ?? [], true), 422, '任务状态流转无效');
+            abort_if($r->hasAny(['title', 'venue', 'priority', 'deadline', 'standard']), 403, '老师只能认领或提报本人任务');
+        }
+        if (in_array($r->input('status'), ['已完成', '已退回'], true)) {
+            abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可验收');
+            abort_unless($task->status === '待验收', 422, '仅待验收任务可执行验收');
+        }
         $allowed = ['title', 'customer_name', 'venue', 'owner', 'priority', 'deadline', 'standard', 'status'];
         $task->update(collect(camelToSnake($r->all()))->only($allowed)->all());
         audit($r, $r->input('_action', '修改'), '任务中心', $task->id, "{$task->title}·{$task->customer_name}", $task->venue, '任务流转：'.($r->input('status') ?: '字段更新'));
@@ -1246,6 +1366,124 @@ if (! function_exists('ok')) {
     function requireSuper(Request $request): void
     {
         abort_unless($request->user()?->role === 'R_SUPER', 403, '仅超管可执行此操作');
+    }
+
+    function scopeCustomersForUser($query, User $user)
+    {
+        if ($user->role === 'R_MANAGER') {
+            $query->where('venue', $user->venue);
+        } elseif ($user->role === 'R_TEACHER') {
+            $query->where('venue', $user->venue)
+                ->where(fn ($q) => $q->where('owner', $user->name)->orWhere('consultant', $user->name));
+        } elseif ($user->role === 'R_MEDIA') {
+            $query->where('layer', 'P5');
+        }
+
+        return $query;
+    }
+
+    function canAccessCustomer(User $user, Customer $customer): bool
+    {
+        return match ($user->role) {
+            'R_SUPER' => true,
+            'R_MANAGER' => $customer->venue === $user->venue,
+            'R_TEACHER' => $customer->venue === $user->venue
+                && in_array($user->name, [$customer->owner, $customer->consultant], true),
+            default => false,
+        };
+    }
+
+    function renewalEvaluationContext(Customer $customer): array
+    {
+        $memberId = str_starts_with((string) $customer->external_id, 'ky:')
+            ? (string) last(explode(':', (string) $customer->external_id))
+            : '';
+        $attendance = KyBooking::query()
+            ->where('venue', $customer->venue)
+            ->where('status', 'signed')
+            ->where('start_at', '>=', now()->subDays(30)->startOfDay())
+            ->where(function ($q) use ($customer, $memberId) {
+                if ($memberId !== '') {
+                    $q->where('member_id', $memberId);
+                    if ($customer->phone !== '') {
+                        $q->orWhere('phone', $customer->phone);
+                    }
+                } elseif ($customer->phone !== '') {
+                    $q->where('phone', $customer->phone);
+                } else {
+                    $q->whereRaw('1 = 0');
+                }
+            })->count();
+        $expireDays = $customer->expire_date
+            ? now()->startOfDay()->diffInDays($customer->expire_date, false)
+            : null;
+        $cardWindow = ($customer->remain_times !== null && $customer->remain_times <= 10)
+            || ($expireDays !== null && $expireDays >= 0 && $expireDays <= 30) ? 10
+            : (($customer->remain_times !== null && $customer->remain_times <= 20)
+                || ($expireDays !== null && $expireDays > 30 && $expireDays <= 60) ? 5 : 0);
+        $latest = $customer->renewalEvaluations()->latest('evaluated_at')->first();
+
+        return [
+            'attendanceCount' => $attendance,
+            'cardWindow' => $cardWindow,
+            'lastVisit' => $customer->last_visit,
+            'remainTimes' => $customer->remain_times,
+            'expireDate' => $customer->expire_date,
+            'attendM1' => $customer->attend_m1,
+            'attendM2' => $customer->attend_m2,
+            'attendM3' => $customer->attend_m3,
+            'latest' => $latest ? camel($latest) : null,
+        ];
+    }
+
+    function renewalEvaluationScore(array $answers): int
+    {
+        $attendance = (int) ($answers['attendanceCount'] ?? 0);
+        $attendanceScore = match (true) {
+            $attendance >= 8 => 25,
+            $attendance >= 6 => 20,
+            $attendance >= 4 => 10,
+            $attendance >= 1 => 5,
+            default => 0,
+        };
+        $maps = [
+            'goal' => ['written_plan' => 15, 'agreed_goal' => 10, 'visible_progress' => 5, 'none' => 0],
+            'feedback' => ['replied' => 15, 'no_reply' => 5, 'none' => 0],
+            'wechat' => ['proactive' => 15, 'two_way' => 10, 'shallow' => 5, 'no_response' => 0, 'refused' => 0],
+            'intent' => ['asked_plan' => 10, 'positive' => 8, 'uncertain' => 4, 'none' => 0],
+            'service' => ['resolved' => 10, 'handled' => 8, 'normal' => 5, 'unresolved' => 0],
+        ];
+        $score = $attendanceScore + min(10, max(0, (int) ($answers['cardWindow'] ?? 0)));
+        foreach ($maps as $key => $values) {
+            $score += $values[$answers[$key] ?? ''] ?? 0;
+        }
+        $riskScores = ['purchase_refused' => 10, 'long_no_response' => 10, 'complaint_unresolved' => 15];
+        foreach (array_unique((array) ($answers['risks'] ?? [])) as $risk) {
+            $score -= $riskScores[$risk] ?? 0;
+        }
+
+        return min(100, max(0, $score));
+    }
+
+    function renewalLevel(int $score): string
+    {
+        return $score >= 70 ? 'high' : ($score >= 40 ? 'medium' : 'low');
+    }
+
+    function renewalTaskSpec(Customer $customer, int $score): array
+    {
+        $level = renewalLevel($score);
+        $manager = User::where('role', 'R_MANAGER')->where('venue', $customer->venue)->where('status', '启用')->first();
+        $owner = trim((string) $customer->consultant) ?: (trim((string) $customer->owner) ?: '未分配');
+        if ($level === 'low' && $manager) {
+            $owner = $manager->name;
+        }
+
+        return match ($level) {
+            'high' => ['title' => '续费方案确认', 'owner' => $owner, 'priority' => '中', 'days' => 3, 'reviewRole' => 'R_MANAGER', 'standard' => '确认续费课种、方案、预计时间，并记录客户明确反馈'],
+            'medium' => ['title' => '续费障碍跟进', 'owner' => $owner, 'priority' => '高', 'days' => 7, 'reviewRole' => 'R_MANAGER', 'standard' => '完成一次有效沟通或训练反馈，明确主要障碍与下一次安排'],
+            default => ['title' => '店长介入续费修复', 'owner' => $owner, 'priority' => '高', 'days' => 3, 'reviewRole' => 'R_MANAGER', 'standard' => '店长完成介入，记录客户主要顾虑、解决动作及下一次跟进时间'],
+        };
     }
 
     function camel($model): array
