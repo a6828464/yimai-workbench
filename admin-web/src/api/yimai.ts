@@ -1114,7 +1114,11 @@ export async function getDashboardSeries(
       daily: Array<Record<string, unknown>>
       summary: Record<string, number>
       visit30: number
-    }>('/analytics/trends', { start: startDate, end: endDate })
+    }>('/analytics/trends', {
+      start: startDate,
+      end: endDate,
+      ...(scope === '双店' ? {} : { venue: scope })
+    })
     const venues = scope === '双店' ? null : [scope]
     const daily: DashboardDayPoint[] = (t.daily ?? []).map((day) => {
       const date = String(day.date ?? '')
@@ -1128,7 +1132,7 @@ export async function getDashboardSeries(
         label: date.slice(5).replace('-', '/'),
         bookings: sum('booked'),
         trials: sum('experienced'),
-        visits: sum('booked'),
+        visits: sum('experienced'),
         deals: sum('deals'),
         amount: sum('amount'),
         leads: sum('leads'),
@@ -1218,7 +1222,8 @@ export async function getChannelBreakdown(
   if (USE_BACKEND) {
     const c = await apiGet<{ rows: ChannelLeadItem[] }>('/analytics/channels', {
       start: startDate,
-      end: endDate
+      end: endDate,
+      ...(scope === '双店' ? {} : { venue: scope })
     })
     return (c.rows ?? []).sort((x, y) => y.leads - x.leads)
   }
@@ -1264,7 +1269,11 @@ export async function getPlatformAmounts(
   scope: '双店' | '绿地店' | '东部店' = '双店'
 ): Promise<PlatformAmounts> {
   if (USE_BACKEND) {
-    return apiGet<PlatformAmounts>('/analytics/platforms', { start: startDate, end: endDate })
+    return apiGet<PlatformAmounts>('/analytics/platforms', {
+      start: startDate,
+      end: endDate,
+      ...(scope === '双店' ? {} : { venue: scope })
+    })
   }
   const a = actor()
   const venues =
@@ -1437,7 +1446,7 @@ export function publishShare(
 
 // ==================== 今日工作台汇总 ====================
 
-export function getTodaySummary(): Promise<{
+export interface TodaySummary {
   newLeads: number
   pendingFollowup: number
   expiringMembers: number
@@ -1447,7 +1456,9 @@ export function getTodaySummary(): Promise<{
   trialBookings: { 绿地店: number; 东部店: number }
   scopeLabel: string
   snapshotTime: string
-}> {
+}
+
+export function getTodaySummary(): Promise<TodaySummary> {
   if (USE_BACKEND) return apiGet('/today/summary')
 
   const a = actor()

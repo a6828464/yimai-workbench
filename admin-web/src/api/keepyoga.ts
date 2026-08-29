@@ -32,15 +32,16 @@ async function kyPost<T = unknown>(
   body: Record<string, unknown>,
   venueId?: string
 ): Promise<T> {
+  const normalizedPath = path.replace(/^\/+/, '')
   if (USE_BACKEND) {
     const form: Record<string, unknown> = { ...body }
     if (venueId && form['venue_id'] === undefined) form['venue_id'] = venueId
     const data = await apiPost<{ errno?: string | number } & Record<string, unknown>>('/ky/call', {
-      path,
+      path: normalizedPath,
       form
     })
     if (String(data?.errno ?? '0') !== '0') {
-      throw new Error(`${path} errno=${data?.errno} ${data?.emsg ?? ''}`)
+      throw new Error(`${normalizedPath} errno=${data?.errno} ${data?.emsg ?? ''}`)
     }
     return data as T
   }
@@ -53,7 +54,7 @@ async function kyPost<T = unknown>(
   }
   if (venueId) params['venue_id'] = venueId
   for (const [k, v] of Object.entries(body)) params[k] = String(v)
-  const resp = await fetch(`/ky${path}`, {
+  const resp = await fetch(`/ky/${normalizedPath}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams(params).toString()
@@ -64,9 +65,9 @@ async function kyPost<T = unknown>(
     if (String(data.errno) === '6') {
       cachedToken = ''
       await kySession(true)
-      return kyPost(path, body, venueId)
+      return kyPost(normalizedPath, body, venueId)
     }
-    throw new Error(`${path} errno=${data.errno} ${data.emsg ?? ''}`)
+    throw new Error(`${normalizedPath} errno=${data.errno} ${data.emsg ?? ''}`)
   }
   return data as T
 }
@@ -90,7 +91,6 @@ function extractTotal(response: unknown): number | string {
   scopes.push(resp)
   for (const obj of scopes) {
     for (const key of ['total', 'count', 'recordsTotal', 'total_count']) {
-      if (key === 'count' && obj === resp) continue
       if (obj[key] !== undefined && obj[key] !== '' && !Number.isNaN(Number(obj[key])))
         return Number(obj[key])
     }
@@ -98,6 +98,14 @@ function extractTotal(response: unknown): number | string {
     if (fenye) {
       for (const key of ['record_count', 'total', 'count']) {
         if (fenye[key] !== undefined && fenye[key] !== '') return Number(fenye[key])
+      }
+    }
+    for (const pageKey of ['pagination', 'page']) {
+      const page = obj[pageKey] as Record<string, unknown> | undefined
+      if (!page) continue
+      for (const key of ['total', 'count', 'record_count', 'totalCount']) {
+        if (page[key] !== undefined && page[key] !== '' && !Number.isNaN(Number(page[key])))
+          return Number(page[key])
       }
     }
   }
@@ -151,13 +159,17 @@ export async function fetchKyCounts(storeKey: string): Promise<KyCounts> {
       }
     ]
   ]
+  const errors: string[] = []
   for (const [key, path, body] of tasks) {
     try {
       const d = await kyPost(path, { ...common(vid), ...body }, vid)
       out[key] = extractTotal(d)
-    } catch {
-      /* 单项失败不影响其余 */
+    } catch (error) {
+      errors.push(String((error as { message?: string }).message ?? error))
     }
+  }
+  if (Object.values(out).every((value) => value === '-')) {
+    throw new Error(errors[0] || '上游响应中没有可识别的计数字段')
   }
   return out
 }
@@ -167,37 +179,87 @@ export interface KyTodayBookings {
   trialHits: number
 }
 
+function localDate(): string {
+  const now = new Date()
+  return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+}
+
+function bookingRows(response: unknown): Record<string, unknown>[] {
+  if (!response || typeof response !== 'object') return []
+  const data = (response as { data?: unknown }).data
+  if (Array.isArray(data))
+    return data.filter((row): row is Record<string, unknown> => !!row && typeof row === 'object')
+  if (!data || typeof data !== 'object') return []
+  const inner = data as Record<string, unknown>
+  for (const key of ['reservations', 'list', 'rows']) {
+    if (Array.isArray(inner[key])) {
+      return (inner[key] as unknown[]).filter(
+        (row): row is Record<string, unknown> => !!row && typeof row === 'object'
+      )
+    }
+  }
+  return []
+}
+
+function isTrialBooking(row: Record<string, unknown>): boolean {
+  return [
+    'm_name',
+    'member_name',
+    'course_name',
+    'course_title',
+    'card_title',
+    'card_name',
+    'remark'
+  ].some((key) => String(row[key] ?? '').includes('体验'))
+}
+
 export async function fetchKyToday(storeKey: string, date?: string): Promise<KyTodayBookings> {
   const vid = KY_STORES[storeKey]
-  const d = date ? date.replace(/-/g, '') : new Date().toISOString().slice(0, 10).replace(/-/g, '')
-  const resp = await kyPost<{
-    data?: {
-      reservations?: Record<string, unknown>[]
-      list?: Record<string, unknown>[]
-      rows?: Record<string, unknown>[]
+  const d = date ? date.replace(/-/g, '') : localDate()
+  const list: Record<string, unknown>[] = []
+  for (const path of ['course/api/queryreversionleague', 'course/api/queryreversionprivate']) {
+    let previousPageSignature = ''
+    for (let page = 1; page <= 100; page++) {
+      const rows = bookingRows(
+        await kyPost(
+          path,
+          {
+            ...common(vid),
+            page_index: page,
+            page_size: 200,
+            s_date: d,
+            e_date: d,
+            status_code: 'all',
+            ...(path.includes('league') ? { course_type: 0 } : {}),
+            course_id: 0,
+            coach_id: 0,
+            m_card_id: 0,
+            search: ''
+          },
+          vid
+        )
+      )
+      const signature = JSON.stringify(rows)
+      if (page > 1 && signature === previousPageSignature) break
+      previousPageSignature = signature
+      list.push(...rows.map((row) => ({ ...row, __source: path })))
+      if (rows.length < 200) break
     }
-  }>(
-    '/course/api/queryreversionleague',
-    {
-      ...common(vid),
-      page_index: 1,
-      page_size: 200,
-      s_date: d,
-      e_date: d,
-      status_code: 'all',
-      course_type: 0,
-      course_id: 0,
-      coach_id: 0,
-      m_card_id: 0,
-      search: ''
-    },
-    vid
-  )
-  // 兼容 data.reservations / data.list / data.rows 多种返回结构
-  const inner = resp.data
-  const list = [...(inner?.reservations ?? []), ...(inner?.list ?? []), ...(inner?.rows ?? [])]
-  const trials = list.filter((r) => String(r.m_name ?? '').includes('体验')).length
-  return { total: list.length, trialHits: trials }
+  }
+  const unique = [
+    ...new Map(
+      list.map((row) => {
+        const id = row.id ?? row.reservation_id
+        const fallback = `${row.m_id ?? row.member_id ?? row.m_name ?? ''}:${row.start_time ?? row.course_date ?? ''}:${row.course_name ?? ''}`
+        return [`${row.__source}:${id ?? fallback}`, row]
+      })
+    ).values()
+  ]
+  const active = unique.filter((row) => {
+    const status = String(row.status_desc ?? row.status_name ?? row.status ?? '')
+    return !/(取消|爽约|作废|未到)/u.test(status)
+  })
+  return { total: active.length, trialHits: active.filter(isTrialBooking).length }
 }
 
 export interface KyMemberRow {
@@ -231,7 +293,7 @@ export async function fetchKyMembers(
   const resp = await kyPost<{
     data?: { members?: Record<string, unknown>[]; list?: Record<string, unknown>[] }
   }>(
-    '/member/api/getmembersbycondwithpager',
+    'member/api/getmembersbycondwithpager',
     {
       ...common(vid),
       page_index: 1,

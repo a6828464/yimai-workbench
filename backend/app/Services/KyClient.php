@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\AppSetting;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -15,7 +16,9 @@ use RuntimeException;
 class KyClient
 {
     public const BASE = 'https://cloud.keepyoga.com';
+
     public const BRAND_ID = '108193';
+
     public const VERSION = '10.1.3';
 
     /** 允许代理的上游接口白名单 */
@@ -33,7 +36,7 @@ class KyClient
     /** 凭据来源优先级：数据库 app_settings.ky（后台可改）> .env */
     public static function credentials(): array
     {
-        $ky = \App\Models\AppSetting::first()?->ky ?? [];
+        $ky = AppSetting::first()?->ky ?? [];
         $phone = is_string($ky['phone'] ?? null) && $ky['phone'] !== '' ? (string) $ky['phone'] : (string) config('services.ky.phone');
         $password = is_string($ky['password'] ?? null) && $ky['password'] !== '' ? (string) $ky['password'] : (string) config('services.ky.password');
 
@@ -90,6 +93,8 @@ class KyClient
      */
     public static function call(string $path, array $form): array
     {
+        // 浏览器代理和服务端同步统一使用无前导斜杠的白名单路径。
+        $path = ltrim(trim($path), '/');
         if (! in_array($path, self::ALLOWED_PATHS, true)) {
             throw new RuntimeException("路径不在白名单: {$path}");
         }

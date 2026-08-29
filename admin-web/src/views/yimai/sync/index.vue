@@ -135,6 +135,9 @@
                   >新客体验 {{ v.trialHits }}</ElTag
                 ></div
               >
+              <div v-if="todayErrors[store]" class="mt-2 text-xs text-red-500 break-all">
+                {{ todayErrors[store] }}
+              </div>
             </div>
           </div>
           <div class="mt-3 flex items-center justify-between">
@@ -381,18 +384,25 @@
     绿地店: { total: 0, trialHits: 0 },
     东部店: { total: 0, trialHits: 0 }
   })
+  const todayErrors = ref<Record<string, string>>({})
 
   async function loadToday(withSnapshot: boolean) {
     todayLoading.value = true
+    const nextErrors: Record<string, string> = {}
     try {
       for (const store of Object.keys(KY_STORES)) {
         try {
           today.value[store] = await fetchKyToday(store)
-        } catch {
-          /* ignore */
+        } catch (error) {
+          nextErrors[store] = String((error as { message?: string }).message ?? error).slice(0, 120)
         }
       }
+      todayErrors.value = nextErrors
       if (withSnapshot) {
+        if (Object.keys(nextErrors).length) {
+          ElMessage.error(`预约获取失败，已保留原快照：${Object.keys(nextErrors).join('、')}`)
+          return
+        }
         const snap = {
           fetchedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
           fetchedBy: yimaiStore.currentActor().operatorName,

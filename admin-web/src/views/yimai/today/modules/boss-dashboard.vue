@@ -8,9 +8,31 @@
         <ElRadioButton value="绿地店">绿地店</ElRadioButton>
         <ElRadioButton value="东部店">东部店</ElRadioButton>
       </ElRadioGroup>
-      <DateRangeControl :start="range[0]" :end="range[1]" :shortcuts="shortcuts" @change="onRangeChange" />
+      <DateRangeControl
+        :start="range[0]"
+        :end="range[1]"
+        :shortcuts="shortcuts"
+        @change="onRangeChange"
+      />
       <div class="flex-1" />
       <span class="text-xs text-gray-400">{{ scopeLabel }} · 默认为本月1号至今</span>
+    </div>
+
+    <div class="grid grid-cols-2 gap-3 mb-4">
+      <YimaiKpiCard
+        label="随心瑜今日预约"
+        :value="todayBookingCount"
+        hint="团课 + 私教预约记录，来自最近成功快照"
+        :icon="ticketIcon"
+        accent="#409EFF"
+      />
+      <YimaiKpiCard
+        label="随心瑜今日体验预约"
+        :value="todayTrialCount"
+        :hint="todaySummary?.snapshotTime ? `快照 ${todaySummary.snapshotTime}` : '尚无成功快照'"
+        :icon="userIcon"
+        accent="#E6A23C"
+      />
     </div>
 
     <!-- 门店经营 KPI（店长视角） -->
@@ -100,9 +122,23 @@
 
 <script setup lang="ts">
   import YimaiKpiCard from './kpi-card.vue'
-  import { getDashboardSeries, getChannelBreakdown } from '@/api/yimai'
-  import type { DashboardDayPoint, DashboardSummary, ChannelLeadItem } from '@/api/yimai'
-  import { Ticket, User, ShoppingBag, Wallet, DataLine, Position, Coin, Odometer } from '@element-plus/icons-vue'
+  import { getDashboardSeries, getChannelBreakdown, getTodaySummary } from '@/api/yimai'
+  import type {
+    DashboardDayPoint,
+    DashboardSummary,
+    ChannelLeadItem,
+    TodaySummary
+  } from '@/api/yimai'
+  import {
+    Ticket,
+    User,
+    ShoppingBag,
+    Wallet,
+    DataLine,
+    Position,
+    Coin,
+    Odometer
+  } from '@element-plus/icons-vue'
   import type { LineDataItem } from '@/types/component/chart'
   import DateRangeControl from './date-range-control.vue'
 
@@ -116,6 +152,9 @@
   const channels = ref<ChannelLeadItem[]>([])
   const ldSummary = ref<DashboardSummary | null>(null)
   const dbSummary = ref<DashboardSummary | null>(null)
+  const todaySummary = ref<TodaySummary | null>(null)
+  const ticketIcon = markRaw(Ticket)
+  const userIcon = markRaw(User)
 
   function defaultRange(): [string, string] {
     const now = new Date()
@@ -128,9 +167,28 @@
   }
 
   const shortcuts = [
-    { text: '本月', value: () => [new Date(new Date().getFullYear(), new Date().getMonth(), 1), new Date()] },
-    { text: '上周', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 7); return [s, e] } },
-    { text: '近30天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 30); return [s, e] } }
+    {
+      text: '本月',
+      value: () => [new Date(new Date().getFullYear(), new Date().getMonth(), 1), new Date()]
+    },
+    {
+      text: '上周',
+      value: () => {
+        const e = new Date()
+        const s = new Date()
+        s.setDate(s.getDate() - 7)
+        return [s, e]
+      }
+    },
+    {
+      text: '近30天',
+      value: () => {
+        const e = new Date()
+        const s = new Date()
+        s.setDate(s.getDate() - 30)
+        return [s, e]
+      }
+    }
   ]
 
   const scopeLabel = computed(() =>
@@ -150,23 +208,101 @@
 
   const compareLabels = ['成交人数', '体验人数', '约课人数']
   const compareSeries = computed(() => [
-    { name: '绿地店', data: [ldSummary.value?.dealCount ?? 0, ldSummary.value?.trialCount ?? 0, ldSummary.value?.bookingCount ?? 0], stack: undefined },
-    { name: '东部店', data: [dbSummary.value?.dealCount ?? 0, dbSummary.value?.trialCount ?? 0, dbSummary.value?.bookingCount ?? 0] }
+    {
+      name: '绿地店',
+      data: [
+        ldSummary.value?.dealCount ?? 0,
+        ldSummary.value?.trialCount ?? 0,
+        ldSummary.value?.bookingCount ?? 0
+      ],
+      stack: undefined
+    },
+    {
+      name: '东部店',
+      data: [
+        dbSummary.value?.dealCount ?? 0,
+        dbSummary.value?.trialCount ?? 0,
+        dbSummary.value?.bookingCount ?? 0
+      ]
+    }
   ])
+  const todayBookingCount = computed(() => {
+    if (!todaySummary.value) return '-'
+    if (venueScope.value === '双店')
+      return todaySummary.value.todayBookings['绿地店'] + todaySummary.value.todayBookings['东部店']
+    return todaySummary.value.todayBookings[venueScope.value]
+  })
+  const todayTrialCount = computed(() => {
+    if (!todaySummary.value) return '-'
+    if (venueScope.value === '双店')
+      return todaySummary.value.trialBookings['绿地店'] + todaySummary.value.trialBookings['东部店']
+    return todaySummary.value.trialBookings[venueScope.value]
+  })
 
   const storeKpis = computed(() => [
-    { label: '约课人数', value: summary.value?.bookingCount ?? '-', icon: markRaw(Ticket), accent: '#409EFF' },
-    { label: '体验人数', value: summary.value?.trialCount ?? '-', icon: markRaw(User), accent: '#E6A23C' },
-    { label: '成交人数', value: summary.value?.dealCount ?? '-', icon: markRaw(ShoppingBag), accent: '#67C23A' },
-    { label: '成交率', value: summary.value ? `${summary.value.dealRate}` : '-', suffix: '%', hint: '成交 ÷ 到店体验', icon: markRaw(Odometer), accent: '#F56C6C' },
-    { label: '成交金额', value: summary.value?.dealAmount ?? '-', prefix: '¥', hint: '工作台登记口径', icon: markRaw(Wallet), accent: '#9C27B0' }
+    {
+      label: '约课人数',
+      value: summary.value?.bookingCount ?? '-',
+      icon: markRaw(Ticket),
+      accent: '#409EFF'
+    },
+    {
+      label: '体验人数',
+      value: summary.value?.trialCount ?? '-',
+      icon: markRaw(User),
+      accent: '#E6A23C'
+    },
+    {
+      label: '成交人数',
+      value: summary.value?.dealCount ?? '-',
+      icon: markRaw(ShoppingBag),
+      accent: '#67C23A'
+    },
+    {
+      label: '成交率',
+      value: summary.value ? `${summary.value.dealRate}` : '-',
+      suffix: '%',
+      hint: '成交 ÷ 到店体验',
+      icon: markRaw(Odometer),
+      accent: '#F56C6C'
+    },
+    {
+      label: '成交金额',
+      value: summary.value?.dealAmount ?? '-',
+      prefix: '¥',
+      hint: '工作台登记口径',
+      icon: markRaw(Wallet),
+      accent: '#9C27B0'
+    }
   ])
 
   const mediaKpis = computed(() => [
-    { label: '留资人数', value: summary.value?.leadCount ?? '-', icon: markRaw(DataLine), accent: '#409EFF' },
-    { label: '转私域人数', value: summary.value?.privateDomainCount ?? '-', icon: markRaw(Position), accent: '#E6A23C' },
-    { label: '到店人数', value: summary.value?.visitCount ?? '-', icon: markRaw(User), accent: '#9C27B0' },
-    { label: '核销金额', value: summary.value?.redeemAmount ?? '-', prefix: '¥', hint: '平台团购券', icon: markRaw(Coin), accent: '#FF9800' }
+    {
+      label: '留资人数',
+      value: summary.value?.leadCount ?? '-',
+      icon: markRaw(DataLine),
+      accent: '#409EFF'
+    },
+    {
+      label: '转私域人数',
+      value: summary.value?.privateDomainCount ?? '-',
+      icon: markRaw(Position),
+      accent: '#E6A23C'
+    },
+    {
+      label: '到店人数',
+      value: summary.value?.visitCount ?? '-',
+      icon: markRaw(User),
+      accent: '#9C27B0'
+    },
+    {
+      label: '核销金额',
+      value: summary.value?.redeemAmount ?? '-',
+      prefix: '¥',
+      hint: '平台团购券',
+      icon: markRaw(Coin),
+      accent: '#FF9800'
+    }
   ])
 
   function onRangeChange(v: [string, string]) {
@@ -180,21 +316,31 @@
       const requests: Promise<void>[] = []
       if (venueScope.value === '双店') {
         requests.push(
-          (async () => { ldSummary.value = (await getDashboardSeries(range.value[0], range.value[1], '绿地店')).summary })(),
-          (async () => { dbSummary.value = (await getDashboardSeries(range.value[0], range.value[1], '东部店')).summary })()
+          (async () => {
+            ldSummary.value = (
+              await getDashboardSeries(range.value[0], range.value[1], '绿地店')
+            ).summary
+          })(),
+          (async () => {
+            dbSummary.value = (
+              await getDashboardSeries(range.value[0], range.value[1], '东部店')
+            ).summary
+          })()
         )
       } else {
         ldSummary.value = null
         dbSummary.value = null
       }
-      const [dash, ch] = await Promise.all([
+      const [dash, ch, today] = await Promise.all([
         getDashboardSeries(range.value[0], range.value[1], venueScope.value),
         getChannelBreakdown(range.value[0], range.value[1], venueScope.value),
+        getTodaySummary(),
         ...requests
       ])
       daily.value = dash.daily
       summary.value = dash.summary
       channels.value = ch
+      todaySummary.value = today
     } finally {
       loading.value = false
     }
