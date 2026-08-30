@@ -2,8 +2,9 @@
 set -Eeuo pipefail
 
 # 一麦工作台 · 受控在线更新脚本（由后台「版本更新」调用）
-# 站点根目录可通过环境变量覆盖：SITE_ROOT=/path ./update.sh
-SITE_ROOT="${SITE_ROOT:-/www/wwwroot/oa.nbyimai.com}"
+# 默认以脚本所在目录为站点根；也可通过 SITE_ROOT=/path ./update.sh 覆盖。
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SITE_ROOT="${SITE_ROOT:-$SCRIPT_ROOT}"
 APP_ROOT="$SITE_ROOT/backend"
 WORK_ROOT="${WORK_ROOT:-$SITE_ROOT/.update-work}"
 GITEE_API="https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/releases/latest"
@@ -60,6 +61,12 @@ rsync -a \
   --exclude 'bootstrap/cache/' \
   --exclude 'database/database.sqlite*' \
   "$RELEASE_ROOT/backend/" "$APP_ROOT/"
+
+# 升级包同时携带最新版更新脚本；在当前进程结束前覆盖自身不影响本次执行。
+if [ -f "$RELEASE_ROOT/update.sh" ]; then
+  cp "$RELEASE_ROOT/update.sh" "$SITE_ROOT/update.sh"
+  chmod 755 "$SITE_ROOT/update.sh"
+fi
 
 cd "$APP_ROOT"
 php artisan migrate --force

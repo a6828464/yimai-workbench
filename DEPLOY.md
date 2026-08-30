@@ -1,6 +1,6 @@
 # 部署指南（宝塔面板 · 安装包方式）
 
-> 推荐流程：本地跑 `./make-release.sh` 生成安装包 → 宝塔上传解压 → 配置站点和数据库 → 执行受控迁移
+> 首次安装推荐上传 `yimai-workbench-installer-v<版本>.zip`，访问 `/install.php` 完成；现有站点更新使用普通发行包。
 > 微信内打开 H5 分享页必须 HTTPS，请务必配置 SSL 证书
 
 ## 一、宝塔环境要求
@@ -22,7 +22,7 @@ PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
    - 改法：`/www/server/php/{版本}/etc/php.ini` → `disable_functions = ...` 行删除 `proc_open,` 和 `putenv,` → 面板「软件商店 → PHP → 重启」或 `/system?action=ServiceAdmin`(`name=php-fpm-84`,`type=restart`)。
 2. **站点 `open_basedir` 放开到站点根**：`update.sh` 位于站点根目录，若 `backend/public/.user.ini` 的 `open_basedir` 只允许 `backend/`，PHP 无法访问 `../update.sh` 也会报错。改为 `open_basedir=/www/wwwroot/oa.nbyimai.com/:/tmp/`。
 
-- ❌ 不需要装 Composer（安装包已内置 vendor）
+- ❌ 首次安装服务器不需要装 Composer（首次安装包已内置生产 vendor）
 - ❌ 不需要装 Node.js（前端已构建成静态文件）
 
 ## 二、域名规划
@@ -37,26 +37,30 @@ PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
 
 ## 三、上传安装包
 
-1. 宝塔 → 文件 → 上传 `releases/yimai-workbench-xxxx.zip`
-2. 解压到 `/www/wwwroot/`，得到：
+1. 从 GitHub/Gitee Release 下载并上传 `yimai-workbench-installer-v<当前版本>.zip`
+2. 解压到站点目录，例如 `/www/wwwroot/yimai-workbench/`，得到：
 
 ```
 /www/wwwroot/yimai-workbench/
-└── app/          # Laravel 应用；Vue 构建产物已合入 app/public
+└── app/
+    ├── backend/  # Laravel 应用；Vue 构建产物已合入 backend/public
+    └── update.sh # 后台在线升级脚本
 ```
 
 ## 四、统一站点（oa.yourdomain.com）
 
 1. 宝塔 → 网站 → 添加站点：
    - 域名：`oa.yourdomain.com`
-   - 根目录：`/www/wwwroot/yimai-workbench/app/public`
+   - 根目录：`/www/wwwroot/yimai-workbench/app/backend/public`
    - PHP 版本：8.2+
 2. 数据库（二选一）：
-   - **面板建库**：数据库菜单创建 `yimai` 库+用户（推荐）
-   - 安装向导里填 root 也可自动建库
+   - **面板建库**：数据库菜单创建库和用户（推荐），记住库名、用户名、密码
+   - 安装向导填有建库权限的账号，让向导自动建库
 3. SSL：Let's Encrypt 一键签发 → 开启「强制 HTTPS」
-4. 配置 `app/.env`，然后执行 `php artisan migrate --force` 并创建初始超管账号。
-5. 不要使用 `migrate:fresh` 初始化已有生产数据库；后续发布只执行 `php artisan migrate --force`。
+4. 将 `app/backend/storage`、`app/backend/bootstrap/cache` 权限设置为 `www:www`、`775`。
+5. 访问 `https://oa.yourdomain.com/install.php`，填写数据库、初始超管和可选 KeepYoga 信息。
+6. 安装器自动写 `.env`、生成 APP_KEY、执行迁移、创建超管并生成 `storage/install.lock`；请求结束后自动删除 `install.php`。
+7. 不要使用 `migrate:fresh` 初始化已有生产数据库；后续发布只执行 `php artisan migrate --force`。
 
 验证：访问 `https://oa.yourdomain.com/api/customers`，未登录时返回 JSON `401` 即表示 API 已进入 Laravel。
 
@@ -82,6 +86,13 @@ window.__YIMAI_API_BASE__ = '/api'
 
 首次安装时由安装向导创建超管账号并要求设置至少 12 位密码。生产环境不创建固定演示账号；如需本地 Seeder 演示数据，必须显式设置 `DEMO_PASSWORD`。
 
+### 两种发行包的区别
+
+| 文件 | 用途 | vendor | install.php |
+|------|------|--------|-------------|
+| `yimai-workbench-v<版本>.zip` / `latest.zip` | 已有站点在线升级 | 不含（保留服务器现有依赖） | 不含 |
+| `yimai-workbench-installer-v<版本>.zip` | 全新宝塔服务器首次安装 | 包含生产依赖 | 包含，安装后自动删除并锁定 |
+
 ## 七、日常更新
 
 ### 推荐流程：提交仓库后后台更新
@@ -100,7 +111,7 @@ Gitee Release 自动发布需要在 GitHub 仓库配置 Actions Secret：`GITEE_
 
 如果没有配置 `GITEE_TOKEN`，工作流会跳过 Gitee 发布（不影响 GitHub 发行包），服务器会自动回退到 GitHub `auto-latest`。
 
-更新脚本位于仓库根目录 `update.sh`，服务器路径为 `/www/wwwroot/oa.nbyimai.com/update.sh`。生产服务器不安装 Node.js、不运行前端构建，也不通过 Web 请求直接执行任意 Shell 命令。
+更新脚本位于安装目录 `app/update.sh`，会自动以自身目录为站点根。生产服务器不安装 Node.js、不运行前端构建，也不通过 Web 请求直接执行任意 Shell 命令。
 
 每次更新前应保留站点和数据库备份。后端迁移应使用 `php artisan migrate --force`，不要使用 `migrate:fresh`。
 

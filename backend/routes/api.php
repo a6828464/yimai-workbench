@@ -1529,7 +1529,7 @@ Route::middleware('auth:sanctum')->group(function () {
         }
         $script = base_path('../update.sh');
         if (! is_file($script)) {
-            return response()->json(['code' => 1, 'message' => '服务器未配置受控更新脚本（/www/wwwroot/oa.nbyimai.com/update.sh 不存在），请先安装 update.sh'], 503);
+            return response()->json(['code' => 1, 'message' => '服务器未配置受控更新脚本（站点 app/update.sh 不存在），请先安装 update.sh'], 503);
         }
         $result = runShell('bash '.escapeshellarg($script), 900);
         if (! $result['ok']) {
