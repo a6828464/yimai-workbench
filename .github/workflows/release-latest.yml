@@ -36,7 +36,8 @@ jobs:
         working-directory: admin-web
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        run: pnpm build
+        # CI 安装禁用依赖脚本，自动导入声明不会重生成；类型检查已在本地发布门禁执行。
+        run: pnpm exec vite build
 
       - name: Install production backend dependencies
         working-directory: backend
