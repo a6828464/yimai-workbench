@@ -173,9 +173,14 @@ const isBoss = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_BO
 
   async function act(row: YimaiApproval, pass: boolean, finalStage = false) {
     if (!pass) {
-      await decideApproval(row.id, '驳回')
-      refreshData()
-      ElMessage.warning('已驳回，决定已写入留痕日志')
+      try {
+        await decideApproval(row.id, '驳回')
+        refreshData()
+        ElMessage.warning('已驳回，决定已写入留痕日志')
+      } catch (e) {
+        console.error('[approvals.act]', e)
+        ElMessage.error('操作失败，请稍后重试')
+      }
       return
     }
     if (finalStage && !isBoss.value) {
@@ -183,15 +188,25 @@ const isBoss = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_BO
       return
     }
     const stage = row.status === '待店长初审' ? '初审' : '终审'
-    await decideApproval(row.id, stage === '初审' ? '初审通过' : '终审通过')
-    refreshData()
-    ElMessage.success(`${stage}通过，决定已写入留痕日志`)
+    try {
+      await decideApproval(row.id, stage === '初审' ? '初审通过' : '终审通过')
+      refreshData()
+      ElMessage.success(`${stage}通过，决定已写入留痕日志`)
+    } catch (e) {
+      console.error('[approvals.act]', e)
+      ElMessage.error('操作失败，请稍后重试')
+    }
   }
 
   async function linkDeal(row: YimaiApproval) {
-    await decideApproval(row.id, '关联成交')
-    refreshData()
-    ElMessage.success(`${row.customerName} 已标记「已关联成交」`)
+    try {
+      await decideApproval(row.id, '关联成交')
+      refreshData()
+      ElMessage.success(`${row.customerName} 已标记「已关联成交」`)
+    } catch (e) {
+      console.error('[approvals.linkDeal]', e)
+      ElMessage.error('操作失败，请稍后重试')
+    }
   }
 
   // ---------- 发起价格审批 ----------

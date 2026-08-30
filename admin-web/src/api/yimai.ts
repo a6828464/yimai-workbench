@@ -263,7 +263,7 @@ export function queryLeads(
     return apiGet<{ records: YimaiLead[]; total: number }>(
       '/leads',
       params as Record<string, unknown>
-    )
+    ).then((d) => ({ records: d.records ?? [], total: d.total ?? 0 }))
   }
   ensureSeeded()
   const store = useYimaiStore()
@@ -311,7 +311,9 @@ export interface PhoneMatch {
 
 export function checkLeadPhone(phone: string): Promise<{ exists: boolean; matches: PhoneMatch[] }> {
   if (USE_BACKEND) {
-    return apiGet<{ exists: boolean; matches: PhoneMatch[] }>('/leads/check', { phone })
+    return apiGet<{ exists: boolean; matches: PhoneMatch[] }>('/leads/check', { phone }).then(
+      (d) => ({ exists: d.exists ?? false, matches: d.matches ?? [] })
+    )
   }
   ensureSeeded()
   const store = useYimaiStore()
@@ -1373,7 +1375,12 @@ export async function getPlatformAmounts(
       start: startDate,
       end: endDate,
       ...(scope === '双店' ? {} : { venue: scope })
-    })
+    }).then((d) => ({
+      rows: d.rows ?? [],
+      totalDeal: d.totalDeal ?? 0,
+      totalRedeem: d.totalRedeem ?? 0,
+      dealCount: d.dealCount ?? 0
+    }))
   }
   const a = actor()
   const venues =

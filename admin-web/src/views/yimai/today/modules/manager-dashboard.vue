@@ -240,11 +240,11 @@
   ])
   const todayBookingCount = computed(() => {
     const venue = userStore.getUserInfo.venue as '绿地店' | '东部店'
-    return todaySummary.value?.todayBookings[venue] ?? '-'
+    return todaySummary.value?.todayBookings?.[venue] ?? '-'
   })
   const todayTrialCount = computed(() => {
     const venue = userStore.getUserInfo.venue as '绿地店' | '东部店'
-    return todaySummary.value?.trialBookings[venue] ?? '-'
+    return todaySummary.value?.trialBookings?.[venue] ?? '-'
   })
 
   const kpis = computed(() => [
@@ -302,7 +302,7 @@
   async function reload() {
     loading.value = true
     try {
-      const [dash, f, r, today, contracts] = await Promise.all([
+      const settled = await Promise.allSettled([
         getDashboardSeries(
           range.value[0],
           range.value[1],
@@ -310,17 +310,23 @@
         ),
         getFollowupQueue(),
         getRiskAlerts(),
-        getTodaySummary(),
-        getPendingContracts().catch((error) => {
-          contractError.value = `合同读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
-          return { venues: {} as PendingContracts['venues'], fetchedAt: '' }
-        })
+        getTodaySummary()
       ])
-      daily.value = dash.daily
-      summary.value = dash.summary
-      followups.value = f
-      risks.value = r
-      todaySummary.value = today
+      const contracts = await getPendingContracts().catch((error) => {
+        contractError.value = `合同读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
+        return { venues: {} as PendingContracts['venues'], fetchedAt: '' }
+      })
+      const dash = settled[0].status === 'fulfilled' ? settled[0].value : null
+      const f = settled[1].status === 'fulfilled' ? settled[1].value : null
+      const r = settled[2].status === 'fulfilled' ? settled[2].value : null
+      const today = settled[3].status === 'fulfilled' ? settled[3].value : null
+      if (dash) {
+        daily.value = dash.daily
+        summary.value = dash.summary
+      }
+      if (f) followups.value = f
+      if (r) risks.value = r
+      if (today) todaySummary.value = today
       const venue = userStore.getUserInfo.venue as '绿地店' | '东部店'
       contractVenue.value = contracts.venues[venue] ?? null
     } finally {

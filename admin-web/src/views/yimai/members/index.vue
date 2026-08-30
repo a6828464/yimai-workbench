@@ -748,6 +748,9 @@
         queryLeads({ current: 1, size: 5000 }).catch(() => ({ records: [] as YimaiLead[] }))
       ])
       all.value = matchConsultants(res.records ?? [], leadsRes.records ?? [])
+    } catch (e) {
+      console.error('[members.load]', e)
+      ElMessage.error('会员列表加载失败，请稍后重试')
     } finally {
       loading.value = false
     }
@@ -805,9 +808,14 @@
 
   async function saveRenewal() {
     if (!renewalDlg.row) return
-    await updateMemberFields(renewalDlg.row.id, { renewalPlan: { ...renewalDlg.form } }, '续课预报')
-    renewalDlg.visible = false
-    ElMessage.success('已保存，进入首周「先确认不销售」流程')
+    try {
+      await updateMemberFields(renewalDlg.row.id, { renewalPlan: { ...renewalDlg.form } }, '续课预报')
+      renewalDlg.visible = false
+      ElMessage.success('已保存，进入首周「先确认不销售」流程')
+    } catch (e) {
+      console.error('[members.saveRenewal]', e)
+      ElMessage.error('保存失败，请稍后重试')
+    }
   }
 
   // ---------- 出勤降低处置 ----------
@@ -828,9 +836,14 @@
 
   async function saveDecline() {
     if (!declineDlg.row) return
-    await updateMemberFields(declineDlg.row.id, { decline: { ...declineDlg.form } }, '下降处置')
-    declineDlg.visible = false
-    ElMessage.success('已保存')
+    try {
+      await updateMemberFields(declineDlg.row.id, { decline: { ...declineDlg.form } }, '下降处置')
+      declineDlg.visible = false
+      ElMessage.success('已保存')
+    } catch (e) {
+      console.error('[members.saveDecline]', e)
+      ElMessage.error('保存失败，请稍后重试')
+    }
   }
 
   // ---------- 待复活沟通 ----------
@@ -849,28 +862,38 @@
   async function saveTouch() {
     if (!touchDlg.row) return
     const today = new Date().toISOString().slice(0, 10)
-    await updateMemberFields(
-      touchDlg.row.id,
-      {
-        expectedReturn: touchDlg.form.expectedReturn,
-        needsHelp: touchDlg.form.needsHelp,
-        lastTouch: today
-      },
-      '复活跟进'
-    )
-    touchDlg.visible = false
-    ElMessage.success('已记录，14天后需再次有效触达')
+    try {
+      await updateMemberFields(
+        touchDlg.row.id,
+        {
+          expectedReturn: touchDlg.form.expectedReturn,
+          needsHelp: touchDlg.form.needsHelp,
+          lastTouch: today
+        },
+        '复活跟进'
+      )
+      touchDlg.visible = false
+      ElMessage.success('已记录，14天后需再次有效触达')
+    } catch (e) {
+      console.error('[members.saveTouch]', e)
+      ElMessage.error('保存失败，请稍后重试')
+    }
   }
 
   // ---------- 预流失转待复活 ----------
   async function toRevive(row: YimaiCustomer) {
-    await updateMemberFields(
-      row.id,
-      { inRevive: true, lastTouch: new Date().toISOString().slice(0, 10) },
-      '转待复活'
-    )
-    ElMessage.success(`${row.name} 已转入待复活清单`)
-    load()
+    try {
+      await updateMemberFields(
+        row.id,
+        { inRevive: true, lastTouch: new Date().toISOString().slice(0, 10) },
+        '转待复活'
+      )
+      ElMessage.success(`${row.name} 已转入待复活清单`)
+      load()
+    } catch (e) {
+      console.error('[members.toRevive]', e)
+      ElMessage.error('操作失败，请稍后重试')
+    }
   }
 
   // ---------- 30天评估 ----------
@@ -936,9 +959,12 @@
       })
       evalDlg.visible = false
       ElMessage.success(
-        `评估已保存，已生成任务「${result.task.title}」，负责人：${result.task.owner}`
+        `评估已保存，已生成任务「${result.task?.title ?? ''}」，负责人：${result.task?.owner ?? ''}`
       )
       await load()
+    } catch (e) {
+      console.error('[members.saveEval]', e)
+      ElMessage.error('评估保存失败，请稍后重试')
     } finally {
       evalDlg.saving = false
     }
@@ -953,11 +979,16 @@
   })
 
   async function applyRules() {
-    await setMemberRules({ ...rulesForm })
-    rules.value = getMemberRules()
-    rulesDlg.value = false
-    load()
-    ElMessage.success('规则已更新，清单实时重算')
+    try {
+      await setMemberRules({ ...rulesForm })
+      rules.value = getMemberRules()
+      rulesDlg.value = false
+      load()
+      ElMessage.success('规则已更新，清单实时重算')
+    } catch (e) {
+      console.error('[members.applyRules]', e)
+      ElMessage.error('规则保存失败，请稍后重试')
+    }
   }
 
   onMounted(load)

@@ -262,16 +262,16 @@
     }
   ])
   const todayBookingCount = computed(() => {
-    if (!todaySummary.value) return '-'
-    if (venueScope.value === '双店')
-      return todaySummary.value.todayBookings['绿地店'] + todaySummary.value.todayBookings['东部店']
-    return todaySummary.value.todayBookings[venueScope.value]
+    const tb = todaySummary.value?.todayBookings
+    if (!tb) return '-'
+    if (venueScope.value === '双店') return Number(tb['绿地店'] ?? 0) + Number(tb['东部店'] ?? 0)
+    return tb[venueScope.value] ?? '-'
   })
   const todayTrialCount = computed(() => {
-    if (!todaySummary.value) return '-'
-    if (venueScope.value === '双店')
-      return todaySummary.value.trialBookings['绿地店'] + todaySummary.value.trialBookings['东部店']
-    return todaySummary.value.trialBookings[venueScope.value]
+    const tb = todaySummary.value?.trialBookings
+    if (!tb) return '-'
+    if (venueScope.value === '双店') return Number(tb['绿地店'] ?? 0) + Number(tb['东部店'] ?? 0)
+    return tb[venueScope.value] ?? '-'
   })
 
   const storeKpis = computed(() => [
@@ -366,7 +366,7 @@
         ldSummary.value = null
         dbSummary.value = null
       }
-      const [dash, ch, today, contracts] = await Promise.all([
+      const results = await Promise.allSettled([
         getDashboardSeries(range.value[0], range.value[1], venueScope.value),
         getChannelBreakdown(range.value[0], range.value[1], venueScope.value),
         getTodaySummary(),
@@ -376,12 +376,20 @@
         }),
         ...requests
       ])
-      daily.value = dash.daily
-      summary.value = dash.summary
-      channels.value = ch
-      todaySummary.value = today
-      contractVenues.value = contracts.venues
-      contractsFetchedAt.value = contracts.fetchedAt
+      const dash = results[0].status === 'fulfilled' ? results[0].value : null
+      const ch = results[1].status === 'fulfilled' ? results[1].value : null
+      const today = results[2].status === 'fulfilled' ? results[2].value : null
+      const contracts = results[3].status === 'fulfilled' ? results[3].value : null
+      if (dash) {
+        daily.value = dash.daily
+        summary.value = dash.summary
+      }
+      if (ch) channels.value = ch
+      if (today) todaySummary.value = today
+      if (contracts) {
+        contractVenues.value = contracts.venues
+        contractsFetchedAt.value = contracts.fetchedAt
+      }
     } finally {
       loading.value = false
     }

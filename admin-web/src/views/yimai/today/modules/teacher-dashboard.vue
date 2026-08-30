@@ -156,15 +156,24 @@
   async function reload() {
     loading.value = true
     try {
-      const [dash, ov, leads] = await Promise.all([
+      const settled = await Promise.allSettled([
         getDashboardSeries(range.value[0], range.value[1], '双店'),
         getTeacherOverview(range.value[0], range.value[1]),
         queryLeads({ current: 1, size: 50 })
       ])
-      daily.value = dash.daily
-      summary.value = dash.summary
-      overview.value = ov
-      myLeads.value = leads.records.filter((l) => l.serviceTeacher === userName.value || !l.serviceTeacher)
+      const dash = settled[0].status === 'fulfilled' ? settled[0].value : null
+      const ov = settled[1].status === 'fulfilled' ? settled[1].value : null
+      const leads = settled[2].status === 'fulfilled' ? settled[2].value : null
+      if (dash) {
+        daily.value = dash.daily
+        summary.value = dash.summary
+      }
+      if (ov) overview.value = ov
+      if (leads) {
+        myLeads.value = leads.records.filter(
+          (l) => l.serviceTeacher === userName.value || !l.serviceTeacher
+        )
+      }
     } finally {
       loading.value = false
     }

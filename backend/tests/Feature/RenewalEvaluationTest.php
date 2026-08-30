@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Approval;
 use App\Models\Customer;
 use App\Models\Task;
 use App\Models\User;
@@ -99,6 +100,119 @@ class RenewalEvaluationTest extends TestCase
         $this->getJson('/api/tasks?status='.urlencode('待验收').'&venue='.urlencode('绿地店'))
             ->assertOk()->assertJsonPath('data.total', 1);
         $this->patchJson("/api/tasks/{$task->id}", ['status' => '已完成'])->assertOk();
+    }
+
+    public function test_lead_create_defaults_lead_date_and_ignores_non_column_fields(): void
+    {
+        Sanctum::actingAs($this->user('media', '阿玉', 'R_MEDIA', null));
+
+        $this->postJson('/api/leads', [
+            'id' => 0,
+            'name' => '新增验证',
+            'phone' => '13800000002',
+            'phoneTail' => '0002',
+            'source' => '抖音',
+            'venue' => '绿地店',
+            'dealAmount' => '',
+            'redeemAmount' => '',
+            'trialCards' => [['session' => 1, 'time' => '2026-09-01 10:00', 'topic' => '内观流']],
+        ])->assertOk()->assertJsonPath('data.id', 1);
+
+        $this->assertDatabaseHas('leads', [
+            'id' => 1,
+            'name' => '新增验证',
+            'lead_date' => now()->toDateString(),
+        ]);
+    }
+
+    public function test_lead_edit_patch_does_not_500_and_preserves_creator(): void
+    {
+        Sanctum::actingAs($this->user('media', '阿玉', 'R_MEDIA', null));
+        $created = $this->postJson('/api/leads', [
+            'name' => '编辑验证',
+            'phone' => '13800000003',
+            'source' => '美团',
+            'venue' => '东部店',
+        ])->assertOk()->json('data.id');
+
+        // 编辑时把完整行（含 phoneTail/id/dealAt/createdBy 等非库表字段）回传
+        $this->patchJson("/api/leads/{$created}", [
+            'id' => $created,
+            'name' => '编辑验证',
+            'phone' => '13800000003',
+            'phoneTail' => '0003',
+            'source' => '美团',
+            'venue' => '东部店',
+            'status' => '已成交',
+            'dealAmount' => 3200,
+            'redeemAmount' => 0,
+            'dealAt' => null,
+            'redeemedAt' => null,
+            'createdBy' => '别的人',
+            'createdAt' => '2026-08-26T02:02:44.000000Z',
+            'trialCards' => [],
+        ])->assertOk();
+
+        $this->assertDatabaseHas('leads', [
+            'id' => $created,
+            'status' => '已成交',
+            'created_by' => '阿玉',
+        ]);
+    }
+
+    public function test_teacher_cannot_decide_approval_and_state_machine_is_enforced(): void
+    {
+        $approval = Approval::create([
+            'customer_name' => '测试客户',
+            'applicant' => '店长',
+            'venue' => '绿地店',
+            'card_name' => '年卡',
+            'standard_price' => 200,
+            'request_price' => 150,
+            'status' => '待店长初审',
+            'apply_time' => now()->format('Y-m-d H:i'),
+        ]);
+        $teacher = $this->user('teacher-decide', '老师', 'R_TEACHER', '绿地店');
+        Sanctum::actingAs($teacher);
+
+        $this->postJson("/api/approvals/{$approval->id}/decide", ['decision' => '初审通过'])->assertForbidden();
+    }
+
+    public function test_manager_cannot_decide_another_venues_approval(): void
+    {
+        $approval = Approval::create([
+            'customer_name' => '东部客户',
+            'applicant' => '东部店长',
+            'venue' => '东部店',
+            'card_name' => '年卡',
+            'standard_price' => 200,
+            'request_price' => 150,
+            'status' => '待店长初审',
+            'apply_time' => now()->format('Y-m-d H:i'),
+        ]);
+        Sanctum::actingAs($this->user('manager-green-approval', '绿地店长', 'R_MANAGER', '绿地店'));
+
+        $this->postJson("/api/approvals/{$approval->id}/decide", ['decision' => '初审通过'])->assertForbidden();
+    }
+
+    public function test_customer_workflow_patch_normalizes_string_booleans(): void
+    {
+        $manager = $this->user('manager-cw', '绿地店长', 'R_MANAGER', '绿地店');
+        $customer = $this->customer('工作流会员', '绿地店', '绿地店长');
+        Sanctum::actingAs($manager);
+
+        $this->patchJson("/api/customers/{$customer->id}", [
+            'lastTouch' => '',
+            'needsHelp' => 'false',
+            'inRevive' => 'true',
+        ])->assertOk();
+
+        $this->assertDatabaseHas('customers', [
+            'id' => $customer->id,
+            'last_touch' => null,
+            'needs_help' => 0,
+            'in_revive' => 1,
+        ]);
     }
 
     private function user(string $username, string $name, string $role, ?string $venue): User

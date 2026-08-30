@@ -95,7 +95,7 @@
   import { mittBus } from '@/utils/sys'
   import { useAiConfigStore } from '@/store/modules/ai-config'
   import meAvatar from '@/assets/images/avatar/avatar5.webp'
-  import aiAvatar from '@/assets/images/avatar/avatar10.webp'
+  import aiAvatar from '@/assets/images/yimai-logo.png'
 
   defineOptions({ name: 'ArtChatWindow' })
 

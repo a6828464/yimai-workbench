@@ -377,24 +377,34 @@
   async function transit(status: string) {
     if (!detailDlg.row) return
     const label = status === '待验收' ? '提报完成' : status === '已完成' ? '验收通过' : '验收退回'
-    await updateTask(detailDlg.row.id, { status: status as YimaiTask['status'] }, label)
-    ElMessage.success(`${label}成功`)
-    detailDlg.visible = false
-    await getData()
+    try {
+      await updateTask(detailDlg.row.id, { status: status as YimaiTask['status'] }, label)
+      ElMessage.success(`${label}成功`)
+      detailDlg.visible = false
+      await getData()
+    } catch (e) {
+      console.error('[tasks.transit]', e)
+      ElMessage.error('操作失败，请稍后重试')
+    }
   }
 
   async function startTask() {
     const r = detailDlg.row
     if (!r) return
     const me = userStore.getUserInfo.userName
-    await updateTask(
-      r.id,
-      { status: '进行中', owner: r.owner === '未分配' ? me : r.owner },
-      '认领并开始'
-    )
-    ElMessage.success('已开始执行')
-    detailDlg.visible = false
-    await getData()
+    try {
+      await updateTask(
+        r.id,
+        { status: '进行中', owner: r.owner === '未分配' ? me : r.owner },
+        '认领并开始'
+      )
+      ElMessage.success('已开始执行')
+      detailDlg.visible = false
+      await getData()
+    } catch (e) {
+      console.error('[tasks.startTask]', e)
+      ElMessage.error('操作失败，请稍后重试')
+    }
   }
 
   async function assignOwner() {
@@ -405,9 +415,14 @@
       inputPlaceholder: '负责人姓名'
     }).catch(() => ({ value: null }))
     if (!value) return
-    await updateTask(r.id, { owner: value }, '分配负责人')
-    ElMessage.success(`已分配给 ${value}`)
-    detailDlg.visible = false
-    await getData()
+    try {
+      await updateTask(r.id, { owner: value }, '分配负责人')
+      ElMessage.success(`已分配给 ${value}`)
+      detailDlg.visible = false
+      await getData()
+    } catch (e) {
+      console.error('[tasks.assignOwner]', e)
+      ElMessage.error('分配失败，请稍后重试')
+    }
   }
 </script>

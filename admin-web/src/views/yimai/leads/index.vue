@@ -667,6 +667,9 @@
           size: 5000
         })
       ).records
+    } catch (e) {
+      console.error('[leads.load]', e)
+      ElMessage.error('留资列表加载失败，请稍后重试')
     } finally {
       loading.value = false
     }
@@ -740,8 +743,13 @@
   }
 
   async function openHistory(row: YimaiLead) {
-    history.list = await getLeadHistory(row.id)
-    history.visible = true
+    try {
+      history.list = await getLeadHistory(row.id)
+      history.visible = true
+    } catch (e) {
+      console.error('[leads.history]', e)
+      ElMessage.error('变更记录加载失败，请稍后重试')
+    }
   }
 
   function plusDays(date: string, days: number): string {

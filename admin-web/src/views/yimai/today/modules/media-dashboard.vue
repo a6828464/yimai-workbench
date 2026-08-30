@@ -272,16 +272,23 @@
   async function reload() {
     loading.value = true
     try {
-      const [dash, ch, plat] = await Promise.all([
+      const settled = await Promise.allSettled([
         getDashboardSeries(range.value[0], range.value[1], venueScope.value),
         getChannelBreakdown(range.value[0], range.value[1], venueScope.value),
         getPlatformAmounts(range.value[0], range.value[1], venueScope.value)
       ])
-      daily.value = dash.daily
-      summary.value = dash.summary
-      channels.value = ch
-      platforms.value = plat.rows
-      platformTotal.value = { deal: plat.totalDeal, redeem: plat.totalRedeem }
+      const dash = settled[0].status === 'fulfilled' ? settled[0].value : null
+      const ch = settled[1].status === 'fulfilled' ? settled[1].value : null
+      const plat = settled[2].status === 'fulfilled' ? settled[2].value : null
+      if (dash) {
+        daily.value = dash.daily
+        summary.value = dash.summary
+      }
+      if (ch) channels.value = ch
+      if (plat) {
+        platforms.value = plat.rows
+        platformTotal.value = { deal: plat.totalDeal, redeem: plat.totalRedeem }
+      }
     } finally {
       loading.value = false
     }

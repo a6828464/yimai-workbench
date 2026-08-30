@@ -97,8 +97,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/leads', function (Request $r) use ($leadFields) {
         $d = $r->validate([
             'name' => 'required|string', 'source' => 'required|string', 'venue' => 'required|string',
+            'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|integer|min:0', 'redeemAmount' => 'nullable|integer|min:0',
         ]);
         $values = array_intersect_key(camelToSnake($r->all()), array_flip($leadFields)) + ['created_by' => $r->user()->name, 'status' => $r->input('status', '新留资')];
+        $values['lead_date'] = $values['lead_date'] ?? now()->toDateString();
+        foreach (['deal_amount', 'redeem_amount'] as $f) {
+            if (($values[$f] ?? '') === '') {
+                $values[$f] = null;
+            }
+        }
         if ($values['status'] === '已成交') {
             $values['deal_at'] = now();
         }
@@ -113,8 +120,19 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::patch('/leads/{id}', function (Request $r, int $id) use ($leadFields) {
         $lead = Lead::findOrFail($id);
-        $before = camel($lead)->toJson();
+        $before = json_encode(camel($lead), JSON_UNESCAPED_UNICODE);
+        $r->validate([
+            'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|integer|min:0', 'redeemAmount' => 'nullable|integer|min:0',
+        ]);
         $changes = array_intersect_key(camelToSnake($r->all()), array_flip($leadFields));
+        if (isset($changes['lead_date']) && $changes['lead_date'] === '') {
+            unset($changes['lead_date']);
+        }
+        foreach (['deal_amount', 'redeem_amount'] as $f) {
+            if (($changes[$f] ?? '') === '') {
+                $changes[$f] = null;
+            }
+        }
         if (($changes['status'] ?? null) === '已成交' && ! $lead->deal_at) {
             $changes['deal_at'] = now();
         }
@@ -211,10 +229,34 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/customers/{id}', function (Request $r, int $id) {
         $c = Customer::findOrFail($id);
         abort_unless(canAccessCustomer($r->user(), $c), 403, '无权修改该会员');
-        $c->update(collect(camelToSnake($r->all()))->only([
+        // 兼容字符串布尔（"false"/"true"/"0"/"1" 等），避免被 PHP (bool)"false"=true 污染
+        foreach (['needsHelp', 'inRevive'] as $f) {
+            $v = $r->input($f);
+            if (is_string($v)) {
+                $b = filter_var($v, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+                if ($b !== null) {
+                    $r->merge([$f => $b]);
+                }
+            }
+        }
+        $r->validate([
+            'lastTouch' => 'nullable|date',
+            'needsHelp' => 'nullable|boolean',
+            'inRevive' => 'nullable|boolean',
+        ]);
+        $patch = collect(camelToSnake($r->all()))->only([
             'renewal_plan', 'decline', 'stop_reason', 'expected_return',
             'last_touch', 'needs_help', 'in_revive',
-        ])->all());
+        ])->all();
+        if (($patch['last_touch'] ?? '') === '') {
+            $patch['last_touch'] = null;
+        }
+        foreach (['needs_help', 'in_revive'] as $f) {
+            if (array_key_exists($f, $patch) && ! is_bool($patch[$f])) {
+                $patch[$f] = filter_var($patch[$f], FILTER_VALIDATE_BOOLEAN);
+            }
+        }
+        $c->update($patch);
         audit($r, $r->input('_action', '修改'), '会员管理', $id, "{$c->name}（{$c->venue}）", $c->venue, '工作流字段更新');
 
         return ok(camel($c));
@@ -425,10 +467,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/approvals', function (Request $r) {
         $u = $r->user();
         abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER']), 403);
+        $q = Approval::query();
+        if ($u->role === 'R_MANAGER') {
+            $q->where('venue', $u->venue);
+        }
         $current = max(1, (int) $r->query('current', 1));
         $size = min(100, max(1, (int) $r->query('size', 20)));
-        $total = Approval::count();
-        $rows = Approval::orderBy('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
+        $total = (clone $q)->count();
+        $rows = $q->orderBy('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
 
         return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
     });
@@ -440,8 +486,8 @@ Route::middleware('auth:sanctum')->group(function () {
         $d = $r->validate([
             'customerName' => 'required|string|max:20',
             'cardName' => 'required|string|max:40',
-            'standardPrice' => 'required|numeric|min:0',
-            'requestPrice' => 'required|numeric|min:0',
+            'standardPrice' => 'required|integer|min:0',
+            'requestPrice' => 'required|integer|min:0',
             'reason' => 'nullable|string|max:200',
         ]);
         if ((float) $d['requestPrice'] >= (float) $d['standardPrice']) {
@@ -450,6 +496,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $a = Approval::create([
             'customer_name' => $d['customerName'],
             'applicant' => $r->user()->name,
+            'venue' => $r->user()->role === 'R_MANAGER' ? $r->user()->venue : '双店',
             'card_name' => $d['cardName'],
             'standard_price' => (int) $d['standardPrice'],
             'request_price' => (int) $d['requestPrice'],
@@ -463,10 +510,26 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('/approvals/{id}/decide', function (Request $r, int $id) {
+        $u = $r->user();
+        abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可审批');
         $a = Approval::findOrFail($id);
+        if ($u->role === 'R_MANAGER') {
+            abort_unless($a->venue === $u->venue, 403, '无权操作其他门店审批');
+        }
         $decision = $r->input('decision');
         $map = ['初审通过' => '待老板终审', '终审通过' => '已通过', '驳回' => '已驳回', '关联成交' => '已关联成交'];
         abort_unless(isset($map[$decision]), 422, '未知决定');
+        // 状态机守卫：按当前状态与角色限制可执行的动作
+        $state = $a->status;
+        $ok = match ($decision) {
+            '初审通过' => $state === '待店长初审' && in_array($u->role, ['R_SUPER', 'R_MANAGER'], true),
+            '终审通过' => $state === '待老板终审' && $u->role === 'R_SUPER',
+            '驳回' => ($state === '待店长初审' && in_array($u->role, ['R_SUPER', 'R_MANAGER'], true))
+                || ($state === '待老板终审' && $u->role === 'R_SUPER'),
+            '关联成交' => $state === '已通过' && $u->role === 'R_SUPER',
+            default => false,
+        };
+        abort_unless($ok, 422, '当前状态不允许该操作');
         $a->update(['status' => $map[$decision]]);
         audit($r, $decision, '价格审批', $id, "价格审批单 #{$id}", '双店', "审批决定：{$decision}");
 
@@ -1315,10 +1378,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
         return ok([
             'newLeads' => $scopedCustomers->where('layer', 'P5')->count() + $leads->where('status', '新留资')->count(),
-            'pendingFollowup' => $scopedCustomers->where('next_action_time', '<=', $tomorrow)->count(),
+            'pendingFollowup' => $scopedCustomers->where('next_action_time', '!=', '')->where('next_action_time', '<=', $tomorrow.' 23:59:59')->count(),
             'expiringMembers' => $expiringMembers,
             'riskCount' => $overdueTasks + $scopedCustomers->where('owner', '未分配')->count() + $leads->where('status', '新留资')->count(),
-            'pendingApprovals' => $u->role === 'R_MEDIA' ? 0 : Approval::where('status', 'like', '待%')->count(),
+            'pendingApprovals' => $u->role === 'R_MEDIA' ? 0 : Approval::where('status', 'like', '待%')->when($u->role === 'R_MANAGER', fn ($q) => $q->where('venue', $u->venue))->count(),
             'todayBookings' => [
                 '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['todayBookings']['绿地店'] ?? 0) : 0,
                 '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['todayBookings']['东部店'] ?? 0) : 0,
@@ -1593,6 +1656,9 @@ if (! function_exists('ok')) {
         }
         if (in_array($user->role, ['R_SUPER', 'R_MANAGER'], true)) {
             $approvalQ = Approval::where('status', 'like', '待%');
+            if ($user->role === 'R_MANAGER') {
+                $approvalQ->where('venue', $user->venue);
+            }
             $approvals = $approvalQ->count();
             if ($approvals > 0) {
                 $items[] = ['key' => 'approvals-'.$approvals, 'category' => 'notice', 'level' => 'warning', 'title' => "有 {$approvals} 项价格审批待处理", 'detail' => '审批中心', 'path' => '/yimai/approvals'];
@@ -1915,7 +1981,7 @@ if (! function_exists('ok')) {
         return [
             'local' => $local,
             'remote' => ['commit' => $remoteSha, 'error' => $remoteErr],
-            'upToDate' => $remoteSha !== '' && str_starts_with($remoteSha, $local['commit']),
+            'upToDate' => $remoteSha !== '' && str_starts_with($local['commit'], $remoteSha),
         ];
     }
 }
