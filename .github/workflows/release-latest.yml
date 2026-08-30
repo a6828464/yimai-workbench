@@ -139,7 +139,8 @@ jobs:
             local file="$1" attempt=1
             while [ "$attempt" -le 3 ]; do
               echo "  上传 $file（第 $attempt/3 次）"
-              if curl --http1.1 --fail-with-body -sS -X POST "$GITEE_API/repos/$GITEE_REPO/releases/$rid/attach_files" \
+              if curl --http1.1 --fail-with-body -sS --connect-timeout 20 --max-time 300 \
+                -X POST "$GITEE_API/repos/$GITEE_REPO/releases/$rid/attach_files" \
                 -F "access_token=$GITEE_TOKEN" -F "file=@$file" >/dev/null 2>&1; then
                 return 0
               fi
