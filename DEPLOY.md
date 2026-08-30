@@ -9,7 +9,7 @@
 |------|----------|------|
 | Nginx | 任意近期版本 | Web 服务器 |
 | MySQL | 5.7+（推荐 8.0） | 数据库 |
-| PHP | **8.2 ~ 8.4** | Laravel 12 要求 ≥8.2 |
+| PHP | **8.4.1+** | 当前锁定依赖要求 PHP ≥8.4.1 |
 
 PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
 `fileinfo` `opcache` `pdo_mysql` `mbstring` `curl` `zip` `gd` `bcmath`
@@ -52,7 +52,7 @@ PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
 1. 宝塔 → 网站 → 添加站点：
    - 域名：`oa.yourdomain.com`
    - 根目录：`/www/wwwroot/yimai-workbench/app/backend/public`
-   - PHP 版本：8.2+
+   - PHP 版本：8.4（确认小版本 ≥8.4.1）
 2. 数据库（二选一）：
    - **面板建库**：数据库菜单创建库和用户（推荐），记住库名、用户名、密码
    - 安装向导填有建库权限的账号，让向导自动建库

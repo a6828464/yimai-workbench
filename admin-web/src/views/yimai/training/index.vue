@@ -207,6 +207,7 @@
   import { generateTrainingPlan, detectHighRisk } from '@/api/ai'
   import { loadTrainingPlansCloud, syncTrainingPlansCloud } from '@/api/yimai'
   import { USE_BACKEND } from '@/api/backend'
+  import { useUserStore } from '@/store/modules/user'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiTraining' })
@@ -221,15 +222,16 @@
   let pendingSync: ReturnType<typeof setTimeout> | null = null
 
   onMounted(async () => {
+    const userId = String(useUserStore().getUserInfo.userId ?? '')
+    trainingStore.loadForUser(userId)
     if (!USE_BACKEND) {
       cloudReady = true
       return
     }
     try {
       const remote = await loadTrainingPlansCloud()
-      if (remote && remote.length) {
-        trainingStore.state.plans = remote as unknown as TrainingPlan[]
-        trainingStore.state.nextId = Math.max(100, ...remote.map((p) => Number(p.id ?? 0))) + 1
+      if (trainingStore.loadedUserId === userId) {
+        trainingStore.replacePlans((remote ?? []) as unknown as TrainingPlan[])
       }
     } catch (e) {
       ElMessage.warning(`云端训练计划加载失败：${String(e).slice(0, 80)}`)
@@ -241,9 +243,11 @@
   watch(
     plans,
     () => {
-      if (!USE_BACKEND || !cloudReady || syncing) return
+      const userId = trainingStore.loadedUserId
+      if (!USE_BACKEND || !cloudReady || syncing || !userId) return
       if (pendingSync) clearTimeout(pendingSync)
       pendingSync = setTimeout(async () => {
+        if (trainingStore.loadedUserId !== userId) return
         syncing = true
         try {
           await syncTrainingPlansCloud(JSON.parse(JSON.stringify(plans.value)))
@@ -256,6 +260,11 @@
     },
     { deep: true }
   )
+
+  onBeforeUnmount(() => {
+    cloudReady = false
+    if (pendingSync) clearTimeout(pendingSync)
+  })
 
   function emptyForm() {
     return {

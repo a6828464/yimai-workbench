@@ -198,13 +198,10 @@
         }
       } else {
         // 后端代理：max_tokens 给足余量，避免部分模型因 max_tokens 过小直接 400
-        const r = await apiPost<{ code?: number; message?: string; content?: string }>('/ai/chat', {
+        const r = await apiPost<{ code?: number; message?: string; content?: string }>('/ai/test', {
           baseUrl: aiStore.config.baseUrl,
           apiKey: aiStore.config.apiKey,
           model: aiStore.config.model,
-          messages: [{ role: 'user', content: '回复OK' }],
-          temperature: 0.1,
-          maxTokens: 512
         })
         // 后端失败时 HTTP 200 + code:1，需显式判断
         if (r && r.code !== undefined && r.code !== 0) {

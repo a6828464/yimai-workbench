@@ -7,14 +7,14 @@
           placeholder="操作人"
           clearable
           class="!w-36"
-          @change="load"
+          @change="search"
         />
         <ElSelect
           v-model="filters.module"
           placeholder="模块"
           clearable
           class="!w-40"
-          @change="load"
+          @change="search"
         >
           <ElOption v-for="m in MODULES" :key="m" :label="m" :value="m" />
         </ElSelect>
@@ -23,13 +23,13 @@
           placeholder="动作"
           clearable
           class="!w-32"
-          @change="load"
+          @change="search"
         >
           <ElOption label="新增" value="新增" />
           <ElOption label="修改" value="修改" />
           <ElOption v-for="a in ACTIONS" :key="a" :label="a" :value="a" />
         </ElSelect>
-        <ElButton @click="load">查询</ElButton>
+        <ElButton @click="search">查询</ElButton>
         <ElButton @click="resetFilters">重置</ElButton>
       </div>
 
@@ -41,7 +41,7 @@
         </template>
       </ArtTableHeader>
 
-      <ElTable v-loading="loading" :data="pagedList" border stripe>
+      <ElTable v-loading="loading" :data="list" border stripe>
         <ElTableColumn prop="time" label="时间" width="140" sortable />
         <ElTableColumn label="操作人" width="130">
           <template #default="{ row }">
@@ -67,10 +67,11 @@
 
       <div class="mt-4 flex justify-end">
         <ElPagination
-          v-model:current-page="page.current"
+          :current-page="page.current"
           :page-size="page.size"
-          :total="list.length"
+          :total="total"
           layout="total, prev, pager, next"
+          @current-change="changePage"
         />
       </div>
     </ElCard>
@@ -122,32 +123,39 @@
   const filters = ref({ operator: '', module: '', action: '' })
   const page = ref({ current: 1, size: 20 })
   const list = ref<YimaiAuditLog[]>([])
-
-  const pagedList = computed(() =>
-    list.value.slice(
-      (page.value.current - 1) * page.value.size,
-      page.value.current * page.value.size
-    )
-  )
+  const total = ref(0)
 
   const detail = reactive({ visible: false, row: null as YimaiAuditLog | null })
 
   async function load() {
     loading.value = true
     try {
-      page.value.current = 1
-      const res = await queryAuditLogs({ ...filters.value })
+      const res = await queryAuditLogs({ ...filters.value, ...page.value })
       list.value = res.records
+      total.value = res.total
+      page.value.current = res.current
+      page.value.size = res.size
     } catch {
       list.value = []
+      total.value = 0
     } finally {
       loading.value = false
     }
   }
 
+  function search() {
+    page.value.current = 1
+    load()
+  }
+
+  function changePage(current: number) {
+    page.value.current = current
+    load()
+  }
+
   function resetFilters() {
     filters.value = { operator: '', module: '', action: '' }
-    load()
+    search()
   }
 
   function showDetail(row: YimaiAuditLog) {

@@ -532,7 +532,7 @@
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
   const isManager = computed(() => roles.value.includes('R_MANAGER'))
   const isTeacher = computed(() => roles.value.includes('R_TEACHER'))
-  const showVenueFilter = computed(() => !isManager.value)
+  const showVenueFilter = computed(() => !isManager.value && !isTeacher.value)
   const scopeHint = computed(() => {
     if (isManager.value) return `数据范围：本店（${userStore.getUserInfo.venue}）`
     if (isTeacher.value)
@@ -586,10 +586,10 @@
       demand: '',
       source: '',
       orderPlatform: '',
-      venue: isManager.value
+      venue: isManager.value || isTeacher.value
         ? (String(userStore.getUserInfo.venue ?? '绿地店') as YimaiLead['venue'])
         : ('绿地店' as YimaiLead['venue']),
-      serviceTeacher: '',
+      serviceTeacher: isTeacher.value ? String(userStore.getUserInfo.userName ?? '') : '',
       status: '新留资' as YimaiLead['status'],
       grade: '' as YimaiLead['grade'],
       dealCard: '',
@@ -607,7 +607,7 @@
     form: emptyForm()
   })
 
-  const dialogLockedVenue = computed(() => isManager.value)
+  const dialogLockedVenue = computed(() => isManager.value || isTeacher.value)
 
   /** 手机号命中检测（仅新增时提示，编辑不打扰） */
   const phoneChecked = ref(false)
@@ -725,11 +725,34 @@
     dialog.form.redeemAmount = redeemSum > 0 ? redeemSum : null
     dialog.saving = true
     try {
+      const teacherPayload = isTeacher.value
+        ? dialog.isCreate
+          ? {
+              leadDate: dialog.form.leadDate,
+              name: dialog.form.name,
+              phone: dialog.form.phone,
+              wechat: dialog.form.wechat,
+              demand: dialog.form.demand,
+              source: dialog.form.source,
+              orderPlatform: dialog.form.orderPlatform,
+              venue: dialog.form.venue,
+              serviceTeacher: String(userStore.getUserInfo.userName ?? ''),
+              status: '新留资' as const,
+              remark: dialog.form.remark
+            }
+          : {
+              demand: dialog.form.demand,
+              status: dialog.form.status,
+              remark: dialog.form.remark,
+              serviceTeacher: String(userStore.getUserInfo.userName ?? ''),
+              trialCards: dialog.form.trialCards
+            }
+        : dialog.form
       if (dialog.isCreate) {
-        await addLead(dialog.form)
+        await addLead(teacherPayload as Parameters<typeof addLead>[0])
         ElMessage.success('留资已提交，对应门店店长端立即可见')
       } else {
-        await updateLead(dialog.form.id, dialog.form)
+        await updateLead(dialog.form.id, teacherPayload)
         ElMessage.success('已保存，变更已同步并写入留痕日志')
       }
       dialog.visible = false

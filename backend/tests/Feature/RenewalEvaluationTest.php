@@ -195,6 +195,39 @@ class RenewalEvaluationTest extends TestCase
         $this->postJson("/api/approvals/{$approval->id}/decide", ['decision' => '初审通过'])->assertForbidden();
     }
 
+    public function test_approval_list_filters_by_status_and_scopes_manager_to_own_venue(): void
+    {
+        Approval::create([
+            'customer_name' => '绿地客户', 'applicant' => '绿地店长', 'venue' => '绿地店',
+            'card_name' => '年卡', 'standard_price' => 200, 'request_price' => 150,
+            'status' => '待店长初审', 'apply_time' => now()->format('Y-m-d H:i'),
+        ]);
+        Approval::create([
+            'customer_name' => '东部客户', 'applicant' => '东部店长', 'venue' => '东部店',
+            'card_name' => '年卡', 'standard_price' => 200, 'request_price' => 150,
+            'status' => '已通过', 'apply_time' => now()->format('Y-m-d H:i'),
+        ]);
+        Sanctum::actingAs($this->user('manager-approval-list', '绿地店长', 'R_MANAGER', '绿地店'));
+
+        $this->getJson('/api/approvals')->assertOk()->assertJsonCount(1, 'data.records');
+        $this->getJson('/api/approvals?status='.urlencode('待店长初审'))
+            ->assertOk()
+            ->assertJsonPath('data.records.0.customerName', '绿地客户');
+        $this->getJson('/api/approvals?status='.urlencode('已通过'))->assertOk()->assertJsonCount(0, 'data.records');
+    }
+
+    public function test_super_can_create_approval_with_venue(): void
+    {
+        Sanctum::actingAs($this->user('approval-owner', '老板', 'R_SUPER', null));
+        $this->postJson('/api/approvals', [
+            'customerName' => '指定门店客户',
+            'cardName' => '私教年卡',
+            'standardPrice' => 8800,
+            'requestPrice' => 7980,
+            'venue' => '东部店',
+        ])->assertOk()->assertJsonPath('data.venue', '东部店');
+    }
+
     public function test_customer_workflow_patch_normalizes_string_booleans(): void
     {
         $manager = $this->user('manager-cw', '绿地店长', 'R_MANAGER', '绿地店');

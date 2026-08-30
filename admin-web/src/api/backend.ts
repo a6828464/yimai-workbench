@@ -4,7 +4,31 @@ export const USE_BACKEND = import.meta.env.VITE_USE_BACKEND === 'true'
 
 const TOKEN_KEY = 'backend-token'
 
+let sessionExpiredHandler: (() => void | Promise<void>) | undefined
+let sessionExpiryInProgress: Promise<void> | null = null
+let sessionExpired = false
+
+export function registerSessionExpiredHandler(handler: () => void | Promise<void>) {
+  sessionExpiredHandler = handler
+}
+
+function expireSession(): Promise<void> {
+  if (sessionExpiryInProgress) return sessionExpiryInProgress
+  if (sessionExpired) return Promise.resolve()
+
+  sessionExpired = true
+  clearBackendToken()
+  sessionExpiryInProgress = Promise.resolve()
+    .then(() => sessionExpiredHandler?.())
+    .catch((error) => console.error('[Session] Failed to clear expired session:', error))
+    .finally(() => {
+      sessionExpiryInProgress = null
+    })
+  return sessionExpiryInProgress
+}
+
 export function setBackendToken(token: string) {
+  sessionExpired = false
   localStorage.setItem(TOKEN_KEY, token)
 }
 
@@ -44,11 +68,14 @@ http.interceptors.request.use((cfg) => {
 
 http.interceptors.response.use(
   (resp) => resp,
-  (error) => {
+  async (error) => {
     const status = error.response?.status
     if (status === 401) {
-      clearBackendToken()
-      window.location.hash = '#/login'
+      const requestToken = String(error.config?.headers?.Authorization ?? '').replace(/^Bearer\s+/i, '')
+      const currentToken = getBackendToken()
+      if (!requestToken || !currentToken || requestToken === currentToken) {
+        await expireSession()
+      }
     }
     return Promise.reject(error)
   }

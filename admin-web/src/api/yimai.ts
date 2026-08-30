@@ -376,12 +376,19 @@ export function canAssignTeacher(): boolean {
 
 export function queryAuditLogs(
   params: PageParams & { operator?: string; module?: string; action?: string }
-) {
+): Promise<{ records: YimaiAuditLog[]; total: number; current: number; size: number }> {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiAuditLog[]; total: number }>(
-      '/audit-logs',
-      params as Record<string, unknown>
-    ).then((d) => ({ records: d.records ?? [], total: d.records?.length ?? 0 }))
+    return apiGet<{
+      records: YimaiAuditLog[]
+      total: number
+      current: number
+      size: number
+    }>('/audit-logs', params as Record<string, unknown>).then((d) => ({
+      records: d.records ?? [],
+      total: d.total ?? 0,
+      current: d.current ?? params.current ?? 1,
+      size: d.size ?? params.size ?? 20
+    }))
   }
   const a = actor()
   if (!a.isSuper && !a.isBoss) {
@@ -394,7 +401,9 @@ export function queryAuditLogs(
   if (params.operator) list = list.filter((l) => l.operatorName.includes(String(params.operator)))
   if (params.module) list = list.filter((l) => l.module === params.module)
   if (params.action) list = list.filter((l) => l.action === params.action)
-  return Promise.resolve({ records: paginate(list, params), total: list.length })
+  const current = Number(params.current ?? 1)
+  const size = Number(params.size ?? 20)
+  return Promise.resolve({ records: paginate(list, params), total: list.length, current, size })
 }
 
 // ==================== 客户经营池 ====================
@@ -897,6 +906,7 @@ export async function createApproval(data: {
   standardPrice: number
   requestPrice: number
   reason?: string
+  venue?: '绿地店' | '东部店'
 }): Promise<YimaiApproval> {
   if (USE_BACKEND) {
     return apiPost<YimaiApproval>('/approvals', data as unknown as Record<string, unknown>)
