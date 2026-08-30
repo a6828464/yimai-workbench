@@ -44,7 +44,7 @@ if (is_file($LOCK)) {
 }
 
 $checks = [
-    'PHP 版本 ≥ 8.2' => version_compare(PHP_VERSION, '8.2.0', '>='),
+    'PHP 版本 ≥ 8.4.1' => version_compare(PHP_VERSION, '8.4.1', '>='),
     'Composer 生产依赖完整' => is_file($ROOT.'/vendor/autoload.php'),
     'PDO MySQL 扩展' => extension_loaded('pdo_mysql'),
     'mbstring 扩展' => extension_loaded('mbstring'),

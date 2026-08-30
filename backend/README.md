@@ -4,7 +4,7 @@ Laravel 12 + Sanctum 的双店经营工作台 API。后端负责认证、角色�
 
 ## 环境要求
 
-- PHP 8.2 或更高版本
+- PHP 8.4.1 或更高版本
 - MySQL 8.0（5.7 兼容性未作为生产目标）
 - `pdo_mysql`、`mbstring`、`openssl`、`curl`、`fileinfo`、`zip`
 - 已安装项目依赖：`composer install --no-dev --prefer-dist`

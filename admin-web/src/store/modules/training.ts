@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { USE_BACKEND } from '@/api/backend'
 import { useUserStore } from './user'
 import { useYimaiStore } from './yimai'
 
@@ -92,8 +93,66 @@ interface TrainingState {
   plans: TrainingPlan[]
 }
 
+const STORAGE_PREFIX = 'yimai-training-store:user:'
+
+function emptyState(): TrainingState {
+  return {
+    nextId: 100,
+    plans: USE_BACKEND ? [] : JSON.parse(JSON.stringify(SEEDS))
+  }
+}
+
 export const useTrainingStore = defineStore('trainingStore', () => {
-  const state = ref<TrainingState>({ nextId: 100, plans: JSON.parse(JSON.stringify(SEEDS)) })
+  const state = ref<TrainingState>(emptyState())
+  const loadedUserId = ref('')
+
+  function storageKey(userId: string): string {
+    return `${STORAGE_PREFIX}${encodeURIComponent(userId)}`
+  }
+
+  function reset() {
+    loadedUserId.value = ''
+    state.value = emptyState()
+  }
+
+  function loadForUser(userId: string | number) {
+    const id = String(userId || '')
+    reset()
+    localStorage.removeItem('yimai-training-store')
+    if (!id) return
+
+    loadedUserId.value = id
+    if (USE_BACKEND) return
+
+    const saved = localStorage.getItem(storageKey(id))
+    if (!saved) return
+    try {
+      const parsed = JSON.parse(saved) as TrainingState
+      if (Array.isArray(parsed.plans)) {
+        state.value = {
+          plans: parsed.plans,
+          nextId: Number(parsed.nextId) || 100
+        }
+      }
+    } catch {
+      localStorage.removeItem(storageKey(id))
+    }
+  }
+
+  function replacePlans(plans: TrainingPlan[]) {
+    state.value.plans = plans
+    state.value.nextId = Math.max(99, ...plans.map((p) => Number(p.id ?? 0))) + 1
+  }
+
+  watch(
+    state,
+    (value) => {
+      if (!USE_BACKEND && loadedUserId.value) {
+        localStorage.setItem(storageKey(loadedUserId.value), JSON.stringify(value))
+      }
+    },
+    { deep: true }
+  )
 
   function actorName(): string {
     return useUserStore().getUserInfo.userName ?? ''
@@ -183,6 +242,10 @@ export const useTrainingStore = defineStore('trainingStore', () => {
 
   return {
     state,
+    loadedUserId,
+    reset,
+    loadForUser,
+    replacePlans,
     saveDraft,
     attachContent,
     confirmPlan,
@@ -191,10 +254,5 @@ export const useTrainingStore = defineStore('trainingStore', () => {
     setPlanShare,
     registerPlanView,
     removePlan
-  }
-}, {
-  persist: {
-    key: 'yimai-training-store',
-    storage: localStorage
   }
 })

@@ -471,6 +471,9 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($u->role === 'R_MANAGER') {
             $q->where('venue', $u->venue);
         }
+        if ($s = $r->query('status')) {
+            $q->where('status', $s);
+        }
         $current = max(1, (int) $r->query('current', 1));
         $size = min(100, max(1, (int) $r->query('size', 20)));
         $total = (clone $q)->count();
@@ -489,6 +492,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'standardPrice' => 'required|integer|min:0',
             'requestPrice' => 'required|integer|min:0',
             'reason' => 'nullable|string|max:200',
+            'venue' => 'nullable|string|in:绿地店,东部店',
         ]);
         if ((float) $d['requestPrice'] >= (float) $d['standardPrice']) {
             return response()->json(['code' => 1, 'message' => '申请价应低于标准价'], 422);
@@ -496,7 +500,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $a = Approval::create([
             'customer_name' => $d['customerName'],
             'applicant' => $r->user()->name,
-            'venue' => $r->user()->role === 'R_MANAGER' ? $r->user()->venue : '双店',
+            'venue' => $r->user()->role === 'R_MANAGER' ? $r->user()->venue : ($d['venue'] ?? '双店'),
             'card_name' => $d['cardName'],
             'standard_price' => (int) $d['standardPrice'],
             'request_price' => (int) $d['requestPrice'],
@@ -694,25 +698,27 @@ Route::middleware('auth:sanctum')->group(function () {
     // ---------- AI 大模型代理（OpenAI 兼容协议，解决浏览器跨域） ----------
     Route::post('/ai/chat', function (Request $r) {
         $d = $r->validate([
-            'baseUrl' => 'required|url',
-            'apiKey' => 'nullable|string',
-            'model' => 'required|string',
-            'messages' => 'required|array',
+            'messages' => 'required|array|min:1|max:30',
+            'messages.*.role' => 'required|in:system,user,assistant',
+            'messages.*.content' => 'required|string|max:20000',
+            'temperature' => 'nullable|numeric|min:0|max:2',
+            'maxTokens' => 'nullable|integer|min:16|max:32768',
+            'stream' => 'nullable|boolean',
         ]);
         $saved = (array) (AppSetting::first()?->ai ?? []);
-        $d['apiKey'] = ($d['apiKey'] && $d['apiKey'] !== 'server-configured') ? $d['apiKey'] : ($saved['apiKey'] ?? '');
-        if ($d['apiKey'] === '') {
+        $baseUrl = (string) ($saved['baseUrl'] ?? '');
+        $apiKey = (string) ($saved['apiKey'] ?? '');
+        $model = (string) ($saved['model'] ?? '');
+        if (empty($saved['enabled']) || $baseUrl === '' || $apiKey === '' || $model === '') {
             return response()->json(['code' => 1, 'message' => '尚未配置 API Key'], 422);
         }
-        if (! str_starts_with($d['baseUrl'], 'https://')) {
-            return response()->json(['code' => 1, 'message' => '接口地址必须为 https'], 422);
-        }
+        assertPublicHttpsUrl($baseUrl);
 
         // 推理模型（reasoner / r1 / o1 / o3 / thinking）不支持 temperature，
         // 且 max_tokens 需要足够大来容纳推理过程
-        $isReasoning = (bool) preg_match('/(reasoner|^r1|deepseek-r1|^o1|^o3|-thinking|viz|thinking)/i', $d['model']);
+        $isReasoning = (bool) preg_match('/(reasoner|^r1|deepseek-r1|^o1|^o3|-thinking|viz|thinking)/i', $model);
         $payload = [
-            'model' => $d['model'],
+            'model' => $model,
             'messages' => $d['messages'],
         ];
         // 非推理模型才带 temperature
@@ -731,10 +737,10 @@ Route::middleware('auth:sanctum')->group(function () {
         }
 
         try {
-            $resp = Http::withToken($d['apiKey'])
+            $resp = Http::withToken($apiKey)
                 ->timeout(120)
                 ->withOptions($stream ? ['stream' => true] : [])
-                ->post(rtrim($d['baseUrl'], '/').'/chat/completions', $payload);
+                ->post(rtrim($baseUrl, '/').'/chat/completions', $payload);
         } catch (Throwable $e) {
             return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
         }
@@ -771,16 +777,15 @@ Route::middleware('auth:sanctum')->group(function () {
         }
 
         return ok(['content' => $content]);
-    });
+    })->middleware('throttle:30,1');
 
     Route::post('/ai/models', function (Request $r) {
+        requireSuper($r);
         $d = $r->validate([
             'baseUrl' => 'required|url',
             'apiKey' => 'required|string',
         ]);
-        if (! str_starts_with($d['baseUrl'], 'https://')) {
-            return response()->json(['code' => 1, 'message' => '接口地址必须为 https'], 422);
-        }
+        assertPublicHttpsUrl($d['baseUrl']);
 
         try {
             $resp = Http::withToken($d['apiKey'])
@@ -805,7 +810,31 @@ Route::middleware('auth:sanctum')->group(function () {
         sort($ids, SORT_NATURAL | SORT_FLAG_CASE);
 
         return ok(['models' => $ids]);
-    });
+    })->middleware('throttle:10,1');
+
+    Route::post('/ai/test', function (Request $r) {
+        requireSuper($r);
+        $d = $r->validate([
+            'baseUrl' => 'required|url',
+            'apiKey' => 'required|string|max:500',
+            'model' => 'required|string|max:120',
+        ]);
+        assertPublicHttpsUrl($d['baseUrl']);
+        try {
+            $resp = Http::withToken($d['apiKey'])->timeout(30)->post(rtrim($d['baseUrl'], '/').'/chat/completions', [
+                'model' => $d['model'],
+                'messages' => [['role' => 'user', 'content' => '只回复OK']],
+                'max_tokens' => 512,
+            ]);
+        } catch (Throwable $e) {
+            return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
+        }
+        if (! $resp->successful()) {
+            return response()->json(['code' => 1, 'message' => '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 250)]);
+        }
+
+        return ok(['content' => (string) ($resp->json('choices.0.message.content') ?? '')]);
+    })->middleware('throttle:10,1');
 
     Route::get('/ai/config', function (Request $r) {
         // 读取接口对全部登录角色开放（不含密钥明文），保证各角色工作台都能水合同一份 AI 配置
@@ -821,6 +850,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'baseUrl' => 'required|url', 'apiKey' => 'nullable|string|max:500',
             'model' => 'required|string', 'temperature' => 'required|numeric|min:0|max:2',
         ]);
+        assertPublicHttpsUrl($d['baseUrl']);
         $s = AppSetting::firstOrCreate([]);
         $ai = (array) ($s->ai ?? []);
         if (! empty($d['apiKey']) && $d['apiKey'] !== 'server-configured') {
@@ -904,10 +934,14 @@ Route::middleware('auth:sanctum')->group(function () {
         $detail = '';
         if ($action === 'disable' || $action === 'enable') {
             $user->update(['status' => $action === 'disable' ? '停用' : '启用']);
+            if ($action === 'disable') {
+                $user->tokens()->delete();
+            }
             $detail = $action === 'disable' ? '停用账号' : '启用账号';
         } elseif ($action === 'resetPassword') {
             abort_unless(! empty($d['password']), 422, '请输入新密码');
             $user->update(['password' => $d['password']]);
+            $user->tokens()->delete();
             $detail = '重置密码';
         } else {
             $patch = [];
@@ -1427,13 +1461,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/today/followups', function (Request $r) {
         $u = $r->user();
-        $q = Customer::query()->whereIn('layer', ['P0', 'P1', 'P5']);
-        if ($u->role === 'R_MANAGER') {
-            $q->where('venue', $u->venue);
+        if ($u->role === 'R_MEDIA') {
+            return ok([]);
         }
-        if ($u->role === 'R_TEACHER' && $u->venue) {
-            $q->where('venue', $u->venue);
-        }
+        $q = scopeCustomersForUser(Customer::query(), $u)->whereIn('layer', ['P0', 'P1', 'P5']);
 
         return ok($q->orderBy('id')->limit(6)->get()->map(function ($c) {
             $arr = camel($c);
@@ -1448,10 +1479,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $u = $r->user();
         $alerts = [];
 
-        $leadQ = Lead::query()->where('status', '新留资');
-        if ($u->role === 'R_MANAGER') {
-            $leadQ->where('venue', $u->venue);
-        }
+        $leadQ = scopeLeadsForUser(Lead::query(), $u)->where('status', '新留资');
         foreach ($leadQ->orderByDesc('id')->limit(2)->get() as $l) {
             $alerts[] = ['id' => 9000 + $l->id, 'level' => '高', 'text' => "[{$l->venue}] 新客资 {$l->name} 待首响（{$l->source}）", 'action' => '24小时内完成首轮联系'];
         }
@@ -1461,13 +1489,18 @@ Route::middleware('auth:sanctum')->group(function () {
             $taskQ->where('venue', $u->venue);
         }
         if ($u->role === 'R_TEACHER') {
-            $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+            $taskQ->where('venue', $u->venue)->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+        }
+        if ($u->role === 'R_MEDIA') {
+            $taskQ->whereRaw('1 = 0');
         }
         foreach ($taskQ->limit(4)->get() as $t) {
             $alerts[] = ['id' => 100 + $t->id, 'level' => '中', 'text' => "任务「{$t->title}-{$t->customer_name}」已逾期", 'action' => '提醒责任人完成闭环'];
         }
 
-        $expiring = Customer::whereIn('id', filteredIds('待续课'))->orderBy('expire_date')->limit(2)->get();
+        $expiring = scopeCustomersForUser(Customer::query(), $u)
+            ->when($u->role === 'R_MEDIA', fn ($q) => $q->whereRaw('1 = 0'))
+            ->whereIn('id', filteredIds('待续课'))->orderBy('expire_date')->limit(2)->get();
         foreach ($expiring as $c) {
             $alerts[] = ['id' => 200 + $c->id, 'level' => '中', 'text' => "{$c->name} 卡项临近到期（剩余{$c->remain_times}节）", 'action' => '确认续费窗口沟通结果'];
         }
@@ -1694,6 +1727,18 @@ if (! function_exists('ok')) {
         return $query;
     }
 
+    function scopeLeadsForUser($query, User $user)
+    {
+        if ($user->role === 'R_MANAGER') {
+            $query->where('venue', $user->venue);
+        } elseif ($user->role === 'R_TEACHER') {
+            $query->where('venue', $user->venue)
+                ->where(fn ($q) => $q->where('service_teacher', $user->name)->orWhere('service_teacher', ''));
+        }
+
+        return $query;
+    }
+
     function canAccessCustomer(User $user, Customer $customer): bool
     {
         return match ($user->role) {
@@ -1820,6 +1865,40 @@ if (! function_exists('ok')) {
         }
 
         return array_filter($out, fn ($v) => $v !== null);
+    }
+
+    function assertPublicHttpsUrl(string $url): void
+    {
+        $parts = parse_url($url);
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        abort_unless(
+            ($parts['scheme'] ?? '') === 'https'
+            && $host !== ''
+            && ! isset($parts['user'])
+            && ! isset($parts['pass'])
+            && ! in_array($host, ['localhost', 'localhost.localdomain'], true),
+            422,
+            '接口地址必须是公网 HTTPS 地址'
+        );
+
+        $ips = filter_var($host, FILTER_VALIDATE_IP) ? [$host] : [];
+        if ($ips === []) {
+            $records = @dns_get_record($host, DNS_A | DNS_AAAA) ?: [];
+            foreach ($records as $record) {
+                $ip = $record['ip'] ?? $record['ipv6'] ?? null;
+                if ($ip) {
+                    $ips[] = $ip;
+                }
+            }
+        }
+        abort_if($ips === [], 422, '接口域名无法解析');
+        foreach (array_unique($ips) as $ip) {
+            abort_unless(
+                filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false,
+                422,
+                '接口地址不能指向内网、回环或保留地址'
+            );
+        }
     }
 
     function audit(Request $r, string $action, string $module, int|string $targetId, string $targetLabel, string $venue, string $detail): void

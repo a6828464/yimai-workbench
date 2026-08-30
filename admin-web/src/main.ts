@@ -8,6 +8,10 @@ import '@styles/index.scss'                         // 样式
 import '@utils/sys/console.ts'                      // 控制台输出内容
 import { setupGlobDirectives } from './directives'
 import { setupErrorHandle } from './utils/sys/error-handle'
+import { useUserStore } from './store/modules/user'
+import { useTrainingStore } from './store/modules/training'
+import { registerSessionExpiredHandler } from './api/backend'
+import { registerSessionLifecycleHandlers } from './utils/session-lifecycle'
 
 document.addEventListener(
   'touchstart',
@@ -18,6 +22,11 @@ document.addEventListener(
 const app = createApp(App)
 initStore(app)
 initRouter(app)
+registerSessionLifecycleHandlers({
+  resetSensitiveState: () => useTrainingStore().reset(),
+  onUserChange: (userId) => useTrainingStore().loadForUser(userId)
+})
+registerSessionExpiredHandler(() => useUserStore().logOut())
 setupGlobDirectives(app)
 setupErrorHandle(app)
 

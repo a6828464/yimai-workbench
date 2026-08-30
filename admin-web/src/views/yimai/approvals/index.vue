@@ -59,7 +59,7 @@
 defineOptions({ name: 'YimaiApprovals' })
 
 const userStore = useUserStore()
-const isBoss = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_BOSS'))
+const isSuper = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_SUPER'))
 
   const STATUSES = ['待店长初审', '待老板终审', '已通过', '已驳回', '已关联成交'] as const
 
@@ -111,13 +111,13 @@ const isBoss = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_BO
           width: 170,
           sortable: true,
           formatter: (row: YimaiApproval) => {
-            const discount = ((row.requestPrice / row.standardPrice) * 10).toFixed(1)
+            const discount = row.standardPrice > 0 ? ((row.requestPrice / row.standardPrice) * 10).toFixed(1) : '—'
             return h('div', [
               h('p', [
                 h('span', { class: 'text-gray-400 line-through mr-2' }, fmtPrice(row.standardPrice)),
                 h('span', { class: 'font-500 text-red-500' }, fmtPrice(row.requestPrice))
               ]),
-              h('p', { class: 'text-xs text-gray-400' }, `${discount}折`)
+                h('p', { class: 'text-xs text-gray-400' }, discount === '—' ? '标准价未设置' : `${discount}折`)
             ])
           }
         },
@@ -139,19 +139,22 @@ const isBoss = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_BO
             return h('div', { class: 'flex gap-1' }, [
               h(ArtButtonTable, {
                 type: 'edit',
-                title: isBoss.value ? '越级终审通过' : '初审通过',
+                title: '初审通过',
                 onClick: () => act(row, true)
               }),
               h(ArtButtonTable, { type: 'delete', title: '驳回', onClick: () => act(row, false) })
             ])
           }
           if (row.status === '待老板终审') {
+            if (!isSuper.value) {
+              return h('span', { class: 'text-xs text-gray-400' }, '等待超管终审')
+            }
             return h('div', { class: 'flex gap-1' }, [
               h(
                 ArtButtonTable,
                 {
                   type: 'edit',
-                  title: isBoss.value ? '终审通过' : '等待南哥终审',
+                  title: '终审通过',
                   onClick: () => act(row, true, true)
                 }
               ),
@@ -159,6 +162,7 @@ const isBoss = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_BO
             ])
           }
           if (row.status === '已通过') {
+            if (!isSuper.value) return h('span', { class: 'text-xs text-gray-400' }, '等待关联成交')
             return h(
               ArtButtonTable,
               { type: 'edit', title: '关联成交', onClick: () => linkDeal(row) }
@@ -183,8 +187,8 @@ const isBoss = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_BO
       }
       return
     }
-    if (finalStage && !isBoss.value) {
-      ElMessage.info('该单已到终审环节，需南哥拍板')
+    if (finalStage && !isSuper.value) {
+      ElMessage.info('该单已到终审环节，需超管终审')
       return
     }
     const stage = row.status === '待店长初审' ? '初审' : '终审'

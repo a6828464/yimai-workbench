@@ -251,9 +251,6 @@ export async function chatLLMStream(
       Authorization: `Bearer ${getBackendToken()}`
     },
     body: JSON.stringify({
-      baseUrl: c.baseUrl,
-      apiKey: c.apiKey,
-      model: c.model,
       messages,
       temperature: c.temperature,
       maxTokens: opts?.maxTokens,
