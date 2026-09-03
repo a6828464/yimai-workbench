@@ -61,7 +61,7 @@
       </ElCol>
       <ElCol :xs="24" :lg="14" class="mb-4">
         <ElCard shadow="never">
-          <template #header><span class="font-500">登记售卡金额趋势（元）</span></template>
+          <template #header><span class="font-500">售卡金额趋势（元）</span></template>
           <ArtLineChart
             height="260px"
             :data="amountSeries"
@@ -299,7 +299,7 @@
       label: '售卡金额',
       value: summary.value?.dealAmount ?? '-',
       prefix: '¥',
-      hint: '工作台登记售卡口径，非财务实收',
+        hint: '随心瑜会员卡实收口径（非财务流水）',
       icon: markRaw(Wallet),
       accent: '#9C27B0'
     }

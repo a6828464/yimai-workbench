@@ -6,6 +6,7 @@ use App\Models\AppSetting;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\KyBooking;
+use App\Models\KyCard;
 use App\Models\Lead;
 use App\Models\PublishedShare;
 use App\Models\RenewalEvaluation;
@@ -1150,11 +1151,25 @@ Route::middleware('auth:sanctum')->group(function () {
             $date = $sale->deal_at?->toDateString() ?: (string) $sale->lead_date;
             $saleVenue = $sale->venue ?: '双店';
             $byDate[$date][$saleVenue]['deals'] = ($byDate[$date][$saleVenue]['deals'] ?? 0) + 1;
-            $byDate[$date][$saleVenue]['card_sales'] = ($byDate[$date][$saleVenue]['card_sales'] ?? 0)
-                + (trim((string) $sale->deal_card) !== '' ? 1 : 0);
-            if (trim((string) $sale->deal_card) !== '') {
-                $byDate[$date][$saleVenue]['amount'] = ($byDate[$date][$saleVenue]['amount'] ?? 0) + (int) $sale->deal_amount;
-            }
+        }
+
+        // 售卡张数/金额：以随心瑜会员卡表落库的售卡事实为准，按售卡时间与实收金额统计，
+        // 排除体验/赠卡（is_taste）与退卡；不再依赖工作台留资手动登记的成交卡项。
+        $cardQ = KyCard::query()
+            ->where('is_taste', false)
+            ->where('status_format', '!=', '退卡')
+            ->whereNotNull('sold_at')
+            ->whereBetween('sold_at', [$start, $end]);
+        if ($u->role !== 'R_SUPER' && $u->venue) {
+            $cardQ->where('venue', $u->venue);
+        } elseif ($venue !== '') {
+            $cardQ->where('venue', $venue);
+        }
+        foreach ($cardQ->get() as $card) {
+            $date = (string) $card->sold_at;
+            $cardVenue = $card->venue ?: '双店';
+            $byDate[$date][$cardVenue]['card_sales'] = ($byDate[$date][$cardVenue]['card_sales'] ?? 0) + 1;
+            $byDate[$date][$cardVenue]['amount'] = ($byDate[$date][$cardVenue]['amount'] ?? 0) + (float) $card->deal_price;
         }
         $redeems = (clone $leadQ)->where('redeem_amount', '>', 0)->get()->filter(function ($lead) use ($start, $end) {
             $date = $lead->redeemed_at?->toDateString() ?: (string) $lead->lead_date;
