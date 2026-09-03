@@ -41,7 +41,7 @@
           </template>
         </ElTableColumn>
         <ElTableColumn prop="email" label="邮箱" min-width="180" />
-        <ElTableColumn label="操作" width="220" fixed="right">
+        <ElTableColumn label="操作" width="300" fixed="right">
           <template #default="{ row }">
             <ElButton link type="primary" size="small" :disabled="row.self" @click="openEdit(row)"
               >编辑</ElButton
@@ -64,6 +64,9 @@
               @click="doResetPassword(row)"
               >重置密码</ElButton
             >
+            <ElButton link type="danger" size="small" :disabled="row.self" @click="doDelete(row)"
+              >删除</ElButton
+            >
           </template>
         </ElTableColumn>
       </ElTable>
@@ -72,6 +75,9 @@
     <!-- 新增账号 -->
     <ElDialog v-model="createDlg" title="开通新账号" width="460px" destroy-on-close>
       <ElForm label-width="92px">
+        <ElFormItem label="姓名">
+          <ElInput v-model="form.name" placeholder="真实姓名，用于展示与会籍归属" maxlength="20" />
+        </ElFormItem>
         <ElFormItem label="登录名">
           <ElInput v-model="form.userName" placeholder="字母数字，将用于登录" />
         </ElFormItem>
@@ -187,6 +193,7 @@
 
   const createDlg = ref(false)
   const form = reactive({
+    name: '',
     userName: '',
     roleCode: 'R_TEACHER',
     venues: ['绿地店'] as string[],
@@ -222,7 +229,13 @@
   }
 
   function openCreate() {
-    Object.assign(form, { userName: '', roleCode: 'R_TEACHER', venues: ['绿地店'], password: '' })
+    Object.assign(form, {
+      name: '',
+      userName: '',
+      roleCode: 'R_TEACHER',
+      venues: ['绿地店'],
+      password: ''
+    })
     createDlg.value = true
   }
 
@@ -239,6 +252,7 @@
     try {
       await createAccount({
         userName: form.userName.trim(),
+        name: form.name.trim() || form.userName.trim(),
         roleCode: form.roleCode,
         venues,
         password: form.password
@@ -299,6 +313,21 @@
     try {
       await updateAccount(row.key, 'enable')
       ElMessage.success('已启用')
+      await load()
+    } catch (e) {
+      ElMessage.error(String((e as { message?: string }).message ?? e).slice(0, 120))
+    }
+  }
+
+  async function doDelete(row: AccountRow) {
+    await ElMessageBox.confirm(
+      `确定删除账号「${row.userName}」（登录名 ${row.key}）？删除后无法恢复。`,
+      '删除账号',
+      { type: 'error' }
+    )
+    try {
+      await updateAccount(row.key, 'delete')
+      ElMessage.success('已删除')
       await load()
     } catch (e) {
       ElMessage.error(String((e as { message?: string }).message ?? e).slice(0, 120))

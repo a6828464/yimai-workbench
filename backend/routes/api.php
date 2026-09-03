@@ -887,6 +887,7 @@ Route::middleware('auth:sanctum')->group(function () {
         requireSuper($r);
         $d = $r->validate([
             'userName' => 'required|string|max:20',
+            'name' => 'nullable|string|max:20',
             'roleCode' => 'required|string|in:R_SUPER,R_MANAGER,R_TEACHER,R_MEDIA',
             'venues' => 'required|array|min:1',
             'venues.*' => 'string|in:绿地店,东部店',
@@ -895,10 +896,11 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
         abort_unless(User::where('username', $d['userName'])->doesntExist(), 422, '登录名已存在');
 
+        $name = trim((string) ($d['name'] ?? '')) !== '' ? trim((string) $d['name']) : $d['userName'];
         $venues = $d['venues'];
         $venue = $d['roleCode'] === 'R_MANAGER' ? $venues[0] : ($d['roleCode'] === 'R_TEACHER' ? $venues[0] : null);
         $user = User::create([
-            'name' => $d['userName'],
+            'name' => $name,
             'username' => $d['userName'],
             'email' => $d['email'] ?? ($d['userName'].'@yimai.local'),
             'password' => $d['password'],
@@ -918,12 +920,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/accounts/{key}', function (Request $r, string $key) {
         requireSuper($r);
         $user = User::where('username', $key)->firstOrFail();
-        if ($user->name === $r->user()->name) {
-            abort(422, '不能修改自己的账号');
+        if ($user->id === $r->user()->id) {
+            abort(422, '不能操作自己的账号');
         }
 
         $action = $r->input('action', 'update');
-        $allowed = ['update', 'disable', 'enable', 'resetPassword'];
+        $allowed = ['update', 'disable', 'enable', 'resetPassword', 'delete'];
         abort_unless(in_array($action, $allowed, true), 422, '未知操作');
 
         $d = $r->validate([
@@ -933,6 +935,15 @@ Route::middleware('auth:sanctum')->group(function () {
             'password' => 'nullable|string|min:8|max:64',
         ]);
         $detail = '';
+        if ($action === 'delete') {
+            $targetName = $user->name;
+            $targetVenue = $user->venue;
+            $user->tokens()->delete();
+            $user->delete();
+            audit($r, '删除', '人员管理', $user->id, $targetName, is_string($targetVenue) ? $targetVenue : '双店', "删除账号：{$targetName}（登录名 {$key}）");
+
+            return ok(['ok' => true]);
+        }
         if ($action === 'disable' || $action === 'enable') {
             $user->update(['status' => $action === 'disable' ? '停用' : '启用']);
             if ($action === 'disable') {
@@ -1197,8 +1208,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 continue;
             }
             $identity = $booking->phone ?: ($booking->member_id ?: $booking->source_key);
+            $typeKey = $booking->booking_type === '私教' ? 'private' : 'group';
             if (! in_array($booking->status, ['cancelled', 'no_show'], true)) {
                 $kyByDate[$date][$booking->venue]['booked'][$identity] = true;
+                $kyByDate[$date][$booking->venue]['booked_'.$typeKey][$identity] = true;
             }
             if ($booking->status === 'signed') {
                 $session = implode('|', [
@@ -1209,6 +1222,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     $booking->booking_type,
                 ]);
                 $kyByDate[$date][$booking->venue]['classes'][$session] = true;
+                $kyByDate[$date][$booking->venue]['classes_'.$typeKey][$session] = true;
                 if ($booking->is_trial) {
                     $kyByDate[$date][$booking->venue]['experienced'][$identity] = true;
                 }
@@ -1255,6 +1269,20 @@ Route::middleware('auth:sanctum')->group(function () {
         $totalAmount = $sumKey('amount');
         $totalRedeem = $sumKey('redeem');
 
+        // 预约/上课班次按私教 vs 团课/小班拆分
+        $privateBooked = 0;
+        $groupBooked = 0;
+        $privateClasses = 0;
+        $groupClasses = 0;
+        foreach ($kyByDate as $venues) {
+            foreach ($venues as $counts) {
+                $privateBooked += count($counts['booked_private'] ?? []);
+                $groupBooked += count($counts['booked_group'] ?? []);
+                $privateClasses += count($counts['classes_private'] ?? []);
+                $groupClasses += count($counts['classes_group'] ?? []);
+            }
+        }
+
         return ok([
             'daily' => array_values(collect($byDate)->sortKeys()->map(function ($venues, $date) {
                 $out = ['date' => $date];
@@ -1282,6 +1310,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 'dealCount' => $totalDeals,
                 'cardSalesCount' => $totalCardSales,
                 'classCount' => $totalClasses,
+                'privateBookingCount' => $privateBooked,
+                'groupBookingCount' => $groupBooked,
+                'privateClassCount' => $privateClasses,
+                'groupClassCount' => $groupClasses,
                 'dealAmount' => $totalAmount,
                 'redeemAmount' => $totalRedeem,
                 'dealRate' => $totalExperienced > 0 ? round($totalDeals / $totalExperienced * 100, 1) : 0,
