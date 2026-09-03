@@ -60,17 +60,20 @@ class AnalyticsTrendsTest extends TestCase
         $this->booking('green-booked', '绿地店', '13800000001', 'booked');
         $this->booking('green-signed', '绿地店', '13800000002', 'signed');
         $this->booking('east-cancelled', '东部店', '13800000003', 'cancelled');
-        $this->booking('green-private-signed', '绿地店', '13800000004', 'signed', '私教', false);
+        $this->booking('green-private-signed', '绿地店', '13800000004', 'signed', '私教', false, '2');
+        $this->booking('green-small-signed', '绿地店', '13800000005', 'signed', '团课', false, '3');
 
         $this->getJson('/api/analytics/trends?start=2026-08-29&end=2026-08-29&venue='.urlencode('绿地店'))
             ->assertOk()
-            ->assertJsonPath('data.summary.bookingCount', 3)
+            ->assertJsonPath('data.summary.bookingCount', 4)
             ->assertJsonPath('data.summary.trialCount', 2)
             ->assertJsonPath('data.summary.visitCount', 2)
-            ->assertJsonPath('data.summary.classCount', 2)
+            ->assertJsonPath('data.summary.classCount', 3)
             ->assertJsonPath('data.summary.privateBookingCount', 1)
+            ->assertJsonPath('data.summary.smallBookingCount', 1)
             ->assertJsonPath('data.summary.groupBookingCount', 2)
             ->assertJsonPath('data.summary.privateClassCount', 1)
+            ->assertJsonPath('data.summary.smallClassCount', 1)
             ->assertJsonPath('data.summary.groupClassCount', 1)
             ->assertJsonPath('data.summary.cardSalesCount', 1)
             ->assertJsonPath('data.summary.dealAmount', 3000)
@@ -121,7 +124,8 @@ class AnalyticsTrendsTest extends TestCase
         string $phone,
         string $status,
         string $type = '团课',
-        bool $isTrial = true
+        bool $isTrial = true,
+        string $courseType = '1'
     ): void {
         KyBooking::create([
             'source_key' => $key,
@@ -134,6 +138,7 @@ class AnalyticsTrendsTest extends TestCase
             'status_raw' => $status,
             'status' => $status,
             'is_trial' => $isTrial,
+            'raw' => ['course_type' => $courseType],
         ]);
     }
 }

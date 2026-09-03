@@ -177,6 +177,8 @@ export async function fetchKyCounts(storeKey: string): Promise<KyCounts> {
 export interface KyTodayBookings {
   total: number
   trialHits: number
+  /** 课型计数：2=私教，3=小班（精品课），1=团课（精品团课） */
+  kinds: { 私教: number; 小班: number; 团课: number }
 }
 
 function localDate(): string {
@@ -259,7 +261,15 @@ export async function fetchKyToday(storeKey: string, date?: string): Promise<KyT
     const status = String(row.status_desc ?? row.status_name ?? row.status ?? '')
     return !/(取消|爽约|作废|未到)/u.test(status)
   })
-  return { total: active.length, trialHits: active.filter(isTrialBooking).length }
+  // 课型计数：course_type 2=私教，3=小班（精品课），1=团课（精品团课）
+  const kinds: { 私教: number; 小班: number; 团课: number } = { 私教: 0, 小班: 0, 团课: 0 }
+  for (const row of active) {
+    const courseType = String(row.course_type ?? '')
+    if (courseType === '2') kinds.私教++
+    else if (courseType === '3') kinds.小班++
+    else kinds.团课++
+  }
+  return { total: active.length, trialHits: active.filter(isTrialBooking).length, kinds }
 }
 
 export interface KyMemberRow {

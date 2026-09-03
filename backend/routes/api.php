@@ -1050,6 +1050,9 @@ Route::middleware('auth:sanctum')->group(function () {
             'trialBookings' => 'required|array',
             'trialBookings.绿地店' => 'required|integer|min:0',
             'trialBookings.东部店' => 'required|integer|min:0',
+            'todayKinds' => 'nullable|array',
+            'todayKinds.绿地店' => 'nullable|array',
+            'todayKinds.东部店' => 'nullable|array',
         ]);
         $s = AppSetting::firstOrCreate([]);
         $snap = $s->snapshot ?? [];
@@ -1061,6 +1064,20 @@ Route::middleware('auth:sanctum')->group(function () {
             '绿地店' => (int) ($d['trialBookings']['绿地店'] ?? 0),
             '东部店' => (int) ($d['trialBookings']['东部店'] ?? 0),
         ];
+        if (isset($d['todayKinds'])) {
+            $snap['todayKinds'] = [
+                '绿地店' => [
+                    '私教' => (int) ($d['todayKinds']['绿地店']['私教'] ?? 0),
+                    '小班' => (int) ($d['todayKinds']['绿地店']['小班'] ?? 0),
+                    '团课' => (int) ($d['todayKinds']['绿地店']['团课'] ?? 0),
+                ],
+                '东部店' => [
+                    '私教' => (int) ($d['todayKinds']['东部店']['私教'] ?? 0),
+                    '小班' => (int) ($d['todayKinds']['东部店']['小班'] ?? 0),
+                    '团课' => (int) ($d['todayKinds']['东部店']['团课'] ?? 0),
+                ],
+            ];
+        }
         $snap['fetchedAt'] = now()->format('Y-m-d H:i:s');
         $snap['fetchedBy'] = $r->user()->name;
         $s->update(['snapshot' => $snap]);
@@ -1208,10 +1225,16 @@ Route::middleware('auth:sanctum')->group(function () {
                 continue;
             }
             $identity = $booking->phone ?: ($booking->member_id ?: $booking->source_key);
-            $typeKey = $booking->booking_type === '私教' ? 'private' : 'group';
+            // 课型：course_type 2=私教，3=小班（精品课），1=团课（精品团课）
+            $courseType = (string) ($booking->raw['course_type'] ?? '');
+            $kindKey = match ($courseType) {
+                '2' => 'private',
+                '3' => 'small',
+                default => 'group',
+            };
             if (! in_array($booking->status, ['cancelled', 'no_show'], true)) {
                 $kyByDate[$date][$booking->venue]['booked'][$identity] = true;
-                $kyByDate[$date][$booking->venue]['booked_'.$typeKey][$identity] = true;
+                $kyByDate[$date][$booking->venue]['booked_'.$kindKey][$identity] = true;
             }
             if ($booking->status === 'signed') {
                 $session = implode('|', [
@@ -1219,10 +1242,10 @@ Route::middleware('auth:sanctum')->group(function () {
                     $booking->start_at?->format('Y-m-d H:i'),
                     $booking->course_name,
                     $booking->teacher_name,
-                    $booking->booking_type,
+                    $kindKey,
                 ]);
                 $kyByDate[$date][$booking->venue]['classes'][$session] = true;
-                $kyByDate[$date][$booking->venue]['classes_'.$typeKey][$session] = true;
+                $kyByDate[$date][$booking->venue]['classes_'.$kindKey][$session] = true;
                 if ($booking->is_trial) {
                     $kyByDate[$date][$booking->venue]['experienced'][$identity] = true;
                 }
@@ -1269,16 +1292,20 @@ Route::middleware('auth:sanctum')->group(function () {
         $totalAmount = $sumKey('amount');
         $totalRedeem = $sumKey('redeem');
 
-        // 预约/上课班次按私教 vs 团课/小班拆分
+        // 预约/上课班次按私教 / 小班 / 团课拆分
         $privateBooked = 0;
+        $smallBooked = 0;
         $groupBooked = 0;
         $privateClasses = 0;
+        $smallClasses = 0;
         $groupClasses = 0;
         foreach ($kyByDate as $venues) {
             foreach ($venues as $counts) {
                 $privateBooked += count($counts['booked_private'] ?? []);
+                $smallBooked += count($counts['booked_small'] ?? []);
                 $groupBooked += count($counts['booked_group'] ?? []);
                 $privateClasses += count($counts['classes_private'] ?? []);
+                $smallClasses += count($counts['classes_small'] ?? []);
                 $groupClasses += count($counts['classes_group'] ?? []);
             }
         }
@@ -1311,8 +1338,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 'cardSalesCount' => $totalCardSales,
                 'classCount' => $totalClasses,
                 'privateBookingCount' => $privateBooked,
+                'smallBookingCount' => $smallBooked,
                 'groupBookingCount' => $groupBooked,
                 'privateClassCount' => $privateClasses,
+                'smallClassCount' => $smallClasses,
                 'groupClassCount' => $groupClasses,
                 'dealAmount' => $totalAmount,
                 'redeemAmount' => $totalRedeem,
@@ -1470,6 +1499,10 @@ Route::middleware('auth:sanctum')->group(function () {
             'trialBookings' => [
                 '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['trialBookings']['绿地店'] ?? 0) : 0,
                 '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['trialBookings']['东部店'] ?? 0) : 0,
+            ],
+            'todayKinds' => [
+                '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['todayKinds']['绿地店'] ?? ['私教' => 0, '小班' => 0, '团课' => 0]) : ['私教' => 0, '小班' => 0, '团课' => 0],
+                '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['todayKinds']['东部店'] ?? ['私教' => 0, '小班' => 0, '团课' => 0]) : ['私教' => 0, '小班' => 0, '团课' => 0],
             ],
             'scopeLabel' => $u->venue ? "本店 · {$u->venue}" : '双店',
             'snapshotTime' => in_array($u->role, ['R_SUPER', 'R_MANAGER'], true) ? (string) ($snap['fetchedAt'] ?? '') : '',
