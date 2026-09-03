@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\KyBooking;
+use App\Models\KyCard;
 use App\Models\Lead;
 use App\Models\Task;
 use App\Models\User;
@@ -34,9 +35,27 @@ class AnalyticsTrendsTest extends TestCase
             'source' => '美团',
             'order_platform' => '美团',
             'status' => '已成交',
-            'deal_card' => '私教卡',
-            'deal_amount' => 3000,
             'deal_at' => '2026-08-29 12:00:00',
+        ]);
+        KyCard::create([
+            'source_key' => '1:green-card',
+            'venue' => '绿地店',
+            'external_id' => 'green-card',
+            'card_title' => '私教卡',
+            'deal_price' => 3000,
+            'is_taste' => false,
+            'status_format' => '正常',
+            'sold_at' => '2026-08-29',
+        ]);
+        KyCard::create([
+            'source_key' => '1:green-taste-card',
+            'venue' => '绿地店',
+            'external_id' => 'green-taste-card',
+            'card_title' => '体验卡',
+            'deal_price' => 9999,
+            'is_taste' => true,
+            'status_format' => '正常',
+            'sold_at' => '2026-08-29',
         ]);
         $this->booking('green-booked', '绿地店', '13800000001', 'booked');
         $this->booking('green-signed', '绿地店', '13800000002', 'signed');

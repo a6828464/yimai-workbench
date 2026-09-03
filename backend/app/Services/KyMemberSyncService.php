@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\AppSetting;
 use App\Models\Customer;
 use App\Models\KyBooking;
+use App\Models\KyCard;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -32,6 +33,8 @@ class KyMemberSyncService
         if ($cards === []) {
             throw new RuntimeException('未读取到会员卡表');
         }
+        // 售卡事实落库：经营看板的售卡张数/金额按售卡时间与实收金额统计。
+        self::upsertCardFacts(array_map(fn ($card) => self::cardFact($card, $venue, $venueId), $cards));
 
         $today = CarbonImmutable::today();
         $month3 = $today->startOfMonth()->subMonth();
@@ -422,6 +425,42 @@ class KyMemberSyncService
             KyBooking::upsert($chunk, ['source_key'], [
                 'member_id', 'member_name', 'phone', 'start_at', 'course_name', 'teacher_name',
                 'status_raw', 'status', 'is_trial', 'raw', 'updated_at',
+            ]);
+        }
+    }
+
+    private static function cardFact(array $card, string $venue, string $venueId): array
+    {
+        $cardId = self::pick($card, ['id', 'card_id', 'card_no']);
+        $now = now();
+
+        return [
+            'source_key' => "{$venueId}:{$cardId}",
+            'venue' => $venue,
+            'external_id' => $cardId,
+            'card_title' => self::pick($card, ['card_title', 'card_name']),
+            'member_id' => self::pick($card, ['member_id', 'm_id']),
+            'member_name' => self::pick($card, ['member_name', 'name']),
+            'phone' => substr((string) preg_replace('/\D+/', '', self::pick($card, ['phone', 'mobile'])), 0, 20),
+            'consultant_name' => self::pick($card, ['consultant_name', 'consultant']),
+            'deal_price' => self::toNum($card['deal_price'] ?? 0),
+            'price' => self::toNum($card['price'] ?? 0),
+            'status' => (string) ($card['status'] ?? ''),
+            'status_format' => self::pick($card, ['status_format', 'status_desc']),
+            'is_taste' => (string) ($card['is_taste'] ?? '0') === '1',
+            'sold_at' => self::date($card['create_time'] ?? null),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ];
+    }
+
+    private static function upsertCardFacts(array $facts): void
+    {
+        foreach (array_chunk($facts, 500) as $chunk) {
+            KyCard::upsert($chunk, ['source_key'], [
+                'venue', 'external_id', 'card_title', 'member_id', 'member_name', 'phone',
+                'consultant_name', 'deal_price', 'price', 'status', 'status_format',
+                'is_taste', 'sold_at', 'updated_at',
             ]);
         }
     }
