@@ -1122,8 +1122,10 @@ export interface DashboardSummary {
   classCount: number
   cardSalesCount: number
   privateBookingCount?: number
+  smallBookingCount?: number
   groupBookingCount?: number
   privateClassCount?: number
+  smallClassCount?: number
   groupClassCount?: number
   onlineLeadCount: number
   onlineDealCount: number
@@ -1258,8 +1260,10 @@ export async function getDashboardSeries(
       classCount: s.classCount ?? 0,
       cardSalesCount: s.cardSalesCount ?? 0,
       privateBookingCount: s.privateBookingCount ?? 0,
+      smallBookingCount: s.smallBookingCount ?? 0,
       groupBookingCount: s.groupBookingCount ?? 0,
       privateClassCount: s.privateClassCount ?? 0,
+      smallClassCount: s.smallClassCount ?? 0,
       groupClassCount: s.groupClassCount ?? 0,
       onlineLeadCount: s.onlineLeadCount ?? 0,
       onlineDealCount: s.onlineDealCount ?? 0,
@@ -1579,6 +1583,10 @@ export interface TodaySummary {
   pendingApprovals: number
   todayBookings: { 绿地店: number; 东部店: number }
   trialBookings: { 绿地店: number; 东部店: number }
+  todayKinds?: {
+    绿地店: { 私教: number; 小班: number; 团课: number }
+    东部店: { 私教: number; 小班: number; 团课: number }
+  }
   scopeLabel: string
   snapshotTime: string
 }

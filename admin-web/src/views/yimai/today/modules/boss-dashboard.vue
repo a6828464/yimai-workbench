@@ -22,7 +22,7 @@
       <YimaiKpiCard
         label="随心瑜今日预约"
         :value="todayBookingCount"
-        hint="团课 + 私教预约记录，来自最近成功快照"
+        :hint="todayKindHint"
         :icon="ticketIcon"
         accent="#409EFF"
       />
@@ -273,19 +273,35 @@
     if (venueScope.value === '双店') return Number(tb['绿地店'] ?? 0) + Number(tb['东部店'] ?? 0)
     return tb[venueScope.value] ?? '-'
   })
+  const todayKindHint = computed(() => {
+    const tk = todaySummary.value?.todayKinds
+    if (!tk) return '来自最近成功快照'
+    const venues =
+      venueScope.value === '双店' ? (['绿地店', '东部店'] as const) : ([venueScope.value] as const)
+    const sum = { 私教: 0, 小班: 0, 团课: 0 }
+    for (const v of venues) {
+      const k = tk[v]
+      if (k) {
+        sum.私教 += Number(k.私教 ?? 0)
+        sum.小班 += Number(k.小班 ?? 0)
+        sum.团课 += Number(k.团课 ?? 0)
+      }
+    }
+    return `私教 ${sum.私教} · 小班 ${sum.小班} · 团课 ${sum.团课}，来自最近成功快照`
+  })
 
   const storeKpis = computed(() => [
     {
       label: '约课人数',
       value: summary.value?.bookingCount ?? '-',
-      hint: `私教 ${summary.value?.privateBookingCount ?? 0} · 团课/小班 ${summary.value?.groupBookingCount ?? 0}`,
+      hint: `私教 ${summary.value?.privateBookingCount ?? 0} · 小班 ${summary.value?.smallBookingCount ?? 0} · 团课 ${summary.value?.groupBookingCount ?? 0}`,
       icon: markRaw(Ticket),
       accent: '#409EFF'
     },
     {
       label: '上课班次',
       value: summary.value?.classCount ?? '-',
-      hint: `私教 ${summary.value?.privateClassCount ?? 0} · 团课/小班 ${summary.value?.groupClassCount ?? 0}`,
+      hint: `私教 ${summary.value?.privateClassCount ?? 0} · 小班 ${summary.value?.smallClassCount ?? 0} · 团课 ${summary.value?.groupClassCount ?? 0}`,
       icon: markRaw(User),
       accent: '#E6A23C'
     },

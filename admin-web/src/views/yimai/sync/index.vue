@@ -380,9 +380,9 @@
 
   // ---------- 今日 ----------
   const todayLoading = ref(false)
-  const today = ref<Record<string, { total: number; trialHits: number }>>({
-    绿地店: { total: 0, trialHits: 0 },
-    东部店: { total: 0, trialHits: 0 }
+  const today = ref<Record<string, { total: number; trialHits: number; kinds: { 私教: number; 小班: number; 团课: number } }>>({
+    绿地店: { total: 0, trialHits: 0, kinds: { 私教: 0, 小班: 0, 团课: 0 } },
+    东部店: { total: 0, trialHits: 0, kinds: { 私教: 0, 小班: 0, 团课: 0 } }
   })
   const todayErrors = ref<Record<string, string>>({})
 
@@ -414,13 +414,18 @@
           trialBookings: {
             绿地店: today.value['绿地店'].trialHits,
             东部店: today.value['东部店'].trialHits
+          },
+          todayKinds: {
+            绿地店: today.value['绿地店'].kinds ?? { 私教: 0, 小班: 0, 团课: 0 },
+            东部店: today.value['东部店'].kinds ?? { 私教: 0, 小班: 0, 团课: 0 }
           }
         }
         if (USE_BACKEND) {
           // 后端模式：快照落库，工作台/经营看板读取同一份
           await apiPut('/today/snapshot', {
             todayBookings: snap.todayBookings,
-            trialBookings: snap.trialBookings
+            trialBookings: snap.trialBookings,
+            todayKinds: snap.todayKinds
           })
         } else {
           yimaiStore.saveSnapshot(snap)
