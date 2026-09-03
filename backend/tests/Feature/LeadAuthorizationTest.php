@@ -139,6 +139,27 @@ class LeadAuthorizationTest extends TestCase
         $this->assertDatabaseCount('personal_access_tokens', 0);
     }
 
+    public function test_create_account_with_name_and_delete_it(): void
+    {
+        Sanctum::actingAs($this->user('account-admin', '账号管理员', 'R_SUPER', null));
+
+        $this->postJson('/api/accounts', [
+            'userName' => 'teacher-new',
+            'name' => '新老师',
+            'roleCode' => 'R_TEACHER',
+            'venues' => ['绿地店'],
+            'password' => 'password123',
+        ])->assertOk()->assertJsonPath('data.key', 'teacher-new');
+
+        $this->assertDatabaseHas('users', [
+            'username' => 'teacher-new',
+            'name' => '新老师',
+        ]);
+
+        $this->patchJson('/api/accounts/teacher-new', ['action' => 'delete'])->assertOk();
+        $this->assertDatabaseMissing('users', ['username' => 'teacher-new']);
+    }
+
     public function test_today_followups_and_alerts_follow_role_scopes(): void
     {
         $this->customer('老师会员', '绿地店', '绿地老师', 'P1');

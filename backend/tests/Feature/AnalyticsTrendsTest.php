@@ -60,13 +60,18 @@ class AnalyticsTrendsTest extends TestCase
         $this->booking('green-booked', '绿地店', '13800000001', 'booked');
         $this->booking('green-signed', '绿地店', '13800000002', 'signed');
         $this->booking('east-cancelled', '东部店', '13800000003', 'cancelled');
+        $this->booking('green-private-signed', '绿地店', '13800000004', 'signed', '私教', false);
 
         $this->getJson('/api/analytics/trends?start=2026-08-29&end=2026-08-29&venue='.urlencode('绿地店'))
             ->assertOk()
-            ->assertJsonPath('data.summary.bookingCount', 2)
+            ->assertJsonPath('data.summary.bookingCount', 3)
             ->assertJsonPath('data.summary.trialCount', 2)
             ->assertJsonPath('data.summary.visitCount', 2)
-            ->assertJsonPath('data.summary.classCount', 1)
+            ->assertJsonPath('data.summary.classCount', 2)
+            ->assertJsonPath('data.summary.privateBookingCount', 1)
+            ->assertJsonPath('data.summary.groupBookingCount', 2)
+            ->assertJsonPath('data.summary.privateClassCount', 1)
+            ->assertJsonPath('data.summary.groupClassCount', 1)
             ->assertJsonPath('data.summary.cardSalesCount', 1)
             ->assertJsonPath('data.summary.dealAmount', 3000)
             ->assertJsonPath('data.summary.onlineLeadCount', 1)
@@ -110,19 +115,25 @@ class AnalyticsTrendsTest extends TestCase
         $this->assertSame('unknown', contractPartyState([], 'customer'));
     }
 
-    private function booking(string $key, string $venue, string $phone, string $status): void
-    {
+    private function booking(
+        string $key,
+        string $venue,
+        string $phone,
+        string $status,
+        string $type = '团课',
+        bool $isTrial = true
+    ): void {
         KyBooking::create([
             'source_key' => $key,
             'venue' => $venue,
-            'booking_type' => '团课',
+            'booking_type' => $type,
             'member_name' => '新客体验',
             'phone' => $phone,
             'start_at' => '2026-08-29 10:00:00',
             'course_name' => '体验课',
             'status_raw' => $status,
             'status' => $status,
-            'is_trial' => true,
+            'is_trial' => $isTrial,
         ]);
     }
 }

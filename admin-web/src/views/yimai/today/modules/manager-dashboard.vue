@@ -251,20 +251,21 @@
     {
       label: '约课人数',
       value: summary.value?.bookingCount ?? '-',
+      hint: `私教 ${summary.value?.privateBookingCount ?? 0} · 团课/小班 ${summary.value?.groupBookingCount ?? 0}`,
       icon: markRaw(Ticket),
       accent: '#409EFF'
     },
     {
       label: '上课班次',
       value: summary.value?.classCount ?? '-',
-      hint: '随心瑜已签到，按课程/老师/时间去重',
+      hint: `私教 ${summary.value?.privateClassCount ?? 0} · 团课/小班 ${summary.value?.groupClassCount ?? 0}`,
       icon: markRaw(User),
       accent: '#E6A23C'
     },
     {
       label: '售卡张数',
       value: summary.value?.cardSalesCount ?? '-',
-      hint: '工作台已成交且登记卡项',
+      hint: '随心瑜会员卡实收口径（非财务流水）',
       icon: markRaw(ShoppingBag),
       accent: '#67C23A'
     },
@@ -272,7 +273,7 @@
       label: '售卡金额',
       value: summary.value?.dealAmount ?? '-',
       prefix: '¥',
-          hint: '随心瑜会员卡实收口径（非财务流水）',
+      hint: '随心瑜会员卡实收口径（非财务流水）',
       icon: markRaw(Wallet),
       accent: '#9C27B0'
     }

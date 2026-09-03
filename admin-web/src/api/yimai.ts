@@ -1121,6 +1121,10 @@ export interface DashboardSummary {
   memberTotal?: number
   classCount: number
   cardSalesCount: number
+  privateBookingCount?: number
+  groupBookingCount?: number
+  privateClassCount?: number
+  groupClassCount?: number
   onlineLeadCount: number
   onlineDealCount: number
   onlineDealRate: number
@@ -1253,6 +1257,10 @@ export async function getDashboardSeries(
       memberTotal: s.memberTotal ?? 0,
       classCount: s.classCount ?? 0,
       cardSalesCount: s.cardSalesCount ?? 0,
+      privateBookingCount: s.privateBookingCount ?? 0,
+      groupBookingCount: s.groupBookingCount ?? 0,
+      privateClassCount: s.privateClassCount ?? 0,
+      groupClassCount: s.groupClassCount ?? 0,
       onlineLeadCount: s.onlineLeadCount ?? 0,
       onlineDealCount: s.onlineDealCount ?? 0,
       onlineDealRate: s.onlineDealRate ?? 0

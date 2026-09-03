@@ -99,6 +99,7 @@ export async function listAccounts(): Promise<AccountRow[]> {
 /** 新增账号（仅超管，凭据由服务端保管） */
 export async function createAccount(data: {
   userName: string
+  name?: string
   roleCode: string
   venues: string[]
   email?: string
@@ -108,10 +109,10 @@ export async function createAccount(data: {
   return apiPost<{ key: string }>('/accounts', { ...data } as Record<string, unknown>)
 }
 
-/** 停用/启用/改角色/重置密码（仅超管） */
+/** 停用/启用/改角色/重置密码/删除（仅超管） */
 export async function updateAccount(
   key: string,
-  action: 'update' | 'disable' | 'enable' | 'resetPassword',
+  action: 'update' | 'disable' | 'enable' | 'resetPassword' | 'delete',
   data?: { roleCode?: string; venues?: string[]; password?: string }
 ): Promise<{ ok: boolean }> {
   if (!USE_BACKEND) throw new Error('演示模式不支持账号变更')
