@@ -103,6 +103,8 @@ jobs:
             --notes "$(printf '%s' "$NOTES")"
 
       - name: Publish Gitee release
+        # Gitee 国际线路附件上传偶发慢/断，失败不阻断发布（服务器 update.sh 会回退 GitHub auto-latest）
+        continue-on-error: true
         # GitHub Actions 不允许在 if 条件里读 secrets/env，因此改为脚本内判断：未配置 Token 时直接跳过
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
@@ -134,23 +136,38 @@ jobs:
             --data-urlencode "target_commitish=main")"
           # Gitee 创建 release 的响应不含 upload_url，需用返回的 id 拼附件上传地址
           rid="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-          # Gitee 附件上传偶发网络失败，做 3 次重试（间隔 5s）
+          # Gitee 附件上传偶发网络失败：5 次重试 + 递增间隔 + 失败后核对附件（防止"实际已传上"的假失败与重复附件）
+          gitee_assets() {
+            curl -sS -G "$GITEE_API/repos/$GITEE_REPO/releases/$rid" \
+              --data-urlencode "access_token=$GITEE_TOKEN" 2>/dev/null \
+              | python3 -c 'import json,sys; print("\n".join(a.get("name","") for a in (json.load(sys.stdin).get("assets") or [])))' 2>/dev/null
+          }
           upload_file() {
-            local file="$1" attempt=1
-            while [ "$attempt" -le 3 ]; do
-              echo "  上传 $file（第 $attempt/3 次）"
-              if curl --http1.1 --fail-with-body -sS --connect-timeout 20 --max-time 300 \
+            local file="$1" attempt=1 max=5
+            local delays=(5 15 30 60 60)
+            while [ "$attempt" -le "$max" ]; do
+              echo "  上传 $file（第 $attempt/$max 次）"
+              err="$(curl --http1.1 --fail-with-body -sS --connect-timeout 20 --max-time 600 \
                 -X POST "$GITEE_API/repos/$GITEE_REPO/releases/$rid/attach_files" \
-                -F "access_token=$GITEE_TOKEN" -F "file=@$file" >/dev/null 2>&1; then
+                -F "access_token=$GITEE_TOKEN" -F "file=@$file" 2>&1)" && {
+                echo "  $file 上传成功"
+                return 0
+              }
+              echo "  上传报错: $err" >&2
+              if gitee_assets | grep -qx -- "$file"; then
+                echo "  复核确认 $file 已存在于附件中，视为成功"
                 return 0
               fi
+              if [ "$attempt" -lt "$max" ]; then
+                sleep "${delays[$((attempt-1))]}"
+              fi
               attempt=$((attempt + 1))
-              [ "$attempt" -le 3 ] && sleep 5
             done
-            echo "上传 $file 连续 3 次失败" >&2
+            echo "⚠ 上传 $file 连续 $max 次失败，跳过（不阻断发布）" >&2
             return 1
           }
-          upload_file "yimai-workbench-v${VERSION}.zip"
-          upload_file "yimai-workbench-latest.zip"
-          upload_file "yimai-workbench-installer-v${VERSION}.zip"
-          upload_file "yimai-workbench-installer-latest.zip"
+          upload_file "yimai-workbench-v${VERSION}.zip" || true
+          upload_file "yimai-workbench-latest.zip" || true
+          upload_file "yimai-workbench-installer-v${VERSION}.zip" || true
+          upload_file "yimai-workbench-installer-latest.zip" || true
+          echo "Gitee 发布流程结束（个别附件失败见上方 ⚠ 警告，不影响 GitHub 发行）"
