@@ -249,22 +249,27 @@
   const todayKindHint = computed(() => {
     const venue = userStore.getUserInfo.venue as '绿地店' | '东部店'
     const kinds = todaySummary.value?.todayKinds?.[venue]
-    if (!kinds) return '来自最近成功快照'
-    return `私教 ${kinds.私教 ?? 0} · 小班 ${kinds.小班 ?? 0} · 团课 ${kinds.团课 ?? 0}，来自最近成功快照`
+    const total = (kinds?.私教 ?? 0) + (kinds?.小班 ?? 0) + (kinds?.团课 ?? 0)
+    if (!kinds || total === 0) return '团课 + 私教预约记录（在 KeepYoga 同步页点「更新快照」可显示细分）'
+    return `私教 ${kinds.私教} · 小班 ${kinds.小班} · 团课 ${kinds.团课}，来自最近成功快照`
   })
 
   const kpis = computed(() => [
     {
       label: '约课人数',
       value: summary.value?.bookingCount ?? '-',
-      hint: `私教 ${summary.value?.privateBookingCount ?? 0} · 小班 ${summary.value?.smallBookingCount ?? 0} · 团课 ${summary.value?.groupBookingCount ?? 0}`,
+      hint: summary.value?.bookingCount
+        ? `私教 ${summary.value?.privateBookingCount ?? 0} · 小班 ${summary.value?.smallBookingCount ?? 0} · 团课 ${summary.value?.groupBookingCount ?? 0}`
+        : '本时段暂无预约数据，可在 KeepYoga 同步后查看',
       icon: markRaw(Ticket),
       accent: '#409EFF'
     },
     {
       label: '上课班次',
       value: summary.value?.classCount ?? '-',
-      hint: `私教 ${summary.value?.privateClassCount ?? 0} · 小班 ${summary.value?.smallClassCount ?? 0} · 团课 ${summary.value?.groupClassCount ?? 0}`,
+      hint: summary.value?.classCount
+        ? `私教 ${summary.value?.privateClassCount ?? 0} · 小班 ${summary.value?.smallClassCount ?? 0} · 团课 ${summary.value?.groupClassCount ?? 0}`
+        : '本时段暂无签到班次数据',
       icon: markRaw(User),
       accent: '#E6A23C'
     },
