@@ -242,15 +242,19 @@ Route::middleware('auth:sanctum')->group(function () {
         }
         $r->validate([
             'lastTouch' => 'nullable|date',
+            'birthday' => 'nullable|date_format:Y-m-d',
             'needsHelp' => 'nullable|boolean',
             'inRevive' => 'nullable|boolean',
         ]);
         $patch = collect(camelToSnake($r->all()))->only([
             'renewal_plan', 'decline', 'stop_reason', 'expected_return',
-            'last_touch', 'needs_help', 'in_revive',
+            'last_touch', 'needs_help', 'in_revive', 'birthday',
         ])->all();
         if (($patch['last_touch'] ?? '') === '') {
             $patch['last_touch'] = null;
+        }
+        if (($patch['birthday'] ?? '') === '') {
+            $patch['birthday'] = null;
         }
         foreach (['needs_help', 'in_revive'] as $f) {
             if (array_key_exists($f, $patch) && ! is_bool($patch[$f])) {
@@ -1588,6 +1592,296 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok($alerts);
     });
 
+    // ---------- 今日待办：今日预约会员 + 需要服务的客户汇总 ----------
+    Route::get('/today/todo', function (Request $r) {
+        $u = $r->user();
+        $today = now()->startOfDay();
+        $isMedia = $u->role === 'R_MEDIA';
+        $isSuper = $u->role === 'R_SUPER';
+
+        // 五清单口径复用会员管理引擎，一次算好 id => 清单集合 映射
+        $listKeys = ['待续课', '预流失', '待复活', '出勤降低', 'VIP'];
+        $listMap = [];
+        foreach ($listKeys as $key) {
+            foreach (filteredIds($key) as $id) {
+                $listMap[$id][] = $key;
+            }
+        }
+
+        $scopedCustomers = scopeCustomersForUser(Customer::query(), $u)->get()->map(fn ($c) => camel($c));
+        $customerByPhone = $scopedCustomers->filter(fn ($c) => (string) $c['phone'] !== '')->keyBy('phone');
+        $customerByExternal = $scopedCustomers->filter(fn ($c) => (string) ($c['externalId'] ?? '') !== '')
+            ->keyBy(fn ($c) => preg_replace('/^ky:\d+:/', '', (string) $c['externalId']));
+        $customerByName = $scopedCustomers->keyBy(fn ($c) => $c['venue'].'|'.$c['name']);
+        $matchCustomer = function (string $phone, string $memberId, string $name, string $venue) use ($customerByPhone, $customerByExternal, $customerByName) {
+            if ($phone !== '' && isset($customerByPhone[$phone])) {
+                return $customerByPhone[$phone];
+            }
+            if ($memberId !== '' && isset($customerByExternal[$memberId])) {
+                return $customerByExternal[$memberId];
+            }
+            if ($name !== '' && isset($customerByName[$venue.'|'.$name])) {
+                return $customerByName[$venue.'|'.$name];
+            }
+
+            return null;
+        };
+        $daysBetween = fn ($date) => $date ? (int) now()->startOfDay()->diffInDays($date, false) : null;
+        $serviceFlags = function (array $c) use ($listMap, $daysBetween): array {
+            $flags = $listMap[$c['id']] ?? [];
+            if (($c['evalLevel'] ?? null) === 'low') {
+                $flags[] = '评估低分';
+            }
+            if (! empty($c['needsHelp'])) {
+                $flags[] = '需协助';
+            }
+            if (($daysBetween($c['expireDate']) ?? 99) >= 0 && ($daysBetween($c['expireDate']) ?? 99) <= 7) {
+                $flags[] = '7天内到期';
+            }
+
+            return array_values(array_unique($flags));
+        };
+
+        // ---- 今日预约（随心瑜预约事实，排除已取消/爽约） ----
+        $bookings = [];
+        $bookingTrialCount = 0;
+        if (! $isMedia) {
+            $bookingQ = KyBooking::query()
+                ->whereBetween('start_at', [$today->copy(), $today->copy()->endOfDay()])
+                ->whereNotIn('status', ['cancelled', 'no_show']);
+            if (! $isSuper) {
+                $bookingQ->where('venue', $u->venue);
+            }
+            foreach ($bookingQ->orderBy('start_at')->get() as $b) {
+                $phone = preg_replace('/\D+/', '', (string) $b->phone) ?? '';
+                $customer = $matchCustomer($phone, (string) $b->member_id, (string) $b->member_name, (string) $b->venue);
+                $rawData = is_array($b->raw) ? $b->raw : ((array) json_decode((string) $b->raw, true));
+                $kind = match ((string) ($rawData['course_type'] ?? '')) {
+                    '2' => '私教',
+                    '3' => '小班',
+                    default => '团课',
+                };
+                $bookings[] = [
+                    'id' => $b->id,
+                    'time' => $b->start_at?->format('H:i'),
+                    'memberName' => (string) $b->member_name,
+                    'phoneTail' => $phone !== '' ? substr($phone, -4) : '',
+                    'venue' => (string) $b->venue,
+                    'course' => (string) $b->course_name,
+                    'kind' => $kind,
+                    'teacher' => (string) $b->teacher_name,
+                    'status' => (string) $b->status,
+                    'isTrial' => (bool) $b->is_trial,
+                    'customerId' => $customer['id'] ?? null,
+                    'lists' => $customer ? $serviceFlags($customer) : [],
+                    'birthdayToday' => $customer ? isBirthdayToday($customer['birthday'] ?? null) : false,
+                ];
+                if ($b->is_trial) {
+                    $bookingTrialCount++;
+                }
+            }
+        }
+
+        // ---- 待续费：待续课清单（临近到期优先） ----
+        $renewals = [];
+        if (! $isMedia) {
+            $renewals = $scopedCustomers
+                ->filter(fn ($c) => in_array('待续课', $listMap[$c['id']] ?? [], true))
+                ->map(function ($c) use ($daysBetween, $listMap) {
+                    $expireDays = $daysBetween($c['expireDate']);
+
+                    return [
+                        'id' => $c['id'],
+                        'name' => $c['name'],
+                        'phoneTail' => $c['phoneTail'],
+                        'venue' => $c['venue'],
+                        'mainCard' => $c['mainCard'],
+                        'remainTimes' => $c['remainTimes'],
+                        'expireDate' => $c['expireDate'],
+                        'expireDays' => $expireDays,
+                        'urgent' => $expireDays !== null && $expireDays <= 7,
+                        'owner' => $c['owner'],
+                        'consultant' => $c['consultant'] ?? '',
+                        'evalLevel' => $c['evalLevel'] ?? null,
+                        'hasRenewalPlan' => ! empty($c['renewalPlan']),
+                        'lists' => $listMap[$c['id']] ?? [],
+                    ];
+                })
+                ->sortBy(fn ($c) => [$c['expireDays'] === null ? 9999 : $c['expireDays'], $c['remainTimes'] ?? 999])
+                ->values()->all();
+        }
+
+        // ---- 可能流失：预流失 + 待复活 + 出勤降低 ----
+        $churnRisks = [];
+        if (! $isMedia) {
+            $riskSets = ['预流失', '待复活', '出勤降低'];
+            $churnRisks = $scopedCustomers
+                ->filter(fn ($c) => collect($riskSets)->contains(fn ($k) => in_array($k, $listMap[$c['id']] ?? [], true)))
+                ->map(function ($c) use ($listMap, $daysBetween) {
+                    $lists = array_values(array_intersect($listMap[$c['id']] ?? [], ['预流失', '待复活', '出勤降低']));
+                    $lastVisitDays = $c['lastVisit'] ? abs((int) ((time() - strtotime((string) $c['lastVisit'])) / 86400)) : null;
+
+                    return [
+                        'id' => $c['id'],
+                        'name' => $c['name'],
+                        'phoneTail' => $c['phoneTail'],
+                        'venue' => $c['venue'],
+                        'lists' => $lists,
+                        'lastVisit' => $c['lastVisit'],
+                        'lastVisitDays' => $lastVisitDays,
+                        'stopReason' => $c['stopReason'],
+                        'expectedReturn' => $c['expectedReturn'],
+                        'needsHelp' => (bool) $c['needsHelp'],
+                        'evalLevel' => $c['evalLevel'] ?? null,
+                        'owner' => $c['owner'],
+                        'consultant' => $c['consultant'] ?? '',
+                    ];
+                })
+                ->sortByDesc(fn ($c) => $c['lastVisitDays'] ?? 999)
+                ->values()->all();
+        }
+
+        // ---- 生日关怀：今日 + 未来7天 ----
+        $birthdays = [];
+        if (! $isMedia) {
+            $start = $today->copy();
+            $window = [];
+            for ($i = 0; $i <= 7; $i++) {
+                $window[] = $start->copy()->addDays($i)->format('m-d');
+            }
+            $birthdays = $scopedCustomers
+                ->filter(fn ($c) => ! empty($c['birthday']) && in_array(substr((string) $c['birthday'], 5, 5), $window, true))
+                ->map(function ($c) use ($today, $listMap) {
+                    $md = substr((string) $c['birthday'], 5, 5);
+                    $offset = (int) ((strtotime(date('Y').'-'.$md) - strtotime($today->format('Y-m-d'))) / 86400);
+                    $offset = $offset < 0 ? $offset + 366 : $offset; // 跨年兜底（2/29）
+
+                    return [
+                        'id' => $c['id'],
+                        'name' => $c['name'],
+                        'phoneTail' => $c['phoneTail'],
+                        'venue' => $c['venue'],
+                        'birthday' => $c['birthday'],
+                        'isToday' => $offset === 0,
+                        'daysLater' => $offset,
+                        'age' => (int) date('Y') - (int) substr((string) $c['birthday'], 0, 4),
+                        'owner' => $c['owner'],
+                        'consultant' => $c['consultant'] ?? '',
+                        'lists' => $listMap[$c['id']] ?? [],
+                    ];
+                })
+                ->sortBy(fn ($c) => [$c['isToday'] ? 0 : 1, $c['daysLater']])
+                ->values()->all();
+        }
+
+        // ---- 今日体验课：随心瑜体验预约事实 + 留资体验课卡片 ----
+        $trials = [];
+        if (! $isMedia) {
+            $trialQ = KyBooking::query()
+                ->whereBetween('start_at', [$today->copy(), $today->copy()->endOfDay()])
+                ->where('is_trial', true)
+                ->whereNotIn('status', ['cancelled', 'no_show']);
+            if (! $isSuper) {
+                $trialQ->where('venue', $u->venue);
+            }
+            foreach ($trialQ->orderBy('start_at')->get() as $b) {
+                $digits = preg_replace('/\D+/', '', (string) $b->phone) ?? '';
+                $trials[] = [
+                    'key' => 'ky-'.$b->id,
+                    'time' => $b->start_at?->format('H:i'),
+                    'name' => (string) $b->member_name,
+                    'phoneTail' => $digits !== '' ? substr($digits, -4) : '',
+                    'venue' => (string) $b->venue,
+                    'topic' => (string) $b->course_name,
+                    'teacher' => (string) $b->teacher_name,
+                    'source' => 'ky',
+                    'status' => (string) $b->status,
+                ];
+            }
+        }
+        $leadQ = scopeLeadsForUser(Lead::query(), $u);
+        $newLeads = [];
+        foreach ($leadQ->get() as $l) {
+            $arr = camel($l);
+            // 留资体验课卡片中的今日体验
+            foreach ((array) ($l->trial_cards ?? []) as $card) {
+                $cardDate = substr((string) ($card['time'] ?? ''), 0, 10);
+                if ($cardDate === $today->format('Y-m-d')) {
+                    $trials[] = [
+                        'key' => 'lead-'.$l->id.'-'.($card['session'] ?? ''),
+                        'time' => mb_substr((string) ($card['time'] ?? ''), 11, 5) ?: (string) ($card['time'] ?? ''),
+                        'name' => (string) $l->name,
+                        'phoneTail' => substr((string) $l->phone, -4),
+                        'venue' => (string) $l->venue,
+                        'topic' => (string) ($card['topic'] ?? ''),
+                        'teacher' => (string) ($card['teacher'] ?? ''),
+                        'source' => 'lead',
+                        'status' => (string) $l->status,
+                    ];
+                }
+            }
+            if ($arr['status'] === '新留资') {
+                $newLeads[] = [
+                    'id' => $l->id,
+                    'name' => (string) $l->name,
+                    'phoneTail' => substr((string) $l->phone, -4),
+                    'venue' => (string) $l->venue,
+                    'source' => (string) $l->source,
+                    'demand' => (string) $l->demand,
+                    'grade' => (string) $l->grade,
+                    'serviceTeacher' => (string) $l->service_teacher,
+                    'leadDate' => (string) $l->lead_date,
+                    'stale' => $l->created_at && $l->created_at->diffInHours(now()) >= 24,
+                    'remark' => (string) $l->remark,
+                ];
+            }
+        }
+        $newLeads = collect($newLeads)
+            ->sortByDesc(fn ($l) => [$l['stale'] ? 1 : 0, $l['id']])
+            ->values()->all();
+        usort($trials, fn ($a, $b) => strcmp((string) $a['time'], (string) $b['time']));
+
+        // ---- 今日任务：今天到期或逾期 ----
+        $taskQ = Task::query()
+            ->whereNotIn('status', ['已完成'])
+            ->where('deadline', '!=', '')
+            ->where('deadline', '<=', $today->format('Y-m-d 23:59'));
+        if ($isMedia) {
+            $taskQ->where('owner', $u->name);
+        } else {
+            if (! $isSuper) {
+                $taskQ->where('venue', $u->venue);
+            }
+            if ($u->role === 'R_TEACHER') {
+                $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+            }
+        }
+        $tasks = collect($taskQ->orderBy('deadline')->get())->map(fn ($t) => camel($t))
+            ->map(fn ($t) => $t + ['overdue' => (string) $t['deadline'] < $today->format('Y-m-d 00:00') || $t['status'] === '已逾期'])
+            ->all();
+
+        return ok([
+            'date' => $today->format('Y-m-d'),
+            'bookings' => ['items' => $bookings, 'trialCount' => $bookingTrialCount],
+            'renewals' => $renewals,
+            'churnRisks' => $churnRisks,
+            'birthdays' => $birthdays,
+            'trials' => $trials,
+            'newLeads' => $newLeads,
+            'tasks' => $tasks,
+            'counts' => [
+                'bookings' => count($bookings),
+                'renewals' => count($renewals),
+                'churnRisks' => count($churnRisks),
+                'birthdays' => count($birthdays),
+                'trials' => count($trials),
+                'newLeads' => count($newLeads),
+                'tasks' => count($tasks),
+            ],
+            'generatedAt' => now()->format('Y-m-d H:i:s'),
+        ]);
+    });
+
     // ---------- 对外发布（H5 分享快照） ----------
     Route::post('/shares/publish', function (Request $r) {
         $d = $r->validate([
@@ -2044,6 +2338,21 @@ if (! function_exists('ok')) {
                     default => false,
                 };
             })->pluck('id')->all();
+    }
+
+    /** 生日是否为今天（忽略年份，2/29 生日在平年按 3/1 庆祝） */
+    function isBirthdayToday(?string $birthday): bool
+    {
+        if (! $birthday || strlen($birthday) < 10) {
+            return false;
+        }
+        $md = substr($birthday, 5, 5);
+        $todayMd = now()->format('m-d');
+        if ($md === '02-29' && $todayMd === '03-01' && ! now()->isLeapYear()) {
+            return true;
+        }
+
+        return $md === $todayMd;
     }
 
     // ---------- 版本更新 helpers ----------

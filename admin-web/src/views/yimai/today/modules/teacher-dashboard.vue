@@ -4,7 +4,12 @@
     <div class="mb-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-500">我的工作台</span>
       <ElTag size="small" effect="plain">{{ scopeLabel }}</ElTag>
-      <DateRangeControl :start="range[0]" :end="range[1]" :shortcuts="shortcuts" @change="onRangeChange" />
+      <DateRangeControl
+        :start="range[0]"
+        :end="range[1]"
+        :shortcuts="shortcuts"
+        @change="onRangeChange"
+      />
       <div class="flex-1" />
       <ElButton v-if="isDualStore" plain size="small" @click="$router.push('/yimai/store-select')">
         切换门店
@@ -47,6 +52,9 @@
       </ElCol>
     </ElRow>
 
+    <!-- 今日待办 -->
+    <YimaiTodayTodo class="mb-4" />
+
     <!-- 我的客资池 -->
     <ElRow :gutter="16">
       <ElCol :span="24">
@@ -54,7 +62,9 @@
           <template #header>
             <div class="flex items-center justify-between">
               <span class="font-500">待我跟进的客资</span>
-              <ElButton link type="primary" @click="$router.push('/yimai/leads')">进入留资管理</ElButton>
+              <ElButton link type="primary" @click="$router.push('/yimai/leads')"
+                >进入留资管理</ElButton
+              >
             </div>
           </template>
           <ElTable :data="myLeads" size="default" v-loading="loading">
@@ -64,14 +74,27 @@
             <ElTableColumn prop="source" label="来源" width="110" />
             <ElTableColumn prop="status" label="状态" width="95">
               <template #default="{ row }">
-                <ElTag size="small" :type="row.status === '已成交' ? 'success' : row.status === '新留资' ? 'danger' : 'primary'">
+                <ElTag
+                  size="small"
+                  :type="
+                    row.status === '已成交'
+                      ? 'success'
+                      : row.status === '新留资'
+                        ? 'danger'
+                        : 'primary'
+                  "
+                >
                   {{ row.status }}
                 </ElTag>
               </template>
             </ElTableColumn>
             <ElTableColumn prop="remark" label="备注" min-width="160" show-overflow-tooltip />
           </ElTable>
-          <ElEmpty v-if="!loading && !myLeads.length" description="暂无待跟进客资" :image-size="70" />
+          <ElEmpty
+            v-if="!loading && !myLeads.length"
+            description="暂无待跟进客资"
+            :image-size="70"
+          />
         </ElCard>
       </ElCol>
     </ElRow>
@@ -80,11 +103,8 @@
 
 <script setup lang="ts">
   import YimaiKpiCard from './kpi-card.vue'
-  import {
-    getDashboardSeries,
-    getTeacherOverview,
-    queryLeads
-  } from '@/api/yimai'
+  import YimaiTodayTodo from './today-todo.vue'
+  import { getDashboardSeries, getTeacherOverview, queryLeads } from '@/api/yimai'
   import type { YimaiLead, DashboardDayPoint, DashboardSummary, TeacherOverview } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { User, Calendar, Medal, Aim, Place, Odometer, Wallet } from '@element-plus/icons-vue'
@@ -117,15 +137,38 @@
   }
 
   const shortcuts = [
-    { text: '本月', value: () => [new Date(new Date().getFullYear(), new Date().getMonth(), 1), new Date()] },
-    { text: '上周', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 7); return [s, e] } },
-    { text: '近30天', value: () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 30); return [s, e] } }
+    {
+      text: '本月',
+      value: () => [new Date(new Date().getFullYear(), new Date().getMonth(), 1), new Date()]
+    },
+    {
+      text: '上周',
+      value: () => {
+        const e = new Date()
+        const s = new Date()
+        s.setDate(s.getDate() - 7)
+        return [s, e]
+      }
+    },
+    {
+      text: '近30天',
+      value: () => {
+        const e = new Date()
+        const s = new Date()
+        s.setDate(s.getDate() - 30)
+        return [s, e]
+      }
+    }
   ]
 
   const labels = computed(() => daily.value.map((p) => p.label))
   const classSeries = computed<LineDataItem[]>(() => [
     { name: '上课节数', data: daily.value.map((p) => Math.round(p.bookings * 0.6)) },
-    { name: '服务人次', data: daily.value.map((p) => p.trials + Math.round(p.bookings * 0.35)), color: '#67C23A' }
+    {
+      name: '服务人次',
+      data: daily.value.map((p) => p.trials + Math.round(p.bookings * 0.35)),
+      color: '#67C23A'
+    }
   ])
   const leadFunnelLabels = computed(() =>
     ['新留资', '已联系', '已约体验', '已体验', '已成交'].map(
@@ -133,19 +176,57 @@
     )
   )
   const leadFunnelSeries = computed(() =>
-    ['新留资', '已联系', '已约体验', '已体验', '已成交'].map((s) =>
-      myLeads.value.filter((l) => l.status === s).length
+    ['新留资', '已联系', '已约体验', '已体验', '已成交'].map(
+      (s) => myLeads.value.filter((l) => l.status === s).length
     )
   )
 
   const kpis = computed(() => [
-    { label: '所属会员人数', value: overview.value?.memberCount ?? '-', icon: markRaw(User), accent: '#409EFF' },
-    { label: '服务会员人次', value: overview.value?.servedCount ?? '-', icon: markRaw(Medal), accent: '#9C27B0' },
-    { label: '上课节数', value: overview.value?.classCount ?? '-', icon: markRaw(Calendar), accent: '#67C23A' },
-    { label: '资源数', value: overview.value?.resourceCount ?? '-', hint: overview.value ? `其中待分配 ${overview.value.newResourceCount}` : '', icon: markRaw(Aim), accent: '#E6A23C' },
-    { label: '到店数', value: summary.value?.visitCount ?? '-', icon: markRaw(Place), accent: '#00BCD4' },
-    { label: '成交率', value: summary.value ? `${summary.value.dealRate}` : '-', suffix: '%', icon: markRaw(Odometer), accent: '#F56C6C' },
-    { label: '成交金额', value: summary.value?.dealAmount ?? '-', prefix: '¥', icon: markRaw(Wallet), accent: '#FF9800' }
+    {
+      label: '所属会员人数',
+      value: overview.value?.memberCount ?? '-',
+      icon: markRaw(User),
+      accent: '#409EFF'
+    },
+    {
+      label: '服务会员人次',
+      value: overview.value?.servedCount ?? '-',
+      icon: markRaw(Medal),
+      accent: '#9C27B0'
+    },
+    {
+      label: '上课节数',
+      value: overview.value?.classCount ?? '-',
+      icon: markRaw(Calendar),
+      accent: '#67C23A'
+    },
+    {
+      label: '资源数',
+      value: overview.value?.resourceCount ?? '-',
+      hint: overview.value ? `其中待分配 ${overview.value.newResourceCount}` : '',
+      icon: markRaw(Aim),
+      accent: '#E6A23C'
+    },
+    {
+      label: '到店数',
+      value: summary.value?.visitCount ?? '-',
+      icon: markRaw(Place),
+      accent: '#00BCD4'
+    },
+    {
+      label: '成交率',
+      value: summary.value ? `${summary.value.dealRate}` : '-',
+      suffix: '%',
+      icon: markRaw(Odometer),
+      accent: '#F56C6C'
+    },
+    {
+      label: '成交金额',
+      value: summary.value?.dealAmount ?? '-',
+      prefix: '¥',
+      icon: markRaw(Wallet),
+      accent: '#FF9800'
+    }
   ])
 
   function onRangeChange(v: [string, string]) {

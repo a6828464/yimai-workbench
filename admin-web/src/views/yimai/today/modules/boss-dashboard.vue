@@ -147,11 +147,15 @@
         </div>
       </div>
     </ElCard>
+
+    <!-- 今日待办 -->
+    <YimaiTodayTodo class="mt-4" />
   </div>
 </template>
 
 <script setup lang="ts">
   import YimaiKpiCard from './kpi-card.vue'
+  import YimaiTodayTodo from './today-todo.vue'
   import {
     getDashboardSeries,
     getChannelBreakdown,

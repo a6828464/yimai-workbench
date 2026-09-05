@@ -149,6 +149,11 @@ class KyMemberSyncService
                     'card_paid_amount' => $cardSummary['card_paid_amount'],
                 ];
 
+                // 生日仅在上游有值时覆盖，避免同步清空工作台人工维护的数据
+                if ($birthday = self::pickDate($row, ['birthday', 'born_date', 'birth_date', 'm_birthday', 'member_birthday'])) {
+                    $changes['birthday'] = $birthday;
+                }
+
                 $customer = Customer::where('external_id', $externalId)->first();
                 if (! $customer) {
                     Customer::create($changes + [
@@ -524,6 +529,21 @@ class KyMemberSyncService
             if (isset($row[$key]) && $row[$key] !== '') {
                 return trim((string) $row[$key]);
             }
+        }
+
+        return '';
+    }
+
+    /** 从原始行多个候选键提取生日，返回 Y-m-d 或空串 */
+    private static function pickDate(array $row, array $keys): string
+    {
+        foreach ($keys as $key) {
+            if (! isset($row[$key]) || $row[$key] === '') {
+                continue;
+            }
+            $parsed = self::date($row[$key]);
+
+            return $parsed ?? '';
         }
 
         return '';

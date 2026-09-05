@@ -1639,6 +1639,292 @@ export function getTodaySummary(): Promise<TodaySummary> {
   })
 }
 
+/** —— 今日待办：今日预约会员 + 需要服务的客户汇总（v3.1.22） —— */
+
+export interface TodayTodoBookingItem {
+  id: number
+  time: string
+  memberName: string
+  phoneTail: string
+  venue: '绿地店' | '东部店'
+  course: string
+  kind: '私教' | '小班' | '团课'
+  teacher: string
+  /** booked 已约 / signed 已签到 / cancelled / no_show */
+  status: string
+  isTrial: boolean
+  customerId: number | null
+  /** 命中的服务提示（五清单 + 评估低分/需协助/7天内到期） */
+  lists: string[]
+  birthdayToday: boolean
+}
+
+export interface TodayTodoMemberItem {
+  id: number
+  name: string
+  phoneTail: string
+  venue: '绿地店' | '东部店'
+  lists: string[]
+  owner: string
+  consultant?: string
+}
+
+export interface TodayTodoRenewalItem extends TodayTodoMemberItem {
+  mainCard: string
+  remainTimes: number | null
+  expireDate: string | null
+  expireDays: number | null
+  /** 7 天内到期 */
+  urgent: boolean
+  evalLevel?: 'high' | 'medium' | 'low' | null
+  hasRenewalPlan: boolean
+}
+
+export interface TodayTodoChurnItem extends TodayTodoMemberItem {
+  lastVisit: string | null
+  lastVisitDays: number | null
+  stopReason: string
+  expectedReturn: string
+  needsHelp: boolean
+  evalLevel?: 'high' | 'medium' | 'low' | null
+}
+
+export interface TodayTodoBirthdayItem extends TodayTodoMemberItem {
+  birthday: string
+  isToday: boolean
+  daysLater: number
+  age: number
+}
+
+export interface TodayTodoTrialItem {
+  key: string
+  time: string
+  name: string
+  phoneTail: string
+  venue: '绿地店' | '东部店'
+  topic: string
+  teacher: string
+  /** ky=随心瑜体验预约事实 / lead=留资体验课卡片 */
+  source: 'ky' | 'lead'
+  status: string
+}
+
+export interface TodayTodoLeadItem {
+  id: number
+  name: string
+  phoneTail: string
+  venue: '绿地店' | '东部店'
+  source: string
+  demand: string
+  grade: string
+  serviceTeacher: string
+  leadDate: string
+  /** 超 24 小时未首响 */
+  stale: boolean
+  remark: string
+}
+
+export interface TodayTodoTaskItem extends YimaiTask {
+  overdue: boolean
+}
+
+export interface TodayTodo {
+  date: string
+  bookings: { items: TodayTodoBookingItem[]; trialCount: number }
+  renewals: TodayTodoRenewalItem[]
+  churnRisks: TodayTodoChurnItem[]
+  birthdays: TodayTodoBirthdayItem[]
+  trials: TodayTodoTrialItem[]
+  newLeads: TodayTodoLeadItem[]
+  tasks: TodayTodoTaskItem[]
+  counts: {
+    bookings: number
+    renewals: number
+    churnRisks: number
+    birthdays: number
+    trials: number
+    newLeads: number
+    tasks: number
+  }
+  generatedAt: string
+}
+
+function todayIso(): string {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
+
+/** 生日距今天数：0=今天，1~7=未来7天内，null=不在关怀窗口（忽略年份，跨年按同月日处理） */
+export function birthdayOffset(birthday: string | null | undefined): number | null {
+  if (!birthday || birthday.length < 10) return null
+  const md = birthday.slice(5, 10)
+  const today = todayIso().slice(5, 10)
+  if (md === today) return 0
+  const offset = Math.round(
+    (new Date(`${new Date().getFullYear()}-${md}`).getTime() -
+      new Date(`${new Date().getFullYear()}-${today}`).getTime()) /
+      86400000
+  )
+  if (offset < 1 || offset > 7) return null
+  return offset
+}
+
+/** 生日是否为今天（忽略年份） */
+export function isBirthdayToday(birthday: string | null | undefined): boolean {
+  return !!birthday && birthday.slice(5, 10) === todayIso().slice(5, 10)
+}
+
+export function getTodayTodo(): Promise<TodayTodo> {
+  if (USE_BACKEND) return apiGet<TodayTodo>('/today/todo')
+
+  // 本地演示模式：从本地演示数据派生；预约明细不含（仅快照计数）
+  const a = actor()
+  const userVenue = a.scopeVenue
+  const scoped = allCustomers().filter(
+    (c) =>
+      inScope(c.venue, userVenue) &&
+      (!a.isTeacher || c.owner === a.userName || c.consultant === a.userName)
+  )
+  const customers = scoped.map((c) => ({ c, lists: computeMemberLists(c) }))
+  const snap = useYimaiStore().state.snapshot
+  const today = todayIso()
+
+  const renewals = customers
+    .filter(({ lists }) => lists.includes('待续课'))
+    .map(({ c, lists }) => {
+      const expireDays = c.expireDate
+        ? Math.floor((new Date(c.expireDate).getTime() - Date.now()) / 86400000)
+        : null
+      return {
+        id: c.id,
+        name: c.name,
+        phoneTail: c.phoneTail,
+        venue: c.venue,
+        lists,
+        owner: c.owner,
+        consultant: c.consultant ?? '',
+        mainCard: c.mainCard,
+        remainTimes: c.remainTimes,
+        expireDate: c.expireDate,
+        expireDays,
+        urgent: expireDays !== null && expireDays <= 7,
+        evalLevel: c.evalLevel ?? null,
+        hasRenewalPlan: Boolean(c.renewalPlan && Object.keys(c.renewalPlan).length)
+      }
+    })
+    .sort((x, y) => (x.expireDays ?? 9999) - (y.expireDays ?? 9999))
+
+  const churnRisks = customers
+    .filter(({ lists }) => lists.some((k) => ['预流失', '待复活', '出勤降低'].includes(k)))
+    .map(({ c, lists }) => ({
+      id: c.id,
+      name: c.name,
+      phoneTail: c.phoneTail,
+      venue: c.venue,
+      lists: lists.filter((k) => ['预流失', '待复活', '出勤降低'].includes(k)),
+      owner: c.owner,
+      consultant: c.consultant ?? '',
+      lastVisit: c.lastVisit,
+      lastVisitDays: calcDays(c.lastVisit) === 9999 ? null : calcDays(c.lastVisit),
+      stopReason: c.stopReason ?? '',
+      expectedReturn: c.expectedReturn ?? '',
+      needsHelp: Boolean(c.needsHelp),
+      evalLevel: c.evalLevel ?? null
+    }))
+    .sort((x, y) => (y.lastVisitDays ?? 0) - (x.lastVisitDays ?? 0))
+
+  const birthdays = customers
+    .map(({ c, lists }) => ({ c, lists, offset: birthdayOffset(c.birthday) }))
+    .filter(({ offset }) => offset !== null)
+    .map(({ c, lists, offset }) => ({
+      id: c.id,
+      name: c.name,
+      phoneTail: c.phoneTail,
+      venue: c.venue,
+      lists,
+      owner: c.owner,
+      consultant: c.consultant ?? '',
+      birthday: c.birthday ?? '',
+      isToday: offset === 0,
+      daysLater: offset ?? 0,
+      age: new Date().getFullYear() - Number(c.birthday?.slice(0, 4))
+    }))
+    .sort((x, y) => Number(y.isToday) - Number(x.isToday) || x.daysLater - y.daysLater)
+
+  const leads = useYimaiStore().state.leads.filter((l) => inScope(l.venue, userVenue))
+  const trials: TodayTodoTrialItem[] = leads
+    .flatMap((l) =>
+      (l.trialCards ?? [])
+        .filter((card) => (card.time ?? '').slice(0, 10) === today)
+        .map((card, idx) => ({
+          key: `lead-${l.id}-${idx}`,
+          time: (card.time ?? '').slice(11, 16) || (card.time ?? ''),
+          name: l.name,
+          phoneTail: (l.phone ?? '').slice(-4),
+          venue: l.venue,
+          topic: card.topic ?? '',
+          teacher: card.teacher ?? '',
+          source: 'lead' as const,
+          status: l.status
+        }))
+    )
+    .sort((x, y) => (x.time ?? '').localeCompare(y.time ?? ''))
+
+  const newLeads: TodayTodoLeadItem[] = leads
+    .filter((l) => l.status === '新留资')
+    .map((l) => ({
+      id: l.id,
+      name: l.name,
+      phoneTail: (l.phone ?? '').slice(-4),
+      venue: l.venue,
+      source: l.source,
+      demand: l.demand,
+      grade: l.grade ?? '',
+      serviceTeacher: l.serviceTeacher,
+      leadDate: l.leadDate,
+      stale: l.createdAt ? Date.now() - new Date(l.createdAt).getTime() >= 24 * 3600_000 : false,
+      remark: l.remark ?? ''
+    }))
+    .sort((x, y) => Number(y.stale) - Number(x.stale) || y.id - x.id)
+
+  const tasks = TASKS.filter(
+    (t) =>
+      inScope(t.venue, userVenue) &&
+      t.status !== '已完成' &&
+      t.deadline &&
+      t.deadline <= `${today} 23:59` &&
+      (!a.isTeacher || t.owner === a.userName || t.owner === '未分配') &&
+      (!a.isMedia || t.owner === a.userName)
+  ).map((t) => ({ ...t, overdue: t.deadline < `${today} 00:00` || t.status === '已逾期' }))
+
+  const bookingCount = snap
+    ? userVenue
+      ? (snap.todayBookings[userVenue] ?? 0)
+      : (snap.todayBookings['绿地店'] ?? 0) + (snap.todayBookings['东部店'] ?? 0)
+    : 0
+
+  return Promise.resolve({
+    date: today,
+    bookings: { items: [], trialCount: 0 },
+    renewals,
+    churnRisks,
+    birthdays,
+    trials,
+    newLeads,
+    tasks,
+    counts: {
+      bookings: bookingCount,
+      renewals: renewals.length,
+      churnRisks: churnRisks.length,
+      birthdays: birthdays.length,
+      trials: trials.length,
+      newLeads: newLeads.length,
+      tasks: tasks.length
+    },
+    generatedAt: new Date().toLocaleString('zh-CN', { hour12: false })
+  })
+}
+
 export interface PendingContractItem {
   id: string
   name: string

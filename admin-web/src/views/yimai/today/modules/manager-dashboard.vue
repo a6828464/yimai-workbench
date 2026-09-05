@@ -89,6 +89,9 @@
       </div>
     </ElCard>
 
+    <!-- 今日待办 -->
+    <YimaiTodayTodo class="mb-4" />
+
     <!-- 待办区 -->
     <ElRow :gutter="16">
       <ElCol :xs="24" :lg="14" class="mb-4">
@@ -163,6 +166,7 @@
 
 <script setup lang="ts">
   import YimaiKpiCard from './kpi-card.vue'
+  import YimaiTodayTodo from './today-todo.vue'
   import {
     getDashboardSeries,
     getFollowupQueue,
@@ -250,7 +254,8 @@
     const venue = userStore.getUserInfo.venue as '绿地店' | '东部店'
     const kinds = todaySummary.value?.todayKinds?.[venue]
     const total = (kinds?.私教 ?? 0) + (kinds?.小班 ?? 0) + (kinds?.团课 ?? 0)
-    if (!kinds || total === 0) return '团课 + 私教预约记录（在 KeepYoga 同步页点「更新快照」可显示细分）'
+    if (!kinds || total === 0)
+      return '团课 + 私教预约记录（在 KeepYoga 同步页点「更新快照」可显示细分）'
     return `私教 ${kinds.私教} · 小班 ${kinds.小班} · 团课 ${kinds.团课}，来自最近成功快照`
   })
 

@@ -81,6 +81,8 @@ export interface YimaiCustomer {
   remainTimes: number | null
   expireDate: string | null
   lastVisit: string | null
+  /** 生日（Y-m-d，KeepYoga 同步或工作台人工维护），今日待办生日关怀使用 */
+  birthday?: string | null
   layer: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' | 'P5'
   status: string
   owner: string

@@ -23,6 +23,9 @@
       <YimaiKpiCard v-for="k in kpis" :key="k.label" v-bind="k" />
     </div>
 
+    <!-- 今日待办（新媒体：新客首响 + 今日体验课） -->
+    <YimaiTodayTodo class="mb-4" />
+
     <!-- 图表区 -->
     <ElRow :gutter="16" class="mb-4">
       <ElCol :xs="24" :lg="14" class="mb-4">
@@ -131,6 +134,7 @@
 
 <script setup lang="ts">
   import YimaiKpiCard from './kpi-card.vue'
+  import YimaiTodayTodo from './today-todo.vue'
   import { getDashboardSeries, getChannelBreakdown, getPlatformAmounts } from '@/api/yimai'
   import type {
     DashboardDayPoint,

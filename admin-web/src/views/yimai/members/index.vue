@@ -117,6 +117,21 @@
           </template>
         </ElTableColumn>
 
+        <ElTableColumn label="生日" width="100" align="center">
+          <template #default="{ row }">
+            <template v-if="row.birthday">
+              <div class="text-sm tabular-nums">{{ row.birthday.slice(0, 10) }}</div>
+              <ElTag v-if="isBirthdayToday(row.birthday)" size="small" type="danger" effect="dark"
+                >今天生日</ElTag
+              >
+              <div v-else-if="birthdayOffset(row.birthday)" class="text-xs text-orange-500">
+                {{ birthdayOffset(row.birthday) }}天后生日
+              </div>
+            </template>
+            <span v-else class="text-xs text-gray-300">—</span>
+          </template>
+        </ElTableColumn>
+
         <ElTableColumn label="清单归属" min-width="170">
           <template #default="{ row }">
             <div class="flex flex-wrap gap-1">
@@ -268,9 +283,10 @@
           </ElTableColumn>
         </template>
 
-        <ElTableColumn label="操作" width="230" fixed="right">
+        <ElTableColumn label="操作" width="260" fixed="right">
           <template #default="{ row }">
             <ElButton link type="primary" size="small" @click="openEval(row)">续费评估</ElButton>
+            <ElButton link type="primary" size="small" @click="openBirthday(row)">生日</ElButton>
             <ElButton
               v-if="memberLists(row).includes('待续课')"
               link
@@ -506,6 +522,33 @@
       </template>
     </ElDialog>
 
+    <!-- 生日维护 -->
+    <ElDialog v-model="birthdayDlg.visible" title="会员生日维护" width="420px" destroy-on-close>
+      <ElForm label-width="92px">
+        <ElFormItem label="会员">
+          <span class="font-500">{{ birthdayDlg.row?.name }}</span>
+        </ElFormItem>
+        <ElFormItem label="生日">
+          <ElDatePicker
+            v-model="birthdayDlg.form.birthday"
+            type="date"
+            value-format="YYYY-MM-DD"
+            class="!w-full"
+            placeholder="选择生日，用于生日关怀提醒"
+          />
+        </ElFormItem>
+        <ElAlert
+          title="保存后进入工作台「今日待办 → 生日关怀」：今天与未来 7 天内的生日会员会自动提醒"
+          type="info"
+          :closable="false"
+        />
+      </ElForm>
+      <template #footer>
+        <ElButton @click="birthdayDlg.visible = false">取消</ElButton>
+        <ElButton type="primary" @click="saveBirthday">保存</ElButton>
+      </template>
+    </ElDialog>
+
     <!-- 阈值设置 -->
     <ElDialog v-model="rulesDlg" title="清单规则阈值（保存后实时重算）" width="480px">
       <ElForm label-width="140px">
@@ -560,6 +603,8 @@
     refreshMemberRules,
     computeMemberLists,
     updateMemberFields,
+    birthdayOffset,
+    isBirthdayToday,
     queryLeads,
     matchConsultants,
     EVAL_DIMENSIONS,
@@ -809,7 +854,11 @@
   async function saveRenewal() {
     if (!renewalDlg.row) return
     try {
-      await updateMemberFields(renewalDlg.row.id, { renewalPlan: { ...renewalDlg.form } }, '续课预报')
+      await updateMemberFields(
+        renewalDlg.row.id,
+        { renewalPlan: { ...renewalDlg.form } },
+        '续课预报'
+      )
       renewalDlg.visible = false
       ElMessage.success('已保存，进入首周「先确认不销售」流程')
     } catch (e) {
@@ -842,6 +891,36 @@
       ElMessage.success('已保存')
     } catch (e) {
       console.error('[members.saveDecline]', e)
+      ElMessage.error('保存失败，请稍后重试')
+    }
+  }
+
+  // ---------- 生日维护 ----------
+  const birthdayDlg = reactive({
+    visible: false,
+    row: null as YimaiCustomer | null,
+    form: { birthday: '' }
+  })
+
+  function openBirthday(row: YimaiCustomer) {
+    birthdayDlg.row = row
+    birthdayDlg.form.birthday = row.birthday?.slice(0, 10) ?? ''
+    birthdayDlg.visible = true
+  }
+
+  async function saveBirthday() {
+    if (!birthdayDlg.row) return
+    try {
+      await updateMemberFields(
+        birthdayDlg.row.id,
+        { birthday: birthdayDlg.form.birthday || null },
+        '生日维护'
+      )
+      birthdayDlg.row.birthday = birthdayDlg.form.birthday || null
+      birthdayDlg.visible = false
+      ElMessage.success('已保存，工作台「今日待办 → 生日关怀」将自动提醒')
+    } catch (e) {
+      console.error('[members.saveBirthday]', e)
       ElMessage.error('保存失败，请稍后重试')
     }
   }
