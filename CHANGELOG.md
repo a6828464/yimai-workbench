@@ -1,5 +1,10 @@
 ﻿# 更新日志
 
+## 2026-09-07 ｜ fix: v3.1.29 更新脚本平滑重载 PHP-FPM（修复新增类短暂 500）
+
+- 根因复盘：v3.1.25 上线后「今日待办」500（`Class App\Models\TodoAction not found`）——生产 PHP-FPM 长驻进程持有旧 OPcache/自动加载状态，新增模型类在后续请求中一度无法加载；后续更新触发 rsync+清缓存后自愈。
+- `update.sh` 在收尾新增 PHP-FPM 平滑重载（按 php-fpm-84/83/82/php8.4-fpm 等常见服务名逐一尝试，未匹配则跳过），确保每次更新后新增类、路由立即生效，不再依赖进程自然回收。
+
 ## 2026-09-07 ｜ feat: v3.1.28 日志接口支持按天日志与目录列表
 
 - `GET /system/logs` 支持 `?list=1` 列出 storage/logs 下全部日志文件、`?file=` 读取指定文件尾部（默认 laravel.log，兼容 LOG_CHANNEL=daily 的 laravel-YYYY-MM-DD.log）。
