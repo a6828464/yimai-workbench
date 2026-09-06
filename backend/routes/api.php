@@ -2089,22 +2089,33 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(systemVersionInfo());
     });
 
-    // 远程排障：超管查看当日 Laravel 日志尾部（免 SSH 定位线上问题）
+    // 远程排障：超管查看 Laravel 日志尾部（免 SSH 定位线上问题）
+    // ?list=1 列出可用日志文件；?file=laravel-YYYY-MM-DD.log 读取指定文件（仅限 storage/logs 内 .log）
     Route::get('/system/logs', function (Request $r) {
         requireSuper($r);
-        $file = storage_path('logs/laravel.log');
+        $dir = storage_path('logs');
+        if ((string) $r->query('list') === '1') {
+            $files = glob($dir.'/*.log') ?: [];
+            $files = array_map(fn ($f) => ['name' => basename($f), 'size' => filesize($f), 'modified' => date('Y-m-d H:i:s', filemtime($f))], $files);
+            usort($files, fn ($a, $b) => strcmp((string) $b['modified'], (string) $a['modified']));
+
+            return ok(['files' => $files]);
+        }
+        $name = (string) $r->query('file', 'laravel.log');
+        abort_unless(preg_match('/^[A-Za-z0-9._-]+\.log$/', $name) === 1 && ! str_contains($name, '..'), 422, '非法日志文件名');
+        $file = $dir.'/'.$name;
         if (! is_file($file)) {
-            return ok(['tail' => '', 'message' => '当日日志文件不存在']);
+            return ok(['tail' => '', 'message' => '日志文件不存在：'.$name]);
         }
         $size = filesize($file);
         $fp = fopen($file, 'r');
-        $read = (int) min($size, 65536);
+        $read = (int) min($size, 131072);
         fseek($fp, -1 * $read, SEEK_END);
         $tail = fread($fp, $read);
         fclose($fp);
         $lines = array_values(array_filter(explode("\n", (string) $tail), fn ($l) => trim($l) !== ''));
 
-        return ok(['tailBytes' => $read, 'lines' => $lines]);
+        return ok(['file' => $name, 'tailBytes' => $read, 'lines' => $lines]);
     });
 
     Route::get('/system/changelog', function () {

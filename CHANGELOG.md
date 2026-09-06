@@ -1,5 +1,9 @@
 ﻿# 更新日志
 
+## 2026-09-07 ｜ feat: v3.1.28 日志接口支持按天日志与目录列表
+
+- `GET /system/logs` 支持 `?list=1` 列出 storage/logs 下全部日志文件、`?file=` 读取指定文件尾部（默认 laravel.log，兼容 LOG_CHANNEL=daily 的 laravel-YYYY-MM-DD.log）。
+
 ## 2026-09-07 ｜ feat: v3.1.27 新增超管远程日志查看接口（排障用）
 
 - 新增 `GET /system/logs`（仅超管）：返回 Laravel 当日日志尾部（最后 64KB），远程定位线上 500 无需 SSH/面板，配合版本更新完成自服务排障闭环。
