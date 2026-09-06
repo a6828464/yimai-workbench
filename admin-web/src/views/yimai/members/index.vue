@@ -160,19 +160,32 @@
         <ElTableColumn
           v-if="activeTab === 'all' || activeTab === 'renewal'"
           label="剩余课时"
-          width="90"
-          align="center"
+          width="150"
         >
           <template #default="{ row }">
             <span
               :class="
                 row.remainTimes !== null && row.remainTimes < rules.renewalThreshold
-                  ? 'font-500 text-red-500'
+                  ? 'font-600 text-red-500'
                   : ''
               "
             >
-              {{ row.remainTimes ?? '—' }}
+              {{ row.remainTimes ?? '—'
+              }}<span v-if="row.remainTimes !== null" class="text-xs"> 节</span>
             </span>
+            <div
+              v-if="row.cardsList?.length"
+              class="mt-0.5 text-xs leading-4 text-gray-400"
+              :title="cardSummaryText(row.cardsList)"
+            >
+              <div v-for="card in row.cardsList.slice(0, 3)" :key="card.title" class="truncate">
+                {{ card.title }} {{ card.residue ?? '?' }}{{ card.unit
+                }}<template v-if="card.unactivated">（未开卡）</template>
+              </div>
+              <div v-if="row.cardsList.length > 3" class="text-gray-300">
+                …共 {{ row.cardsList.length }} 张有效卡
+              </div>
+            </div>
           </template>
         </ElTableColumn>
 
@@ -644,7 +657,8 @@
     MemberListKey,
     YimaiLead,
     RenewalEvaluationAnswers,
-    RenewalEvaluationContext
+    RenewalEvaluationContext,
+    CustomerCardItem
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { ElMessage, ElTag } from 'element-plus'
@@ -668,6 +682,13 @@
 
   function formatMoney(v: number): string {
     return Number(v).toLocaleString('zh-CN')
+  }
+
+  /** 剩余课时列悬浮提示：逐卡列出名称+剩余 */
+  function cardSummaryText(cards: CustomerCardItem[]): string {
+    return cards
+      .map((x) => `${x.title} ${x.residue ?? '?'}${x.unit}${x.unactivated ? '（未开卡）' : ''}`)
+      .join('；')
   }
 
   const LIST_KEYS: MemberListKey[] = ['待续课', '出勤降低', 'VIP', '预流失', '待复活']

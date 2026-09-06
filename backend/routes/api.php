@@ -12,6 +12,7 @@ use App\Models\PublishedShare;
 use App\Models\RenewalEvaluation;
 use App\Models\SyncJob;
 use App\Models\Task;
+use App\Models\TodoAction;
 use App\Models\TrainingPlan;
 use App\Models\User;
 use App\Services\KyClient;
@@ -1687,6 +1688,23 @@ Route::middleware('auth:sanctum')->group(function () {
         $isMedia = $u->role === 'R_MEDIA';
         $isSuper = $u->role === 'R_SUPER';
 
+        // 今日已处理的待办（全店共享：任何人标记，全员消隐，留痕可溯）
+        $doneActions = TodoAction::query()->whereDate('action_date', $today->toDateString())->get()->keyBy('todo_key');
+        $doneInfo = function (string $key) use ($doneActions): array {
+            $rec = $doneActions->get($key);
+            if (! $rec) {
+                return ['done' => false];
+            }
+
+            return [
+                'done' => true,
+                'doneAction' => (string) $rec->action,
+                'doneBy' => (string) $rec->user_name,
+                'doneAt' => $rec->created_at?->timezone(config('app.timezone'))->format('H:i'),
+                'doneRemark' => (string) $rec->remark,
+            ];
+        };
+
         // 五清单口径复用会员管理引擎，一次算好 id => 清单集合 映射
         $listKeys = ['待续课', '预流失', '待复活', '出勤降低', 'VIP'];
         $listMap = [];
@@ -1751,8 +1769,10 @@ Route::middleware('auth:sanctum')->group(function () {
                 };
                 $bookings[] = [
                     'id' => $b->id,
+                    'key' => 'booking:'.$b->id,
                     'time' => $b->start_at?->format('H:i'),
                     'memberName' => (string) $b->member_name,
+                    'phone' => $phone,
                     'phoneTail' => $phone !== '' ? substr($phone, -4) : '',
                     'venue' => (string) $b->venue,
                     'course' => (string) $b->course_name,
@@ -1763,7 +1783,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     'customerId' => $customer['id'] ?? null,
                     'lists' => $customer ? $serviceFlags($customer) : [],
                     'birthdayToday' => $customer ? isBirthdayToday($customer['birthday'] ?? null) : false,
-                ];
+                ] + $doneInfo('booking:'.$b->id);
                 if ($b->is_trial) {
                     $bookingTrialCount++;
                 }
@@ -1775,12 +1795,14 @@ Route::middleware('auth:sanctum')->group(function () {
         if (! $isMedia) {
             $renewals = $scopedCustomers
                 ->filter(fn ($c) => in_array('待续课', $listMap[$c['id']] ?? [], true))
-                ->map(function ($c) use ($daysBetween, $listMap) {
+                ->map(function ($c) use ($daysBetween, $listMap, $doneInfo) {
                     $expireDays = $daysBetween($c['expireDate']);
 
                     return [
                         'id' => $c['id'],
+                        'key' => 'renewal:'.$c['id'],
                         'name' => $c['name'],
+                        'phone' => (string) ($c['phone'] ?? ''),
                         'phoneTail' => $c['phoneTail'],
                         'venue' => $c['venue'],
                         'mainCard' => $c['mainCard'],
@@ -1793,7 +1815,7 @@ Route::middleware('auth:sanctum')->group(function () {
                         'evalLevel' => $c['evalLevel'] ?? null,
                         'hasRenewalPlan' => ! empty($c['renewalPlan']),
                         'lists' => $listMap[$c['id']] ?? [],
-                    ];
+                    ] + $doneInfo('renewal:'.$c['id']);
                 })
                 ->sortBy(fn ($c) => [$c['expireDays'] === null ? 9999 : $c['expireDays'], $c['remainTimes'] ?? 999])
                 ->values()->all();
@@ -1805,13 +1827,15 @@ Route::middleware('auth:sanctum')->group(function () {
             $riskSets = ['预流失', '待复活', '出勤降低'];
             $churnRisks = $scopedCustomers
                 ->filter(fn ($c) => collect($riskSets)->contains(fn ($k) => in_array($k, $listMap[$c['id']] ?? [], true)))
-                ->map(function ($c) use ($listMap, $daysBetween) {
+                ->map(function ($c) use ($listMap, $daysBetween, $doneInfo) {
                     $lists = array_values(array_intersect($listMap[$c['id']] ?? [], ['预流失', '待复活', '出勤降低']));
                     $lastVisitDays = $c['lastVisit'] ? abs((int) ((time() - strtotime((string) $c['lastVisit'])) / 86400)) : null;
 
                     return [
                         'id' => $c['id'],
+                        'key' => 'churn:'.$c['id'],
                         'name' => $c['name'],
+                        'phone' => (string) ($c['phone'] ?? ''),
                         'phoneTail' => $c['phoneTail'],
                         'venue' => $c['venue'],
                         'lists' => $lists,
@@ -1823,7 +1847,7 @@ Route::middleware('auth:sanctum')->group(function () {
                         'evalLevel' => $c['evalLevel'] ?? null,
                         'owner' => $c['owner'],
                         'consultant' => $c['consultant'] ?? '',
-                    ];
+                    ] + $doneInfo('churn:'.$c['id']);
                 })
                 ->sortByDesc(fn ($c) => $c['lastVisitDays'] ?? 999)
                 ->values()->all();
@@ -1839,14 +1863,16 @@ Route::middleware('auth:sanctum')->group(function () {
             }
             $birthdays = $scopedCustomers
                 ->filter(fn ($c) => ! empty($c['birthday']) && in_array(substr((string) $c['birthday'], 5, 5), $window, true))
-                ->map(function ($c) use ($today, $listMap) {
+                ->map(function ($c) use ($today, $listMap, $doneInfo) {
                     $md = substr((string) $c['birthday'], 5, 5);
                     $offset = (int) ((strtotime(date('Y').'-'.$md) - strtotime($today->format('Y-m-d'))) / 86400);
                     $offset = $offset < 0 ? $offset + 366 : $offset; // 跨年兜底（2/29）
 
                     return [
                         'id' => $c['id'],
+                        'key' => 'birthday:'.$c['id'],
                         'name' => $c['name'],
+                        'phone' => (string) ($c['phone'] ?? ''),
                         'phoneTail' => $c['phoneTail'],
                         'venue' => $c['venue'],
                         'birthday' => $c['birthday'],
@@ -1856,7 +1882,7 @@ Route::middleware('auth:sanctum')->group(function () {
                         'owner' => $c['owner'],
                         'consultant' => $c['consultant'] ?? '',
                         'lists' => $listMap[$c['id']] ?? [],
-                    ];
+                    ] + $doneInfo('birthday:'.$c['id']);
                 })
                 ->sortBy(fn ($c) => [$c['isToday'] ? 0 : 1, $c['daysLater']])
                 ->values()->all();
@@ -1875,16 +1901,17 @@ Route::middleware('auth:sanctum')->group(function () {
             foreach ($trialQ->orderBy('start_at')->get() as $b) {
                 $digits = preg_replace('/\D+/', '', (string) $b->phone) ?? '';
                 $trials[] = [
-                    'key' => 'ky-'.$b->id,
+                    'key' => 'trial:ky-'.$b->id,
                     'time' => $b->start_at?->format('H:i'),
                     'name' => (string) $b->member_name,
+                    'phone' => $digits,
                     'phoneTail' => $digits !== '' ? substr($digits, -4) : '',
                     'venue' => (string) $b->venue,
                     'topic' => (string) $b->course_name,
                     'teacher' => (string) $b->teacher_name,
                     'source' => 'ky',
                     'status' => (string) $b->status,
-                ];
+                ] + $doneInfo('trial:ky-'.$b->id);
             }
         }
         $leadQ = scopeLeadsForUser(Lead::query(), $u);
@@ -1895,23 +1922,27 @@ Route::middleware('auth:sanctum')->group(function () {
             foreach ((array) ($l->trial_cards ?? []) as $card) {
                 $cardDate = substr((string) ($card['time'] ?? ''), 0, 10);
                 if ($cardDate === $today->format('Y-m-d')) {
+                    $trialKey = 'trial:lead-'.$l->id.'-'.($card['session'] ?? '');
                     $trials[] = [
-                        'key' => 'lead-'.$l->id.'-'.($card['session'] ?? ''),
+                        'key' => $trialKey,
                         'time' => mb_substr((string) ($card['time'] ?? ''), 11, 5) ?: (string) ($card['time'] ?? ''),
                         'name' => (string) $l->name,
+                        'phone' => (string) $l->phone,
                         'phoneTail' => substr((string) $l->phone, -4),
                         'venue' => (string) $l->venue,
                         'topic' => (string) ($card['topic'] ?? ''),
                         'teacher' => (string) ($card['teacher'] ?? ''),
                         'source' => 'lead',
                         'status' => (string) $l->status,
-                    ];
+                    ] + $doneInfo($trialKey);
                 }
             }
             if ($arr['status'] === '新留资') {
                 $newLeads[] = [
                     'id' => $l->id,
+                    'key' => 'lead:'.$l->id,
                     'name' => (string) $l->name,
+                    'phone' => (string) $l->phone,
                     'phoneTail' => substr((string) $l->phone, -4),
                     'venue' => (string) $l->venue,
                     'source' => (string) $l->source,
@@ -1921,7 +1952,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     'leadDate' => (string) $l->lead_date,
                     'stale' => $l->created_at && $l->created_at->diffInHours(now()) >= 24,
                     'remark' => (string) $l->remark,
-                ];
+                ] + $doneInfo('lead:'.$l->id);
             }
         }
         $newLeads = collect($newLeads)
@@ -1970,6 +2001,71 @@ Route::middleware('auth:sanctum')->group(function () {
             ],
             'generatedAt' => now()->format('Y-m-d H:i:s'),
         ]);
+    });
+
+    // 今日待办操作：标记已处理（当天全店消隐、留痕），并按类型流转业务状态
+    Route::post('/today/todo/action', function (Request $r) {
+        $u = $r->user();
+        $d = $r->validate([
+            'type' => 'required|in:bookings,renewals,churnRisks,birthdays,trials,newLeads',
+            'key' => 'required|string|max:120',
+            'action' => 'required|string|max:30',
+            'remark' => 'nullable|string|max:200',
+            'customerId' => 'nullable|integer',
+            'leadId' => 'nullable|integer',
+            // renewals/churnRisks 标记沟通时同步更新会员最近触达
+            'touch' => 'nullable|boolean',
+        ]);
+        $today = now()->toDateString();
+        $typeLabels = [
+            'bookings' => '今日预约', 'renewals' => '待续费', 'churnRisks' => '流失风险',
+            'birthdays' => '生日关怀', 'trials' => '体验课', 'newLeads' => '新客首响',
+        ];
+
+        // 业务流转 1：新客首响 → 留资状态机（已首响→已联系、无效客资→已流失）
+        if ($d['type'] === 'newLeads' && ! empty($d['leadId'])) {
+            $lead = Lead::find($d['leadId']);
+            if ($lead) {
+                $canHandle = in_array($u->role, ['R_SUPER', 'R_MANAGER'], true)
+                    || (string) $lead->service_teacher === (string) $u->name
+                    || (string) $lead->service_teacher === '';
+                abort_unless($canHandle, 403, '无权处理该客资');
+                $next = match ($d['action']) {
+                    '已首响' => '已联系',
+                    '无效客资' => '已流失',
+                    default => null,
+                };
+                if ($next !== null && (string) $lead->status !== $next) {
+                    $lead->update(['status' => $next]);
+                    audit($r, '标记处理', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue, "今日待办标记：状态变更为 {$next}");
+                }
+            }
+        }
+
+        // 业务流转 2：续费/流失沟通 → 更新会员最近触达，保证 2 周触达口径不断档
+        if (! empty($d['customerId']) && ! empty($d['touch'])) {
+            $c = Customer::find($d['customerId']);
+            if ($c) {
+                abort_unless(canAccessCustomer($u, $c), 403, '无权处理该会员');
+                $c->update(['last_touch' => $today]);
+            }
+        }
+
+        TodoAction::updateOrCreate(
+            ['todo_key' => $d['key'], 'action_date' => $today],
+            [
+                'todo_type' => $d['type'],
+                'action' => $d['action'],
+                'remark' => (string) ($d['remark'] ?? ''),
+                'user_id' => $u->id,
+                'user_name' => $u->name,
+                'user_role' => $u->role,
+                'venue' => (string) ($u->venue ?? ''),
+            ]
+        );
+        audit($r, '标记处理', '今日待办', $d['key'], $typeLabels[$d['type']], (string) ($u->venue ?? '双店'), $d['action'].((string) ($d['remark'] ?? '') !== '' ? '：'.$d['remark'] : ''));
+
+        return ok(['done' => true]);
     });
 
     // ---------- 对外发布（H5 分享快照） ----------

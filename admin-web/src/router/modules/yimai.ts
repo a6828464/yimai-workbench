@@ -58,6 +58,12 @@ export const yimaiRoutes: AppRouteRecord[] = [
     },
     children: [
       {
+        path: '/yimai/todo',
+        name: 'YimaiTodo',
+        component: '/yimai/todo',
+        meta: { title: '今日待办', icon: 'ri:task-line', roles: ALL, keepAlive: false }
+      },
+      {
         path: '/yimai/members',
         name: 'YimaiMembers',
         component: '/yimai/members',

@@ -190,8 +190,8 @@
       </div>
     </ElCard>
 
-    <!-- 今日待办 -->
-    <YimaiTodayTodo class="mt-4" />
+    <!-- 今日待办（概要，点击进入完整待办页） -->
+    <YimaiTodayTodo variant="summary" class="mt-4" />
   </div>
 </template>
 

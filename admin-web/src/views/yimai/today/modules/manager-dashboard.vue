@@ -136,8 +136,8 @@
       </div>
     </ElCard>
 
-    <!-- 今日待办 -->
-    <YimaiTodayTodo class="mb-4" />
+    <!-- 今日待办（概要，点击进入完整待办页） -->
+    <YimaiTodayTodo variant="summary" class="mb-4" />
 
     <!-- 待办区 -->
     <ElRow :gutter="16">

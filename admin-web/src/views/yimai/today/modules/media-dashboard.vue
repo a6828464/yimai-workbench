@@ -23,8 +23,8 @@
       <YimaiKpiCard v-for="k in kpis" :key="k.label" v-bind="k" />
     </div>
 
-    <!-- 今日待办（新媒体：新客首响 + 今日体验课） -->
-    <YimaiTodayTodo class="mb-4" />
+    <!-- 今日待办（概要，新媒体：新客首响 + 今日体验课） -->
+    <YimaiTodayTodo variant="summary" class="mb-4" />
 
     <!-- 图表区 -->
     <ElRow :gutter="16" class="mb-4">

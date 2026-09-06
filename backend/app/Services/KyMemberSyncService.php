@@ -148,6 +148,7 @@ class KyMemberSyncService
                     'total_purchased' => $cardSummary['total_purchased'],
                     'card_paid_amount' => $cardSummary['card_paid_amount'],
                     'card_stats' => $cardSummary['card_stats'],
+                    'cards_list' => $cardSummary['cards_list'],
                 ];
 
                 // 生日仅在上游有值时覆盖，避免同步清空工作台人工维护的数据
@@ -342,6 +343,26 @@ class KyMemberSyncService
                 'daysLeft' => $hasTimeCard ? (int) floor($daysLeft) : null,
                 'daysTotal' => $hasTimeCard ? (int) floor($daysTotal) : null,
             ],
+            // 有效卡项明细：供会员管理「剩余课时」列逐卡展示（含未开卡标记）
+            'cards_list' => array_values(array_map(function (array $card) {
+                $type = (string) ($card['type'] ?? '');
+                $residue = is_numeric($card['residue_amount'] ?? null)
+                    ? max(0.0, self::toNum($card['residue_amount']))
+                    : null;
+
+                return [
+                    'title' => self::pick($card, ['card_title', 'card_name']),
+                    // 1=次卡(节) 2=期限卡(天)
+                    'unit' => $type === '2' ? '天' : '节',
+                    'residue' => $residue !== null ? (int) floor($residue) : null,
+                    'bound' => $type === '1'
+                        ? (int) floor(max(0.0, self::toNum($card['residue_amount'] ?? 0)) + max(0.0, self::toNum($card['usage_total'] ?? 0)))
+                        : null,
+                    'deadline' => self::date($card['deadline'] ?? null),
+                    'status' => self::pick($card, ['status_format', 'status']),
+                    'unactivated' => (string) ($card['status'] ?? '') === '7',
+                ];
+            }, $active)),
         ];
     }
 

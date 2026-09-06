@@ -189,6 +189,19 @@ export interface YimaiCustomer extends StoreCustomer {
     daysLeft: number | null
     daysTotal: number
   } | null
+  /** 有效卡项明细（同步写入）：供剩余课时列逐卡展示 */
+  cardsList?: CustomerCardItem[] | null
+}
+
+export interface CustomerCardItem {
+  title: string
+  /** 节=次卡 天=期限卡 */
+  unit: '节' | '天'
+  residue: number | null
+  bound: number | null
+  deadline: string | null
+  status: string
+  unactivated: boolean
 }
 
 export interface YimaiTask {
@@ -1674,8 +1687,12 @@ export function getTodaySummary(): Promise<TodaySummary> {
 
 /** —— 今日待办：今日预约会员 + 需要服务的客户汇总（v3.1.22） —— */
 
-export interface TodayTodoBookingItem {
+export interface TodayTodoBookingItem extends TodayTodoDoneInfo {
   id: number
+  /** 待办稳定键：booking:{id}，用于标记处理 */
+  key: string
+  /** 全量手机号（内部系统直接显示） */
+  phone: string
   time: string
   memberName: string
   phoneTail: string
@@ -1692,8 +1709,21 @@ export interface TodayTodoBookingItem {
   birthdayToday: boolean
 }
 
+/** 待办行通用：标记处理状态（当天全店共享消隐） */
+export interface TodayTodoDoneInfo {
+  done?: boolean
+  doneAction?: string
+  doneBy?: string
+  doneAt?: string
+  doneRemark?: string
+}
+
 export interface TodayTodoMemberItem {
   id: number
+  /** 待办稳定键：renewal/churn/birthday:{id} */
+  key: string
+  /** 全量手机号（内部系统直接显示） */
+  phone: string
   name: string
   phoneTail: string
   venue: '绿地店' | '东部店'
@@ -1702,7 +1732,7 @@ export interface TodayTodoMemberItem {
   consultant?: string
 }
 
-export interface TodayTodoRenewalItem extends TodayTodoMemberItem {
+export interface TodayTodoRenewalItem extends TodayTodoMemberItem, TodayTodoDoneInfo {
   mainCard: string
   remainTimes: number | null
   expireDate: string | null
@@ -1713,7 +1743,7 @@ export interface TodayTodoRenewalItem extends TodayTodoMemberItem {
   hasRenewalPlan: boolean
 }
 
-export interface TodayTodoChurnItem extends TodayTodoMemberItem {
+export interface TodayTodoChurnItem extends TodayTodoMemberItem, TodayTodoDoneInfo {
   lastVisit: string | null
   lastVisitDays: number | null
   stopReason: string
@@ -1722,17 +1752,18 @@ export interface TodayTodoChurnItem extends TodayTodoMemberItem {
   evalLevel?: 'high' | 'medium' | 'low' | null
 }
 
-export interface TodayTodoBirthdayItem extends TodayTodoMemberItem {
+export interface TodayTodoBirthdayItem extends TodayTodoMemberItem, TodayTodoDoneInfo {
   birthday: string
   isToday: boolean
   daysLater: number
   age: number
 }
 
-export interface TodayTodoTrialItem {
+export interface TodayTodoTrialItem extends TodayTodoDoneInfo {
   key: string
   time: string
   name: string
+  phone: string
   phoneTail: string
   venue: '绿地店' | '东部店'
   topic: string
@@ -1742,8 +1773,12 @@ export interface TodayTodoTrialItem {
   status: string
 }
 
-export interface TodayTodoLeadItem {
+export interface TodayTodoLeadItem extends TodayTodoDoneInfo {
   id: number
+  /** 待办稳定键：lead:{id} */
+  key: string
+  /** 全量手机号（内部系统直接显示） */
+  phone: string
   name: string
   phoneTail: string
   venue: '绿地店' | '东部店'
@@ -1832,7 +1867,9 @@ export function getTodayTodo(): Promise<TodayTodo> {
         : null
       return {
         id: c.id,
+        key: `renewal:${c.id}`,
         name: c.name,
+        phone: c.phone ?? '',
         phoneTail: c.phoneTail,
         venue: c.venue,
         lists,
@@ -1853,7 +1890,9 @@ export function getTodayTodo(): Promise<TodayTodo> {
     .filter(({ lists }) => lists.some((k) => ['预流失', '待复活', '出勤降低'].includes(k)))
     .map(({ c, lists }) => ({
       id: c.id,
+      key: `churn:${c.id}`,
       name: c.name,
+      phone: c.phone ?? '',
       phoneTail: c.phoneTail,
       venue: c.venue,
       lists: lists.filter((k) => ['预流失', '待复活', '出勤降低'].includes(k)),
@@ -1873,7 +1912,9 @@ export function getTodayTodo(): Promise<TodayTodo> {
     .filter(({ offset }) => offset !== null)
     .map(({ c, lists, offset }) => ({
       id: c.id,
+      key: `birthday:${c.id}`,
       name: c.name,
+      phone: c.phone ?? '',
       phoneTail: c.phoneTail,
       venue: c.venue,
       lists,
@@ -1892,9 +1933,10 @@ export function getTodayTodo(): Promise<TodayTodo> {
       (l.trialCards ?? [])
         .filter((card) => (card.time ?? '').slice(0, 10) === today)
         .map((card, idx) => ({
-          key: `lead-${l.id}-${idx}`,
+          key: `trial:lead-${l.id}-${idx}`,
           time: (card.time ?? '').slice(11, 16) || (card.time ?? ''),
           name: l.name,
+          phone: l.phone ?? '',
           phoneTail: (l.phone ?? '').slice(-4),
           venue: l.venue,
           topic: card.topic ?? '',
@@ -1909,7 +1951,9 @@ export function getTodayTodo(): Promise<TodayTodo> {
     .filter((l) => l.status === '新留资')
     .map((l) => ({
       id: l.id,
+      key: `lead:${l.id}`,
       name: l.name,
+      phone: l.phone ?? '',
       phoneTail: (l.phone ?? '').slice(-4),
       venue: l.venue,
       source: l.source,
@@ -1959,6 +2003,27 @@ export function getTodayTodo(): Promise<TodayTodo> {
     },
     generatedAt: new Date().toLocaleString('zh-CN', { hour12: false })
   })
+}
+
+export interface MarkTodoPayload {
+  type: 'bookings' | 'renewals' | 'churnRisks' | 'birthdays' | 'trials' | 'newLeads'
+  /** 待办稳定键（后端 /today/todo 各条目携带） */
+  key: string
+  /** 动作文案：已接待/已沟通待跟进/已首响/已送祝福 等 */
+  action: string
+  remark?: string
+  /** 会员/客资流转对象 */
+  customerId?: number | null
+  leadId?: number | null
+  /** 是否同步更新会员最近触达（last_touch） */
+  touch?: boolean
+}
+
+/** 标记今日待办已处理：当天全店消隐并留痕，新客首响/续费/流失自动流转业务状态 */
+export function markTodoAction(payload: MarkTodoPayload): Promise<{ done: boolean }> {
+  if (USE_BACKEND)
+    return apiPost('/today/todo/action', payload as unknown as Record<string, unknown>)
+  return Promise.resolve({ done: true })
 }
 
 export interface PendingContractItem {
