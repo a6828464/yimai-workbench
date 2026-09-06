@@ -11,14 +11,19 @@ import type {
 
 export type { YimaiLead, YimaiAuditLog, MemberRules }
 
-let rulesCache: MemberRules = {
+const DEFAULT_MEMBER_RULES: MemberRules = {
   renewalThreshold: 10,
+  renewalCountPercent: 20,
+  renewalExpireDays: 30,
+  renewalExpirePercent: 0,
   vipAmountThreshold: 30000,
   declineMode: 'strict',
   predropMin: 15,
   predropMax: 30,
   reviveDays: 30
 }
+
+let rulesCache: MemberRules = { ...DEFAULT_MEMBER_RULES }
 
 export async function refreshMemberRules(): Promise<MemberRules> {
   if (USE_BACKEND) {
@@ -33,7 +38,8 @@ export type MemberListKey = '待续课' | '出勤降低' | 'VIP' | '预流失' |
 export function getMemberRules(): MemberRules {
   if (USE_BACKEND) return rulesCache
   ensureSeeded()
-  rulesCache = useYimaiStore().state.rules
+  // 持久化的旧规则可能缺新阈值键，合并默认值兜底
+  rulesCache = { ...DEFAULT_MEMBER_RULES, ...useYimaiStore().state.rules }
   return rulesCache
 }
 
@@ -52,7 +58,11 @@ export async function setMemberRules(rules: MemberRules): Promise<MemberRules> {
 
 /**
  * 清单归入引擎（口径来源：卓越店长训练营会员管理板块）
- * - 待续课：最近月有出勤 且 剩余课时 < 阈值（默认10，严格小于）
+ * - 待续费（多卡口径 v3.1.24，任一命中即标记）：
+ *   ① 次卡库存：全部有效次卡合计剩余节数 ≤ 阈值（含未开卡；无次卡不参与，避免误判 0 节）
+ *   ② 次卡占比：合计剩余 / 合计绑定(剩余+已用) ≤ N%（捕捉大卡进入尾段，0=关闭）
+ *   ③ 到期提醒：最早到期日在 N 天内
+ *   ④ 有效期占比：时间卡剩余天数 / 有效期天数 ≤ N%（默认 0=关闭）
  * - 出勤降低：strict=M1>M2>M3 连续三月递减 / recent=M2>M3
  * - VIP：会员卡实收金额 ≥ 阈值（默认 30000 元）
  * - 预流失：上月出勤、本月停训（M2>0且M3=0），或15-30天未到店
@@ -79,15 +89,31 @@ export function computeMemberLists(c: YimaiCustomer): MemberListKey[] {
   const declining =
     !revive && !preLoss && (rules.declineMode === 'strict' ? m1 > m2 && m2 > m3 : m2 > m3)
 
-  if (
-    hasAsset &&
-    ((m3 > 0 && c.remainTimes !== null && c.remainTimes <= rules.renewalThreshold) ||
-      (expireDays !== null && expireDays >= 0 && expireDays <= 30))
-  ) {
+  // 次卡剩余：优先取有效卡汇总；无汇总的历史数据退回旧的单主卡字段
+  const stats = c.cardStats ?? null
+  const countResidue = stats && stats.countResidue !== null ? stats.countResidue : c.remainTimes
+  const countBound = stats?.countBound ?? 0
+  const countPercent = rules.renewalCountPercent ?? 0
+  const countHit =
+    countResidue !== null &&
+    m3 > 0 &&
+    (countResidue <= (rules.renewalThreshold ?? 10) ||
+      (countPercent > 0 && countBound > 0 && (countResidue / countBound) * 100 <= countPercent))
+  const expireDaysHit =
+    expireDays !== null && expireDays >= 0 && expireDays <= (rules.renewalExpireDays ?? 30)
+  const expirePercent = rules.renewalExpirePercent ?? 0
+  const expirePercentHit =
+    expirePercent > 0 &&
+    stats?.daysLeft !== null &&
+    stats?.daysLeft !== undefined &&
+    (stats?.daysTotal ?? 0) > 0 &&
+    (stats.daysLeft / (stats.daysTotal as number)) * 100 <= expirePercent
+
+  if (hasAsset && (countHit || expireDaysHit || expirePercentHit)) {
     out.push('待续课')
   }
   if (declining) out.push('出勤降低')
-  if ((c.cardPaidAmount ?? 0) >= rules.vipAmountThreshold) out.push('VIP')
+  if ((c.cardPaidAmount ?? 0) >= (rules.vipAmountThreshold ?? 30000)) out.push('VIP')
   if (preLoss) out.push('预流失')
   if (revive) out.push('待复活')
 
@@ -156,6 +182,13 @@ export async function getCustomerDetail(id: number): Promise<CustomerDetail> {
 
 export interface YimaiCustomer extends StoreCustomer {
   externalId?: string
+  /** 有效卡汇总（同步写入）：次卡剩余/绑定、时间卡剩余/总天数，供待续费阈值判定 */
+  cardStats?: {
+    countResidue: number | null
+    countBound: number
+    daysLeft: number | null
+    daysTotal: number
+  } | null
 }
 
 export interface YimaiTask {

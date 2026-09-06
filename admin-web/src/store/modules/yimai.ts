@@ -117,6 +117,12 @@ export interface YimaiCustomer {
 /** 清单规则阈值（来源：卓越店长训练营，阈值可调） */
 export interface MemberRules {
   renewalThreshold: number
+  /** 次卡：合计剩余 / 合计绑定(剩余+已用) ≤ N%（0=关闭，默认 20） */
+  renewalCountPercent: number
+  /** 到期提醒：任一有效卡剩余天数 ≤ N（默认 30） */
+  renewalExpireDays: number
+  /** 时间卡：剩余天数 / 有效期天数 ≤ N%（0=关闭，默认 0） */
+  renewalExpirePercent: number
   /** VIP：会员卡实收金额 ≥ 阈值（默认 30000 元） */
   vipAmountThreshold: number
   declineMode: 'strict' | 'recent'
@@ -159,6 +165,9 @@ const SEED_VERSION = 5
 
 const DEFAULT_RULES: MemberRules = {
   renewalThreshold: 10,
+  renewalCountPercent: 20,
+  renewalExpireDays: 30,
+  renewalExpirePercent: 0,
   vipAmountThreshold: 30000,
   declineMode: 'strict',
   predropMin: 15,

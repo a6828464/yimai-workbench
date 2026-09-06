@@ -375,12 +375,19 @@ Route::middleware('auth:sanctum')->group(function () {
         requireSuper($r);
         $data = $r->validate([
             'renewalThreshold' => 'required|integer|min:1|max:50',
+            'renewalCountPercent' => 'nullable|integer|min:0|max:100',
+            'renewalExpireDays' => 'nullable|integer|min:1|max:365',
+            'renewalExpirePercent' => 'nullable|integer|min:0|max:100',
             'vipAmountThreshold' => 'required|integer|min:1000|max:1000000',
             'declineMode' => 'required|in:strict,recent',
             'predropMin' => 'required|integer|min:1|max:180',
             'predropMax' => 'required|integer|min:1|max:180|gte:predropMin',
             'reviveDays' => 'required|integer|min:7|max:365',
         ]);
+        // 未传的新阈值回落到默认值，避免存一半缺键
+        $data['renewalCountPercent'] = (int) ($data['renewalCountPercent'] ?? 20);
+        $data['renewalExpireDays'] = (int) ($data['renewalExpireDays'] ?? 30);
+        $data['renewalExpirePercent'] = (int) ($data['renewalExpirePercent'] ?? 0);
         setRules($data);
         audit($r, '修改', '会员管理', 0, '清单规则阈值', '双店', json_encode($data, JSON_UNESCAPED_UNICODE));
 
@@ -2245,10 +2252,14 @@ if (! function_exists('ok')) {
         $expireDays = $customer->expire_date
             ? now()->startOfDay()->diffInDays($customer->expire_date, false)
             : null;
-        $cardWindow = ($customer->remain_times !== null && $customer->remain_times <= 10)
-            || ($expireDays !== null && $expireDays >= 0 && $expireDays <= 30) ? 10
-            : (($customer->remain_times !== null && $customer->remain_times <= 20)
-                || ($expireDays !== null && $expireDays > 30 && $expireDays <= 60) ? 5 : 0);
+        // 续费窗口与清单阈值同口径（客户管理可调），不再硬编码 10/30
+        $rules = rules();
+        $renewalThreshold = (int) ($rules['renewalThreshold'] ?? 10);
+        $renewalExpireDays = (int) ($rules['renewalExpireDays'] ?? 30);
+        $cardWindow = ($customer->remain_times !== null && $customer->remain_times <= $renewalThreshold)
+            || ($expireDays !== null && $expireDays >= 0 && $expireDays <= $renewalExpireDays) ? 10
+            : (($customer->remain_times !== null && $customer->remain_times <= $renewalThreshold * 2)
+                || ($expireDays !== null && $expireDays > $renewalExpireDays && $expireDays <= $renewalExpireDays * 2) ? 5 : 0);
         $latest = $customer->renewalEvaluations()->latest('evaluated_at')->first();
 
         return [
@@ -2389,7 +2400,17 @@ if (! function_exists('ok')) {
     function rules(): array
     {
         $s = AppSetting::first();
-        $defaults = ['renewalThreshold' => 10, 'vipAmountThreshold' => 30000, 'declineMode' => 'strict', 'predropMin' => 15, 'predropMax' => 30, 'reviveDays' => 30];
+        $defaults = [
+            'renewalThreshold' => 10,
+            'renewalCountPercent' => 20,
+            'renewalExpireDays' => 30,
+            'renewalExpirePercent' => 0,
+            'vipAmountThreshold' => 30000,
+            'declineMode' => 'strict',
+            'predropMin' => 15,
+            'predropMax' => 30,
+            'reviveDays' => 30,
+        ];
 
         return array_merge($defaults, (array) ($s?->rules ?? []));
     }
@@ -2406,6 +2427,9 @@ if (! function_exists('ok')) {
     {
         $rules = rules();
         $threshold = $rules['renewalThreshold'] ?? 10;
+        $countPercent = (int) ($rules['renewalCountPercent'] ?? 0);
+        $expireDaysRule = (int) ($rules['renewalExpireDays'] ?? 30);
+        $expirePercent = (int) ($rules['renewalExpirePercent'] ?? 0);
         $vip = (float) ($rules['vipAmountThreshold'] ?? 30000);
         $strict = ($rules['declineMode'] ?? 'strict') === 'strict';
         $predropMin = (int) ($rules['predropMin'] ?? 15);
@@ -2414,7 +2438,7 @@ if (! function_exists('ok')) {
         $days = fn ($d) => $d ? (int) ((time() - strtotime($d)) / 86400) : null;
 
         return Customer::query()->get()
-            ->filter(function (Customer $c) use ($list, $threshold, $vip, $strict, $predropMin, $predropMax, $reviveDays, $days) {
+            ->filter(function (Customer $c) use ($list, $threshold, $countPercent, $expireDaysRule, $expirePercent, $vip, $strict, $predropMin, $predropMax, $reviveDays, $days) {
                 $m1 = $c->attend_m1;
                 $m2 = $c->attend_m2;
                 $m3 = $c->attend_m3;
@@ -2425,9 +2449,30 @@ if (! function_exists('ok')) {
                 $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= $predropMin && $dd <= $predropMax));
                 $declining = ! $revive && ! $preLoss && ($strict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3));
 
+                // 待续费判定（v3.1.24 多卡口径）：
+                // card_stats 由同步写入，是全部有效卡的汇总；无快照的历史数据退回单主卡字段。
+                // - 次卡库存：合计剩余节数 ≤ 阈值（含未开卡；时间卡会员无次卡则不参与，避免误判 0 节）
+                // - 次卡占比：合计剩余 / 合计绑定(剩余+已用) ≤ N%，捕捉大卡进入尾段
+                // - 到期提醒：最早到期日在 N 天内（旧口径硬编码 30 天）
+                // - 有效期占比：时间卡剩余天数 / 有效期天数 ≤ N%（默认 0=关闭）
+                $stats = (array) ($c->card_stats ?? []);
+                $countResidue = array_key_exists('countResidue', $stats)
+                    ? $stats['countResidue']
+                    : (($c->main_card !== null && (string) $c->remain_times !== null && $c->remain_times !== null) ? $c->remain_times : null);
+                $countBound = (int) ($stats['countBound'] ?? 0);
+                $daysLeft = $stats['daysLeft'] ?? null;
+                $daysTotal = (int) ($stats['daysTotal'] ?? 0);
+                $renewalHit = false;
+                if ($countResidue !== null && $m3 > 0) {
+                    $renewalHit = $countResidue <= $threshold
+                        || ($countPercent > 0 && $countBound > 0 && $countResidue / $countBound * 100 <= $countPercent);
+                }
+                $renewalHit = $renewalHit
+                    || ($expireDays !== null && $expireDays >= 0 && $expireDays <= $expireDaysRule)
+                    || ($expirePercent > 0 && $daysLeft !== null && $daysTotal > 0 && $daysLeft / $daysTotal * 100 <= $expirePercent);
+
                 return match ($list) {
-                    '待续课' => $hasAsset && (($m3 > 0 && $c->remain_times !== null && $c->remain_times <= $threshold)
-                        || ($expireDays !== null && $expireDays >= 0 && $expireDays <= 30)),
+                    '待续课' => $hasAsset && $renewalHit,
                     '出勤降低' => $declining,
                     'VIP' => (float) ($c->card_paid_amount ?? 0) >= $vip,
                     '预流失' => $preLoss,

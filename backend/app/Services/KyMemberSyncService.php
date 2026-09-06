@@ -147,6 +147,7 @@ class KyMemberSyncService
                     'attend_m3' => $visitSummary['attend_m3'] ?? 0,
                     'total_purchased' => $cardSummary['total_purchased'],
                     'card_paid_amount' => $cardSummary['card_paid_amount'],
+                    'card_stats' => $cardSummary['card_stats'],
                 ];
 
                 // 生日仅在上游有值时覆盖，避免同步清空工作台人工维护的数据
@@ -253,9 +254,39 @@ class KyMemberSyncService
         });
 
         $main = $active[0] ?? null;
-        $remain = null;
-        if ($main && (string) ($main['type'] ?? '') === '1' && is_numeric($main['residue_amount'] ?? null)) {
-            $remain = max(0, (int) floor((float) $main['residue_amount']));
+
+        // 全部有效卡汇总（不再只看主卡）：
+        // - 次卡剩余节数 = 所有有效次卡(含未开卡)的 residue_amount 合计，一张用完的卡不再污染整体判定
+        // - 绑定总量 = 剩余 + 已用(usage_total)，供「剩余占比」阈值
+        // - 最早到期日 = 所有有效卡的最早 deadline（次卡/时间卡都可能有到期日）
+        // - 时间卡剩余天数/有效期天数合计，供「有效期占比」阈值
+        $countResidue = 0.0;
+        $countBound = 0.0;
+        $hasCountCard = false;
+        $daysLeft = 0.0;
+        $daysTotal = 0.0;
+        $hasTimeCard = false;
+        $earliestDeadline = null;
+        foreach ($active as $card) {
+            $type = (string) ($card['type'] ?? '');
+            if ($type === '1' && is_numeric($card['residue_amount'] ?? null)) {
+                $hasCountCard = true;
+                $residue = max(0.0, self::toNum($card['residue_amount']));
+                $countResidue += $residue;
+                $countBound += $residue + max(0.0, self::toNum($card['usage_total'] ?? 0));
+            }
+            if ($type === '2' && is_numeric($card['residue_amount'] ?? null)) {
+                $hasTimeCard = true;
+                $daysLeft += max(0.0, self::toNum($card['residue_amount']));
+                $expiry = self::toNum($card['expiry_days'] ?? 0);
+                if ($expiry > 0) {
+                    $daysTotal += $expiry;
+                }
+            }
+            $deadline = self::date($card['deadline'] ?? null);
+            if ($deadline !== null && ($earliestDeadline === null || $deadline < $earliestDeadline)) {
+                $earliestDeadline = $deadline;
+            }
         }
 
         $totalPurchased = 0;
@@ -298,10 +329,19 @@ class KyMemberSyncService
 
         return [
             'main_card' => $main ? self::pick($main, ['card_title', 'card_name']) : '—',
-            'remain_times' => $remain,
-            'expire_date' => $main ? self::date($main['deadline'] ?? null) : null,
+            // 次卡剩余合计（含未开卡）；无次卡时为 null（时间卡会员不再被误判为 0 节）
+            'remain_times' => $hasCountCard ? (int) floor($countResidue) : null,
+            // 最早到期日（此前只取主卡到期日）
+            'expire_date' => $earliestDeadline,
             'total_purchased' => $totalPurchased,
             'card_paid_amount' => round($cardPaid, 2),
+            // 运行时阈值判定依据（阈值可在工作台调整，这里只存原始汇总）
+            'card_stats' => [
+                'countResidue' => $hasCountCard ? (int) floor($countResidue) : null,
+                'countBound' => (int) floor($countBound),
+                'daysLeft' => $hasTimeCard ? (int) floor($daysLeft) : null,
+                'daysTotal' => $hasTimeCard ? (int) floor($daysTotal) : null,
+            ],
         ];
     }
 

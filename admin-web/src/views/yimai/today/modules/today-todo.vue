@@ -15,13 +15,11 @@
         </div>
       </div>
       <div class="mt-1 text-xs text-gray-400">
-        清单阈值（随「会员管理 → 调整标签阈值」实时同步）：待续课 剩余 ≤{{
-          activeRules.renewalThreshold
+        清单阈值（随「会员管理 → 调整标签阈值」实时同步）：待续费 {{ renewalRuleText }} · 预流失
+        {{ activeRules.predropMin }}-{{ activeRules.predropMax }} 天未到店 · 待复活 &gt;{{
+          activeRules.reviveDays
         }}
-        节 · 预流失 {{ activeRules.predropMin }}-{{ activeRules.predropMax }} 天未到店 · 待复活
-        &gt;{{ activeRules.reviveDays }} 天 · VIP 实收 ≥{{
-          formatMoney(activeRules.vipAmountThreshold)
-        }}
+        天 · VIP 实收 ≥{{ formatMoney(activeRules.vipAmountThreshold) }}
         元
       </div>
     </template>
@@ -334,6 +332,17 @@
   function formatMoney(v: number): string {
     return Number(v).toLocaleString('zh-CN')
   }
+
+  /** 待续费阈值摘要：次卡节数/占比 + 到期天数（+ 有效期占比，启用时） */
+  const renewalRuleText = computed(() => {
+    const r = activeRules.value
+    const parts = [`次卡剩余 ≤${r.renewalThreshold ?? 10} 节`]
+    if ((r.renewalCountPercent ?? 0) > 0) parts.push(`占比 ≤${r.renewalCountPercent}%`)
+    parts.push(`到期 ≤${r.renewalExpireDays ?? 30} 天`)
+    if ((r.renewalExpirePercent ?? 0) > 0)
+      parts.push(`时间卡有效期剩余 ≤${r.renewalExpirePercent}%`)
+    return parts.join(' 或 ')
+  })
 
   const allTabs: { key: TabKey; label: string }[] = [
     { key: 'bookings', label: '今日预约' },

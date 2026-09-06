@@ -550,14 +550,38 @@
     </ElDialog>
 
     <!-- 阈值设置 -->
-    <ElDialog v-model="rulesDlg" title="清单规则阈值（保存后实时重算）" width="480px">
+    <ElDialog v-model="rulesDlg" title="清单规则阈值（保存后实时重算）" width="520px">
       <ElForm label-width="140px">
-        <ElFormItem label="待续课阈值(节)"
+        <ElFormItem label="次卡剩余(节)"
           ><ElInputNumber v-model="rulesForm.renewalThreshold" :min="1" :max="50" /><span
             class="ml-2 text-xs text-gray-400"
-            >剩余课时 ≤ 该值且最近月有出勤</span
+            >全部次卡合计剩余 ≤ 该值且最近月有出勤（含未开卡）</span
           ></ElFormItem
         >
+        <ElFormItem label="次卡剩余占比(%)"
+          ><ElInputNumber v-model="rulesForm.renewalCountPercent" :min="0" :max="100" /><span
+            class="ml-2 text-xs text-gray-400"
+            >合计剩余 ÷ 合计绑定(剩余+已用) ≤ 该值；0=关闭</span
+          ></ElFormItem
+        >
+        <ElFormItem label="到期提醒(天)"
+          ><ElInputNumber v-model="rulesForm.renewalExpireDays" :min="1" :max="365" /><span
+            class="ml-2 text-xs text-gray-400"
+            >任一有效卡剩余天数 ≤ 该值（含次卡/时间卡）</span
+          ></ElFormItem
+        >
+        <ElFormItem label="有效期占比(%)"
+          ><ElInputNumber v-model="rulesForm.renewalExpirePercent" :min="0" :max="100" /><span
+            class="ml-2 text-xs text-gray-400"
+            >时间卡剩余天数 ÷ 有效期天数 ≤ 该值；0=关闭</span
+          ></ElFormItem
+        >
+        <ElAlert
+          class="mb-3"
+          type="info"
+          :closable="false"
+          title="待续费判定为多卡口径：按全部有效卡汇总，已用完/已过期的卡不会单独触发提醒"
+        />
         <ElFormItem label="VIP阈值(元)"
           ><ElInputNumber
             v-model="rulesForm.vipAmountThreshold"
