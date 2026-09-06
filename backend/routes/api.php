@@ -1772,7 +1772,8 @@ Route::middleware('auth:sanctum')->group(function () {
                     'key' => 'booking:'.$b->id,
                     'time' => $b->start_at?->format('H:i'),
                     'memberName' => (string) $b->member_name,
-                    'phone' => $phone,
+                    // 预约行 KY 未带手机号时，回填匹配到的会员档案手机号
+                    'phone' => $phone !== '' ? $phone : (string) ($customer['phone'] ?? ''),
                     'phoneTail' => $phone !== '' ? substr($phone, -4) : '',
                     'venue' => (string) $b->venue,
                     'course' => (string) $b->course_name,
