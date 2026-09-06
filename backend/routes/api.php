@@ -2008,7 +2008,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $u = $r->user();
         $d = $r->validate([
             'type' => 'required|in:bookings,renewals,churnRisks,birthdays,trials,newLeads',
-            'key' => 'required|string|max:120',
+            'key' => 'required|string|max:80',
             'action' => 'required|string|max:30',
             'remark' => 'nullable|string|max:200',
             'customerId' => 'nullable|integer',

@@ -778,7 +778,18 @@
       // 先拉最新清单阈值，保证待续费/流失风险等分组与「会员管理 → 调整标签阈值」同口径
       await refreshMemberRules().catch(() => {})
       activeRules.value = getMemberRules()
-      todo.value = await getTodayTodo()
+      try {
+        todo.value = await getTodayTodo()
+      } catch (e) {
+        // 接口失败必须显式报错，避免静默显示全 0 误导
+        todo.value = null
+        ElMessage.error(
+          '今日待办加载失败：' + String((e as { message?: string }).message ?? e).slice(0, 100)
+        )
+        console.error('[today-todo.reload]', e)
+
+        return
+      }
       if (todo.value?.rules) {
         activeRules.value = todo.value.rules
       }
