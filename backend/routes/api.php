@@ -2089,6 +2089,24 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(systemVersionInfo());
     });
 
+    // 远程排障：超管查看当日 Laravel 日志尾部（免 SSH 定位线上问题）
+    Route::get('/system/logs', function (Request $r) {
+        requireSuper($r);
+        $file = storage_path('logs/laravel.log');
+        if (! is_file($file)) {
+            return ok(['tail' => '', 'message' => '当日日志文件不存在']);
+        }
+        $size = filesize($file);
+        $fp = fopen($file, 'r');
+        $read = (int) min($size, 65536);
+        fseek($fp, -1 * $read, SEEK_END);
+        $tail = fread($fp, $read);
+        fclose($fp);
+        $lines = array_values(array_filter(explode("\n", (string) $tail), fn ($l) => trim($l) !== ''));
+
+        return ok(['tailBytes' => $read, 'lines' => $lines]);
+    });
+
     Route::get('/system/changelog', function () {
         $candidates = [
             base_path().'/CHANGELOG.md',                 // 后端站根（部署时随包复制）
