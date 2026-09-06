@@ -118,7 +118,37 @@
       </ElCol>
     </ElRow>
 
-    <ElCard shadow="never" class="mt-1">
+    <ElCard shadow="never" class="mt-4">
+      <template #header>
+        <div class="flex-cb">
+          <span class="font-500">随心瑜经营概览</span>
+          <span class="text-xs text-gray-400">{{
+            overviewFetchedAt ? `读取于 ${overviewFetchedAt}` : '尚未读取'
+          }}</span>
+        </div>
+      </template>
+      <div v-if="overviewError" class="text-sm text-orange-500">{{ overviewError }}</div>
+      <div v-else class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div
+          v-for="cell in overviewCells"
+          :key="cell.label"
+          class="rounded-lg bg-gray-50 dark:bg-gray-800 p-3 text-center"
+        >
+          <div class="text-lg font-600">{{ cell.value }}</div>
+          <div class="mt-0.5 text-xs text-gray-400">{{ cell.label }}</div>
+        </div>
+      </div>
+      <div v-if="overviewVisitorAvailable" class="mt-3 text-xs text-gray-400">
+        本月访客（双店）：新增 {{ overviewSum.monthNewVisitors }} · 访客上课
+        {{ overviewSum.monthVisitorClasses }} · 转化会员
+        {{ overviewSum.monthVisitorConversions }}
+      </div>
+      <div v-if="overviewVenueErrors.length" class="mt-2 text-xs text-orange-500">
+        部分门店读取失败：{{ overviewVenueErrors.join('；') }}
+      </div>
+    </ElCard>
+
+    <ElCard shadow="never" class="mt-4">
       <template #header>
         <div class="flex-cb">
           <span class="font-500">未完成合同签署</span>
@@ -133,17 +163,29 @@
           class="rounded-lg bg-gray-50 dark:bg-gray-800 p-3"
         >
           <div class="font-500 mb-2">{{ venue }}</div>
-          <div class="flex gap-4 text-sm">
-            <span
-              >待会员签署 <b class="text-orange-500">{{ item.pendingCustomer }}</b></span
+          <div v-if="item.error" class="text-sm text-orange-500">读取失败：{{ item.error }}</div>
+          <template v-else>
+            <div class="flex flex-wrap gap-4 text-sm">
+              <span
+                >签署中 <b>{{ item.signing ?? item.pendingCustomer + item.pendingVenue }}</b></span
+              >
+              <span
+                >待会员签署 <b class="text-orange-500">{{ item.pendingCustomer }}</b></span
+              >
+              <span
+                >待场馆签署 <b class="text-red-500">{{ item.pendingVenue }}</b></span
+              >
+              <span
+                >已过期
+                <b :class="(item.expired ?? 0) > 0 ? 'text-red-500' : ''">{{
+                  item.expired ?? 0
+                }}</b>
+              </span>
+            </div>
+            <div v-if="!item.fieldConfirmed" class="mt-2 text-xs text-gray-400"
+              >暂无可确认的双方签署字段；未知 {{ item.unknown }} 条，不计入未签</div
             >
-            <span
-              >待场馆签署 <b class="text-red-500">{{ item.pendingVenue }}</b></span
-            >
-          </div>
-          <div v-if="!item.fieldConfirmed" class="mt-2 text-xs text-gray-400"
-            >暂无可确认的双方签署字段；未知 {{ item.unknown }} 条，不计入未签</div
-          >
+          </template>
         </div>
       </div>
     </ElCard>
@@ -160,14 +202,16 @@
     getDashboardSeries,
     getChannelBreakdown,
     getTodaySummary,
-    getPendingContracts
+    getPendingContracts,
+    getKyOverview
   } from '@/api/yimai'
   import type {
     DashboardDayPoint,
     DashboardSummary,
     ChannelLeadItem,
     TodaySummary,
-    PendingContracts
+    PendingContracts,
+    KyVenueOverview
   } from '@/api/yimai'
   import {
     Ticket,
@@ -192,8 +236,93 @@
   const ldSummary = ref<DashboardSummary | null>(null)
   const dbSummary = ref<DashboardSummary | null>(null)
   const todaySummary = ref<TodaySummary | null>(null)
+  const overviewVenues = ref<Record<string, KyVenueOverview>>({})
+  const overviewFetchedAt = ref('')
+  const overviewError = ref('')
   const ticketIcon = markRaw(Ticket)
   const userIcon = markRaw(User)
+
+  const money = (v: number): string =>
+    Number(Math.round(v)).toLocaleString('zh-CN', { maximumFractionDigits: 0 })
+
+  /** 随心瑜经营概览：按当前门店范围（双店/单店）汇总 */
+  const overviewScopeVenues = computed(() => {
+    const all = overviewVenues.value
+    if (venueScope.value === '双店') return ['绿地店', '东部店'].map((v) => all[v]).filter(Boolean)
+    return all[venueScope.value] ? [all[venueScope.value]] : []
+  })
+  const overviewSum = computed(() => {
+    const venues = overviewScopeVenues.value.filter((v) => !v.error)
+    const pick = (
+      fn: (o: KyVenueOverview) => number,
+      available?: (o: KyVenueOverview) => boolean
+    ) => venues.filter((o) => (available ? available(o) : true)).reduce((sum, o) => sum + fn(o), 0)
+    return {
+      thisMonthRevenue: pick((o) => o.thisMonthRevenue),
+      thisMonthUsage: pick((o) => o.thisMonthUsage),
+      remainingAssets: pick((o) => o.remainingAssets),
+      activeMembers: pick(
+        (o) => o.activeMembers,
+        (o) => o.activityAvailable
+      ),
+      thisMonthClassMembers: pick(
+        (o) => o.thisMonthClassMembers,
+        (o) => o.activityAvailable
+      ),
+      riskMembers: pick(
+        (o) => o.riskMembers,
+        (o) => o.activityAvailable
+      ),
+      inactiveMembers: pick(
+        (o) => o.inactiveMembers,
+        (o) => o.activityAvailable
+      ),
+      lostMembers: pick(
+        (o) => o.lostMembers,
+        (o) => o.activityAvailable
+      ),
+      monthNewVisitors: pick(
+        (o) => o.monthNewVisitors,
+        (o) => o.visitorAvailable
+      ),
+      monthVisitorClasses: pick(
+        (o) => o.monthVisitorClasses,
+        (o) => o.visitorAvailable
+      ),
+      monthVisitorConversions: pick(
+        (o) => o.monthVisitorConversions,
+        (o) => o.visitorAvailable
+      ),
+      activityAvailable: venues.some((o) => o.activityAvailable),
+      visitorAvailable: venues.some((o) => o.visitorAvailable)
+    }
+  })
+  const overviewCells = computed(() => {
+    if (!overviewScopeVenues.value.length) return []
+    const s = overviewSum.value
+    return [
+      { label: '本月收入（元）', value: `¥${money(s.thisMonthRevenue)}` },
+      { label: '本月耗卡（元）', value: `¥${money(s.thisMonthUsage)}` },
+      { label: '剩余资产（元）', value: `¥${money(s.remainingAssets)}` },
+      { label: '活跃会员', value: s.activityAvailable ? String(s.activeMembers) : '—' },
+      {
+        label: '本月上课（人）',
+        value: s.activityAvailable ? String(s.thisMonthClassMembers) : '—'
+      },
+      { label: '风险会员', value: s.activityAvailable ? String(s.riskMembers) : '—' },
+      { label: '沉寂会员', value: s.activityAvailable ? String(s.inactiveMembers) : '—' },
+      { label: '流失会员', value: s.activityAvailable ? String(s.lostMembers) : '—' }
+    ]
+  })
+  const overviewVenueErrors = computed(() =>
+    overviewScopeVenues.value
+      .filter((v) => v.error)
+      .map((v) => {
+        const name = Object.entries(overviewVenues.value).find(([, o]) => o === v)?.[0] ?? ''
+        return `${name}：${v.error}`
+      })
+  )
+  const overviewVisitorAvailable = computed(() => overviewSum.value.visitorAvailable)
 
   function defaultRange(): [string, string] {
     const now = new Date()
@@ -402,12 +531,17 @@
           contractError.value = `合同读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
           return { venues: {} as PendingContracts['venues'], fetchedAt: '' }
         }),
+        getKyOverview().catch((error) => {
+          overviewError.value = `经营概览读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
+          return { venues: {} as Record<string, KyVenueOverview>, fetchedAt: '' }
+        }),
         ...requests
       ])
       const dash = results[0].status === 'fulfilled' ? results[0].value : null
       const ch = results[1].status === 'fulfilled' ? results[1].value : null
       const today = results[2].status === 'fulfilled' ? results[2].value : null
       const contracts = results[3].status === 'fulfilled' ? results[3].value : null
+      const overview = results[4].status === 'fulfilled' ? results[4].value : null
       if (dash) {
         daily.value = dash.daily
         summary.value = dash.summary
@@ -417,6 +551,10 @@
       if (contracts) {
         contractVenues.value = contracts.venues
         contractsFetchedAt.value = contracts.fetchedAt
+      }
+      if (overview) {
+        overviewVenues.value = overview.venues
+        if (Object.keys(overview.venues).length) overviewFetchedAt.value = overview.fetchedAt
       }
     } finally {
       loading.value = false

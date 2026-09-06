@@ -14,6 +14,16 @@
           <ElButton link type="primary" :loading="loading" @click="reload">刷新</ElButton>
         </div>
       </div>
+      <div class="mt-1 text-xs text-gray-400">
+        清单阈值（随「会员管理 → 调整标签阈值」实时同步）：待续课 剩余 ≤{{
+          activeRules.renewalThreshold
+        }}
+        节 · 预流失 {{ activeRules.predropMin }}-{{ activeRules.predropMax }} 天未到店 · 待复活
+        &gt;{{ activeRules.reviveDays }} 天 · VIP 实收 ≥{{
+          formatMoney(activeRules.vipAmountThreshold)
+        }}
+        元
+      </div>
     </template>
 
     <ElTabs v-model="activeTab">
@@ -285,6 +295,8 @@
 <script setup lang="ts">
   import {
     getTodayTodo,
+    getMemberRules,
+    refreshMemberRules,
     type TodayTodo,
     type TodayTodoBookingItem,
     type TodayTodoRenewalItem,
@@ -292,7 +304,8 @@
     type TodayTodoBirthdayItem,
     type TodayTodoTrialItem,
     type TodayTodoLeadItem,
-    type TodayTodoTaskItem
+    type TodayTodoTaskItem,
+    type MemberRules
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
 
@@ -315,6 +328,12 @@
   const activeTab = ref<TabKey>('bookings')
   const visibleCount = 8
   const expanded = reactive<Record<string, boolean>>({})
+  // 当前生效的清单阈值：优先取本次聚合结果携带的口径（后端/本地一致），展示与会员管理同步
+  const activeRules = ref<MemberRules>(getMemberRules())
+
+  function formatMoney(v: number): string {
+    return Number(v).toLocaleString('zh-CN')
+  }
 
   const allTabs: { key: TabKey; label: string }[] = [
     { key: 'bookings', label: '今日预约' },
@@ -398,7 +417,13 @@
   async function reload() {
     loading.value = true
     try {
+      // 先拉最新清单阈值，保证待续费/流失风险等分组与「会员管理 → 调整标签阈值」同口径
+      await refreshMemberRules().catch(() => {})
+      activeRules.value = getMemberRules()
       todo.value = await getTodayTodo()
+      if (todo.value?.rules) {
+        activeRules.value = todo.value.rules
+      }
       // 默认落在第一个有待办的分组
       const firstNonEmpty = visibleTabs.value.find((t) => counts.value[t.key] > 0)
       const current = activeTab.value

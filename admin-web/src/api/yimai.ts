@@ -1730,6 +1730,8 @@ export interface TodayTodoTaskItem extends YimaiTask {
 
 export interface TodayTodo {
   date: string
+  /** 本次聚合使用的清单阈值（与客户管理「调整标签阈值」同步） */
+  rules?: MemberRules
   bookings: { items: TodayTodoBookingItem[]; trialCount: number }
   renewals: TodayTodoRenewalItem[]
   churnRisks: TodayTodoChurnItem[]
@@ -1905,6 +1907,7 @@ export function getTodayTodo(): Promise<TodayTodo> {
 
   return Promise.resolve({
     date: today,
+    rules: getMemberRules(),
     bookings: { items: [], trialCount: 0 },
     renewals,
     churnRisks,
@@ -1939,11 +1942,17 @@ export interface PendingContracts {
   venues: Record<
     string,
     {
+      /** 签署中合同总数（随心瑜 status=1） */
+      signing?: number
       pendingCustomer: number
       pendingVenue: number
       unknown: number
+      /** 已过期合同数（status=5，发起后顾客一直未签） */
+      expired?: number
       fieldConfirmed: boolean
       items: PendingContractItem[]
+      /** 该门店读取失败时的错误信息 */
+      error?: string
     }
   >
   fetchedAt: string
@@ -1951,6 +1960,41 @@ export interface PendingContracts {
 
 export function getPendingContracts(): Promise<PendingContracts> {
   if (USE_BACKEND) return apiGet('/ky/pending-contracts')
+  return Promise.resolve({ venues: {}, fetchedAt: '' })
+}
+
+/** 随心瑜数据分析三件套：数据概览 KPI + 会员活跃分析 + 访客转化（口径与随心瑜后台一致） */
+export interface KyVenueOverview {
+  /** 该门店读取失败时的错误信息 */
+  error?: string
+  thisMonthRevenue: number
+  lastMonthRevenue: number
+  /** 本月耗卡金额 */
+  thisMonthUsage: number
+  /** 会员剩余资产（预收负债） */
+  remainingAssets: number
+  totalMembers: number
+  activeMembers: number
+  thisMonthClassMembers: number
+  lastMonthClassMembers: number
+  riskMembers: number
+  inactiveMembers: number
+  lostMembers: number
+  totalVisitors: number
+  monthNewVisitors: number
+  monthVisitorClasses: number
+  monthVisitorConversions: number
+  activityAvailable: boolean
+  visitorAvailable: boolean
+}
+
+export interface KyOverview {
+  venues: Record<string, KyVenueOverview>
+  fetchedAt: string
+}
+
+export function getKyOverview(): Promise<KyOverview> {
+  if (USE_BACKEND) return apiGet('/ky/overview')
   return Promise.resolve({ venues: {}, fetchedAt: '' })
 }
 

@@ -600,18 +600,27 @@ Route::middleware('auth:sanctum')->group(function () {
         }
         $result = [];
         foreach ($stores as $venue => $venueId) {
-            $response = KyClient::call('venue/api/getallcontractlist', [
-                'venue_id' => $venueId,
-                'page_index' => 1,
-                'page_size' => 200,
-                'contract_status' => '0',
-                'contract_name' => '',
-                'initiator_emp_name' => '',
-                'venue_signatory_emp_name' => '',
-                'customer_signatory_search' => '',
-                'initiator_start_date' => '',
-                'initiator_end_date' => '',
-            ]);
+            // 随心瑜口径实测（2026-09 解读）：contract_status 0=待签(恒空) 1=签署中 2=已完成 3=已撤回 4=已拒绝 5=已过期；
+            // 「双方待签」= status=1 签署中 且 customer/venue_signatory_status 任一为 0（未签，2=已签）。
+            $defaults = ['signing' => 0, 'pendingCustomer' => 0, 'pendingVenue' => 0, 'unknown' => 0, 'expired' => 0, 'items' => [], 'fieldConfirmed' => false];
+            try {
+                $response = KyClient::call('venue/api/getallcontractlist', [
+                    'venue_id' => $venueId,
+                    'page_index' => 1,
+                    'page_size' => 200,
+                    'contract_status' => '1',
+                    'contract_name' => '',
+                    'initiator_emp_name' => '',
+                    'venue_signatory_emp_name' => '',
+                    'customer_signatory_search' => '',
+                    'initiator_start_date' => '',
+                    'initiator_end_date' => '',
+                ]);
+            } catch (\Throwable $e) {
+                $result[$venue] = $defaults + ['error' => mb_substr($e->getMessage(), 0, 120)];
+
+                continue;
+            }
             $rows = contractRows($response);
             $items = collect($rows)->map(function ($row) use ($venue) {
                 $customer = contractPartyState($row, 'customer');
@@ -620,20 +629,92 @@ Route::middleware('auth:sanctum')->group(function () {
                 return [
                     'id' => (string) ($row['id'] ?? $row['contract_id'] ?? $row['contract_no'] ?? ''),
                     'name' => (string) ($row['contract_name'] ?? $row['name'] ?? '未命名合同'),
-                    'memberName' => (string) ($row['member_name'] ?? $row['customer_name'] ?? $row['m_name'] ?? ''),
+                    'memberName' => (string) ($row['member_name'] ?? $row['customer_name'] ?? $row['m_name'] ?? $row['name'] ?? ''),
                     'venue' => $venue,
                     'customerState' => $customer,
                     'venueState' => $venueState,
-                    'statusRaw' => (string) ($row['contract_status_desc'] ?? $row['status_desc'] ?? $row['status'] ?? ''),
+                    'statusRaw' => (string) ($row['status_text'] ?? $row['contract_status_desc'] ?? $row['status_desc'] ?? $row['status'] ?? ''),
                 ];
             });
             $pending = $items->filter(fn ($item) => in_array('incomplete', [$item['customerState'], $item['venueState']], true))->values();
+            // 已过期合同（status=5）只取 total 做提醒，不拉明细
+            $expiredTotal = 0;
+            try {
+                $expiredResp = KyClient::call('venue/api/getallcontractlist', [
+                    'venue_id' => $venueId,
+                    'page_index' => 1,
+                    'page_size' => 1,
+                    'contract_status' => '5',
+                    'contract_name' => '',
+                    'initiator_emp_name' => '',
+                    'venue_signatory_emp_name' => '',
+                    'customer_signatory_search' => '',
+                    'initiator_start_date' => '',
+                    'initiator_end_date' => '',
+                ]);
+                $expiredTotal = (int) ($expiredResp['data']['total'] ?? 0);
+            } catch (\Throwable $e) {
+            }
+            // 注意数组联合运算符左侧优先：计算值在前，defaults 只兜底缺失键
             $result[$venue] = [
+                'signing' => (int) ($response['data']['total'] ?? $items->count()),
                 'pendingCustomer' => $pending->where('customerState', 'incomplete')->count(),
                 'pendingVenue' => $pending->where('venueState', 'incomplete')->count(),
                 'unknown' => $items->filter(fn ($item) => in_array('unknown', [$item['customerState'], $item['venueState']], true))->count(),
+                'expired' => $expiredTotal,
                 'items' => $pending->take(20)->all(),
                 'fieldConfirmed' => $items->contains(fn ($item) => ! in_array('unknown', [$item['customerState'], $item['venueState']], true)),
+            ] + $defaults;
+        }
+
+        return ok(['venues' => $result, 'fetchedAt' => now()->format('Y-m-d H:i:s')]);
+    });
+
+    // 随心瑜数据分析三件套（解读文档 ⭐⭐）：数据概览 KPI + 会员活跃分析 + 访客转化，工作台经营概览直读口径
+    Route::get('/ky/overview', function (Request $r) {
+        abort_unless(in_array($r->user()->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可查看经营概览');
+        $stores = ['绿地店' => '1', '东部店' => '4250'];
+        if ($r->user()->role === 'R_MANAGER') {
+            $stores = [$r->user()->venue => $stores[$r->user()->venue]];
+        }
+        $result = [];
+        foreach ($stores as $venue => $venueId) {
+            try {
+                $overview = KyClient::call('venue/api/getvenuedataoverview', ['venue_id' => $venueId])['data'] ?? [];
+            } catch (\Throwable $e) {
+                $result[$venue] = ['error' => mb_substr($e->getMessage(), 0, 120)];
+
+                continue;
+            }
+            $activity = [];
+            $visitor = [];
+            try {
+                $activity = KyClient::call('venue/api/getmembershipactivityanalysis', ['venue_id' => $venueId])['data'] ?? [];
+            } catch (\Throwable $e) {
+            }
+            try {
+                $visitor = KyClient::call('venue/api/getvisitorconversion', ['venue_id' => $venueId])['data'] ?? [];
+            } catch (\Throwable $e) {
+            }
+            $result[$venue] = [
+                'thisMonthRevenue' => (float) ($overview['this_month_revenue_total'] ?? 0),
+                'lastMonthRevenue' => (float) ($overview['last_month_revenue_total'] ?? 0),
+                'thisMonthUsage' => (float) ($overview['this_month_usage_total'] ?? 0),
+                'remainingAssets' => (float) ($overview['remaining_assets_total'] ?? 0),
+                'totalMembers' => (int) ($activity['total_members'] ?? 0),
+                'activeMembers' => (int) ($activity['total_active_members'] ?? 0),
+                'thisMonthClassMembers' => (int) ($activity['total_this_month_classes_members'] ?? 0),
+                'lastMonthClassMembers' => (int) ($activity['total_last_month_classes_members'] ?? 0),
+                'riskMembers' => (int) ($activity['total_risk_members'] ?? 0),
+                'inactiveMembers' => (int) ($activity['total_inactive_members'] ?? 0),
+                'lostMembers' => (int) ($activity['total_lost_members'] ?? 0),
+                'totalVisitors' => (int) ($visitor['total_visitors'] ?? 0),
+                'monthNewVisitors' => (int) ($visitor['total_this_month_new_add_visitors'] ?? 0),
+                'monthVisitorClasses' => (int) ($visitor['total_this_month_classes_visitors'] ?? 0),
+                'monthVisitorConversions' => (int) ($visitor['total_this_month_visitors_conversion_members'] ?? 0),
+                // 上游两路分析任一失败时，相关计数不作为真实 0 展示
+                'activityAvailable' => $activity !== [],
+                'visitorAvailable' => $visitor !== [],
             ];
         }
 
@@ -1862,6 +1943,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
         return ok([
             'date' => $today->format('Y-m-d'),
+            // 返回当前生效的清单阈值（客户管理可调），工作台展示并与会员管理口径保持一致
+            'rules' => rules(),
             'bookings' => ['items' => $bookings, 'trialCount' => $bookingTrialCount],
             'renewals' => $renewals,
             'churnRisks' => $churnRisks,
@@ -2016,6 +2099,20 @@ if (! function_exists('ok')) {
 
     function contractPartyState(array $row, string $party): string
     {
+        // 随心瑜真实字段（getallcontractlist 实测）：customer_signatory_status / venue_signatory_status，0=未签、2=已签
+        $direct = (string) ($row[($party === 'customer' ? 'customer' : 'venue').'_signatory_status'] ?? '');
+        if ($direct !== '') {
+            if ($direct === '2' || preg_match('/已签署|签署完成|已完成|completed|signed/i', $direct)) {
+                return 'completed';
+            }
+            if ($direct === '0' || preg_match('/未签署|待签署|待会员签署|待场馆签署|签署中|incomplete|pending|unsigned/i', $direct)) {
+                return 'incomplete';
+            }
+
+            return 'unknown';
+        }
+
+        // 兜底：历史猜测字段（*_sign_status 等）
         $prefixes = $party === 'customer' ? ['customer', 'member', 'm'] : ['venue', 'gym'];
         $complete = '/已签署|签署完成|已完成|completed|signed/i';
         $incomplete = '/未签署|待签署|待会员签署|待场馆签署|签署中|incomplete|pending|unsigned/i';

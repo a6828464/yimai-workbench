@@ -29,6 +29,10 @@ class KyClient
         'venue/api/getallcontractlist',
         'course/api/queryreversionleague',
         'course/api/queryreversionprivate',
+        // 数据分析三件套（数据概览/会员活跃分析/访客转化），工作台经营 KPI 直读上游口径
+        'venue/api/getvenuedataoverview',
+        'venue/api/getmembershipactivityanalysis',
+        'venue/api/getvisitorconversion',
     ];
 
     private const CACHE_KEY = 'ky_access_token';

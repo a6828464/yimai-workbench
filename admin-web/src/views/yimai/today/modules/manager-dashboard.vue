@@ -74,18 +74,65 @@
     </ElRow>
 
     <ElCard shadow="never" class="mb-4">
+      <template #header>
+        <div class="flex-cb">
+          <span class="font-500">随心瑜经营概览</span>
+          <span class="text-xs text-gray-400">{{
+            overviewFetchedAt ? `读取于 ${overviewFetchedAt}` : '尚未读取'
+          }}</span>
+        </div>
+      </template>
+      <div v-if="overviewError" class="text-sm text-orange-500">{{ overviewError }}</div>
+      <div v-else-if="overviewVenue" class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div
+          v-for="cell in overviewCells"
+          :key="cell.label"
+          class="rounded-lg bg-gray-50 dark:bg-gray-800 p-3 text-center"
+        >
+          <div class="text-lg font-600">{{ cell.value }}</div>
+          <div class="mt-0.5 text-xs text-gray-400">{{ cell.label }}</div>
+        </div>
+      </div>
+      <div v-if="overviewVenue?.visitorAvailable" class="mt-3 text-xs text-gray-400">
+        本月访客：新增 {{ overviewVenue.monthNewVisitors }} · 访客上课
+        {{ overviewVenue.monthVisitorClasses }} · 转化会员
+        {{ overviewVenue.monthVisitorConversions }}（历史访客 {{ overviewVenue.totalVisitors }}）
+      </div>
+      <div v-if="overviewVenue?.error" class="mt-2 text-xs text-orange-500">
+        部分指标读取失败：{{ overviewVenue.error }}
+      </div>
+    </ElCard>
+
+    <ElCard shadow="never" class="mb-4">
       <template #header><span class="font-500">未完成合同签署</span></template>
       <div v-if="contractError" class="text-sm text-orange-500">{{ contractError }}</div>
-      <div v-else-if="contractVenue" class="flex flex-wrap gap-5 text-sm">
-        <span
-          >待会员签署 <b class="text-orange-500">{{ contractVenue.pendingCustomer }}</b></span
+      <div v-else-if="contractVenue" class="flex flex-wrap items-center gap-5 text-sm">
+        <span v-if="contractVenue.error" class="text-orange-500"
+          >本店读取失败：{{ contractVenue.error }}</span
         >
-        <span
-          >待场馆签署 <b class="text-red-500">{{ contractVenue.pendingVenue }}</b></span
-        >
-        <span v-if="!contractVenue.fieldConfirmed" class="text-xs text-gray-400"
-          >上游签署字段尚未确认，未知 {{ contractVenue.unknown }} 条未计入</span
-        >
+        <template v-else>
+          <span
+            >签署中
+            <b>{{
+              contractVenue.signing ?? contractVenue.pendingCustomer + contractVenue.pendingVenue
+            }}</b></span
+          >
+          <span
+            >待会员签署 <b class="text-orange-500">{{ contractVenue.pendingCustomer }}</b></span
+          >
+          <span
+            >待场馆签署 <b class="text-red-500">{{ contractVenue.pendingVenue }}</b></span
+          >
+          <span>
+            已过期
+            <b :class="(contractVenue.expired ?? 0) > 0 ? 'text-red-500' : ''">{{
+              contractVenue.expired ?? 0
+            }}</b>
+          </span>
+          <span v-if="!contractVenue.fieldConfirmed" class="text-xs text-gray-400"
+            >上游签署字段尚未确认，未知 {{ contractVenue.unknown }} 条未计入</span
+          >
+        </template>
       </div>
     </ElCard>
 
@@ -172,14 +219,16 @@
     getFollowupQueue,
     getRiskAlerts,
     getTodaySummary,
-    getPendingContracts
+    getPendingContracts,
+    getKyOverview
   } from '@/api/yimai'
   import type {
     YimaiCustomer,
     DashboardDayPoint,
     DashboardSummary,
     TodaySummary,
-    PendingContracts
+    PendingContracts,
+    KyVenueOverview
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import DateRangeControl from './date-range-control.vue'
@@ -298,6 +347,30 @@
     Awaited<ReturnType<typeof getPendingContracts>>['venues'][string] | null
   >(null)
   const contractError = ref('')
+  const overviewVenue = ref<KyVenueOverview | null>(null)
+  const overviewFetchedAt = ref('')
+  const overviewError = ref('')
+
+  const money = (v: number): string =>
+    Number(Math.round(v)).toLocaleString('zh-CN', { maximumFractionDigits: 0 })
+
+  const overviewCells = computed(() => {
+    const o = overviewVenue.value
+    if (!o) return []
+    return [
+      { label: '本月收入（元）', value: `¥${money(o.thisMonthRevenue)}` },
+      { label: '本月耗卡（元）', value: `¥${money(o.thisMonthUsage)}` },
+      { label: '剩余资产（元）', value: `¥${money(o.remainingAssets)}` },
+      { label: '活跃会员', value: o.activityAvailable ? String(o.activeMembers) : '—' },
+      {
+        label: '本月上课（人）',
+        value: o.activityAvailable ? String(o.thisMonthClassMembers) : '—'
+      },
+      { label: '风险会员', value: o.activityAvailable ? String(o.riskMembers) : '—' },
+      { label: '沉寂会员', value: o.activityAvailable ? String(o.inactiveMembers) : '—' },
+      { label: '流失会员', value: o.activityAvailable ? String(o.lostMembers) : '—' }
+    ]
+  })
 
   const layerConfig: Record<
     string,
@@ -333,6 +406,10 @@
         contractError.value = `合同读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
         return { venues: {} as PendingContracts['venues'], fetchedAt: '' }
       })
+      const overview = await getKyOverview().catch((error) => {
+        overviewError.value = `经营概览读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
+        return { venues: {} as Record<string, KyVenueOverview>, fetchedAt: '' }
+      })
       const dash = settled[0].status === 'fulfilled' ? settled[0].value : null
       const f = settled[1].status === 'fulfilled' ? settled[1].value : null
       const r = settled[2].status === 'fulfilled' ? settled[2].value : null
@@ -346,6 +423,8 @@
       if (today) todaySummary.value = today
       const venue = userStore.getUserInfo.venue as '绿地店' | '东部店'
       contractVenue.value = contracts.venues[venue] ?? null
+      overviewVenue.value = overview.venues[venue] ?? null
+      if (overview.venues[venue]) overviewFetchedAt.value = overview.fetchedAt
     } finally {
       loading.value = false
     }
