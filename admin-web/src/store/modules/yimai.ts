@@ -45,6 +45,8 @@ export interface YimaiLead {
     total?: number | null
     remaining?: number | null
     redeem?: number | null
+    /** 本课是否已取消（取消后跟进时限留空白） */
+    cancelled?: boolean
   }>
   remark: string
   createdBy: string
@@ -758,6 +760,23 @@ export const useYimaiStore = defineStore(
       return true
     }
 
+    function removeLead(id: number): boolean {
+      ensureSeed()
+      const idx = state.value.leads.findIndex((l) => l.id === id)
+      if (idx === -1) return false
+      const lead = state.value.leads[idx]
+      state.value.leads.splice(idx, 1)
+      writeAudit(
+        '删除',
+        '前端客资',
+        id,
+        `${lead.name}（${lead.source}）`,
+        lead.venue,
+        '删除留资记录'
+      )
+      return true
+    }
+
     function decideApproval(id: number, decision: '初审通过' | '终审通过' | '驳回') {
       const label = `价格审批单 #${id}`
       writeAudit(
@@ -896,6 +915,7 @@ export const useYimaiStore = defineStore(
       writeAudit,
       addLead,
       updateLead,
+      removeLead,
       decideApproval,
       saveSnapshot,
       upsertImportedCustomers,

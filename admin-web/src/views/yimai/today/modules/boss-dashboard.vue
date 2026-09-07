@@ -152,7 +152,18 @@
       <template #header>
         <div class="flex-cb">
           <span class="font-500">未完成合同签署</span>
-          <span class="text-xs text-gray-400">{{ contractsFetchedAt || '尚未读取' }}</span>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-gray-400">{{ contractsFetchedAt || '尚未读取' }}</span>
+            <ElButton
+              link
+              type="primary"
+              :disabled="!contractPendingCount"
+              @click="openContractDialog()"
+            >
+              查看未签名单
+              <template v-if="contractPendingCount">（{{ contractPendingCount }}）</template>
+            </ElButton>
+          </div>
         </div>
       </template>
       <div v-if="contractError" class="text-sm text-orange-500">{{ contractError }}</div>
@@ -162,7 +173,18 @@
           :key="venue"
           class="rounded-lg bg-gray-50 dark:bg-gray-800 p-3"
         >
-          <div class="font-500 mb-2">{{ venue }}</div>
+          <div class="flex-cb mb-2">
+            <span class="font-500">{{ venue }}</span>
+            <ElButton
+              v-if="!item.error && item.items?.length"
+              link
+              type="primary"
+              size="small"
+              @click="openContractDialog(venue)"
+            >
+              查看名单（{{ item.items.length }}）
+            </ElButton>
+          </div>
           <div v-if="item.error" class="text-sm text-orange-500">读取失败：{{ item.error }}</div>
           <template v-else>
             <div class="flex flex-wrap gap-4 text-sm">
@@ -189,6 +211,54 @@
         </div>
       </div>
     </ElCard>
+
+    <!-- 未签名单弹窗 -->
+    <ElDialog
+      v-model="contractDialog.visible"
+      :title="`未完成合同签署名单${contractDialog.venue ? '（' + contractDialog.venue + '）' : ''}`"
+      width="720px"
+      destroy-on-close
+    >
+      <div v-if="contractError" class="text-sm text-orange-500 mb-3">{{ contractError }}</div>
+      <ElAlert
+        v-if="contractDialogVenueItem && !contractDialogVenueItem.fieldConfirmed"
+        type="warning"
+        :closable="false"
+        class="mb-3"
+        show-icon
+      >
+        上游签署字段尚未确认，未知
+        {{ contractDialogVenueItem.unknown }} 条未计入；以下名单为已识别字段的未签合同。
+      </ElAlert>
+      <ElEmpty v-if="!contractDialog.items.length" description="暂无可识别的未签合同" />
+      <ElTable v-else :data="contractDialog.items" border stripe size="small" max-height="460">
+        <ElTableColumn prop="memberName" label="会员姓名" min-width="110" />
+        <ElTableColumn label="签约时间/合同" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.name }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="待会员签署" width="100" align="center">
+          <template #default="{ row }">
+            <ElTag v-if="row.customerState === 'incomplete'" size="small" type="warning"
+              >待签</ElTag
+            >
+            <ElTag v-else-if="row.customerState === 'completed'" size="small" type="success"
+              >已签</ElTag
+            >
+            <span v-else class="text-gray-400">未知</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="待场馆签署" width="100" align="center">
+          <template #default="{ row }">
+            <ElTag v-if="row.venueState === 'incomplete'" size="small" type="danger">待签</ElTag>
+            <ElTag v-else-if="row.venueState === 'completed'" size="small" type="success"
+              >已签</ElTag
+            >
+            <span v-else class="text-gray-400">未知</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn prop="statusRaw" label="上游状态" min-width="120" show-overflow-tooltip />
+      </ElTable>
+    </ElDialog>
 
     <!-- 今日待办（概要，点击进入完整待办页） -->
     <YimaiTodayTodo variant="summary" class="mt-4" />
@@ -496,6 +566,33 @@
   const contractVenues = ref<Awaited<ReturnType<typeof getPendingContracts>>['venues']>({})
   const contractsFetchedAt = ref('')
   const contractError = ref('')
+
+  /** 未签名单弹窗 */
+  const contractDialog = reactive({
+    visible: false,
+    venue: '' as string,
+    items: [] as Array<Record<string, string>>
+  })
+
+  const contractDialogVenueItem = computed(() =>
+    contractDialog.venue ? (contractVenues.value[contractDialog.venue] ?? null) : null
+  )
+
+  /** 全部门店未签合同总数（含未知字段） */
+  const contractPendingCount = computed(() =>
+    Object.values(contractVenues.value).reduce((s, v) => s + (v.items?.length ?? 0), 0)
+  )
+
+  function openContractDialog(venue = '') {
+    contractDialog.venue = venue
+    const item = venue ? (contractVenues.value[venue] ?? null) : null
+    contractDialog.items =
+      (item?.items as unknown as Array<Record<string, string>> | undefined) ??
+      Object.values(contractVenues.value).flatMap(
+        (v) => (v.items as unknown as Array<Record<string, string>> | undefined) ?? []
+      )
+    contractDialog.visible = true
+  }
 
   function onRangeChange(v: [string, string]) {
     range.value = v

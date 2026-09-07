@@ -14,6 +14,8 @@ class Lead extends Model
         'trial_cards' => 'array',
         'coupon_total' => 'integer',
         'coupon_remaining' => 'integer',
+        'deal_amount' => 'float',
+        'redeem_amount' => 'float',
         'deal_at' => 'datetime',
         'redeemed_at' => 'datetime',
     ];

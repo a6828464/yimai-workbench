@@ -215,7 +215,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/leads', function (Request $r) use ($leadFields) {
         $d = $r->validate([
             'name' => 'required|string', 'source' => 'required|string', 'venue' => 'required|string',
-            'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|integer|min:0', 'redeemAmount' => 'nullable|integer|min:0',
+            'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0', 'redeemAmount' => 'nullable|numeric|min:0',
         ]);
         $values = array_intersect_key(camelToSnake($r->all()), array_flip($leadFields)) + ['created_by' => $r->user()->name, 'status' => $r->input('status', '新留资')];
         $values['lead_date'] = $values['lead_date'] ?? now()->toDateString();
@@ -227,7 +227,7 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($values['status'] === '已成交') {
             $values['deal_at'] = now();
         }
-        if ((int) ($values['redeem_amount'] ?? 0) > 0) {
+        if ((float) ($values['redeem_amount'] ?? 0) > 0) {
             $values['redeemed_at'] = now();
         }
         $lead = Lead::create($values);
@@ -240,7 +240,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $lead = Lead::findOrFail($id);
         $before = json_encode(camel($lead), JSON_UNESCAPED_UNICODE);
         $r->validate([
-            'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|integer|min:0', 'redeemAmount' => 'nullable|integer|min:0',
+            'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0', 'redeemAmount' => 'nullable|numeric|min:0',
         ]);
         $changes = array_intersect_key(camelToSnake($r->all()), array_flip($leadFields));
         if (isset($changes['lead_date']) && $changes['lead_date'] === '') {
@@ -254,13 +254,37 @@ Route::middleware('auth:sanctum')->group(function () {
         if (($changes['status'] ?? null) === '已成交' && ! $lead->deal_at) {
             $changes['deal_at'] = now();
         }
-        if ((int) ($changes['redeem_amount'] ?? 0) > 0 && ! $lead->redeemed_at) {
+        if ((float) ($changes['redeem_amount'] ?? 0) > 0 && ! $lead->redeemed_at) {
             $changes['redeemed_at'] = now();
         }
         $lead->update($changes);
         audit($r, '修改', '前端客资', $id, "{$lead->name}（{$lead->source}）", $lead->venue, '字段更新');
 
         return ok(['before' => json_decode($before), 'after' => camel($lead)]);
+    });
+
+    // 删除留资：权限与「编辑」一致（店长本店 / 超管新媒体全部 / 老师本人或未分配），删除写留痕
+    Route::delete('/leads/{id}', function (Request $r, int $id) {
+        $u = $r->user();
+        $lead = Lead::findOrFail($id);
+        if ($u->role === 'R_MANAGER' && $lead->venue !== $u->venue) {
+            abort(403, '无权限：仅可删除本店留资');
+        }
+        if ($u->role === 'R_TEACHER') {
+            if ($u->venue && $lead->venue !== $u->venue) {
+                abort(403, '无权限：仅可删除本店留资');
+            }
+            if ($lead->service_teacher !== '' && $lead->service_teacher !== $u->name && $lead->created_by !== $u->name) {
+                abort(403, '无权限：仅可删除自己名下或未分配的留资');
+            }
+        }
+        if (! in_array($u->role, ['R_SUPER', 'R_MANAGER', 'R_TEACHER', 'R_MEDIA'], true)) {
+            abort(403, '无权限执行此操作');
+        }
+        audit($r, '删除', '前端客资', $id, "{$lead->name}（{$lead->source}）", $lead->venue, '删除留资记录');
+        $lead->delete();
+
+        return ok(['id' => $id]);
     });
 
     Route::get('/leads/{id}/history', function (Request $r, int $id) {
@@ -786,7 +810,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 'pendingVenue' => $pending->where('venueState', 'incomplete')->count(),
                 'unknown' => $items->filter(fn ($item) => in_array('unknown', [$item['customerState'], $item['venueState']], true))->count(),
                 'expired' => $expiredTotal,
-                'items' => $pending->take(20)->all(),
+                'items' => $pending->values()->all(),
                 'fieldConfirmed' => $items->contains(fn ($item) => ! in_array('unknown', [$item['customerState'], $item['venueState']], true)),
             ] + $defaults;
         }
@@ -1416,7 +1440,7 @@ Route::middleware('auth:sanctum')->group(function () {
         foreach ($redeems as $redeem) {
             $date = $redeem->redeemed_at?->toDateString() ?: (string) $redeem->lead_date;
             $redeemVenue = $redeem->venue ?: '双店';
-            $byDate[$date][$redeemVenue]['redeem'] = ($byDate[$date][$redeemVenue]['redeem'] ?? 0) + (int) $redeem->redeem_amount;
+            $byDate[$date][$redeemVenue]['redeem'] = ($byDate[$date][$redeemVenue]['redeem'] ?? 0) + (float) $redeem->redeem_amount;
         }
 
         // 随心瑜体验预约是实际排课事实；按日、门店、人员去重后补足 CRM 留资状态统计。
@@ -1530,8 +1554,8 @@ Route::middleware('auth:sanctum')->group(function () {
                         'deals' => $c['deals'] ?? 0,
                         'cardSales' => $c['card_sales'] ?? 0,
                         'classes' => $c['classes'] ?? 0,
-                        'amount' => $c['amount'] ?? 0,
-                        'redeem' => $c['redeem'] ?? 0,
+                        'amount' => round((float) ($c['amount'] ?? 0), 2),
+                        'redeem' => round((float) ($c['redeem'] ?? 0), 2),
                     ];
                 }
 
@@ -1552,8 +1576,8 @@ Route::middleware('auth:sanctum')->group(function () {
                 'privateClassCount' => $privateClasses,
                 'smallClassCount' => $smallClasses,
                 'groupClassCount' => $groupClasses,
-                'dealAmount' => $totalAmount,
-                'redeemAmount' => $totalRedeem,
+                'dealAmount' => round((float) $totalAmount, 2),
+                'redeemAmount' => round((float) $totalRedeem, 2),
                 'dealRate' => $totalExperienced > 0 ? round($totalDeals / $totalExperienced * 100, 1) : 0,
                 'leadToVisitRate' => $totalLeads > 0 ? min(100, round($totalExperienced / $totalLeads * 100, 1)) : 0,
                 'onlineLeadCount' => $leads->filter(fn ($lead) => isOnlineLead($lead))->count(),
@@ -1636,24 +1660,29 @@ Route::middleware('auth:sanctum')->group(function () {
         foreach ($sales as $sale) {
             $platform = trim((string) $sale->order_platform) !== '' ? $sale->order_platform : (trim((string) $sale->source) !== '' ? $sale->source : '其他');
             $platforms[$platform] = $platforms[$platform] ?? ['redeem' => 0, 'deal' => 0, 'leads' => 0];
-            $platforms[$platform]['deal'] += (int) $sale->deal_amount;
+            $platforms[$platform]['deal'] += (float) $sale->deal_amount;
         }
         foreach ($redeems as $redeem) {
             $platform = trim((string) $redeem->order_platform) !== '' ? $redeem->order_platform : (trim((string) $redeem->source) !== '' ? $redeem->source : '其他');
             $platforms[$platform] = $platforms[$platform] ?? ['redeem' => 0, 'deal' => 0, 'leads' => 0];
-            $platforms[$platform]['redeem'] += (int) $redeem->redeem_amount;
+            $platforms[$platform]['redeem'] += (float) $redeem->redeem_amount;
         }
 
         $rows = [];
         foreach ($platforms as $name => $v) {
-            $rows[] = ['platform' => $name, 'redeem' => $v['redeem'], 'deal' => $v['deal'], 'leads' => $v['leads']];
+            $rows[] = [
+                'platform' => $name,
+                'redeem' => round((float) $v['redeem'], 2),
+                'deal' => round((float) $v['deal'], 2),
+                'leads' => $v['leads'],
+            ];
         }
         usort($rows, fn ($a, $b) => $b['deal'] + $b['redeem'] <=> $a['deal'] + $a['redeem']);
 
         return ok([
             'rows' => $rows,
-            'totalDeal' => (int) $sales->sum('deal_amount'),
-            'totalRedeem' => (int) $redeems->sum('redeem_amount'),
+            'totalDeal' => round((float) $sales->sum('deal_amount'), 2),
+            'totalRedeem' => round((float) $redeems->sum('redeem_amount'), 2),
             'dealCount' => $sales->count(),
         ]);
     });

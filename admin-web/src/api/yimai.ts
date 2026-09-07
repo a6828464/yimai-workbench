@@ -1,7 +1,7 @@
 import { useUserStore } from '@/store/modules/user'
 import { useYimaiStore } from '@/store/modules/yimai'
 import { fetchKyMembers, KY_STORES } from './keepyoga'
-import { USE_BACKEND, apiGet, apiPost, apiPatch, apiPut } from './backend'
+import { USE_BACKEND, apiGet, apiPost, apiPatch, apiPut, apiDelete } from './backend'
 import type {
   YimaiLead,
   YimaiAuditLog,
@@ -388,6 +388,14 @@ export function updateLead(id: number, patch: Partial<YimaiLead>) {
     return apiPatch<unknown>(`/leads/${id}`, patch as Record<string, unknown>)
   }
   return Promise.resolve(useYimaiStore().updateLead(id, patch))
+}
+
+/** 删除留资记录（权限与编辑一致：店长本店 / 超管新媒体全部 / 老师本人或未分配） */
+export function deleteLead(id: number) {
+  if (USE_BACKEND) {
+    return apiDelete<unknown>(`/leads/${id}`)
+  }
+  return Promise.resolve(useYimaiStore().removeLead(id))
 }
 
 export function getLeadHistory(leadId: number): Promise<YimaiAuditLog[]> {

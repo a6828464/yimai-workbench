@@ -55,8 +55,8 @@
       <ArtTableHeader :columns="[]" :loading="loading">
         <template #left>
           <span class="text-sm text-gray-400">
-            {{ scopeHint }} · 三次跟进时限自动计算（7/15/30天），超期红色提醒 ·
-            来源口径：大众点评A/美团B/抖音C/视频号D/自然到店E
+            {{ scopeHint }} · 三次跟进时限从首次体验课自动计算（7/15/30天），第一节体验课取消则留白
+            · 来源口径：大众点评A/美团B/抖音C/视频号D/自然到店E
           </span>
         </template>
       </ArtTableHeader>
@@ -154,15 +154,20 @@
         </ElTableColumn>
         <ElTableColumn label="跟进时限" width="170">
           <template #default="{ row }">
-            <div class="followup-cell">
-              <span :class="deadlineClass(row, 7)">首跟{{ plusDays(row.leadDate, 7) }}</span>
-              <span :class="deadlineClass(row, 15)">二跟{{ plusDays(row.leadDate, 15) }}</span>
-              <span :class="deadlineClass(row, 30)">三跟{{ plusDays(row.leadDate, 30) }}</span>
+            <div v-if="firstTrialTime(row)" class="followup-cell">
+              <span :class="deadlineClass(row, 7)">首跟{{ plusDays(firstTrialTime(row), 7) }}</span>
+              <span :class="deadlineClass(row, 15)"
+                >二跟{{ plusDays(firstTrialTime(row), 15) }}</span
+              >
+              <span :class="deadlineClass(row, 30)"
+                >三跟{{ plusDays(firstTrialTime(row), 30) }}</span
+              >
             </div>
+            <div v-else class="followup-cell text-gray-300">—</div>
           </template>
         </ElTableColumn>
         <ElTableColumn prop="createdBy" label="录入人" width="80" />
-        <ElTableColumn label="操作" width="150" fixed="right">
+        <ElTableColumn label="操作" width="170" fixed="right">
           <template #default="{ row }">
             <ElButton
               link
@@ -174,6 +179,15 @@
               编辑
             </ElButton>
             <ElButton link type="info" size="small" @click="openHistory(row)">变更记录</ElButton>
+            <ElButton
+              link
+              type="danger"
+              size="small"
+              :disabled="!canManageLead(row)"
+              @click="removeLead(row)"
+            >
+              删除
+            </ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
@@ -322,6 +336,8 @@
               ><ElInputNumber
                 v-model="dialog.form.dealAmount"
                 :min="0"
+                :precision="2"
+                :step="1"
                 controls-position="right"
                 class="!w-full"
                 placeholder="成交时填写"
@@ -341,25 +357,23 @@
           </template>
           <div class="text-xs text-gray-400 mb-3 leading-5">
             每一节体验课填写上课时间、主题、上课老师以及核销用的券信息（下单平台 / 券名称 / 券码 /
-            次数）。
+            次数）。若第一节体验课取消，请勾选「已取消」，跟进时限将留空白。
           </div>
           <div v-if="dialog.form.trialCards.length" class="space-y-3">
             <div
               v-for="(card, idx) in dialog.form.trialCards"
               :key="idx"
               class="border border-dashed border-gray-300 rounded-lg p-3"
+              :class="{ 'bg-red-50/40 dark:bg-red-900/10': card.cancelled }"
             >
               <div class="flex-cb mb-2">
                 <span class="text-sm font-500">第 {{ card.session }} 节体验课</span>
-                <ElButton
-                  link
-                  type="danger"
-                  size="small"
-                  :disabled="idx === 0 && dialog.form.trialCards.length === 1"
-                  @click="removeTrialCard(idx)"
-                >
-                  移除
-                </ElButton>
+                <div class="flex items-center gap-3">
+                  <ElCheckbox v-model="card.cancelled" size="small">已取消</ElCheckbox>
+                  <ElButton link type="danger" size="small" @click="removeTrialCard(idx)">
+                    移除
+                  </ElButton>
+                </div>
               </div>
               <ElRow :gutter="12">
                 <ElCol :span="12">
@@ -428,6 +442,8 @@
                     <ElInputNumber
                       v-model="card.redeem"
                       :min="0"
+                      :precision="2"
+                      :step="1"
                       controls-position="right"
                       class="!w-full"
                       placeholder="本节券码核销金额"
@@ -486,6 +502,7 @@
     addLead,
     canManageLead,
     checkLeadPhone,
+    deleteLead,
     getLeadHistory,
     queryLeads,
     queryCustomers,
@@ -493,7 +510,7 @@
   } from '@/api/yimai'
   import type { YimaiLead } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
-  import { ElMessage } from 'element-plus'
+  import { ElMessage, ElMessageBox } from 'element-plus'
 
   defineOptions({ name: 'YimaiLeads' })
 
@@ -586,9 +603,10 @@
       demand: '',
       source: '',
       orderPlatform: '',
-      venue: isManager.value || isTeacher.value
-        ? (String(userStore.getUserInfo.venue ?? '绿地店') as YimaiLead['venue'])
-        : ('绿地店' as YimaiLead['venue']),
+      venue:
+        isManager.value || isTeacher.value
+          ? (String(userStore.getUserInfo.venue ?? '绿地店') as YimaiLead['venue'])
+          : ('绿地店' as YimaiLead['venue']),
       serviceTeacher: isTeacher.value ? String(userStore.getUserInfo.userName ?? '') : '',
       status: '新留资' as YimaiLead['status'],
       grade: '' as YimaiLead['grade'],
@@ -639,7 +657,8 @@
       voucherCode: '',
       total: null,
       remaining: null,
-      redeem: null
+      redeem: null,
+      cancelled: false
     })
   }
 
@@ -694,7 +713,9 @@
       ...emptyForm(),
       ...row,
       status: row.status,
-      trialCards: Array.isArray(row.trialCards) ? [...row.trialCards] : []
+      trialCards: Array.isArray(row.trialCards)
+        ? row.trialCards.map((c) => ({ ...c, cancelled: Boolean(c.cancelled) }))
+        : []
     } as unknown as ReturnType<typeof emptyForm>
     dialog.form = form
     phoneChecked.value = false
@@ -707,9 +728,10 @@
       ElMessage.warning('请至少填写姓名和来源')
       return
     }
-    // 清理空的体验课卡片（未填任何内容不提交）
+    // 清理空的体验课卡片（未填任何内容且未勾选已取消则不提交）
     dialog.form.trialCards = dialog.form.trialCards.filter(
       (c) =>
+        c.cancelled ||
         c.couponName ||
         c.voucherCode ||
         c.platform ||
@@ -722,7 +744,7 @@
     )
     // 核销金额汇总各节体验课，保证经营看板/平台统计口径一致
     const redeemSum = dialog.form.trialCards.reduce((s, c) => s + (Number(c.redeem) || 0), 0)
-    dialog.form.redeemAmount = redeemSum > 0 ? redeemSum : null
+    dialog.form.redeemAmount = redeemSum > 0 ? Math.round(redeemSum * 100) / 100 : null
     dialog.saving = true
     try {
       const teacherPayload = isTeacher.value
@@ -775,19 +797,72 @@
     }
   }
 
+  /**
+   * 跟进时限基准：第一次预约体验课的时间。
+   * 取体验课卡片中 session 最小且已填时间的一张；若该张被标记「已取消」则返回空（跟进时限留白）。
+   * 兼容历史单节体验课字段（trialTime）。
+   */
+  function firstTrialTime(row: YimaiLead): string {
+    const cards = (row.trialCards ?? []).filter((c) => c.time)
+    if (cards.length) {
+      const first = [...cards].sort((a, b) => (a.session ?? 0) - (b.session ?? 0))[0]
+      if (first.cancelled) return ''
+      return first.time
+    }
+    return row.trialTime ?? ''
+  }
+
+  /** 兼容 'YYYY-MM-DD HH:mm' 与 'YYYY-MM-DD' 的日期解析（Safari 对空格格式会 Invalid Date） */
+  function parseDate(date: string): Date {
+    const normalized = date.includes(' ') ? date.replace(' ', 'T') : date
+    return new Date(normalized)
+  }
+
   function plusDays(date: string, days: number): string {
-    if (!date) return '—'
-    const d = new Date(date)
+    if (!date) return ''
+    const d = parseDate(date)
+    if (Number.isNaN(d.getTime())) return '—'
     d.setDate(d.getDate() + days)
     return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   }
 
   function deadlineClass(row: YimaiLead, days: number): string {
-    if (!row.leadDate) return ''
+    const base = firstTrialTime(row)
+    if (!base) return ''
     if (['已成交', '已流失', '爽约'].includes(row.status)) return 'done'
-    const deadline = new Date(row.leadDate)
+    const deadline = parseDate(base)
+    if (Number.isNaN(deadline.getTime())) return ''
     deadline.setDate(deadline.getDate() + days)
     return deadline.getTime() < Date.now() ? 'overdue' : ''
+  }
+
+  /** 删除留资：按编辑权限控制，二次确认后删除并刷新 */
+  async function removeLead(row: YimaiLead) {
+    if (!canManageLead(row)) {
+      ElMessage.warning('无权限删除该留资')
+      return
+    }
+    try {
+      await ElMessageBox.confirm(
+        `确认删除留资「${row.name}（${row.source}）」？删除后不可恢复，操作留痕会保留本次删除记录。`,
+        '删除留资',
+        {
+          type: 'warning',
+          confirmButtonText: '删除',
+          cancelButtonText: '取消'
+        }
+      )
+    } catch {
+      return
+    }
+    try {
+      await deleteLead(row.id)
+      ElMessage.success('已删除')
+      await load()
+    } catch (e) {
+      console.error('[leads.remove]', e)
+      ElMessage.error(e instanceof Error ? e.message : '删除失败，请稍后重试')
+    }
   }
 
   function statusType(status: string): 'danger' | 'warning' | 'info' | 'success' | 'primary' {

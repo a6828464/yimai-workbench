@@ -104,7 +104,22 @@
     </ElCard>
 
     <ElCard shadow="never" class="mb-4">
-      <template #header><span class="font-500">未完成合同签署</span></template>
+      <template #header>
+        <div class="flex items-center justify-between">
+          <span class="font-500">未完成合同签署</span>
+          <ElButton
+            link
+            type="primary"
+            :disabled="!contractVenue?.items.length"
+            @click="contractDialog.visible = true"
+          >
+            查看未签名单
+            <template v-if="contractVenue?.items.length">
+              （{{ contractVenue.items.length }}）
+            </template>
+          </ElButton>
+        </div>
+      </template>
       <div v-if="contractError" class="text-sm text-orange-500">{{ contractError }}</div>
       <div v-else-if="contractVenue" class="flex flex-wrap items-center gap-5 text-sm">
         <span v-if="contractVenue.error" class="text-orange-500"
@@ -135,6 +150,54 @@
         </template>
       </div>
     </ElCard>
+
+    <!-- 未签名单弹窗 -->
+    <ElDialog
+      v-model="contractDialog.visible"
+      title="未完成合同签署名单"
+      width="720px"
+      destroy-on-close
+    >
+      <div v-if="contractError" class="text-sm text-orange-500 mb-3">{{ contractError }}</div>
+      <ElAlert
+        v-if="contractVenue && !contractVenue.fieldConfirmed"
+        type="warning"
+        :closable="false"
+        class="mb-3"
+        show-icon
+      >
+        上游签署字段尚未确认，未知
+        {{ contractVenue.unknown }} 条未计入；以下名单为已识别字段的未签合同。
+      </ElAlert>
+      <ElEmpty v-if="!contractVenue?.items.length" description="暂无可识别的未签合同" />
+      <ElTable v-else :data="contractVenue.items" border stripe size="small" max-height="460">
+        <ElTableColumn prop="memberName" label="会员姓名" min-width="110" />
+        <ElTableColumn label="签约时间/合同" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.name }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="待会员签署" width="100" align="center">
+          <template #default="{ row }">
+            <ElTag v-if="row.customerState === 'incomplete'" size="small" type="warning"
+              >待签</ElTag
+            >
+            <ElTag v-else-if="row.customerState === 'completed'" size="small" type="success"
+              >已签</ElTag
+            >
+            <span v-else class="text-gray-400">未知</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="待场馆签署" width="100" align="center">
+          <template #default="{ row }">
+            <ElTag v-if="row.venueState === 'incomplete'" size="small" type="danger">待签</ElTag>
+            <ElTag v-else-if="row.venueState === 'completed'" size="small" type="success"
+              >已签</ElTag
+            >
+            <span v-else class="text-gray-400">未知</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn prop="statusRaw" label="上游状态" min-width="120" show-overflow-tooltip />
+      </ElTable>
+    </ElDialog>
 
     <!-- 今日待办（概要，点击进入完整待办页） -->
     <YimaiTodayTodo variant="summary" class="mb-4" />
@@ -347,6 +410,8 @@
     Awaited<ReturnType<typeof getPendingContracts>>['venues'][string] | null
   >(null)
   const contractError = ref('')
+  /** 未签名单弹窗 */
+  const contractDialog = reactive({ visible: false })
   const overviewVenue = ref<KyVenueOverview | null>(null)
   const overviewFetchedAt = ref('')
   const overviewError = ref('')
