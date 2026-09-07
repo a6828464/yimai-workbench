@@ -71,7 +71,10 @@ http.interceptors.response.use(
   async (error) => {
     const status = error.response?.status
     if (status === 401) {
-      const requestToken = String(error.config?.headers?.Authorization ?? '').replace(/^Bearer\s+/i, '')
+      const requestToken = String(error.config?.headers?.Authorization ?? '').replace(
+        /^Bearer\s+/i,
+        ''
+      )
       const currentToken = getBackendToken()
       if (!requestToken || !currentToken || requestToken === currentToken) {
         await expireSession()
@@ -81,22 +84,40 @@ http.interceptors.response.use(
   }
 )
 
-export async function apiGet<T = unknown>(path: string, params?: Record<string, unknown>): Promise<T> {
+export async function apiGet<T = unknown>(
+  path: string,
+  params?: Record<string, unknown>
+): Promise<T> {
   const r = await http.get(path, { params })
   return unwrap<T>(r.data)
 }
 
-export async function apiPost<T = unknown>(path: string, body?: Record<string, unknown>, timeout?: number): Promise<T> {
+export async function apiPost<T = unknown>(
+  path: string,
+  body?: Record<string, unknown>,
+  timeout?: number
+): Promise<T> {
   const r = await http.post(path, body, { timeout })
   return unwrap<T>(r.data)
 }
 
-export async function apiPatch<T = unknown>(path: string, body?: Record<string, unknown>): Promise<T> {
+export async function apiPatch<T = unknown>(
+  path: string,
+  body?: Record<string, unknown>
+): Promise<T> {
   const r = await http.patch(path, body)
   return unwrap<T>(r.data)
 }
 
-export async function apiPut<T = unknown>(path: string, body?: Record<string, unknown>): Promise<T> {
+export async function apiPut<T = unknown>(
+  path: string,
+  body?: Record<string, unknown>
+): Promise<T> {
   const r = await http.put(path, body)
+  return unwrap<T>(r.data)
+}
+
+export async function apiDelete<T = unknown>(path: string): Promise<T> {
+  const r = await http.delete(path)
   return unwrap<T>(r.data)
 }

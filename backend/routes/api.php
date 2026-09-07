@@ -8,6 +8,7 @@ use App\Models\Customer;
 use App\Models\KyBooking;
 use App\Models\KyCard;
 use App\Models\Lead;
+use App\Models\MarketingPost;
 use App\Models\PublishedShare;
 use App\Models\RenewalEvaluation;
 use App\Models\SyncJob;
@@ -21,6 +22,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 use Symfony\Component\Process\Process;
@@ -31,6 +33,120 @@ Route::post('/auth/register', [AuthController::class, 'register']);
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/auth/logout', [AuthController::class, 'logout']);
+
+    // ---------- 个人中心（账号自助资料 / 密码 / 营销人设，按用户持久化，多设备共用） ----------
+    Route::get('/my/profile', function (Request $r) {
+        $u = $r->user();
+
+        return ok([
+            'name' => $u->name,
+            'phone' => $u->phone,
+            'avatar' => $u->avatar,
+            'email' => $u->email,
+            'role' => $u->role,
+            'venues' => $u->venues ?? [],
+            'profile' => (array) ($u->profile ?? []),
+        ]);
+    });
+
+    Route::put('/my/profile', function (Request $r) {
+        $d = $r->validate([
+            'phone' => 'nullable|string|max:20',
+            // 头像为前端 canvas 压缩后的 data URI（96~128px jpeg，通常 <30KB）
+            'avatar' => 'nullable|string',
+            'profile' => 'nullable|array',
+        ]);
+        abort_if(filled($d['avatar'] ?? null) && strlen((string) $d['avatar']) > 300000, 422, '头像图片过大，请重新选择或压缩');
+        $u = $r->user();
+        $oldPhone = (string) ($u->phone ?? '');
+        if (array_key_exists('phone', $d)) {
+            $u->phone = trim((string) ($d['phone'] ?? '')) ?: null;
+        }
+        if (array_key_exists('avatar', $d)) {
+            $u->avatar = ($d['avatar'] ?? null) ?: null;
+        }
+        if (! empty($d['profile']) && is_array($d['profile'])) {
+            $u->profile = array_merge((array) ($u->profile ?? []), $d['profile']);
+        }
+        $u->save();
+        if ($u->phone !== $oldPhone) {
+            audit($r, '修改', '个人中心', $u->id, $u->name, '双店', "修改手机号：{$oldPhone} → {$u->phone}");
+        } else {
+            audit($r, '修改', '个人中心', $u->id, $u->name, '双店', '更新个人资料/营销人设');
+        }
+
+        return ok(['ok' => true]);
+    });
+
+    Route::put('/my/password', function (Request $r) {
+        $d = $r->validate([
+            'oldPassword' => 'required|string',
+            'newPassword' => 'required|string|min:8|max:64',
+        ]);
+        $u = $r->user();
+        abort_unless(Hash::check($d['oldPassword'], $u->password), 422, '当前密码不正确');
+        abort_if($d['oldPassword'] === $d['newPassword'], 422, '新密码不能与当前密码相同');
+        $u->update(['password' => $d['newPassword']]);
+        // 改密后除本会话外的设备一律下线
+        $currentTokenId = optional($u->currentAccessToken())->id;
+        $others = $u->tokens();
+        if ($currentTokenId) {
+            $others->where('id', '!=', $currentTokenId);
+        }
+        $others->delete();
+        audit($r, '修改', '个人中心', $u->id, $u->name, '双店', '修改登录密码（其他设备已下线）');
+
+        return ok(['ok' => true]);
+    });
+
+    // ---------- 营销生成历史（按账号，每平台保留最近 300 条） ----------
+    Route::get('/marketing/history', function (Request $r) {
+        $q = MarketingPost::query()->where('user_id', $r->user()->id)->latest('id');
+        if ($p = $r->input('platform')) {
+            $q->where('platform', (string) $p);
+        }
+
+        return ok($q->limit(300)->get()->map(fn ($p) => [
+            'id' => $p->id,
+            'platform' => $p->platform,
+            'title' => $p->title,
+            'content' => $p->content,
+            'reply' => $p->reply,
+            'source' => $p->source,
+            'createdAt' => optional($p->created_at)->format('Y-m-d H:i'),
+        ]));
+    });
+
+    Route::post('/marketing/history', function (Request $r) {
+        $d = $r->validate([
+            'platform' => 'required|string|in:朋友圈,小红书',
+            'title' => 'nullable|string|max:120',
+            'content' => 'required|string|max:20000',
+            'reply' => 'nullable|string|max:3000',
+            'source' => 'nullable|string|in:llm,fallback',
+        ]);
+        $p = MarketingPost::create([
+            'user_id' => $r->user()->id,
+            'platform' => $d['platform'],
+            'title' => mb_substr((string) ($d['title'] ?? ''), 0, 120),
+            'content' => $d['content'],
+            'reply' => $d['reply'] ?? null,
+            'source' => $d['source'] ?? 'llm',
+        ]);
+        $stale = MarketingPost::where('user_id', $r->user()->id)->where('platform', $d['platform'])
+            ->orderByDesc('id')->skip(300)->take(50)->pluck('id');
+        if ($stale->isNotEmpty()) {
+            MarketingPost::whereIn('id', $stale)->delete();
+        }
+
+        return ok(['id' => $p->id]);
+    });
+
+    Route::delete('/marketing/history/{id}', function (Request $r, int $id) {
+        MarketingPost::where('user_id', $r->user()->id)->where('id', $id)->delete();
+
+        return ok(['ok' => true]);
+    });
 
     // ---------- 留资 ----------
     Route::get('/leads', function (Request $r) {
@@ -624,7 +740,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     'initiator_start_date' => '',
                     'initiator_end_date' => '',
                 ]);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 $result[$venue] = $defaults + ['error' => mb_substr($e->getMessage(), 0, 120)];
 
                 continue;
@@ -661,7 +777,7 @@ Route::middleware('auth:sanctum')->group(function () {
                     'initiator_end_date' => '',
                 ]);
                 $expiredTotal = (int) ($expiredResp['data']['total'] ?? 0);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
             }
             // 注意数组联合运算符左侧优先：计算值在前，defaults 只兜底缺失键
             $result[$venue] = [
@@ -689,7 +805,7 @@ Route::middleware('auth:sanctum')->group(function () {
         foreach ($stores as $venue => $venueId) {
             try {
                 $overview = KyClient::call('venue/api/getvenuedataoverview', ['venue_id' => $venueId])['data'] ?? [];
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 $result[$venue] = ['error' => mb_substr($e->getMessage(), 0, 120)];
 
                 continue;
@@ -698,11 +814,11 @@ Route::middleware('auth:sanctum')->group(function () {
             $visitor = [];
             try {
                 $activity = KyClient::call('venue/api/getmembershipactivityanalysis', ['venue_id' => $venueId])['data'] ?? [];
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
             }
             try {
                 $visitor = KyClient::call('venue/api/getvisitorconversion', ['venue_id' => $venueId])['data'] ?? [];
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
             }
             $result[$venue] = [
                 'thisMonthRevenue' => (float) ($overview['this_month_revenue_total'] ?? 0),
@@ -1828,7 +1944,7 @@ Route::middleware('auth:sanctum')->group(function () {
             $riskSets = ['预流失', '待复活', '出勤降低'];
             $churnRisks = $scopedCustomers
                 ->filter(fn ($c) => collect($riskSets)->contains(fn ($k) => in_array($k, $listMap[$c['id']] ?? [], true)))
-                ->map(function ($c) use ($listMap, $daysBetween, $doneInfo) {
+                ->map(function ($c) use ($listMap, $doneInfo) {
                     $lists = array_values(array_intersect($listMap[$c['id']] ?? [], ['预流失', '待复活', '出勤降低']));
                     $lastVisitDays = $c['lastVisit'] ? abs((int) ((time() - strtotime((string) $c['lastVisit'])) / 86400)) : null;
 

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -10,8 +11,8 @@ use Laravel\Sanctum\HasApiTokens;
 
 class User extends Authenticatable
 {
-    /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, Notifiable, HasApiTokens;
+    /** @use HasFactory<UserFactory> */
+    use HasApiTokens, HasFactory, Notifiable;
 
     protected $fillable = [
         'name',
@@ -22,6 +23,9 @@ class User extends Authenticatable
         'venue',
         'venues',
         'status',
+        'phone',
+        'avatar',
+        'profile',
     ];
 
     protected $hidden = [
@@ -35,6 +39,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'venues' => 'array',
+            'profile' => 'array',
         ];
     }
 
@@ -48,6 +53,8 @@ class User extends Authenticatable
             'venues' => $this->venues ?? [],
             'buttons' => [],
             'email' => $this->email,
+            'phone' => $this->phone,
+            'avatar' => $this->avatar,
             'status' => $this->status ?? '启用',
         ];
     }

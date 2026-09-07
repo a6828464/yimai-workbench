@@ -81,6 +81,7 @@ declare namespace Api {
       userId: number
       userName: string
       email: string
+      phone?: string
       avatar?: string
       /** 当前生效的数据范围门店；null 表示不限 */
       venue?: string | null
