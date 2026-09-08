@@ -244,8 +244,8 @@ export const useUserStore = defineStore(
     persist: {
       key: 'user',
       storage: localStorage,
-      // 锁屏密码不落盘：仅会话内存，避免密文随 localStorage 被同机他人读取（固定密钥可逆，落盘即失防）
-      pick: ['language', 'info', 'searchHistory', 'accessToken', 'refreshToken']
+      // 锁屏密码(isLock/lockPassword)不落盘：仅会话内存，避免密文随 localStorage 被同机他人读取（固定密钥可逆，落盘即失防）
+      pick: ['isLogin', 'language', 'info', 'searchHistory', 'accessToken', 'refreshToken']
     }
   }
 )
