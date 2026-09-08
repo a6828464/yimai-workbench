@@ -142,6 +142,18 @@ class KyMemberSyncService
             $members, $cardsByMember, $attendance, $venue, $venueId,
             &$created, &$updated, &$unchanged, &$skipped
         ) {
+            // 预加载本店既有会员 external_id → Customer 映射，避免循环内逐条 SELECT（N+1）
+            $existingByExternalId = Customer::query()
+                ->where('venue', $venue)
+                ->whereIn('external_id', array_values(array_filter(array_map(
+                    fn ($row) => self::pick($row, ['member_id', 'id', 'home_member_id']) !== ''
+                        ? "ky:{$venueId}:".self::pick($row, ['member_id', 'id', 'home_member_id'])
+                        : null,
+                    $members
+                ))))
+                ->get()
+                ->keyBy('external_id');
+
             foreach ($members as $row) {
                 $memberId = self::pick($row, ['member_id', 'id', 'home_member_id']);
                 if ($memberId === '') {
@@ -183,7 +195,7 @@ class KyMemberSyncService
                     $changes['birthday'] = $birthday;
                 }
 
-                $customer = Customer::where('external_id', $externalId)->first();
+                $customer = $existingByExternalId->get($externalId);
                 if (! $customer) {
                     Customer::create($changes + [
                         'layer' => 'P4', 'status' => '待完善', 'owner' => $consultant ?: '未分配',
@@ -224,16 +236,19 @@ class KyMemberSyncService
             ->whereNotIn('status', ['cancelled', 'no_show'])
             ->count();
 
-        // 记录本次同步时间，供下次增量拉取出勤
-        $setting = AppSetting::firstOrCreate([]);
-        $meta = (array) ($setting->sync_meta ?? []);
-        $meta[$venue] = $today->toDateString();
-        $snapshot = (array) ($setting->snapshot ?? []);
-        $snapshot['todayBookings'][$venue] = $todayBookings;
-        $snapshot['trialBookings'][$venue] = $todayTrials;
-        $snapshot['fetchedAt'] = now()->format('Y-m-d H:i:s');
-        $snapshot['fetchedBy'] = 'KeepYoga全量同步';
-        $setting->update(['sync_meta' => $meta, 'snapshot' => $snapshot]);
+        // 记录本次同步时间，供下次增量拉取出勤。
+        // 行锁内读改写，防止与手工「今日预约」PUT 并发时互相覆盖丢更新；fetchedAt 按门店记录。
+        DB::transaction(function () use ($venue, $todayBookings, $todayTrials, $today, &$meta) {
+            $setting = AppSetting::oldest('id')->lockForUpdate()->firstOrCreate([]);
+            $meta = (array) ($setting->sync_meta ?? []);
+            $meta[$venue] = $today->toDateString();
+            $snapshot = (array) ($setting->snapshot ?? []);
+            $snapshot['todayBookings'][$venue] = $todayBookings;
+            $snapshot['trialBookings'][$venue] = $todayTrials;
+            $snapshot['fetchedAt'] = array_merge((array) ($snapshot['fetchedAt'] ?? []), [$venue => now()->format('Y-m-d H:i:s')]);
+            $snapshot['fetchedBy'] = 'KeepYoga全量同步';
+            $setting->update(['sync_meta' => $meta, 'snapshot' => $snapshot]);
+        });
 
         $artifacts = $artifactWriter?->finalize() ?? [];
 

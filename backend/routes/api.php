@@ -229,9 +229,14 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($dt = $r->query('dateTo')) {
             $q->where('lead_date', '<=', $dt);
         }
-        $rows = $q->orderByDesc('id')->get()->map(fn ($x) => camel($x));
+        // 服务端分页：避免全量拉取 + 内存切片导致超量数据被静默截断
+        // size 上限放宽到 5000，兼容前端顾问匹配一次性拉全量留资的场景（超出再逐步下推后端）
+        $current = max(1, (int) $r->query('current', 1));
+        $size = min(5000, max(1, (int) $r->query('size', 20)));
+        $total = (clone $q)->count();
+        $rows = $q->orderByDesc('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
 
-        return ok(['records' => array_slice($rows->toArray(), 0, (int) ($r->query('size', 500))), 'total' => $rows->count()]);
+        return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
     });
 
     // 新增留资时校验手机号是否已命中会员 / 已有留资
@@ -638,27 +643,31 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::patch('/tasks/{id}', function (Request $r, int $id) {
-        $task = Task::findOrFail($id);
         $u = $r->user();
         abort_if($u->role === 'R_MEDIA', 403, '无权操作任务');
-        abort_if($u->role === 'R_MANAGER' && $task->venue !== $u->venue, 403, '无权操作其它门店任务');
-        if ($u->role === 'R_TEACHER') {
-            abort_if($task->venue !== $u->venue || ! in_array($task->owner, [$u->name, '未分配'], true), 403, '只能操作本人任务');
-            $requested = (string) $r->input('status', $task->status);
-            $allowedTransitions = [
-                '待接收' => ['进行中'],
-                '进行中' => ['待验收'],
-                '已退回' => ['进行中', '待验收'],
-            ];
-            abort_unless($requested === $task->status || in_array($requested, $allowedTransitions[$task->status] ?? [], true), 422, '任务状态流转无效');
-            abort_if($r->hasAny(['title', 'venue', 'priority', 'deadline', 'standard']), 403, '老师只能认领或提报本人任务');
-        }
-        if (in_array($r->input('status'), ['已完成', '已退回'], true)) {
-            abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可验收');
-            abort_unless($task->status === '待验收', 422, '仅待验收任务可执行验收');
-        }
-        $allowed = ['title', 'customer_name', 'venue', 'owner', 'priority', 'deadline', 'standard', 'status'];
-        $task->update(collect(camelToSnake($r->all()))->only($allowed)->all());
+        $task = DB::transaction(function () use ($r, $id, $u) {
+            $task = Task::whereKey($id)->lockForUpdate()->firstOrFail();
+            abort_if($u->role === 'R_MANAGER' && $task->venue !== $u->venue, 403, '无权操作其它门店任务');
+            if ($u->role === 'R_TEACHER') {
+                abort_if($task->venue !== $u->venue || ! in_array($task->owner, [$u->name, '未分配'], true), 403, '只能操作本人任务');
+                $requested = (string) $r->input('status', $task->status);
+                $allowedTransitions = [
+                    '待接收' => ['进行中'],
+                    '进行中' => ['待验收'],
+                    '已退回' => ['进行中', '待验收'],
+                ];
+                abort_unless($requested === $task->status || in_array($requested, $allowedTransitions[$task->status] ?? [], true), 422, '任务状态流转无效');
+                abort_if($r->hasAny(['title', 'venue', 'priority', 'deadline', 'standard']), 403, '老师只能认领或提报本人任务');
+            }
+            if (in_array($r->input('status'), ['已完成', '已退回'], true)) {
+                abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可验收');
+                abort_unless($task->status === '待验收', 422, '仅待验收任务可执行验收');
+            }
+            $allowed = ['title', 'customer_name', 'venue', 'owner', 'priority', 'deadline', 'standard', 'status'];
+            $task->update(collect(camelToSnake($r->all()))->only($allowed)->all());
+
+            return $task;
+        });
         audit($r, $r->input('_action', '修改'), '任务中心', $task->id, "{$task->title}·{$task->customer_name}", $task->venue, '任务流转：'.($r->input('status') ?: '字段更新'));
 
         return ok(camel($task));
@@ -1095,9 +1104,10 @@ Route::middleware('auth:sanctum')->group(function () {
             return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
         }
         if (! $resp->successful()) {
-            finishModelRecord($record, 'failed', $startedAt, '', 'HTTP '.$resp->status().': '.$resp->body());
+            // 上游响应体只落内部记录，不回传前端，避免泄露服务商内部报错/请求头回显
+            finishModelRecord($record, 'failed', $startedAt, '', 'HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 500));
 
-            return response()->json(['code' => 1, 'message' => '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 250)]);
+            return response()->json(['code' => 1, 'message' => '大模型接口返回异常（HTTP '.$resp->status().'），请稍后重试']);
         }
 
         if ($stream) {
@@ -1135,7 +1145,7 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($content === null) {
             finishModelRecord($record, 'failed', $startedAt, '', '大模型响应缺少内容');
 
-            return response()->json(['code' => 1, 'message' => '大模型响应缺少内容: '.mb_substr($resp->body(), 0, 150)]);
+            return response()->json(['code' => 1, 'message' => '大模型响应缺少内容，请重试']);
         }
 
         finishModelRecord($record, 'success', $startedAt, (string) $content, null, (array) ($resp->json('usage') ?? []));
@@ -1218,7 +1228,7 @@ Route::middleware('auth:sanctum')->group(function () {
             return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
         }
         if (! $resp->successful()) {
-            return response()->json(['code' => 1, 'message' => '获取模型列表 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 200)]);
+            return response()->json(['code' => 1, 'message' => '获取模型列表失败（HTTP '.$resp->status().'），请检查接口地址与 Key']);
         }
 
         // OpenAI 兼容格式：{data:[{id}]}；部分厂商为 {data:{...}} 或 {models:[...]}
@@ -1255,7 +1265,7 @@ Route::middleware('auth:sanctum')->group(function () {
             return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
         }
         if (! $resp->successful()) {
-            return response()->json(['code' => 1, 'message' => '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 250)]);
+            return response()->json(['code' => 1, 'message' => '大模型接口返回异常（HTTP '.$resp->status().'），请检查接口地址与 Key']);
         }
 
         return ok(['content' => (string) ($resp->json('choices.0.message.content') ?? '')]);
@@ -1494,34 +1504,42 @@ Route::middleware('auth:sanctum')->group(function () {
             'todayKinds.东部店' => 'nullable|array',
         ]);
         $s = setting();
-        $snap = $s->snapshot ?? [];
-        $snap['todayBookings'] = [
-            '绿地店' => (int) ($d['todayBookings']['绿地店'] ?? 0),
-            '东部店' => (int) ($d['todayBookings']['东部店'] ?? 0),
-        ];
-        $snap['trialBookings'] = [
-            '绿地店' => (int) ($d['trialBookings']['绿地店'] ?? 0),
-            '东部店' => (int) ($d['trialBookings']['东部店'] ?? 0),
-        ];
-        if (isset($d['todayKinds'])) {
-            $snap['todayKinds'] = [
-                '绿地店' => [
-                    '私教' => (int) ($d['todayKinds']['绿地店']['私教'] ?? 0),
-                    '小班' => (int) ($d['todayKinds']['绿地店']['小班'] ?? 0),
-                    '团课' => (int) ($d['todayKinds']['绿地店']['团课'] ?? 0),
-                ],
-                '东部店' => [
-                    '私教' => (int) ($d['todayKinds']['东部店']['私教'] ?? 0),
-                    '小班' => (int) ($d['todayKinds']['东部店']['小班'] ?? 0),
-                    '团课' => (int) ($d['todayKinds']['东部店']['团课'] ?? 0),
-                ],
+        $s = DB::transaction(function () use ($s, $d, $r) {
+            $locked = AppSetting::whereKey($s->id)->lockForUpdate()->first() ?? $s;
+            $snap = $locked->snapshot ?? [];
+            $snap['todayBookings'] = [
+                '绿地店' => (int) ($d['todayBookings']['绿地店'] ?? 0),
+                '东部店' => (int) ($d['todayBookings']['东部店'] ?? 0),
             ];
-        }
-        $snap['fetchedAt'] = now()->format('Y-m-d H:i:s');
-        $snap['fetchedBy'] = $r->user()->name;
-        $s->update(['snapshot' => $snap]);
+            $snap['trialBookings'] = [
+                '绿地店' => (int) ($d['trialBookings']['绿地店'] ?? 0),
+                '东部店' => (int) ($d['trialBookings']['东部店'] ?? 0),
+            ];
+            if (isset($d['todayKinds'])) {
+                $snap['todayKinds'] = [
+                    '绿地店' => [
+                        '私教' => (int) ($d['todayKinds']['绿地店']['私教'] ?? 0),
+                        '小班' => (int) ($d['todayKinds']['绿地店']['小班'] ?? 0),
+                        '团课' => (int) ($d['todayKinds']['绿地店']['团课'] ?? 0),
+                    ],
+                    '东部店' => [
+                        '私教' => (int) ($d['todayKinds']['东部店']['私教'] ?? 0),
+                        '小班' => (int) ($d['todayKinds']['东部店']['小班'] ?? 0),
+                        '团课' => (int) ($d['todayKinds']['东部店']['团课'] ?? 0),
+                    ],
+                ];
+            }
+            $snap['fetchedAt'] = array_merge((array) ($snap['fetchedAt'] ?? []), [
+                '绿地店' => now()->format('Y-m-d H:i:s'),
+                '东部店' => now()->format('Y-m-d H:i:s'),
+            ]);
+            $snap['fetchedBy'] = $r->user()->name;
+            $locked->update(['snapshot' => $snap]);
 
-        return ok($snap);
+            return $snap;
+        });
+
+        return ok($s);
     });
 
     // ---------- 经营看板指标（基于现有业务数据实时计算） ----------
@@ -1597,12 +1615,12 @@ Route::middleware('auth:sanctum')->group(function () {
             $bucket($d, $l->venue ?: '双店', $l);
         }
 
-        // 售卡按成交发生时间统计；历史数据没有事件时间时兼容回退留资日期。
-        $sales = (clone $leadQ)->where('status', '已成交')->get()->filter(function ($lead) use ($start, $end) {
-            $date = $lead->deal_at?->toDateString() ?: (string) $lead->lead_date;
-
-            return $date >= $start && $date <= $end;
-        });
+        // 售卡按成交发生时间统计；历史数据没有事件时间时兼容回退留资日期（日期下推 SQL，不再全历史拉取后 PHP 过滤）。
+        $sales = (clone $leadQ)->where('status', '已成交')
+            ->where(function ($q) use ($start, $end) {
+                $q->whereBetween('deal_at', [$start.' 00:00:00', $end.' 23:59:59'])
+                    ->orWhere(fn ($q2) => $q2->whereNull('deal_at')->whereBetween('lead_date', [$start, $end]));
+            })->get();
         foreach ($sales as $sale) {
             $date = $sale->deal_at?->toDateString() ?: (string) $sale->lead_date;
             $saleVenue = $sale->venue ?: '双店';
@@ -1625,11 +1643,11 @@ Route::middleware('auth:sanctum')->group(function () {
             $byDate[$date][$cardVenue]['card_sales'] = ($byDate[$date][$cardVenue]['card_sales'] ?? 0) + 1;
             $byDate[$date][$cardVenue]['amount'] = ($byDate[$date][$cardVenue]['amount'] ?? 0) + (float) $card->deal_price;
         }
-        $redeems = (clone $leadQ)->where('redeem_amount', '>', 0)->get()->filter(function ($lead) use ($start, $end) {
-            $date = $lead->redeemed_at?->toDateString() ?: (string) $lead->lead_date;
-
-            return $date >= $start && $date <= $end;
-        });
+        $redeems = (clone $leadQ)->where('redeem_amount', '>', 0)
+            ->where(function ($q) use ($start, $end) {
+                $q->whereBetween('redeemed_at', [$start.' 00:00:00', $end.' 23:59:59'])
+                    ->orWhere(fn ($q2) => $q2->whereNull('redeemed_at')->whereBetween('lead_date', [$start, $end]));
+            })->get();
         foreach ($redeems as $redeem) {
             $date = $redeem->redeemed_at?->toDateString() ?: (string) $redeem->lead_date;
             $redeemVenue = $redeem->venue ?: '双店';
@@ -1820,16 +1838,16 @@ Route::middleware('auth:sanctum')->group(function () {
         $start = $r->query('start') ?: now()->startOfMonth()->toDateString();
         $end = $r->query('end') ?: now()->toDateString();
         $leadCohort = (clone $leadQ)->whereBetween('lead_date', [$start, $end])->get();
-        $sales = (clone $leadQ)->where('status', '已成交')->get()->filter(function ($lead) use ($start, $end) {
-            $date = $lead->deal_at?->toDateString() ?: (string) $lead->lead_date;
-
-            return $date >= $start && $date <= $end;
-        });
-        $redeems = (clone $leadQ)->where('redeem_amount', '>', 0)->get()->filter(function ($lead) use ($start, $end) {
-            $date = $lead->redeemed_at?->toDateString() ?: (string) $lead->lead_date;
-
-            return $date >= $start && $date <= $end;
-        });
+        $sales = (clone $leadQ)->where('status', '已成交')
+            ->where(function ($q) use ($start, $end) {
+                $q->whereBetween('deal_at', [$start.' 00:00:00', $end.' 23:59:59'])
+                    ->orWhere(fn ($q2) => $q2->whereNull('deal_at')->whereBetween('lead_date', [$start, $end]));
+            })->get();
+        $redeems = (clone $leadQ)->where('redeem_amount', '>', 0)
+            ->where(function ($q) use ($start, $end) {
+                $q->whereBetween('redeemed_at', [$start.' 00:00:00', $end.' 23:59:59'])
+                    ->orWhere(fn ($q2) => $q2->whereNull('redeemed_at')->whereBetween('lead_date', [$start, $end]));
+            })->get();
 
         $platforms = [];
         foreach ($leadCohort as $l) {
@@ -1914,7 +1932,11 @@ Route::middleware('auth:sanctum')->group(function () {
                 '东部店' => (! $u->venue || $u->venue === '东部店') ? (array) ($snap['todayKinds']['东部店'] ?? ['私教' => 0, '小班' => 0, '团课' => 0]) : ['私教' => 0, '小班' => 0, '团课' => 0],
             ] : null,
             'scopeLabel' => $u->venue ? "本店 · {$u->venue}" : '双店',
-            'snapshotTime' => in_array($u->role, ['R_SUPER', 'R_MANAGER'], true) ? (string) ($snap['fetchedAt'] ?? '') : '',
+            'snapshotTime' => in_array($u->role, ['R_SUPER', 'R_MANAGER'], true)
+                ? (is_array($snap['fetchedAt'] ?? null) ? implode(' / ', array_values(array_filter((array) $snap['fetchedAt']))) : (string) ($snap['fetchedAt'] ?? ''))
+                : '',
+            // 区分「今天真没预约」与「该店从未同步/快照缺失」，前端据此给出可读提示而非误显示 0
+            'snapshotAvailable' => $snap !== null && is_array($snap['todayBookings'] ?? null),
         ]);
     });
 
@@ -2022,10 +2044,10 @@ Route::middleware('auth:sanctum')->group(function () {
         };
 
         // 五清单口径复用会员管理引擎，一次算好 id => 清单集合 映射
-        $listKeys = ['待续课', '预流失', '待复活', '出勤降低', 'VIP'];
+        $lists = memberListIds();
         $listMap = [];
-        foreach ($listKeys as $key) {
-            foreach (filteredIds($key) as $id) {
+        foreach (['待续课', '预流失', '待复活', '出勤降低', 'VIP'] as $key) {
+            foreach ($lists[$key] ?? [] as $id) {
                 $listMap[$id][] = $key;
             }
         }
@@ -2700,7 +2722,7 @@ if (! function_exists('ok')) {
     {
         return array_merge([
             'systemLogDays' => 7,
-            'auditLogDays' => null,
+            'auditLogDays' => 180,
             'modelGenerationDays' => 90,
         ], (array) (AppSetting::oldest('id')->first()?->retention ?? []));
     }
@@ -3085,6 +3107,16 @@ if (! function_exists('ok')) {
     /** 五清单引擎：返回命中清单的会员ID集合（口径：卓越店长训练营） */
     function filteredIds(string $list): array
     {
+        return memberListIds()[$list] ?? [];
+    }
+
+    /**
+     * 一次性扫描五清单，返回 [清单名 => 会员ID[]]。
+     * 只 select 必要列，供热路径（如 /today/todo 需要全部五清单）一次算好；
+     * 单清单调用走 filteredIds（内部也调本函数一次）。
+     */
+    function memberListIds(): array
+    {
         $rules = rules();
         $threshold = $rules['renewalThreshold'] ?? 10;
         $countPercent = (int) ($rules['renewalCountPercent'] ?? 0);
@@ -3097,49 +3129,57 @@ if (! function_exists('ok')) {
         $reviveDays = (int) ($rules['reviveDays'] ?? 30);
         $days = fn ($d) => $d ? (int) ((time() - strtotime($d)) / 86400) : null;
 
-        return Customer::query()->get()
-            ->filter(function (Customer $c) use ($list, $threshold, $countPercent, $expireDaysRule, $expirePercent, $vip, $strict, $predropMin, $predropMax, $reviveDays, $days) {
-                $m1 = $c->attend_m1;
-                $m2 = $c->attend_m2;
-                $m3 = $c->attend_m3;
-                $dd = $days($c->last_visit);
-                $hasAsset = $c->main_card !== null && ! in_array($c->main_card, ['', '—', '待同步卡项'], true);
-                $expireDays = $c->expire_date ? now()->startOfDay()->diffInDays($c->expire_date, false) : null;
-                $revive = (bool) $c->in_revive || ($dd !== null && $dd > $reviveDays && $hasAsset);
-                $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= $predropMin && $dd <= $predropMax));
-                $declining = ! $revive && ! $preLoss && ($strict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3));
+        $lists = ['待续课' => [], '出勤降低' => [], 'VIP' => [], '预流失' => [], '待复活' => []];
 
-                // 待续费判定（v3.1.24 多卡口径）：
-                // card_stats 由同步写入，是全部有效卡的汇总；无快照的历史数据退回单主卡字段。
-                // - 次卡库存：合计剩余节数 ≤ 阈值（含未开卡；时间卡会员无次卡则不参与，避免误判 0 节）
-                // - 次卡占比：合计剩余 / 合计绑定(剩余+已用) ≤ N%，捕捉大卡进入尾段
-                // - 到期提醒：最早到期日在 N 天内（旧口径硬编码 30 天）
-                // - 有效期占比：时间卡剩余天数 / 有效期天数 ≤ N%（默认 0=关闭）
-                $stats = (array) ($c->card_stats ?? []);
-                $countResidue = array_key_exists('countResidue', $stats)
-                    ? $stats['countResidue']
-                    : (($c->main_card !== null && (string) $c->remain_times !== null && $c->remain_times !== null) ? $c->remain_times : null);
-                $countBound = (int) ($stats['countBound'] ?? 0);
-                $daysLeft = $stats['daysLeft'] ?? null;
-                $daysTotal = (int) ($stats['daysTotal'] ?? 0);
-                $renewalHit = false;
-                if ($countResidue !== null && $m3 > 0) {
-                    $renewalHit = $countResidue <= $threshold
-                        || ($countPercent > 0 && $countBound > 0 && $countResidue / $countBound * 100 <= $countPercent);
+        Customer::query()
+            ->select(['id', 'main_card', 'remain_times', 'expire_date', 'last_visit', 'attend_m1', 'attend_m2', 'attend_m3', 'in_revive', 'card_paid_amount', 'card_stats'])
+            ->chunkById(500, function ($customers) use (&$lists, $threshold, $countPercent, $expireDaysRule, $expirePercent, $vip, $strict, $predropMin, $predropMax, $reviveDays, $days) {
+                foreach ($customers as $c) {
+                    $m1 = $c->attend_m1;
+                    $m2 = $c->attend_m2;
+                    $m3 = $c->attend_m3;
+                    $dd = $days($c->last_visit);
+                    $hasAsset = $c->main_card !== null && ! in_array($c->main_card, ['', '—', '待同步卡项'], true);
+                    $expireDays = $c->expire_date ? now()->startOfDay()->diffInDays($c->expire_date, false) : null;
+                    $revive = (bool) $c->in_revive || ($dd !== null && $dd > $reviveDays && $hasAsset);
+                    $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= $predropMin && $dd <= $predropMax));
+                    $declining = ! $revive && ! $preLoss && ($strict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3));
+
+                    $stats = (array) ($c->card_stats ?? []);
+                    $countResidue = array_key_exists('countResidue', $stats)
+                        ? $stats['countResidue']
+                        : (($c->main_card !== null && (string) $c->remain_times !== null && $c->remain_times !== null) ? $c->remain_times : null);
+                    $countBound = (int) ($stats['countBound'] ?? 0);
+                    $daysLeft = $stats['daysLeft'] ?? null;
+                    $daysTotal = (int) ($stats['daysTotal'] ?? 0);
+                    $renewalHit = false;
+                    if ($countResidue !== null && $m3 > 0) {
+                        $renewalHit = $countResidue <= $threshold
+                            || ($countPercent > 0 && $countBound > 0 && $countResidue / $countBound * 100 <= $countPercent);
+                    }
+                    $renewalHit = $renewalHit
+                        || ($expireDays !== null && $expireDays >= 0 && $expireDays <= $expireDaysRule)
+                        || ($expirePercent > 0 && $daysLeft !== null && $daysTotal > 0 && $daysLeft / $daysTotal * 100 <= $expirePercent);
+
+                    if ($hasAsset && $renewalHit) {
+                        $lists['待续课'][] = $c->id;
+                    }
+                    if ($declining) {
+                        $lists['出勤降低'][] = $c->id;
+                    }
+                    if ((float) ($c->card_paid_amount ?? 0) >= $vip) {
+                        $lists['VIP'][] = $c->id;
+                    }
+                    if ($preLoss) {
+                        $lists['预流失'][] = $c->id;
+                    }
+                    if ($revive) {
+                        $lists['待复活'][] = $c->id;
+                    }
                 }
-                $renewalHit = $renewalHit
-                    || ($expireDays !== null && $expireDays >= 0 && $expireDays <= $expireDaysRule)
-                    || ($expirePercent > 0 && $daysLeft !== null && $daysTotal > 0 && $daysLeft / $daysTotal * 100 <= $expirePercent);
+            });
 
-                return match ($list) {
-                    '待续课' => $hasAsset && $renewalHit,
-                    '出勤降低' => $declining,
-                    'VIP' => (float) ($c->card_paid_amount ?? 0) >= $vip,
-                    '预流失' => $preLoss,
-                    '待复活' => $revive,
-                    default => false,
-                };
-            })->pluck('id')->all();
+        return $lists;
     }
 
     /** 生日是否为今天（忽略年份，2/29 生日在平年按 3/1 庆祝） */

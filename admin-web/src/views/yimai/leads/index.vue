@@ -46,7 +46,7 @@
         >
           <ElOption v-for="s in STATUS_LIST" :key="s" :label="s" :value="s" />
         </ElSelect>
-        <ElButton @click="load">查询</ElButton>
+        <ElButton @click="reloadFromFirstPage">查询</ElButton>
         <ElButton @click="resetFilters">重置</ElButton>
         <div class="flex-1" />
         <ElButton type="primary" v-ripple @click="openCreate">新增留资</ElButton>
@@ -61,7 +61,7 @@
         </template>
       </ArtTableHeader>
 
-      <ElTable v-loading="loading" :data="pagedList" border stripe>
+      <ElTable v-loading="loading" :data="filteredList" border stripe>
         <ElTableColumn prop="leadDate" label="留资日期" width="100" sortable />
         <ElTableColumn label="姓名 / 联系方式" min-width="150">
           <template #default="{ row }">
@@ -196,7 +196,7 @@
         <ElPagination
           v-model:current-page="page.current"
           :page-size="page.size"
-          :total="filteredList.length"
+          :total="total"
           layout="total, prev, pager, next"
         />
       </div>
@@ -568,6 +568,7 @@
   })
   const page = ref({ current: 1, size: 20 })
   const list = ref<YimaiLead[]>([])
+  const total = ref(0)
 
   /** 会籍顾问选项：从在册会员的会籍顾问去重得到 */
   const consultantOptions = ref<string[]>([])
@@ -586,12 +587,6 @@
   }
 
   const filteredList = computed(() => list.value)
-  const pagedList = computed(() =>
-    filteredList.value.slice(
-      (page.value.current - 1) * page.value.size,
-      page.value.current * page.value.size
-    )
-  )
 
   function emptyForm() {
     return {
@@ -676,17 +671,16 @@
   async function load() {
     loading.value = true
     try {
-      page.value.current = 1
       const [dateFrom, dateTo] = filters.value.dateRange ?? [undefined, undefined]
-      list.value = (
-        await queryLeads({
-          ...filters.value,
-          dateFrom,
-          dateTo,
-          current: 1,
-          size: 5000
-        })
-      ).records
+      const res = await queryLeads({
+        ...filters.value,
+        dateFrom,
+        dateTo,
+        current: page.value.current,
+        size: page.value.size
+      })
+      list.value = res.records
+      total.value = res.total
     } catch (e) {
       console.error('[leads.load]', e)
       ElMessage.error('留资列表加载失败，请稍后重试')
@@ -695,9 +689,19 @@
     }
   }
 
+  function reloadFromFirstPage() {
+    page.value.current = 1
+    load()
+  }
+
+  watch(
+    () => page.value.current,
+    () => load()
+  )
+
   function resetFilters() {
     filters.value = { name: '', phone: '', venue: '', status: '', dateRange: null }
-    load()
+    reloadFromFirstPage()
   }
 
   function openCreate() {

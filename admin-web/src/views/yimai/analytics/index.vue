@@ -7,6 +7,14 @@
       :closable="false"
       class="mb-4"
     />
+    <ElAlert
+      v-if="analyticsError"
+      :title="analyticsError"
+      type="error"
+      show-icon
+      :closable="false"
+      class="mb-4"
+    />
     <ElRow :gutter="16" class="mb-4">
       <ElCol v-for="m in metricList" :key="m.label" :xs="12" :sm="12" :md="6" class="mb-4">
         <ElCard shadow="never">
@@ -169,6 +177,7 @@
   // ---------- 活跃度 ----------
   const attend = ref({ m1: 0, m2: 0, m3: 0 })
   const trends = ref({ visit30: 0, activeCustomers: 0 })
+  const analyticsError = ref('')
 
   function last30Days(): { start: string; end: string } {
     const end = new Date()
@@ -196,8 +205,10 @@
       trends.value = { visit30: t.visit30 ?? 0, activeCustomers: t.activeCustomers ?? 0 }
       const c = await apiGet<{ rows: { channel: string; leads: number }[]; total: number }>('/analytics/channels', { start, end })
       channelRows.value = (c.rows ?? []).sort((a, b) => b.leads - a.leads)
-    } catch {
-      /* keep zeros */
+    } catch (e) {
+      // 区分「加载失败」与「无数据」，避免故障时 KPI 静默显示 0 误导决策
+      const status = (e as { response?: { status?: number } })?.response?.status
+      analyticsError.value = status === 401 || status === 403 ? '' : '看板数据加载失败，请稍后重试'
     } finally {
       trendLoading.value = false
       channelLoading.value = false
@@ -208,8 +219,10 @@
     try {
       const res = await apiGet<Record<string, number>>('/analytics/summary')
       d.value = { ...d.value, ...res }
-    } catch {
-      /* keep zeros */
+      analyticsError.value = ''
+    } catch (e) {
+      const status = (e as { response?: { status?: number } })?.response?.status
+      analyticsError.value = status === 401 || status === 403 ? '' : '看板数据加载失败，请稍后重试'
     }
     await loadTrends()
   })

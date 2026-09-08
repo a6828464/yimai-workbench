@@ -41,7 +41,7 @@ class SystemRecordsTest extends TestCase
         Sanctum::actingAs($super);
         $this->getJson('/api/system/retention')->assertOk()
             ->assertJsonPath('data.systemLogDays', 7)
-            ->assertJsonPath('data.auditLogDays', null);
+            ->assertJsonPath('data.auditLogDays', 180);
         $this->getJson('/api/audit-logs?action='.urlencode('修改'))->assertOk()
             ->assertJsonCount(1, 'data.records')->assertJsonPath('data.metadata.actions.0', '修改');
     }

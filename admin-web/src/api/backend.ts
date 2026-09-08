@@ -83,6 +83,10 @@ http.interceptors.response.use(
         await expireSession()
       }
     }
+    if (status === 403) {
+      // 归一化错误信息，供视图层展示明确的「无权限」提示，而非笼统的加载失败
+      error.message = error.response?.data?.message || '无权限执行此操作'
+    }
     return Promise.reject(error)
   }
 )

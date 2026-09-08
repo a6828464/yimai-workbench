@@ -118,6 +118,37 @@ class AnalyticsTrendsTest extends TestCase
         $this->assertSame('unknown', contractPartyState([], 'customer'));
     }
 
+    public function test_trends_deal_and_redeem_date_window_is_sql_pushed(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'trends-window', 'role' => 'R_SUPER']));
+        $venue = '绿地店';
+
+        // 成交事件在窗口内 → 计入本月成交/核销
+        Lead::create([
+            'lead_date' => '2026-08-10', 'name' => '窗口内成交', 'venue' => $venue, 'source' => '美团',
+            'order_platform' => '美团', 'status' => '已成交', 'deal_amount' => 500,
+            'deal_at' => '2026-08-29 12:00:00', 'redeemed_at' => '2026-08-29 09:00:00', 'redeem_amount' => 99,
+        ]);
+        // 成交事件在窗口外（早于 start）→ 即便 lead_date 在窗口内也不计入成交金额
+        Lead::create([
+            'lead_date' => '2026-08-29', 'name' => '窗口外成交', 'venue' => $venue, 'source' => '到店',
+            'status' => '已成交', 'deal_amount' => 800, 'deal_at' => '2026-07-29 12:00:00',
+        ]);
+        // 无成交事件时间 → 按 lead_date 回退计入
+        Lead::create([
+            'lead_date' => '2026-08-29', 'name' => '无成交时间', 'venue' => $venue, 'source' => '到店',
+            'status' => '已成交', 'deal_amount' => 200,
+        ]);
+
+        $summary = $this->getJson('/api/analytics/trends?start=2026-08-20&end=2026-08-30&venue='.urlencode($venue))
+            ->assertOk()->json('data.summary');
+
+        // 成交计数：窗口内成交 + 无成交时间回退 lead_date = 2；窗口外成交（deal_at 早于 start）不计
+        $this->assertSame(2, (int) $summary['dealCount']);
+        // 核销金额按 redeemed_at 窗口计入（deal_at/redeemed_at 过滤已下推 SQL）
+        $this->assertSame(99.0, (float) $summary['redeemAmount']);
+    }
+
     private function booking(
         string $key,
         string $venue,
