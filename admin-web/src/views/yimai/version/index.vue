@@ -5,7 +5,7 @@
       <div class="flex-cb gap-3 flex-wrap mb-4">
         <h3 class="text-lg font-medium text-g-900 flex-c gap-2">
           <i class="ri-install-line text-theme text-xl" />
-           版本与发布状态
+          版本与发布状态
         </h3>
         <ElButton type="primary" plain size="small" :loading="checking" @click="checkUpdate">
           <i class="ri-refresh-line mr-1" />
@@ -40,20 +40,17 @@
           {{ version.local.message }}
         </div>
 
-         <!-- 有更新时仅允许服务器预置的受控脚本执行更新 -->
-        <ElAlert
-          v-if="!upToDate && !remoteError"
-          type="warning"
-          :closable="false"
-          class="mt-4"
-        >
-           <template #title>远端存在新提交 {{ short(version.remote.commit) }}</template>
-           <template #default>
-             <div class="flex-cb gap-3 flex-wrap">
-               <span>可由服务器上的受控更新脚本完成更新，更新期间服务可能短暂重启。</span>
-               <ElButton type="warning" size="small" :loading="updating" @click="applyUpdate">立即更新</ElButton>
-             </div>
-           </template>
+        <!-- 有更新时仅允许服务器预置的受控脚本执行更新 -->
+        <ElAlert v-if="!upToDate && !remoteError" type="warning" :closable="false" class="mt-4">
+          <template #title>远端存在新提交 {{ short(version.remote.commit) }}</template>
+          <template #default>
+            <div class="flex-cb gap-3 flex-wrap">
+              <span>可由服务器上的受控更新脚本完成更新，更新期间服务可能短暂重启。</span>
+              <ElButton type="warning" size="small" :loading="updating" @click="applyUpdate"
+                >立即更新</ElButton
+              >
+            </div>
+          </template>
         </ElAlert>
 
         <ElAlert v-if="remoteError" type="error" :closable="false" class="mt-4">
@@ -63,12 +60,13 @@
         <ElAlert v-if="updateError" type="error" :closable="false" class="mt-4">
           <template #title>{{ updateError }}</template>
           <template #default v-if="updateOutput.length">
-            <div class="mt-2 max-h-60 overflow-auto rounded bg-black/70 p-3 font-mono text-xs text-green-300 leading-6">
+            <div
+              class="mt-2 max-h-60 overflow-auto rounded bg-black/70 p-3 font-mono text-xs text-green-300 leading-6"
+            >
               <div v-for="(line, i) in updateOutput" :key="i">{{ line }}</div>
             </div>
           </template>
         </ElAlert>
-
       </template>
     </div>
 
@@ -79,15 +77,46 @@
         更新日志
       </h3>
       <ElSkeleton v-if="loading" :rows="6" animated />
-      <div v-else-if="changelogHtml" class="changelog-body" v-html="changelogHtml" />
-      <ElAlert v-else-if="changelogError" type="warning" :closable="false" :title="changelogError" />
-      <ElEmpty v-else description="暂无 CHANGELOG.md" />
+      <template v-else>
+        <div
+          v-if="latestRelease.version"
+          class="mb-5 rounded-lg border border-theme/20 bg-theme/5 p-4"
+        >
+          <div class="flex-cb gap-3 flex-wrap mb-3">
+            <div>
+              <div class="font-600 text-g-900">最新发行 {{ latestRelease.version }}</div>
+              <div class="mt-1 text-xs text-g-500">{{ latestRelease.name }}</div>
+            </div>
+            <ElButton
+              v-if="latestRelease.url"
+              link
+              type="primary"
+              tag="a"
+              :href="latestRelease.url"
+              target="_blank"
+              >查看发行版</ElButton
+            >
+          </div>
+          <div class="changelog-body" v-html="latestReleaseHtml" />
+        </div>
+        <ElDivider v-if="latestRelease.version && changelogHtml" content-position="left"
+          >当前已安装版本完整记录</ElDivider
+        >
+        <div v-if="changelogHtml" class="changelog-body" v-html="changelogHtml" />
+        <ElAlert
+          v-else-if="changelogError"
+          type="warning"
+          :closable="false"
+          :title="changelogError"
+        />
+        <ElEmpty v-else description="暂无 CHANGELOG.md" />
+      </template>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
+  import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
   import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'YimaiVersion' })
@@ -102,6 +131,8 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
   const updating = ref(false)
   const version = ref<VersionInfo | null>(null)
   const changelogHtml = ref('')
+  const latestRelease = reactive({ version: '', name: '', content: '', url: '', publishedAt: '' })
+  const latestReleaseHtml = computed(() => renderMarkdown(latestRelease.content))
   const changelogError = ref('')
   const updateError = ref('')
   const updateOutput = ref<string[]>([])
@@ -119,8 +150,18 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
 
   async function loadChangelog() {
     try {
-      const d = await apiGet<{ content: string }>('/system/changelog')
+      const d = await apiGet<{
+        content: string
+        latest?: {
+          version: string
+          name: string
+          content: string
+          url: string
+          publishedAt: string
+        }
+      }>('/system/changelog')
       changelogHtml.value = renderMarkdown(d.content || '')
+      if (d.latest) Object.assign(latestRelease, d.latest)
     } catch {
       changelogHtml.value = ''
       changelogError.value = '更新日志暂时无法读取，请稍后重试'
@@ -146,12 +187,20 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
     updateError.value = ''
     updateOutput.value = []
     try {
-      const r = await apiPost<{ updated: boolean; message?: string; output?: string[] }>('/system/update', {})
+      const r = await apiPost<{ updated: boolean; message?: string; output?: string[] }>(
+        '/system/update',
+        {}
+      )
       if (r.output?.length) updateOutput.value = r.output
-      ElMessage.success(r.message || (r.updated ? '更新已执行，请稍候刷新页面' : '当前已是最新版本'))
+      ElMessage.success(
+        r.message || (r.updated ? '更新已执行，请稍候刷新页面' : '当前已是最新版本')
+      )
       if (r.updated) setTimeout(() => window.location.reload(), 2500)
     } catch (e) {
-      const anyE = e as { response?: { data?: { message?: string; output?: string[] } }; message?: string }
+      const anyE = e as {
+        response?: { data?: { message?: string; output?: string[] } }
+        message?: string
+      }
       updateError.value = anyE.response?.data?.message || anyE.message || '更新失败'
       if (anyE.response?.data?.output?.length) updateOutput.value = anyE.response.data.output
       ElMessage.error(`更新失败：${updateError.value}`)
@@ -162,8 +211,7 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
 
   /** 极简 Markdown 渲染：仅覆盖 CHANGELOG.md 用到的语法（#/## 标题、列表、段落） */
   function renderMarkdown(md: string): string {
-    const esc = (s: string) =>
-      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const inline = (s: string) =>
       esc(s)
         .replace(/`([^`]+)`/g, '<code class="px-1 rounded bg-g-300/60 text-xs">$1</code>')
@@ -180,7 +228,10 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
 
     for (const raw of md.split('\n')) {
       const line = raw.trimEnd()
-      if (line.startsWith('## ')) {
+      if (line.startsWith('### ')) {
+        closeList()
+        out.push(`<h4 class="mt-4 mb-2 text-sm font-600 text-g-800">${inline(line.slice(4))}</h4>`)
+      } else if (line.startsWith('## ')) {
         closeList()
         out.push(
           `<div class="mt-5 mb-2 pb-2 border-b border-solid border-g-200"><span class="inline-block px-2.5 py-1 bg-theme/10 text-theme text-sm font-medium rounded-full">${inline(line.slice(3))}</span></div>`
@@ -192,7 +243,9 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
           out.push('<ul class="space-y-1.5 mb-3">')
           inList = true
         }
-        out.push(`<li class="flex-c gap-2 text-sm text-g-600"><span class="mt-0.5 shrink-0">•</span><span>${inline(line.slice(2))}</span></li>`)
+        out.push(
+          `<li class="flex-c gap-2 text-sm text-g-600"><span class="mt-0.5 shrink-0">•</span><span>${inline(line.slice(2))}</span></li>`
+        )
       } else if (line.trim() === '') {
         closeList()
       } else {
@@ -211,7 +264,8 @@ import { apiGet, apiPost, USE_BACKEND } from '@/api/backend'
       return
     }
     const results = await Promise.allSettled([loadVersion(), loadChangelog()])
-    if (results.some((result) => result.status === 'rejected')) ElMessage.warning('部分版本信息暂时不可用')
+    if (results.some((result) => result.status === 'rejected'))
+      ElMessage.warning('部分版本信息暂时不可用')
     loading.value = false
   })
 </script>

@@ -2522,13 +2522,12 @@ Route::middleware('auth:sanctum')->group(function () {
                 break;
             }
         }
-        if ($file === null) {
-            return ok(['content' => "# 更新日志\n\n暂无可用更新日志。"]);
-        }
+        $content = $file === null ? '' : file_get_contents($file);
 
-        $content = file_get_contents($file);
-
-        return ok(['content' => is_string($content) && trim($content) !== '' ? $content : "# 更新日志\n\n暂无可用更新日志。"]);
+        return ok([
+            'content' => is_string($content) && trim($content) !== '' ? $content : "# 更新日志\n\n暂无可用更新日志。",
+            'latest' => latestReleaseNotes(),
+        ]);
     });
 
     Route::post('/system/update', function (Request $r) {
@@ -3220,5 +3219,43 @@ if (! function_exists('ok')) {
             'remote' => ['commit' => $remoteSha, 'error' => $remoteErr],
             'upToDate' => $remoteSha !== '' && str_starts_with($local['commit'], $remoteSha),
         ];
+    }
+
+    function latestReleaseNotes(): array
+    {
+        $empty = ['version' => '', 'name' => '', 'content' => '', 'url' => '', 'publishedAt' => ''];
+        try {
+            $gitee = Http::timeout(12)->get('https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/releases/latest');
+            if ($gitee->successful() && $gitee->json('tag_name')) {
+                $version = (string) $gitee->json('tag_name');
+
+                return [
+                    'version' => $version,
+                    'name' => (string) ($gitee->json('name') ?? $version),
+                    'content' => (string) ($gitee->json('body') ?? ''),
+                    'url' => "https://gitee.com/meng-taoo/yimai-workbench/releases/{$version}",
+                    'publishedAt' => (string) ($gitee->json('created_at') ?? ''),
+                ];
+            }
+        } catch (Throwable) {
+        }
+        try {
+            $github = Http::timeout(12)->withHeaders(['Accept' => 'application/vnd.github+json'])
+                ->get('https://api.github.com/repos/a6828464/yimai-workbench/releases/latest');
+            if ($github->successful() && $github->json('tag_name')) {
+                $version = (string) $github->json('tag_name');
+
+                return [
+                    'version' => $version,
+                    'name' => (string) ($github->json('name') ?? $version),
+                    'content' => (string) ($github->json('body') ?? ''),
+                    'url' => (string) ($github->json('html_url') ?? ''),
+                    'publishedAt' => (string) ($github->json('published_at') ?? ''),
+                ];
+            }
+        } catch (Throwable) {
+        }
+
+        return $empty;
     }
 }
