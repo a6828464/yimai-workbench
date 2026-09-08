@@ -70,6 +70,12 @@ export const yimaiRoutes: AppRouteRecord[] = [
         meta: { title: '会员管理', icon: 'ri:vip-crown-line', roles: OPS, keepAlive: false }
       },
       {
+        path: '/yimai/new-members',
+        name: 'YimaiNewMembers',
+        component: '/yimai/new-members',
+        meta: { title: '新客培养', icon: 'ri:seedling-line', roles: ALL, keepAlive: false }
+      },
+      {
         path: '/yimai/leads',
         name: 'YimaiLeads',
         component: '/yimai/leads',

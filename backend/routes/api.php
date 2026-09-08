@@ -191,6 +191,162 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(['ok' => true]);
     });
 
+    // ---------- 新客培养（入会近 N 天会员的上课养成） ----------
+    Route::get('/new-members/cultivation', function (Request $r) {
+        $u = $r->user();
+        $r->validate([
+            'start' => 'nullable|date_format:Y-m-d',
+            'end' => 'nullable|date_format:Y-m-d|after_or_equal:start',
+            'venue' => 'nullable|string|in:绿地店,东部店',
+            'name' => 'nullable|string|max:100',
+            'cardType' => 'nullable|string|in:private,small,group',
+        ]);
+
+        $start = $r->query('start') ?: now()->subDays(89)->toDateString();
+        $end = $r->query('end') ?: now()->toDateString();
+        $venue = (string) $r->query('venue', '');
+
+        // 养成目标节数（私教/小班/团课，超管可调）
+        $rules = rules();
+        $targets = [
+            'private' => (int) ($rules['cultivationPrivate'] ?? 8),
+            'small' => (int) ($rules['cultivationSmall'] ?? 12),
+            'group' => (int) ($rules['cultivationGroup'] ?? 12),
+        ];
+
+        // 新入会会员：入会时间落在窗口内，按角色/门店隔离（复用 scopeCustomersForUser）
+        $q = scopeCustomersForUser(Customer::query(), $u)
+            ->whereNotNull('enrolled_at')
+            ->whereBetween('enrolled_at', [$start, $end.' 23:59:59']);
+        // 店长锁定本店、老师由 scope 限定本人；超管/新媒体可按需选门店
+        if ($u->role !== 'R_MANAGER' && $u->role !== 'R_TEACHER' && $venue !== '') {
+            $q->where('venue', $venue);
+        }
+        if ($n = trim((string) $r->query('name', ''))) {
+            $q->where('name', 'like', "%{$n}%");
+        }
+        $newMembers = $q->orderByDesc('enrolled_at')->get();
+
+        // 会员唯一键：从 external_id(ky:{venueId}:{memberId}) 解析 KeepYoga member_id
+        $memberIdOf = fn (Customer $c): string => preg_match('/^ky:\d+:(.+)$/', (string) $c->external_id, $m) ? $m[1] : '';
+        $memberIds = array_values(array_filter(array_map($memberIdOf, $newMembers->all())));
+        $phones = array_values(array_filter($newMembers->pluck('phone')->all()));
+
+        // 一次性预载这批会员的预约/上课事实，避免逐个会员查询
+        $bookingMap = collect();
+        if ($memberIds !== [] || $phones !== []) {
+            $bookingMap = KyBooking::query()
+                ->where(fn ($w) => $w->whereIn('member_id', $memberIds ?: ['-'])
+                    ->orWhereIn('phone', $phones ?: ['-']))
+                ->where('is_trial', false)
+                ->where('start_at', '>=', $start.' 00:00:00')
+                ->get()
+                ->groupBy('member_id');
+        }
+
+        $kindOf = fn (KyBooking $b): string => match ((string) ($b->raw['course_type'] ?? '')) {
+            '2' => 'private',
+            '3' => 'small',
+            default => 'group',
+        };
+
+        $emptyCat = fn (): array => ['signed' => 0, 'booked' => 0, 'no_show' => 0];
+        $records = [];
+        $summary = ['total' => 0, 'private' => 0, 'small' => 0, 'group' => 0, 'idle' => 0, 'cultivating' => 0, 'cultured' => 0];
+
+        foreach ($newMembers as $c) {
+            $mid = $memberIdOf($c);
+            $enrolled = (string) ($c->enrolled_at?->toDateString() ?: $c->enrolled_at);
+            $cat = ['private' => $emptyCat(), 'small' => $emptyCat(), 'group' => $emptyCat()];
+            $themes = [];
+            /** @var Collection $rows */
+            $rows = $mid !== '' ? ($bookingMap->get($mid) ?? collect()) : collect();
+            foreach ($rows as $b) {
+                // 只算入会之后的课，衡量新客养成
+                $bDate = (string) ($b->start_at?->toDateString() ?: '');
+                if ($bDate !== '' && $bDate < $enrolled) {
+                    continue;
+                }
+                $kind = $kindOf($b);
+                if ($b->status === 'signed') {
+                    $cat[$kind]['signed']++;
+                    $label = trim((string) $b->course_name) ?: '课程';
+                    $themes[$label] = ($themes[$label] ?? 0) + 1;
+                } elseif ($b->status === 'booked') {
+                    $cat[$kind]['booked']++;
+                } elseif ($b->status === 'no_show') {
+                    $cat[$kind]['no_show']++;
+                }
+            }
+
+            $totalSigned = $cat['private']['signed'] + $cat['small']['signed'] + $cat['group']['signed'];
+            // 健康度：0 上课=待激活；所有参与类别达目标=已养成；否则待养成
+            $participated = array_filter(['private', 'small', 'group'], fn ($k) => $cat[$k]['signed'] > 0 || $cat[$k]['booked'] > 0);
+            $cultured = $participated !== [] && array_reduce($participated, fn ($ok, $k) => $ok && $cat[$k]['signed'] >= $targets[$k], true);
+            $health = $totalSigned === 0 ? 'idle' : ($cultured ? 'cultured' : 'cultivating');
+
+            $topThemes = collect($themes)->sortDesc()->keys()->take(6)->all();
+            $kinds = ['private', 'small', 'group'];
+            usort($kinds, fn ($a, $b) => $cat[$b]['signed'] <=> $cat[$a]['signed']);
+            $primaryKind = $kinds[0];
+            $primaryCat = $cat[$primaryKind];
+
+            $records[] = [
+                'id' => $c->id,
+                'name' => $c->name,
+                'phone' => $c->phone,
+                'phoneTail' => $c->phone_tail ?: substr((string) $c->phone, -4),
+                'venue' => $c->venue,
+                'enrolledAt' => $enrolled,
+                'enrolledDays' => $enrolled !== '' ? (int) CarbonImmutable::parse($enrolled)->diffInDays(now(), false) : null,
+                'consultant' => $c->consultant ?: ($c->owner ?: '未分配'),
+                'mainCard' => $c->main_card,
+                'categories' => [
+                    'private' => $cat['private'] + ['target' => $targets['private']],
+                    'small' => $cat['small'] + ['target' => $targets['small']],
+                    'group' => $cat['group'] + ['target' => $targets['group']],
+                ],
+                'totalSigned' => $totalSigned,
+                'primaryKind' => $primaryKind,
+                'primaryProgress' => [
+                    'signed' => $primaryCat['signed'],
+                    'target' => $targets[$primaryKind],
+                ],
+                'themes' => $topThemes,
+                'health' => $health,
+            ];
+
+            $summary['total']++;
+            if ($cat['private']['signed'] > 0) {
+                $summary['private']++;
+            }
+            if ($cat['small']['signed'] > 0) {
+                $summary['small']++;
+            }
+            if ($cat['group']['signed'] > 0) {
+                $summary['group']++;
+            }
+            $summary[$health === 'idle' ? 'idle' : ($health === 'cultured' ? 'cultured' : 'cultivating')]++;
+        }
+
+        if ($cardType = $r->query('cardType')) {
+            $records = array_values(array_filter($records, fn ($x) => $x['categories'][$cardType]['signed'] > 0));
+        }
+
+        // 数据新鲜度：KeepYoga 增量同步非实时，提示「数据截至最近同步」
+        $setting = AppSetting::oldest('id')->first();
+        $snap = (array) ($setting?->snapshot ?? []);
+        $fetchedAt = is_array($snap['fetchedAt'] ?? null) ? max(array_filter(array_values($snap['fetchedAt']))) : (string) ($snap['fetchedAt'] ?? '');
+
+        return ok([
+            'records' => $records,
+            'summary' => $summary,
+            'targets' => $targets,
+            'range' => ['start' => $start, 'end' => $end],
+            'syncTime' => $fetchedAt,
+        ]);
+    });
+
     // ---------- 留资 ----------
     Route::get('/leads', function (Request $r) {
         $u = $r->user();
@@ -572,6 +728,9 @@ Route::middleware('auth:sanctum')->group(function () {
             'predropMin' => 'required|integer|min:1|max:180',
             'predropMax' => 'required|integer|min:1|max:180|gte:predropMin',
             'reviveDays' => 'required|integer|min:7|max:365',
+            'cultivationPrivate' => 'nullable|integer|min:1|max:100',
+            'cultivationSmall' => 'nullable|integer|min:1|max:100',
+            'cultivationGroup' => 'nullable|integer|min:1|max:100',
         ]);
         // 未传的新阈值回落到默认值，避免存一半缺键
         $data['renewalCountPercent'] = (int) ($data['renewalCountPercent'] ?? 20);
@@ -3092,6 +3251,10 @@ if (! function_exists('ok')) {
             'predropMin' => 15,
             'predropMax' => 30,
             'reviveDays' => 30,
+            // 新客培养：入会 90 天内各类别课的「养成目标节数」（已上课节数达此值视为养成习惯），分别可调
+            'cultivationPrivate' => 8,
+            'cultivationSmall' => 12,
+            'cultivationGroup' => 12,
         ];
 
         return array_merge($defaults, (array) ($s?->rules ?? []));
@@ -3101,7 +3264,8 @@ if (! function_exists('ok')) {
     {
         unset($rules['vipThreshold']);
         $s = setting();
-        $s->update(['rules' => $rules]);
+        // 合并写入：只更新本次提交的键，保留其余（含养成阈值）不被冲掉
+        $s->update(['rules' => array_merge((array) ($s->rules ?? []), $rules)]);
     }
 
     /** 五清单引擎：返回命中清单的会员ID集合（口径：卓越店长训练营） */

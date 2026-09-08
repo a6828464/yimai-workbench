@@ -21,7 +21,10 @@ const DEFAULT_MEMBER_RULES: MemberRules = {
   declineMode: 'strict',
   predropMin: 15,
   predropMax: 30,
-  reviveDays: 30
+  reviveDays: 30,
+  cultivationPrivate: 8,
+  cultivationSmall: 12,
+  cultivationGroup: 12
 }
 
 let rulesCache: MemberRules = { ...DEFAULT_MEMBER_RULES }
@@ -35,6 +38,82 @@ export async function refreshMemberRules(): Promise<MemberRules> {
 
 /** 卓越店长训练营五张运营清单 */
 export type MemberListKey = '待续课' | '出勤降低' | 'VIP' | '预流失' | '待复活'
+
+/** 新客培养：单个课型维度的上课统计 */
+export interface CultivationCategory {
+  signed: number
+  booked: number
+  noShow: number
+  target: number
+}
+
+/** 新客培养：一条新入会会员的养成记录 */
+export interface NewMemberCultivation {
+  id: number
+  name: string
+  phone: string
+  phoneTail: string
+  venue: string
+  enrolledAt: string
+  enrolledDays: number | null
+  consultant: string
+  mainCard: string
+  categories: { private: CultivationCategory; small: CultivationCategory; group: CultivationCategory }
+  totalSigned: number
+  primaryKind: 'private' | 'small' | 'group'
+  primaryProgress: { signed: number; target: number }
+  themes: string[]
+  health: 'idle' | 'cultivating' | 'cultured'
+}
+
+export interface NewMemberCultivationResult {
+  records: NewMemberCultivation[]
+  summary: {
+    total: number
+    private: number
+    small: number
+    group: number
+    idle: number
+    cultivating: number
+    cultured: number
+  }
+  targets: { private: number; small: number; group: number }
+  range: { start: string; end: string }
+  syncTime: string
+}
+
+/** 新客培养列表（依赖 KeepYoga 同步数据，演示模式无此数据返回空） */
+export async function queryNewMemberCultivation(params: {
+  start?: string
+  end?: string
+  venue?: string
+  name?: string
+  cardType?: string
+}): Promise<NewMemberCultivationResult> {
+  if (USE_BACKEND) {
+    const empty = {
+      records: [] as NewMemberCultivation[],
+      summary: { total: 0, private: 0, small: 0, group: 0, idle: 0, cultivating: 0, cultured: 0 },
+      targets: { private: 8, small: 12, group: 12 },
+      range: { start: '', end: '' },
+      syncTime: ''
+    }
+    try {
+      return await apiGet<NewMemberCultivationResult>('/new-members/cultivation', params as Record<string, unknown>)
+    } catch {
+      return empty
+    }
+  }
+  // 演示模式：新客培养完全来自 KeepYoga 同步，无本地样例数据，返回空列表
+  const r = getMemberRules()
+  return {
+    records: [],
+    summary: { total: 0, private: 0, small: 0, group: 0, idle: 0, cultivating: 0, cultured: 0 },
+    targets: { private: r.cultivationPrivate, small: r.cultivationSmall, group: r.cultivationGroup },
+    range: { start: '', end: '' },
+    syncTime: ''
+  }
+}
 
 export function getMemberRules(): MemberRules {
   if (USE_BACKEND) return rulesCache

@@ -623,6 +623,25 @@
             >超过 N 天未到店且有卡项资产</span
           ></ElFormItem
         >
+        <ElDivider content-position="left">新客培养 · 养成目标节数（入会90天内）</ElDivider>
+        <ElFormItem label="私教目标(节)"
+          ><ElInputNumber v-model="rulesForm.cultivationPrivate" :min="1" :max="100" /><span
+            class="ml-2 text-xs text-gray-400"
+            >新客私教已上课 ≥ 该值视为已养成</span
+          ></ElFormItem
+        >
+        <ElFormItem label="小班目标(节)"
+          ><ElInputNumber v-model="rulesForm.cultivationSmall" :min="1" :max="100" /><span
+            class="ml-2 text-xs text-gray-400"
+            >新客小班已上课 ≥ 该值视为已养成</span
+          ></ElFormItem
+        >
+        <ElFormItem label="团课目标(节)"
+          ><ElInputNumber v-model="rulesForm.cultivationGroup" :min="1" :max="100" /><span
+            class="ml-2 text-xs text-gray-400"
+            >新客团课已上课 ≥ 该值视为已养成</span
+          ></ElFormItem
+        >
       </ElForm>
       <template #footer>
         <ElButton @click="rulesDlg = false">取消</ElButton>

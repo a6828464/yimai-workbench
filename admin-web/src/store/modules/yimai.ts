@@ -133,6 +133,10 @@ export interface MemberRules {
   predropMax: number
   /** 待复活：超过 N 天未到店且有资产（默认 30） */
   reviveDays: number
+  /** 新客培养：入会 90 天内各类别课的养成目标节数（私教/小班/团课，默认 8/12/12） */
+  cultivationPrivate: number
+  cultivationSmall: number
+  cultivationGroup: number
 }
 
 export interface YimaiSyncSnapshot {
@@ -174,7 +178,10 @@ const DEFAULT_RULES: MemberRules = {
   declineMode: 'strict',
   predropMin: 15,
   predropMax: 30,
-  reviveDays: 30
+  reviveDays: 30,
+  cultivationPrivate: 8,
+  cultivationSmall: 12,
+  cultivationGroup: 12
 }
 
 function seedCustomers(): YimaiCustomer[] {

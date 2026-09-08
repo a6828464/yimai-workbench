@@ -8,7 +8,7 @@ class Customer extends Model
 {
     protected $guarded = [];
 
-    protected $casts = ['renewal_plan' => 'array', 'decline' => 'array', 'card_stats' => 'array', 'cards_list' => 'array', 'needs_help' => 'boolean', 'in_revive' => 'boolean', 'eval_at' => 'date'];
+    protected $casts = ['renewal_plan' => 'array', 'decline' => 'array', 'card_stats' => 'array', 'cards_list' => 'array', 'needs_help' => 'boolean', 'in_revive' => 'boolean', 'eval_at' => 'date', 'enrolled_at' => 'date', 'visit_at' => 'date'];
 
     protected $table = 'customers';
 

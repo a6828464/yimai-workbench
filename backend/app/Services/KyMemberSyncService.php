@@ -195,6 +195,15 @@ class KyMemberSyncService
                     $changes['birthday'] = $birthday;
                 }
 
+                // 入会时间/到访时间：create_time_format=入会（办理正式会员卡），visit_time_format=到访（访客）。
+                // 仅上游有值时覆盖，是新客培养栏目判定「新入会」的锚点。
+                if ($enrolledAt = self::pickDate($row, ['create_time_format', 'create_time', 'enroll_time', 'member_time'])) {
+                    $changes['enrolled_at'] = $enrolledAt;
+                }
+                if ($visitAt = self::pickDate($row, ['visit_time_format', 'visit_time', 'first_visit_time'])) {
+                    $changes['visit_at'] = $visitAt;
+                }
+
                 $customer = $existingByExternalId->get($externalId);
                 if (! $customer) {
                     Customer::create($changes + [
