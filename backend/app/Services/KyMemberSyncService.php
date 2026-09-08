@@ -9,6 +9,7 @@ use App\Models\KyCard;
 use App\Models\SyncJob;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 
 class KyMemberSyncService
@@ -20,6 +21,10 @@ class KyMemberSyncService
      */
     public static function sync(string $venue, string $venueId, SyncJob|array|null $artifactContext = null): array
     {
+        if (! Schema::hasColumns('customers', ['enrolled_at', 'visit_at'])) {
+            throw new RuntimeException('数据库结构未升级，请先执行 php artisan migrate --force 后重试');
+        }
+
         // 全量导入需拉取大量预约，放宽内存与执行时间限制
         @ini_set('memory_limit', '512M');
         @set_time_limit(0);
@@ -142,9 +147,8 @@ class KyMemberSyncService
             $members, $cardsByMember, $attendance, $venue, $venueId,
             &$created, &$updated, &$unchanged, &$skipped
         ) {
-            // 预加载本店既有会员 external_id → Customer 映射，避免循环内逐条 SELECT（N+1）
+            // external_id 是全局唯一键，历史错店记录也必须复用，避免重复插入导致整店回滚。
             $existingByExternalId = Customer::query()
-                ->where('venue', $venue)
                 ->whereIn('external_id', array_values(array_filter(array_map(
                     fn ($row) => self::pick($row, ['member_id', 'id', 'home_member_id']) !== ''
                         ? "ky:{$venueId}:".self::pick($row, ['member_id', 'id', 'home_member_id'])

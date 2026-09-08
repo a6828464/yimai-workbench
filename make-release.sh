@@ -61,10 +61,17 @@ EOF
 # 先复制首次安装包（保留 install.php 并内置 vendor）。
 cp -a "$COMMON/." "$INSTALLER/"
 cp -a "$WORK/vendor" "$INSTALLER/backend/vendor"
+# 未安装时根路径先进入安装向导；安装成功后 install.php 将 app.html 恢复为 index.html。
+mv "$INSTALLER/backend/public/index.html" "$INSTALLER/backend/public/app.html"
+cp "$ROOT/backend/resources/install-index.html" "$INSTALLER/backend/public/index.html"
+test -s "$INSTALLER/backend/public/install.php"
+test -s "$INSTALLER/backend/public/app.html"
+test -s "$INSTALLER/backend/vendor/autoload.php"
 
 # 在线升级包不包含安装入口和 vendor。
 cp -a "$COMMON/." "$UPDATE/"
 rm -f "$UPDATE/backend/public/install.php"
+test ! -e "$UPDATE/backend/public/install.php"
 
 for stage in "$UPDATE/backend" "$INSTALLER/backend"; do
   mkdir -p "$stage/storage/logs" \

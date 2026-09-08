@@ -81,8 +81,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $allPass && ym_post('action') === '
     } elseif (! preg_match('/^[A-Za-z][A-Za-z0-9_.-]{2,31}$/', $adminUser)) {
         $log[] = '超管账号必须是 3-32 位字母开头的字母、数字或 _.- 组合';
         $result = 'FAIL';
-    } elseif (strlen($adminPass) < 12) {
-        $log[] = '超管密码至少需要 12 位';
+    } elseif (mb_strlen($adminPass) < 6) {
+        $log[] = '超管密码至少需要 6 位';
         $result = 'FAIL';
     }
 
@@ -136,22 +136,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $allPass && ym_post('action') === '
             if (stripos($mOut, 'DONE') === false && stripos($mOut, 'FAIL') !== false) {
                 throw new RuntimeException('迁移失败: '.mb_substr($mOut, -300));
             }
-            User::updateOrCreate(
+            $admin = User::updateOrCreate(
                 ['username' => $adminUser],
                 [
                     'name' => $adminUser,
-                    'password' => Hash::make($adminPass),
+                    'password' => $adminPass,
                     'role' => 'R_SUPER',
+                    'status' => '启用',
                     'venue' => null,
                     'venues' => ['绿地店', '东部店'],
                     'email' => $adminUser.'@local.invalid',
                     'email_verified_at' => now(),
                 ]
             );
+            $admin->refresh();
+            if (! Hash::check($adminPass, $admin->password)) {
+                throw new RuntimeException('初始超管密码写入校验失败');
+            }
             $log[] = '数据库表结构与初始超管账号创建完成';
 
-            // 4. 上锁
-            file_put_contents($LOCK, 'installed at '.date('c'));
+            // 4. 恢复 SPA 首页后上锁；任一步失败都保留安装入口供重试。
+            $stagedIndex = $ROOT.'/public/app.html';
+            $publicIndex = $ROOT.'/public/index.html';
+            $indexRestored = is_file($stagedIndex) && rename($stagedIndex, $publicIndex);
+            if (is_file($stagedIndex)) {
+                throw new RuntimeException('前端首页恢复失败，请检查 public 目录写权限');
+            }
+            if (file_put_contents($LOCK, 'installed at '.date('c')) === false) {
+                if ($indexRestored) {
+                    rename($publicIndex, $stagedIndex);
+                    copy($ROOT.'/resources/install-index.html', $publicIndex);
+                }
+                throw new RuntimeException('安装锁写入失败，请检查 storage 目录写权限');
+            }
             register_shutdown_function(static function (): void {
                 @unlink(__FILE__);
             });
@@ -248,7 +265,7 @@ button:disabled{background:#aab5b0;cursor:not-allowed}
       <h2>③ 初始超管账号</h2>
       <div class="row">
         <div><label>登录账号</label><input type="text" name="admin_user" value="<?= ym_h(ym_post('admin_user', 'admin')) ?>" autocomplete="username"></div>
-        <div><label>登录密码（至少12位）</label><input type="password" name="admin_password" value="" autocomplete="new-password"></div>
+        <div><label>登录密码（至少6位）</label><input type="password" name="admin_password" value="" minlength="6" autocomplete="new-password"></div>
       </div>
 
       <h2>④ 随心瑜 KeepYoga（可选，用于会员同步）</h2>

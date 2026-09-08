@@ -1,6 +1,6 @@
 # 部署指南（宝塔面板 · 安装包方式）
 
-> 首次安装推荐上传 `yimai-workbench-installer-v<版本>.zip`，访问 `/install.php` 完成；现有站点更新使用普通发行包。
+> 首次安装推荐上传 `yimai-workbench-installer-v<版本>.zip`，访问站点域名会自动进入安装向导；现有站点更新使用普通发行包。
 > 微信内打开 H5 分享页必须 HTTPS，请务必配置 SSL 证书
 
 ## 一、宝塔环境要求
@@ -58,7 +58,7 @@ PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
    - 安装向导填有建库权限的账号，让向导自动建库
 3. SSL：Let's Encrypt 一键签发 → 开启「强制 HTTPS」
 4. 将 `app/backend/storage`、`app/backend/bootstrap/cache` 权限设置为 `www:www`、`775`。
-5. 访问 `https://oa.yourdomain.com/install.php`，填写数据库、初始超管和可选 KeepYoga 信息。
+5. 访问 `https://oa.yourdomain.com`，系统自动跳转安装页面，填写数据库、初始超管和可选 KeepYoga 信息。
 6. 安装器自动写 `.env`、生成 APP_KEY、执行迁移、创建超管并生成 `storage/install.lock`；请求结束后自动删除 `install.php`。
 7. 不要使用 `migrate:fresh` 初始化已有生产数据库；后续发布只执行 `php artisan migrate --force`。
 
@@ -84,7 +84,7 @@ window.__YIMAI_API_BASE__ = '/api'
 
 ## 六、初始账号
 
-首次安装时由安装向导创建超管账号并要求设置至少 12 位密码。生产环境不创建固定演示账号；如需本地 Seeder 演示数据，必须显式设置 `DEMO_PASSWORD`。
+首次安装时由安装向导创建超管账号并要求设置至少 6 位密码。生产环境不创建固定演示账号；如需本地 Seeder 演示数据，必须显式设置 `DEMO_PASSWORD`。
 
 ### 两种发行包的区别
 
