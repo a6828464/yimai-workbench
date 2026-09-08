@@ -550,6 +550,13 @@
       hint: '随心瑜会员卡实收口径（非财务流水）',
       icon: markRaw(Wallet),
       accent: '#9C27B0'
+    },
+    {
+      label: '留资登记成交',
+      value: `¥${money(summary.value?.registeredDealAmount ?? 0)}`,
+      hint: `${summary.value?.registeredDealCount ?? 0} 人 · 按成交日，编辑留资成交即联动`,
+      icon: markRaw(Coin),
+      accent: '#13C2C2'
     }
   ])
 

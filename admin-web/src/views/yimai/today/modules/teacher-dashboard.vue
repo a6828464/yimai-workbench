@@ -222,8 +222,8 @@
     },
     {
       label: '成交金额',
-      value: summary.value?.dealAmount ?? '-',
-      prefix: '¥',
+      value: `¥${Number(Math.round(summary.value?.registeredDealAmount ?? 0)).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`,
+      hint: `${summary.value?.registeredDealCount ?? 0} 人 · 编辑留资成交即联动`,
       icon: markRaw(Wallet),
       accent: '#FF9800'
     }

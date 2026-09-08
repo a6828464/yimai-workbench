@@ -145,6 +145,9 @@ class AnalyticsTrendsTest extends TestCase
 
         // 成交计数：窗口内成交 + 无成交时间回退 lead_date = 2；窗口外成交（deal_at 早于 start）不计
         $this->assertSame(2, (int) $summary['dealCount']);
+        // 留资登记成交（按成交日、含全部来源）：窗口内 500 + 回退 200 = 700，与售卡 dealAmount 解耦
+        $this->assertSame(2, (int) $summary['registeredDealCount']);
+        $this->assertSame(700.0, (float) $summary['registeredDealAmount']);
         // 核销金额按 redeemed_at 窗口计入（deal_at/redeemed_at 过滤已下推 SQL）
         $this->assertSame(99.0, (float) $summary['redeemAmount']);
     }

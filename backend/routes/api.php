@@ -1945,6 +1945,9 @@ Route::middleware('auth:sanctum')->group(function () {
                 'groupClassCount' => $groupClasses,
                 'dealAmount' => round((float) $totalAmount, 2),
                 'redeemAmount' => round((float) $totalRedeem, 2),
+                // 留资登记成交（按成交日 deal_at 落在窗口、含全部来源）：改一笔留资成交即联动，区别于上方按售卡实收的 dealAmount
+                'registeredDealCount' => $sales->count(),
+                'registeredDealAmount' => round((float) $sales->sum('deal_amount'), 2),
                 'dealRate' => $totalExperienced > 0 ? round($totalDeals / $totalExperienced * 100, 1) : 0,
                 'leadToVisitRate' => $totalLeads > 0 ? min(100, round($totalExperienced / $totalLeads * 100, 1)) : 0,
                 'onlineLeadCount' => $leads->filter(fn ($lead) => isOnlineLead($lead))->count(),

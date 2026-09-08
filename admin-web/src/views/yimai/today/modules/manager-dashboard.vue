@@ -295,7 +295,7 @@
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import DateRangeControl from './date-range-control.vue'
-  import { User, Ticket, ShoppingBag, Wallet } from '@element-plus/icons-vue'
+  import { User, Ticket, ShoppingBag, Wallet, Coin } from '@element-plus/icons-vue'
   import type { LineDataItem } from '@/types/component/chart'
 
   defineOptions({ name: 'ManagerDashboard' })
@@ -404,6 +404,13 @@
       hint: '随心瑜会员卡实收口径（非财务流水）',
       icon: markRaw(Wallet),
       accent: '#9C27B0'
+    },
+    {
+      label: '留资登记成交',
+      value: `¥${money(summary.value?.registeredDealAmount ?? 0)}`,
+      hint: `${summary.value?.registeredDealCount ?? 0} 人 · 按成交日，编辑留资成交即联动`,
+      icon: markRaw(Coin),
+      accent: '#13C2C2'
     }
   ])
   const contractVenue = ref<

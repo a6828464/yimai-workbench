@@ -1268,6 +1268,9 @@ export interface DashboardSummary {
   dealCount: number
   dealAmount: number
   dealRate: number
+  /** 留资登记成交（按成交日、含全部来源），区别于上方按售卡实收的 dealAmount */
+  registeredDealCount?: number
+  registeredDealAmount?: number
   leadCount: number
   privateDomainCount: number
   redeemAmount: number
@@ -1419,10 +1422,12 @@ export async function getDashboardSeries(
       privateClassCount: s.privateClassCount ?? 0,
       smallClassCount: s.smallClassCount ?? 0,
       groupClassCount: s.groupClassCount ?? 0,
-      onlineLeadCount: s.onlineLeadCount ?? 0,
-      onlineDealCount: s.onlineDealCount ?? 0,
-      onlineDealRate: s.onlineDealRate ?? 0
-    }
+       onlineLeadCount: s.onlineLeadCount ?? 0,
+       onlineDealCount: s.onlineDealCount ?? 0,
+       onlineDealRate: s.onlineDealRate ?? 0,
+       registeredDealCount: s.registeredDealCount ?? 0,
+       registeredDealAmount: s.registeredDealAmount ?? 0
+     }
     return { daily, summary }
   }
 
@@ -1485,7 +1490,9 @@ export async function getDashboardSeries(
     cardSalesCount: sum((p) => p.cardSales),
     onlineLeadCount: leadCount,
     onlineDealCount: dealCount,
-    onlineDealRate: leadCount > 0 ? Number(((dealCount / leadCount) * 100).toFixed(1)) : 0
+    onlineDealRate: leadCount > 0 ? Number(((dealCount / leadCount) * 100).toFixed(1)) : 0,
+    registeredDealCount: dealCount,
+    registeredDealAmount: sum((p) => p.amount)
   }
   return { daily, summary }
 }
