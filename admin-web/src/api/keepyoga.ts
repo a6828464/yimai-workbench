@@ -149,7 +149,8 @@ export async function fetchKyCounts(storeKey: string): Promise<KyCounts> {
       {
         page_index: '1',
         page_size: '1',
-        contract_status: '0',
+        // “合同”卡展示全部合同；状态 0 是上游恒空的待签口径。
+        contract_status: '-1',
         contract_name: '',
         initiator_emp_name: '',
         venue_signatory_emp_name: '',

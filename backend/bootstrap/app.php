@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Middleware\EnsureUserIsEnabled;
+use App\Http\Middleware\LogApiRequest;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
@@ -16,7 +17,7 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->redirectGuestsTo(fn () => null);
-        $middleware->api(append: [EnsureUserIsEnabled::class]);
+        $middleware->api(append: [EnsureUserIsEnabled::class, LogApiRequest::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->render(function (AuthenticationException $e, Request $request) {

@@ -121,3 +121,13 @@ export async function apiDelete<T = unknown>(path: string): Promise<T> {
   const r = await http.delete(path)
   return unwrap<T>(r.data)
 }
+
+export async function apiDownload(path: string, filename: string): Promise<void> {
+  const response = await http.get(path, { responseType: 'blob', timeout: 120000 })
+  const url = URL.createObjectURL(response.data)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}

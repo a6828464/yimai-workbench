@@ -384,9 +384,9 @@ interface ChatMessage {
  * - 后端模式：经 Laravel /ai/chat 代理转发，流式输出（中转站对 stream 请求才结算 token）
  * - 演示模式：浏览器直连（仅对支持CORS的服务商可用）
  */
-async function callLLM(messages: ChatMessage[]): Promise<string> {
+async function callLLM(messages: ChatMessage[], featureType = 'chat'): Promise<string> {
   if (USE_BACKEND) {
-    return chatLLMStream(messages)
+    return chatLLMStream(messages, { featureType })
   }
   await initAiConfig()
   const store = useAiConfigStore()
@@ -421,7 +421,7 @@ async function callLLM(messages: ChatMessage[]): Promise<string> {
  */
 export async function chatLLMStream(
   messages: ChatMessage[],
-  opts?: { onDelta?: (t: string) => void; maxTokens?: number }
+  opts?: { onDelta?: (t: string) => void; maxTokens?: number; featureType?: string }
 ): Promise<string> {
   await initAiConfig()
   const store = useAiConfigStore()
@@ -438,6 +438,7 @@ export async function chatLLMStream(
       messages,
       temperature: c.temperature,
       maxTokens: opts?.maxTokens,
+      featureType: opts?.featureType ?? 'chat',
       stream: true
     })
   })
@@ -622,7 +623,9 @@ export async function generateMomentsCopy(
   let warning: string | undefined
   if (store.isReady()) {
     try {
-      const raw = (await callLLM(buildMomentsMessages(input))).trim().replace(/^["“]|["”]$/g, '')
+      const raw = (await callLLM(buildMomentsMessages(input), 'marketing_moments'))
+        .trim()
+        .replace(/^["“]|["”]$/g, '')
       const parsed = parseMomentsLoose(raw)
       content = parsed.content.trim()
       reply = parsed.reply || fallbackMoments(input).reply
@@ -648,6 +651,13 @@ export async function generateMomentsCopy(
     reply,
     source
   })
+  if (USE_BACKEND && source === 'fallback') {
+    apiPost('/model-generations/fallback', {
+      featureType: 'marketing_moments',
+      outputPreview: content.slice(0, 1000),
+      errorMessage: warning
+    }).catch(() => undefined)
+  }
   return { content, reply, source, warning }
 }
 
@@ -665,7 +675,7 @@ export async function generateXhsNote(input: XhsInput): Promise<{
   let warning: string | undefined
   if (store.isReady()) {
     try {
-      const raw = await callLLM(buildXhsMessages(input))
+      const raw = await callLLM(buildXhsMessages(input), 'marketing_xhs')
       const parsed = parseJsonLoose(raw)
       if (!parsed) throw new Error('JSON_PARSE_FAIL')
       if (!parsed.reply) parsed.reply = fallbackXhs(input).reply
@@ -688,6 +698,13 @@ export async function generateXhsNote(input: XhsInput): Promise<{
     reply: result.reply,
     source
   })
+  if (USE_BACKEND && source === 'fallback') {
+    apiPost('/model-generations/fallback', {
+      featureType: 'marketing_xhs',
+      outputPreview: `${result.title}\n${result.content}`.slice(0, 1000),
+      errorMessage: warning
+    }).catch(() => undefined)
+  }
   return { ...result, source, warning }
 }
 
@@ -810,7 +827,7 @@ export async function generateTrainingPlan(
 
   if (store.isReady()) {
     try {
-      const raw = await callLLM(buildTrainingMessages(input))
+      const raw = await callLLM(buildTrainingMessages(input), 'training_plan')
       const m = raw.match(/\{[\s\S]*\}/)
       if (!m) throw new Error('JSON_PARSE_FAIL')
       const obj = JSON.parse(m[0])
@@ -842,5 +859,12 @@ export async function generateTrainingPlan(
     '双店',
     `生成方式：${source === 'llm' ? '大模型API' : '本地模板'}；目标[${input.coreGoal}]`
   )
+  if (USE_BACKEND && source === 'fallback') {
+    apiPost('/model-generations/fallback', {
+      featureType: 'training_plan',
+      outputPreview: content.summary.slice(0, 1000),
+      errorMessage: warning
+    }).catch(() => undefined)
+  }
   return { content, source, warning }
 }

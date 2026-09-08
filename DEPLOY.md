@@ -103,6 +103,14 @@ window.__YIMAI_API_BASE__ = '/api'
 4. 服务器下载已构建的 Release 包，只替换应用代码和前端资源，保留线上 `.env`、`storage`、`vendor` 和数据库。
 5. 更新脚本执行 `php artisan migrate --force` 和 `php artisan optimize:clear`，完成后自动刷新页面。
 
+生产环境需配置 Laravel 调度器，用于执行系统日志、人员操作日志和模型生成记录的保留策略：
+
+```cron
+* * * * * cd /www/wwwroot/站点目录/app && php artisan schedule:run >> /dev/null 2>&1
+```
+
+系统日志默认保留 7 天，人员操作日志默认永久保留；超管可在对应日志页面调整。未配置调度器时，修改保留策略会立即清理一次，但之后不会按日自动清理。
+
 发行包命名：版本号取自 `CHANGELOG.md` 首个版本标题（如 `v3.1.8`），安装包为 `yimai-workbench-v3.1.8.zip`，并额外生成 `yimai-workbench-latest.zip` 供 `update.sh` 固定名下载；Release 标题/备注含版本号与更新日志。
 
 Gitee Release 自动发布需要在 GitHub 仓库配置 Actions Secret：`GITEE_TOKEN`。Token 至少需要仓库 Release 的创建和上传权限。Token 只用于创建发行包，不写入代码。服务器更新脚本优先读取 Gitee 最新 Release 中的 `yimai-workbench-latest.zip`，Gitee 暂时不可用时回退到 GitHub 的 `auto-latest` 包。

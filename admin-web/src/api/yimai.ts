@@ -237,6 +237,7 @@ export interface YimaiSyncJob {
   batchNo: string
   dataType: string
   venue: '绿地店' | '东部店' | '双店'
+  displayName?: string
   dateRange: string
   totalCount: number
   successCount: number
@@ -245,6 +246,21 @@ export interface YimaiSyncJob {
   finishedAt: string
   /** 同步明细：导出的表格与导入落库统计 */
   detail?: string
+  errorMessage?: string
+  artifactsCount?: number
+}
+
+export interface SyncArtifactItem {
+  id: number
+  type: string
+  displayName: string
+  rowCount: number
+  size: number
+  sha256: string
+  dateFrom?: string
+  dateTo?: string
+  isFull: boolean
+  createdAt: string
 }
 
 type UserInfo = ReturnType<typeof useUserStore>['getUserInfo']
@@ -1084,6 +1100,10 @@ export function querySyncJobs(params: PageParams & { status?: string; dataType?:
     current: params.current ?? 1,
     size: params.size ?? 20
   })
+}
+
+export function getSyncArtifacts(jobId: number): Promise<SyncArtifactItem[]> {
+  return apiGet<SyncArtifactItem[]>(`/sync-jobs/${jobId}/artifacts`)
 }
 
 /** KeepYoga 全量导入：服务端拉取门店全部会员并按外部ID幂等合并（大请求不经过浏览器） */

@@ -3,7 +3,7 @@
     <!-- 控制栏 -->
     <div class="mb-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-500">经营总览</span>
-      <ElRadioGroup v-model="venueScope" @change="reload">
+      <ElRadioGroup v-model="venueScope" @change="onVenueChange">
         <ElRadioButton value="双店">双店合计</ElRadioButton>
         <ElRadioButton value="绿地店">绿地店</ElRadioButton>
         <ElRadioButton value="东部店">东部店</ElRadioButton>
@@ -16,6 +16,11 @@
       />
       <div class="flex-1" />
       <span class="text-xs text-gray-400">{{ scopeLabel }} · 默认为本月1号至今</span>
+    </div>
+
+    <div v-if="dashboardError" class="mb-4 text-sm text-orange-500">{{ dashboardError }}</div>
+    <div v-if="todaySummaryError" class="mb-4 text-sm text-orange-500">
+      {{ todaySummaryError }}
     </div>
 
     <div class="grid grid-cols-2 gap-3 mb-4">
@@ -46,10 +51,14 @@
 
     <!-- 双店对比 + 趋势 -->
     <ElRow :gutter="16" class="mb-5">
-      <ElCol :xs="24" :lg="10" class="mb-4">
+      <ElCol v-if="venueScope === '双店'" :xs="24" :lg="10" class="mb-4">
         <ElCard shadow="never">
           <template #header><span class="font-500">双店门店经营对比</span></template>
+          <div v-if="comparisonError" class="text-sm text-orange-500">
+            {{ comparisonError }}
+          </div>
           <ArtBarChart
+            v-else
             height="260px"
             :data="compareSeries"
             :x-axis-data="compareLabels"
@@ -59,7 +68,7 @@
           />
         </ElCard>
       </ElCol>
-      <ElCol :xs="24" :lg="14" class="mb-4">
+      <ElCol :xs="24" :lg="venueScope === '双店' ? 14 : 24" class="mb-4">
         <ElCard shadow="never">
           <template #header><span class="font-500">售卡金额趋势（元）</span></template>
           <ArtLineChart
@@ -106,7 +115,11 @@
       <ElCol :xs="24" :lg="10" class="mb-4">
         <ElCard shadow="never">
           <template #header><span class="font-500">各渠道留资对比</span></template>
+          <div v-if="channelsError" class="text-sm text-orange-500">
+            {{ channelsError }}
+          </div>
           <ArtBarChart
+            v-else
             height="240px"
             :data="channelSeries"
             :x-axis-data="channelLabels"
@@ -139,7 +152,7 @@
         </div>
       </div>
       <div v-if="overviewVisitorAvailable" class="mt-3 text-xs text-gray-400">
-        本月访客（双店）：新增 {{ overviewSum.monthNewVisitors }} · 访客上课
+        本月访客（{{ venueScope }}）：新增 {{ overviewSum.monthNewVisitors }} · 访客上课
         {{ overviewSum.monthVisitorClasses }} · 转化会员
         {{ overviewSum.monthVisitorConversions }}
       </div>
@@ -280,7 +293,6 @@
     DashboardSummary,
     ChannelLeadItem,
     TodaySummary,
-    PendingContracts,
     KyVenueOverview
   } from '@/api/yimai'
   import {
@@ -306,9 +318,14 @@
   const ldSummary = ref<DashboardSummary | null>(null)
   const dbSummary = ref<DashboardSummary | null>(null)
   const todaySummary = ref<TodaySummary | null>(null)
+  const dashboardError = ref('')
+  const comparisonError = ref('')
+  const channelsError = ref('')
+  const todaySummaryError = ref('')
   const overviewVenues = ref<Record<string, KyVenueOverview>>({})
   const overviewFetchedAt = ref('')
   const overviewError = ref('')
+  const overviewLoaded = ref(false)
   const ticketIcon = markRaw(Ticket)
   const userIcon = markRaw(User)
 
@@ -412,9 +429,13 @@
     {
       text: '上周',
       value: () => {
-        const e = new Date()
-        const s = new Date()
-        s.setDate(s.getDate() - 7)
+        const now = new Date()
+        const currentMonday = new Date(now)
+        currentMonday.setDate(now.getDate() - ((now.getDay() + 6) % 7))
+        const s = new Date(currentMonday)
+        s.setDate(currentMonday.getDate() - 7)
+        const e = new Date(s)
+        e.setDate(s.getDate() + 6)
         return [s, e]
       }
     },
@@ -566,6 +587,7 @@
   const contractVenues = ref<Awaited<ReturnType<typeof getPendingContracts>>['venues']>({})
   const contractsFetchedAt = ref('')
   const contractError = ref('')
+  const contractsLoaded = ref(false)
 
   /** 未签名单弹窗 */
   const contractDialog = reactive({
@@ -599,64 +621,103 @@
     reload()
   }
 
-  async function reload() {
+  function onVenueChange() {
+    reload()
+  }
+
+  function requestError(label: string, error: unknown): string {
+    return `${label}读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
+  }
+
+  async function reload(loadStatic = false) {
     loading.value = true
     try {
-      const requests: Promise<void>[] = []
-      if (venueScope.value === '双店') {
-        requests.push(
-          (async () => {
-            ldSummary.value = (
-              await getDashboardSeries(range.value[0], range.value[1], '绿地店')
-            ).summary
-          })(),
-          (async () => {
-            dbSummary.value = (
-              await getDashboardSeries(range.value[0], range.value[1], '东部店')
-            ).summary
-          })()
-        )
-      } else {
-        ldSummary.value = null
-        dbSummary.value = null
-      }
+      const isDualStore = venueScope.value === '双店'
+      const shouldLoadContracts = loadStatic || !contractsLoaded.value
+      const shouldLoadOverview = loadStatic || !overviewLoaded.value
+      ldSummary.value = null
+      dbSummary.value = null
+      comparisonError.value = ''
+
       const results = await Promise.allSettled([
         getDashboardSeries(range.value[0], range.value[1], venueScope.value),
         getChannelBreakdown(range.value[0], range.value[1], venueScope.value),
         getTodaySummary(),
-        getPendingContracts().catch((error) => {
-          contractError.value = `合同读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
-          return { venues: {} as PendingContracts['venues'], fetchedAt: '' }
-        }),
-        getKyOverview().catch((error) => {
-          overviewError.value = `经营概览读取失败：${String((error as { message?: string }).message ?? error).slice(0, 100)}`
-          return { venues: {} as Record<string, KyVenueOverview>, fetchedAt: '' }
-        }),
-        ...requests
-      ])
-      const dash = results[0].status === 'fulfilled' ? results[0].value : null
-      const ch = results[1].status === 'fulfilled' ? results[1].value : null
-      const today = results[2].status === 'fulfilled' ? results[2].value : null
-      const contracts = results[3].status === 'fulfilled' ? results[3].value : null
-      const overview = results[4].status === 'fulfilled' ? results[4].value : null
-      if (dash) {
-        daily.value = dash.daily
-        summary.value = dash.summary
+        shouldLoadContracts ? getPendingContracts() : Promise.resolve(null),
+        shouldLoadOverview ? getKyOverview() : Promise.resolve(null),
+        isDualStore
+          ? getDashboardSeries(range.value[0], range.value[1], '绿地店')
+          : Promise.resolve(null),
+        isDualStore
+          ? getDashboardSeries(range.value[0], range.value[1], '东部店')
+          : Promise.resolve(null)
+      ] as const)
+
+      if (results[0].status === 'fulfilled') {
+        daily.value = results[0].value.daily
+        summary.value = results[0].value.summary
+        dashboardError.value = ''
+      } else {
+        daily.value = []
+        summary.value = null
+        dashboardError.value = requestError('经营数据', results[0].reason)
       }
-      if (ch) channels.value = ch
-      if (today) todaySummary.value = today
-      if (contracts) {
-        contractVenues.value = contracts.venues
-        contractsFetchedAt.value = contracts.fetchedAt
+      if (results[1].status === 'fulfilled') {
+        channels.value = results[1].value
+        channelsError.value = ''
+      } else {
+        channels.value = []
+        channelsError.value = requestError('渠道数据', results[1].reason)
       }
-      if (overview) {
-        overviewVenues.value = overview.venues
-        if (Object.keys(overview.venues).length) overviewFetchedAt.value = overview.fetchedAt
+      if (results[2].status === 'fulfilled') {
+        todaySummary.value = results[2].value
+        todaySummaryError.value = ''
+      } else {
+        todaySummary.value = null
+        todaySummaryError.value = requestError('今日预约', results[2].reason)
+      }
+      if (shouldLoadContracts) {
+        if (results[3].status === 'fulfilled' && results[3].value) {
+          contractVenues.value = results[3].value.venues
+          contractsFetchedAt.value = results[3].value.fetchedAt
+          contractError.value = ''
+          contractsLoaded.value = true
+        } else if (results[3].status === 'rejected') {
+          contractVenues.value = {}
+          contractsFetchedAt.value = ''
+          contractError.value = requestError('合同', results[3].reason)
+        }
+      }
+      if (shouldLoadOverview) {
+        if (results[4].status === 'fulfilled' && results[4].value) {
+          overviewVenues.value = results[4].value.venues
+          overviewFetchedAt.value = results[4].value.fetchedAt
+          overviewError.value = ''
+          overviewLoaded.value = true
+        } else if (results[4].status === 'rejected') {
+          overviewVenues.value = {}
+          overviewFetchedAt.value = ''
+          overviewError.value = requestError('经营概览', results[4].reason)
+        }
+      }
+      if (isDualStore) {
+        const comparisonErrors: string[] = []
+        if (results[5].status === 'fulfilled' && results[5].value) {
+          ldSummary.value = results[5].value.summary
+        } else if (results[5].status === 'rejected') {
+          comparisonErrors.push(requestError('绿地店经营数据', results[5].reason))
+        }
+        if (results[6].status === 'fulfilled' && results[6].value) {
+          dbSummary.value = results[6].value.summary
+        } else if (results[6].status === 'rejected') {
+          comparisonErrors.push(requestError('东部店经营数据', results[6].reason))
+        }
+        comparisonError.value = comparisonErrors.join('；')
       }
     } finally {
       loading.value = false
     }
   }
 
-  onMounted(reload)
+  onMounted(() => reload(true))
 </script>

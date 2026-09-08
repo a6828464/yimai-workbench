@@ -69,7 +69,24 @@ return [
             'driver' => 'daily',
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
-            'days' => env('LOG_DAILY_DAYS', 14),
+            'days' => env('LOG_DAILY_DAYS', 7),
+            'replace_placeholders' => true,
+        ],
+
+        'runtime' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/runtime.log'),
+            'level' => 'info',
+            // Retention is managed by records:prune so the UI can support "never".
+            'days' => 0,
+            'replace_placeholders' => true,
+        ],
+
+        'system_error' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/error.log'),
+            'level' => 'error',
+            'days' => 0,
             'replace_placeholders' => true,
         ],
 

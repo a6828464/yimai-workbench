@@ -9,8 +9,10 @@ use App\Models\KyBooking;
 use App\Models\KyCard;
 use App\Models\Lead;
 use App\Models\MarketingPost;
+use App\Models\ModelGenerationRecord;
 use App\Models\PublishedShare;
 use App\Models\RenewalEvaluation;
+use App\Models\SyncArtifact;
 use App\Models\SyncJob;
 use App\Models\Task;
 use App\Models\TodoAction;
@@ -25,6 +27,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Symfony\Component\Process\Process;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
@@ -40,6 +44,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         return ok([
             'name' => $u->name,
+            'nickname' => $u->nickname,
             'phone' => $u->phone,
             'avatar' => $u->avatar,
             'email' => $u->email,
@@ -51,14 +56,46 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::put('/my/profile', function (Request $r) {
         $d = $r->validate([
-            'phone' => 'nullable|string|max:20',
+            'nickname' => 'nullable|string|max:30',
+            'email' => 'sometimes|required|email|max:255|unique:users,email,'.$r->user()->id,
+            'phone' => ['nullable', 'string', 'max:20', 'regex:/^\+?[0-9][0-9\s-]{5,19}$/'],
             // 头像为前端 canvas 压缩后的 data URI（96~128px jpeg，通常 <30KB）
             'avatar' => 'nullable|string',
             'profile' => 'nullable|array',
+            'profile.gender' => 'nullable|string|in:男,女',
+            'profile.age' => 'nullable|string|max:3',
+            'profile.years' => 'nullable|string|max:10',
+            'profile.specialties' => 'nullable|array|max:20',
+            'profile.specialties.*' => 'string|max:30',
+            'profile.persona' => 'nullable|array',
+            'profile.persona.role' => 'nullable|string|max:30',
+            'profile.persona.audiences' => 'nullable|array|max:20',
+            'profile.persona.audiences.*' => 'string|max:60',
+            'profile.xhs' => 'nullable|array',
+            'profile.xhs.ipType' => 'nullable|string|in:个人IP,门店IP',
+            'profile.xhs.accountName' => 'nullable|string|max:60',
+            'profile.xhs.role' => 'nullable|string|max:30',
+            'profile.xhs.audiences' => 'nullable|array|max:20',
+            'profile.xhs.audiences.*' => 'string|max:60',
+            'profile.xhs.style' => 'nullable|string|max:30',
+            'profile.xhs.conversion' => 'nullable|string|max:30',
+            'profile.xhs.localFocus' => 'nullable|boolean',
         ]);
         abort_if(filled($d['avatar'] ?? null) && strlen((string) $d['avatar']) > 300000, 422, '头像图片过大，请重新选择或压缩');
+        if (filled($d['avatar'] ?? null)) {
+            abort_unless(preg_match('#^data:image/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$#', $d['avatar'], $match), 422, '头像格式无效');
+            abort_if(base64_decode($match[2], true) === false, 422, '头像内容无效');
+        }
         $u = $r->user();
+        $oldNickname = (string) ($u->nickname ?? '');
+        $oldEmail = (string) $u->email;
         $oldPhone = (string) ($u->phone ?? '');
+        if (array_key_exists('nickname', $d)) {
+            $u->nickname = trim((string) ($d['nickname'] ?? '')) ?: null;
+        }
+        if (array_key_exists('email', $d)) {
+            $u->email = strtolower(trim((string) $d['email']));
+        }
         if (array_key_exists('phone', $d)) {
             $u->phone = trim((string) ($d['phone'] ?? '')) ?: null;
         }
@@ -69,13 +106,19 @@ Route::middleware('auth:sanctum')->group(function () {
             $u->profile = array_merge((array) ($u->profile ?? []), $d['profile']);
         }
         $u->save();
-        if ($u->phone !== $oldPhone) {
-            audit($r, '修改', '个人中心', $u->id, $u->name, '双店', "修改手机号：{$oldPhone} → {$u->phone}");
-        } else {
-            audit($r, '修改', '个人中心', $u->id, $u->name, '双店', '更新个人资料/营销人设');
+        $changed = [];
+        if ((string) $u->nickname !== $oldNickname) {
+            $changed[] = '昵称';
         }
+        if ((string) $u->email !== $oldEmail) {
+            $changed[] = '邮箱';
+        }
+        if ((string) $u->phone !== $oldPhone) {
+            $changed[] = '手机号';
+        }
+        audit($r, '修改', '个人中心', $u->id, $u->name, '双店', $changed ? '更新'.implode('、', $changed) : '更新个人资料/营销人设');
 
-        return ok(['ok' => true]);
+        return ok(profilePayload($u));
     });
 
     Route::put('/my/password', function (Request $r) {
@@ -697,6 +740,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/audit-logs', function (Request $r) {
         $u = $r->user();
         abort_unless($u->role === 'R_SUPER', 403, '仅老板可查看操作留痕');
+        $r->validate(['start' => 'nullable|date_format:Y-m-d', 'end' => 'nullable|date_format:Y-m-d|after_or_equal:start']);
         $q = AuditLog::query()->orderByDesc('id');
         if ($o = $r->query('operator')) {
             $q->where('operator_name', 'like', "%{$o}%");
@@ -707,12 +751,25 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($a = $r->query('action')) {
             $q->where('action', $a);
         }
+        if ($start = $r->query('start')) {
+            $q->where('time', '>=', CarbonImmutable::parse($start)->startOfDay());
+        }
+        if ($end = $r->query('end')) {
+            $q->where('time', '<=', CarbonImmutable::parse($end)->endOfDay());
+        }
         $current = max(1, (int) $r->query('current', 1));
         $size = min(100, max(1, (int) $r->query('size', 20)));
         $total = (clone $q)->count();
         $rows = $q->forPage($current, $size)->get()->map(fn ($x) => camel($x));
 
-        return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
+        return ok([
+            'records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size,
+            'metadata' => [
+                'operators' => AuditLog::query()->where('operator_name', '!=', '')->distinct()->orderBy('operator_name')->pluck('operator_name'),
+                'modules' => AuditLog::query()->where('module', '!=', '')->distinct()->orderBy('module')->pluck('module'),
+                'actions' => AuditLog::query()->where('action', '!=', '')->distinct()->orderBy('action')->pluck('action'),
+            ],
+        ]);
     });
 
     // ---------- KeepYoga 只读代理（阶段1：凭据仅存服务端） ----------
@@ -903,28 +960,42 @@ Route::middleware('auth:sanctum')->group(function () {
         $venue = (string) $r->input('venue');
         $venueId = (string) $r->input('venueId');
         abort_unless(isset($stores[$venue]) && $stores[$venue] === $venueId, 422, '门店参数无效');
+        $batch = 'IMP-'.now()->format('Ymd-His').'-'.substr((string) mt_rand(1000, 9999), 0, 4);
+        $job = SyncJob::create([
+            'batch_no' => $batch,
+            'run_key' => $batch,
+            'display_name' => now()->format('Y-m-d H:i')." {$venue} KeepYoga同步",
+            'data_type' => '会员/卡项/出勤多表',
+            'venue' => $venue,
+            'status' => '进行中',
+            'operator' => $r->user()->name,
+            'started_at' => now(),
+            'metadata' => ['venueId' => $venueId, 'operatorId' => $r->user()->id],
+        ]);
         try {
-            $result = KyMemberSyncService::sync($venue, $venueId);
+            $result = KyMemberSyncService::sync($venue, $venueId, $job);
         } catch (Throwable $e) {
-            return response()->json(['code' => 1, 'message' => 'KeepYoga 多表同步失败：'.$e->getMessage()]);
+            $message = mb_substr($e->getMessage(), 0, 1000);
+            $job->update(['status' => '失败', 'finished_at' => now(), 'error_message' => $message]);
+            audit($r, '导入失败', 'KeepYoga同步', $job->id, "批次{$batch}", $venue, $message);
+
+            return response()->json(['code' => 1, 'message' => 'KeepYoga 多表同步失败：'.$message]);
         }
 
-        $batch = 'IMP-'.now()->format('Ymd-His').'-'.substr((string) mt_rand(1000, 9999), 0, 4);
         $detail = sprintf(
-            '导出表格：会员基础表 %d 条 · 会员卡表 %d 条 · 团课预约 %d 条 · 私教预约 %d 条（出勤口径月 %s / %s / %s）；导入落库：新增 %d · 更新 %d · 未变化 %d · 跳过 %d',
+            '已保存快照：会员基础表 %d 条 · 会员卡表 %d 条 · 团课预约 %d 条 · 私教预约 %d 条（出勤口径月 %s / %s / %s）；导入落库：新增 %d · 更新 %d · 未变化 %d · 跳过 %d',
             $result['total'], $result['cards'], $result['leagueBookings'] ?? 0, $result['privateBookings'] ?? 0,
             $result['attendancePeriod']['m1'] ?? '-', $result['attendancePeriod']['m2'] ?? '-', $result['attendancePeriod']['m3'] ?? '-',
             $result['created'], $result['updated'], $result['unchanged'], $result['skipped']
         );
-        SyncJob::create([
-            'batch_no' => $batch, 'data_type' => '会员/卡项/出勤多表', 'venue' => $venue,
+        $job->update([
             'total_count' => $result['total'],
             'success_count' => $result['created'] + $result['updated'] + $result['unchanged'],
             'fail_count' => $result['skipped'],
             'status' => $result['skipped'] > 0 ? '部分失败' : '成功',
-            'operator' => $r->user()->name, 'finished_at' => now(), 'detail' => $detail,
+            'finished_at' => now(), 'detail' => $detail, 'error_message' => null,
         ]);
-        audit($r, '导入', 'KeepYoga同步', 0, "批次{$batch}", $venue, $detail);
+        audit($r, '导入', 'KeepYoga同步', $job->id, "批次{$batch}", $venue, $detail);
 
         return ok($result + ['batchNo' => $batch]);
     });
@@ -938,15 +1009,36 @@ Route::middleware('auth:sanctum')->group(function () {
             'temperature' => 'nullable|numeric|min:0|max:2',
             'maxTokens' => 'nullable|integer|min:16|max:32768',
             'stream' => 'nullable|boolean',
+            'featureType' => 'nullable|string|in:chat,marketing_moments,marketing_xhs,training_plan',
         ]);
         $saved = (array) (AppSetting::first()?->ai ?? []);
         $baseUrl = (string) ($saved['baseUrl'] ?? '');
         $apiKey = (string) ($saved['apiKey'] ?? '');
         $model = (string) ($saved['model'] ?? '');
+        $record = ModelGenerationRecord::create([
+            'request_id' => (string) Str::uuid(),
+            'user_id' => $r->user()->id,
+            'operator_name' => $r->user()->name,
+            'operator_role' => $r->user()->role,
+            'feature_type' => $d['featureType'] ?? 'chat',
+            'source' => 'llm',
+            'provider' => (string) ($saved['providerLabel'] ?? ''),
+            'model' => $model,
+            'status' => 'pending',
+            'input_summary' => mb_substr((string) last($d['messages'])['content'], 0, 300),
+        ]);
+        $startedAt = microtime(true);
         if (empty($saved['enabled']) || $baseUrl === '' || $apiKey === '' || $model === '') {
+            finishModelRecord($record, 'failed', $startedAt, '', '尚未配置 API Key');
+
             return response()->json(['code' => 1, 'message' => '尚未配置 API Key'], 422);
         }
-        assertPublicHttpsUrl($baseUrl);
+        try {
+            assertPublicHttpsUrl($baseUrl);
+        } catch (Throwable $e) {
+            finishModelRecord($record, 'failed', $startedAt, '', $e->getMessage());
+            throw $e;
+        }
 
         // 推理模型（reasoner / r1 / o1 / o3 / thinking）不支持 temperature，
         // 且 max_tokens 需要足够大来容纳推理过程
@@ -976,9 +1068,13 @@ Route::middleware('auth:sanctum')->group(function () {
                 ->withOptions($stream ? ['stream' => true] : [])
                 ->post(rtrim($baseUrl, '/').'/chat/completions', $payload);
         } catch (Throwable $e) {
+            finishModelRecord($record, 'failed', $startedAt, '', $e->getMessage());
+
             return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
         }
         if (! $resp->successful()) {
+            finishModelRecord($record, 'failed', $startedAt, '', 'HTTP '.$resp->status().': '.$resp->body());
+
             return response()->json(['code' => 1, 'message' => '大模型返回 HTTP '.$resp->status().': '.mb_substr($resp->body(), 0, 250)]);
         }
 
@@ -986,17 +1082,25 @@ Route::middleware('auth:sanctum')->group(function () {
             // 转发上游 SSE 流（X-Accel-Buffering:no 关闭 nginx 缓冲）
             $upstream = $resp->toPsrResponse()->getBody();
 
-            return response()->stream(function () use ($upstream) {
-                while (! $upstream->eof()) {
-                    $chunk = $upstream->read(1024);
-                    if ($chunk === '') {
-                        break;
+            return response()->stream(function () use ($upstream, $record, $startedAt) {
+                $raw = '';
+                try {
+                    while (! $upstream->eof()) {
+                        $chunk = $upstream->read(1024);
+                        if ($chunk === '') {
+                            break;
+                        }
+                        $raw .= $chunk;
+                        echo $chunk;
+                        if (ob_get_level() > 0) {
+                            ob_flush();
+                        }
+                        flush();
                     }
-                    echo $chunk;
-                    if (ob_get_level() > 0) {
-                        ob_flush();
-                    }
-                    flush();
+                    finishModelRecord($record, 'success', $startedAt, ssePreview($raw));
+                } catch (Throwable $e) {
+                    finishModelRecord($record, 'failed', $startedAt, ssePreview($raw), $e->getMessage());
+                    throw $e;
                 }
             }, 200, [
                 'Content-Type' => 'text/event-stream; charset=utf-8',
@@ -1007,11 +1111,73 @@ Route::middleware('auth:sanctum')->group(function () {
 
         $content = $resp->json('choices.0.message.content');
         if ($content === null) {
+            finishModelRecord($record, 'failed', $startedAt, '', '大模型响应缺少内容');
+
             return response()->json(['code' => 1, 'message' => '大模型响应缺少内容: '.mb_substr($resp->body(), 0, 150)]);
         }
 
+        finishModelRecord($record, 'success', $startedAt, (string) $content, null, (array) ($resp->json('usage') ?? []));
+
         return ok(['content' => $content]);
     })->middleware('throttle:30,1');
+
+    Route::post('/model-generations/fallback', function (Request $r) {
+        $d = $r->validate([
+            'featureType' => 'required|string|in:marketing_moments,marketing_xhs,training_plan',
+            'outputPreview' => 'nullable|string|max:1000',
+            'errorMessage' => 'nullable|string|max:500',
+        ]);
+        $row = ModelGenerationRecord::create([
+            'request_id' => (string) Str::uuid(), 'user_id' => $r->user()->id,
+            'operator_name' => $r->user()->name, 'operator_role' => $r->user()->role,
+            'feature_type' => $d['featureType'], 'source' => 'fallback', 'provider' => '本地模板',
+            'model' => 'template', 'status' => 'success', 'output_preview' => mb_substr((string) ($d['outputPreview'] ?? ''), 0, 1000),
+            'error_message' => isset($d['errorMessage']) ? mb_substr($d['errorMessage'], 0, 500) : null,
+            'completed_at' => now(),
+        ]);
+
+        return ok(['id' => $row->id]);
+    });
+
+    Route::get('/model-generations', function (Request $r) {
+        requireSuper($r);
+        $r->validate([
+            'operatorId' => 'nullable|integer|min:1',
+            'start' => 'nullable|date_format:Y-m-d',
+            'end' => 'nullable|date_format:Y-m-d|after_or_equal:start',
+            'featureType' => 'nullable|string|max:40',
+            'status' => 'nullable|string|max:16',
+        ]);
+        $q = ModelGenerationRecord::query()->orderByDesc('id');
+        if ($r->filled('operatorId')) {
+            $q->where('user_id', (int) $r->query('operatorId'));
+        }
+        if ($r->filled('featureType')) {
+            $q->where('feature_type', (string) $r->query('featureType'));
+        }
+        if ($r->filled('status')) {
+            $q->where('status', (string) $r->query('status'));
+        }
+        if ($r->filled('start')) {
+            $q->where('created_at', '>=', CarbonImmutable::parse($r->query('start'))->startOfDay());
+        }
+        if ($r->filled('end')) {
+            $q->where('created_at', '<=', CarbonImmutable::parse($r->query('end'))->endOfDay());
+        }
+        $current = max(1, (int) $r->query('current', 1));
+        $size = min(100, max(1, (int) $r->query('size', 10)));
+        $total = (clone $q)->count();
+        $records = $q->forPage($current, $size)->get()->map(fn ($row) => camel($row));
+
+        return ok([
+            'records' => $records, 'total' => $total, 'current' => $current, 'size' => $size,
+            'metadata' => [
+                'operators' => User::query()->whereIn('id', ModelGenerationRecord::query()->distinct()->pluck('user_id'))->orderBy('name')->get()->map(fn ($u) => ['id' => $u->id, 'name' => $u->name]),
+                'featureTypes' => ModelGenerationRecord::query()->distinct()->orderBy('feature_type')->pluck('feature_type'),
+                'statuses' => ModelGenerationRecord::query()->distinct()->orderBy('status')->pluck('status'),
+            ],
+        ]);
+    });
 
     Route::post('/ai/models', function (Request $r) {
         requireSuper($r);
@@ -1092,6 +1258,7 @@ Route::middleware('auth:sanctum')->group(function () {
         }
         unset($d['apiKey']);
         $s->update(['ai' => array_merge($ai, $d)]);
+        audit($r, '修改', '模型配置', 0, '大模型接入配置', '双店', "服务商[{$d['providerLabel']}] 模型[{$d['model']}] 启用[".($d['enabled'] ? '是' : '否').']');
 
         return ok(array_merge($d, ['apiKey' => '', 'configured' => ! empty($ai['apiKey'])]));
     });
@@ -1261,9 +1428,23 @@ Route::middleware('auth:sanctum')->group(function () {
         $current = max(1, (int) $r->query('current', 1));
         $size = min(100, max(1, (int) $r->query('size', 20)));
         $total = (clone $q)->count();
-        $rows = $q->orderByDesc('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
+        $rows = $q->withCount('artifacts')->orderByDesc('id')->forPage($current, $size)->get()->map(fn ($x) => syncJobPayload($x));
 
         return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
+    });
+
+    Route::get('/sync-jobs/{job}/artifacts', function (Request $r, SyncJob $job) {
+        requireSuper($r);
+
+        return ok($job->artifacts()->orderBy('id')->get()->map(fn (SyncArtifact $artifact) => syncArtifactPayload($artifact)));
+    });
+
+    Route::get('/sync-artifacts/{artifact}/download', function (Request $r, SyncArtifact $artifact) {
+        requireSuper($r);
+        abort_unless(Storage::disk($artifact->disk)->exists($artifact->path), 404, '历史导入表格不存在');
+        audit($r, '下载', 'KeepYoga同步', $artifact->id, $artifact->display_name, $artifact->syncJob?->venue ?? '双店', '下载历史导入快照');
+
+        return Storage::disk($artifact->disk)->download($artifact->path, $artifact->display_name, ['Content-Type' => $artifact->mime]);
     });
 
     // ---------- 今日工作台汇总（服务端计算） ----------
@@ -2235,33 +2416,97 @@ Route::middleware('auth:sanctum')->group(function () {
         return ok(systemVersionInfo());
     });
 
-    // 远程排障：超管查看 Laravel 日志尾部（免 SSH 定位线上问题）
-    // ?list=1 列出可用日志文件；?file=laravel-YYYY-MM-DD.log 读取指定文件（仅限 storage/logs 内 .log）
+    // 技术日志：运行日志展示全部级别，错误日志只展示 ERROR 及以上。
     Route::get('/system/logs', function (Request $r) {
         requireSuper($r);
         $dir = storage_path('logs');
+        // Keep the shipped low-level diagnostics contract for older clients.
         if ((string) $r->query('list') === '1') {
             $files = glob($dir.'/*.log') ?: [];
-            $files = array_map(fn ($f) => ['name' => basename($f), 'size' => filesize($f), 'modified' => date('Y-m-d H:i:s', filemtime($f))], $files);
+            $files = array_map(fn ($file) => ['name' => basename($file), 'size' => filesize($file), 'modified' => date('Y-m-d H:i:s', filemtime($file))], $files);
             usort($files, fn ($a, $b) => strcmp((string) $b['modified'], (string) $a['modified']));
 
             return ok(['files' => $files]);
         }
-        $name = (string) $r->query('file', 'laravel.log');
-        abort_unless(preg_match('/^[A-Za-z0-9._-]+\.log$/', $name) === 1 && ! str_contains($name, '..'), 422, '非法日志文件名');
-        $file = $dir.'/'.$name;
-        if (! is_file($file)) {
-            return ok(['tail' => '', 'message' => '日志文件不存在：'.$name]);
-        }
-        $size = filesize($file);
-        $fp = fopen($file, 'r');
-        $read = (int) min($size, 131072);
-        fseek($fp, -1 * $read, SEEK_END);
-        $tail = fread($fp, $read);
-        fclose($fp);
-        $lines = array_values(array_filter(explode("\n", (string) $tail), fn ($l) => trim($l) !== ''));
+        if ($r->filled('file')) {
+            $name = (string) $r->query('file');
+            abort_unless(preg_match('/^[A-Za-z0-9._-]+\.log$/', $name) === 1 && ! str_contains($name, '..'), 422, '非法日志文件名');
+            $file = $dir.'/'.$name;
+            if (! is_file($file)) {
+                return ok(['file' => $name, 'tailBytes' => 0, 'lines' => [], 'message' => '日志文件不存在：'.$name]);
+            }
+            $size = filesize($file);
+            $fp = fopen($file, 'rb');
+            $read = min($size, 131072);
+            if ($read < $size) {
+                fseek($fp, -$read, SEEK_END);
+            }
+            $tail = (string) fread($fp, $read);
+            fclose($fp);
 
-        return ok(['file' => $name, 'tailBytes' => $read, 'lines' => $lines]);
+            return ok(['file' => $name, 'tailBytes' => $read, 'lines' => array_values(array_filter(explode("\n", $tail), fn ($line) => trim($line) !== ''))]);
+        }
+        $channel = (string) $r->query('channel', 'runtime');
+        abort_unless(in_array($channel, ['runtime', 'error'], true), 422, '日志类型无效');
+        $date = (string) $r->query('date', '');
+        abort_unless($date === '' || preg_match('/^\d{4}-\d{2}-\d{2}$/', $date), 422, '日志日期无效');
+        $prefix = $channel === 'runtime' ? 'runtime' : 'error';
+        $paths = glob($dir."/{$prefix}*.log") ?: [];
+        if ($date !== '') {
+            $paths = array_values(array_filter($paths, fn ($path) => str_contains(basename($path), $date) || date('Y-m-d', filemtime($path)) === $date));
+        }
+        usort($paths, fn ($a, $b) => filemtime($b) <=> filemtime($a));
+        $records = [];
+        foreach (array_slice($paths, 0, 5) as $path) {
+            $size = filesize($path);
+            $fp = fopen($path, 'rb');
+            $read = min($size, 524288);
+            if ($read < $size) {
+                fseek($fp, -$read, SEEK_END);
+            }
+            $content = (string) fread($fp, $read);
+            fclose($fp);
+            foreach (preg_split('/\r?\n/', $content) ?: [] as $line) {
+                if (! preg_match('/^\[([^]]+)]\s+[^.]+\.([A-Z]+):\s*(.*)$/', trim($line), $match)) {
+                    continue;
+                }
+                $level = strtoupper($match[2]);
+                if ($channel === 'error' && ! in_array($level, ['ERROR', 'CRITICAL', 'ALERT', 'EMERGENCY'], true)) {
+                    continue;
+                }
+                if ($r->filled('level') && $level !== strtoupper((string) $r->query('level'))) {
+                    continue;
+                }
+                if ($r->filled('keyword') && ! str_contains(mb_strtolower($match[3]), mb_strtolower((string) $r->query('keyword')))) {
+                    continue;
+                }
+                $records[] = ['time' => $match[1], 'level' => $level === 'WARNING' ? 'WARN' : $level, 'message' => $match[3], 'context' => ['file' => basename($path)]];
+            }
+        }
+
+        return ok(['records' => array_slice(array_reverse($records), 0, 500), 'files' => array_map('basename', $paths)]);
+    });
+
+    Route::get('/system/retention', function (Request $r) {
+        requireSuper($r);
+
+        return ok(retentionSettings());
+    });
+
+    Route::put('/system/retention', function (Request $r) {
+        requireSuper($r);
+        $data = $r->validate([
+            'systemLogDays' => 'present|nullable|integer|min:1|max:3650',
+            'auditLogDays' => 'present|nullable|integer|min:1|max:3650',
+            'modelGenerationDays' => 'present|nullable|integer|min:1|max:3650',
+        ]);
+        $setting = AppSetting::firstOrCreate([]);
+        $before = retentionSettings();
+        $setting->update(['retention' => $data]);
+        audit($r, '修改', '系统日志', 0, '日志保留策略', '双店', json_encode(['before' => $before, 'after' => $data], JSON_UNESCAPED_UNICODE));
+        pruneSystemRecords();
+
+        return ok(retentionSettings());
     });
 
     Route::get('/system/changelog', function () {
@@ -2351,6 +2596,116 @@ if (! function_exists('ok')) {
     function requireSuper(Request $request): void
     {
         abort_unless($request->user()?->role === 'R_SUPER', 403, '仅超管可执行此操作');
+    }
+
+    function profilePayload(User $user): array
+    {
+        return [
+            'name' => $user->name,
+            'nickname' => $user->nickname,
+            'phone' => $user->phone,
+            'avatar' => $user->avatar,
+            'email' => $user->email,
+            'role' => $user->role,
+            'venues' => $user->venues ?? [],
+            'profile' => (array) ($user->profile ?? []),
+        ];
+    }
+
+    function syncJobPayload(SyncJob $job): array
+    {
+        $range = (array) ($job->date_range ?? []);
+        $from = (string) ($range['from'] ?? '');
+        $to = (string) ($range['to'] ?? '');
+        $payload = camel($job);
+        $payload['dateRange'] = $from && $to ? ($from === $to ? $from : "{$from} ~ {$to}") : '会员/卡项全量';
+        $payload['startedAt'] = optional($job->started_at)->format('Y-m-d H:i:s');
+        $payload['finishedAt'] = optional($job->finished_at)->format('Y-m-d H:i:s');
+        $payload['artifactsCount'] = (int) ($job->artifacts_count ?? 0);
+
+        return $payload;
+    }
+
+    function syncArtifactPayload(SyncArtifact $artifact): array
+    {
+        return [
+            'id' => $artifact->id,
+            'type' => $artifact->artifact_type,
+            'displayName' => $artifact->display_name,
+            'rowCount' => $artifact->row_count,
+            'size' => $artifact->size,
+            'sha256' => $artifact->sha256,
+            'dateFrom' => optional($artifact->date_from)->toDateString(),
+            'dateTo' => optional($artifact->date_to)->toDateString(),
+            'isFull' => $artifact->is_full,
+            'createdAt' => optional($artifact->created_at)->format('Y-m-d H:i:s'),
+        ];
+    }
+
+    function finishModelRecord(ModelGenerationRecord $record, string $status, float $startedAt, string $preview = '', ?string $error = null, array $usage = []): void
+    {
+        $record->update([
+            'status' => $status,
+            'latency_ms' => max(0, (int) round((microtime(true) - $startedAt) * 1000)),
+            'input_tokens' => isset($usage['prompt_tokens']) ? (int) $usage['prompt_tokens'] : null,
+            'output_tokens' => isset($usage['completion_tokens']) ? (int) $usage['completion_tokens'] : null,
+            'total_tokens' => isset($usage['total_tokens']) ? (int) $usage['total_tokens'] : null,
+            'output_preview' => mb_substr($preview, 0, 1000),
+            'error_message' => $error ? mb_substr($error, 0, 500) : null,
+            'completed_at' => now(),
+        ]);
+    }
+
+    function ssePreview(string $raw): string
+    {
+        $preview = '';
+        foreach (preg_split('/\r?\n/', $raw) ?: [] as $line) {
+            if (! str_starts_with($line, 'data:')) {
+                continue;
+            }
+            $json = trim(substr($line, 5));
+            if ($json === '' || $json === '[DONE]') {
+                continue;
+            }
+            $payload = json_decode($json, true);
+            $preview .= (string) ($payload['choices'][0]['delta']['content'] ?? $payload['choices'][0]['message']['content'] ?? '');
+            if (mb_strlen($preview) >= 1000) {
+                break;
+            }
+        }
+
+        return mb_substr($preview, 0, 1000);
+    }
+
+    function retentionSettings(): array
+    {
+        return array_merge([
+            'systemLogDays' => 7,
+            'auditLogDays' => null,
+            'modelGenerationDays' => 90,
+        ], (array) (AppSetting::first()?->retention ?? []));
+    }
+
+    function pruneSystemRecords(): array
+    {
+        $settings = retentionSettings();
+        $deleted = ['systemLogs' => 0, 'auditLogs' => 0, 'modelGenerations' => 0];
+        if ($settings['auditLogDays'] !== null) {
+            $deleted['auditLogs'] = AuditLog::where('time', '<', now()->subDays((int) $settings['auditLogDays']))->delete();
+        }
+        if ($settings['modelGenerationDays'] !== null) {
+            $deleted['modelGenerations'] = ModelGenerationRecord::where('created_at', '<', now()->subDays((int) $settings['modelGenerationDays']))->delete();
+        }
+        if ($settings['systemLogDays'] !== null) {
+            $cutoff = now()->subDays((int) $settings['systemLogDays'])->getTimestamp();
+            foreach (array_merge(glob(storage_path('logs/runtime*.log')) ?: [], glob(storage_path('logs/error*.log')) ?: []) as $file) {
+                if (filemtime($file) < $cutoff && @unlink($file)) {
+                    $deleted['systemLogs']++;
+                }
+            }
+        }
+
+        return $deleted;
     }
 
     function isOnlineLead(Lead $lead): bool
@@ -2658,6 +3013,7 @@ if (! function_exists('ok')) {
     {
         $roleMap = ['R_SUPER' => '超管', 'R_MANAGER' => '店长', 'R_TEACHER' => '老师', 'R_MEDIA' => '新媒体'];
         AuditLog::create([
+            'operator_id' => $r->user()->id,
             'operator_name' => $r->user()->name,
             'operator_role' => $roleMap[$r->user()->role] ?? $r->user()->role,
             'action' => $action, 'module' => $module,

@@ -6,6 +6,7 @@ use App\Models\AppSetting;
 use App\Models\Customer;
 use App\Models\KyBooking;
 use App\Models\KyCard;
+use App\Models\SyncJob;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -14,11 +15,17 @@ class KyMemberSyncService
 {
     private const ACTIVE_CARD_STATUSES = ['4', '5', '7'];
 
-    public static function sync(string $venue, string $venueId): array
+    /**
+     * @param  array{sync_job?: SyncJob, run_key?: string, display_name?: string, metadata?: array}|SyncJob|null  $artifactContext
+     */
+    public static function sync(string $venue, string $venueId, SyncJob|array|null $artifactContext = null): array
     {
         // 全量导入需拉取大量预约，放宽内存与执行时间限制
         @ini_set('memory_limit', '512M');
         @set_time_limit(0);
+
+        $artifactWriter = SyncArtifactWriter::from($artifactContext, $venue);
+        $snapshotDate = CarbonImmutable::today();
 
         $members = self::pagedRows('member/api/getmembersbycondwithpager', [
             'cond' => '', 'consultant_id' => -1, 'venue_id' => $venueId,
@@ -26,12 +33,20 @@ class KyMemberSyncService
         if ($members === []) {
             throw new RuntimeException('未读取到会员基础表');
         }
+        if ($artifactWriter) {
+            $artifactWriter->start('members', '会员基础表', $snapshotDate->toDateString(), $snapshotDate->toDateString(), true);
+            $artifactWriter->append('members', $members);
+        }
 
         $cards = self::pagedRows('mcard/api/getmcardsbycond', [
             'cond' => '', 'search' => '', 'consultant_id' => -1, 'venue_id' => $venueId,
         ], ['mcards', 'list']);
         if ($cards === []) {
             throw new RuntimeException('未读取到会员卡表');
+        }
+        if ($artifactWriter) {
+            $artifactWriter->start('cards', '会员卡表', $snapshotDate->toDateString(), $snapshotDate->toDateString(), true);
+            $artifactWriter->append('cards', $cards);
         }
         // 售卡事实落库：经营看板的售卡张数/金额按售卡时间与实收金额统计。
         self::upsertCardFacts(array_map(fn ($card) => self::cardFact($card, $venue, $venueId), $cards));
@@ -49,6 +64,16 @@ class KyMemberSyncService
         $rangeStart = $lastSync && $hasBookingFacts
             ? CarbonImmutable::parse($lastSync)->subDays(3)
             : $today->subDays(730);
+        $isFullBookingSync = ! ($lastSync && $hasBookingFacts);
+        if ($artifactWriter) {
+            $artifactWriter->setDateRange($rangeStart->toDateString(), $today->toDateString(), $isFullBookingSync);
+            $artifactWriter->start(
+                'league-bookings', '团课预约表', $rangeStart->toDateString(), $today->toDateString(), $isFullBookingSync
+            );
+            $artifactWriter->start(
+                'private-bookings', '私教预约表', $rangeStart->toDateString(), $today->toDateString(), $isFullBookingSync
+            );
+        }
 
         $attendance = [];
         $seenBookings = [];
@@ -80,11 +105,13 @@ class KyMemberSyncService
                     }
                     $previousPageSignature = $pageSignature;
                     $bookingCount += $count;
-                    if (str_contains($path, 'league')) {
+                    $isLeague = str_contains($path, 'league');
+                    if ($isLeague) {
                         $leagueBookingCount += $count;
                     } else {
                         $privateBookingCount += $count;
                     }
+                    $artifactWriter?->append($isLeague ? 'league-bookings' : 'private-bookings', $batchRows);
                     $facts = [];
                     foreach ($batchRows as $row) {
                         self::addAttendance($row, $path, $attendance, $seenBookings, $month1, $month2, $month3);
@@ -208,6 +235,8 @@ class KyMemberSyncService
         $snapshot['fetchedBy'] = 'KeepYoga全量同步';
         $setting->update(['sync_meta' => $meta, 'snapshot' => $snapshot]);
 
+        $artifacts = $artifactWriter?->finalize() ?? [];
+
         return [
             'created' => $created, 'updated' => $updated, 'unchanged' => $unchanged,
             'skipped' => $skipped, 'total' => count($members),
@@ -216,6 +245,15 @@ class KyMemberSyncService
             'privateBookings' => $privateBookingCount,
             'signedBookings' => count($seenBookings),
             'bookingFacts' => $bookingFactCount,
+            'artifactRunKey' => $artifactWriter?->runKey(),
+            'artifacts' => array_map(fn ($artifact) => [
+                'id' => $artifact->id,
+                'type' => $artifact->artifact_type,
+                'displayName' => $artifact->display_name,
+                'rowCount' => $artifact->row_count,
+                'size' => $artifact->size,
+                'sha256' => $artifact->sha256,
+            ], $artifacts),
             'attendancePeriod' => [
                 'm1' => $month1->format('Y-m'),
                 'm2' => $month2->format('Y-m'),

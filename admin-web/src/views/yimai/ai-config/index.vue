@@ -18,8 +18,16 @@
               <span class="ml-3 text-xs text-gray-400">关闭后全店营销工具使用本地模板草稿</span>
             </ElFormItem>
             <ElFormItem label="服务商">
-              <ElSelect v-model="form.providerLabel" @change="(v: string) => aiStore.applyPreset(v)">
-                <ElOption v-for="p in AI_PROVIDER_PRESETS" :key="p.label" :label="p.label" :value="p.label" />
+              <ElSelect
+                v-model="form.providerLabel"
+                @change="(v: string) => aiStore.applyPreset(v)"
+              >
+                <ElOption
+                  v-for="p in AI_PROVIDER_PRESETS"
+                  :key="p.label"
+                  :label="p.label"
+                  :value="p.label"
+                />
               </ElSelect>
             </ElFormItem>
             <ElFormItem label="接口地址">
@@ -30,29 +38,40 @@
             </ElFormItem>
             <ElFormItem label="模型">
               <div class="flex gap-2 w-full">
-                <ElSelect v-model="form.model" filterable allow-create default-first-option class="flex-1">
+                <ElSelect
+                  v-model="form.model"
+                  filterable
+                  allow-create
+                  default-first-option
+                  class="flex-1"
+                >
                   <ElOption v-for="m in modelOptions" :key="m" :label="m" :value="m" />
                 </ElSelect>
                 <ElButton :loading="loadingModels" @click="loadModels">获取模型</ElButton>
               </div>
             </ElFormItem>
             <ElFormItem label="温度">
-              <ElSlider v-model="form.temperature" :min="0" :max="1.5" :step="0.1" show-input class="!w-full !pr-2" />
+              <ElSlider
+                v-model="form.temperature"
+                :min="0"
+                :max="1.5"
+                :step="0.1"
+                show-input
+                class="!w-full !pr-2"
+              />
             </ElFormItem>
 
-            <ElAlert
-              title="配置说明"
-              type="success"
-              show-icon
-              :closable="false"
-              class="mb-4"
-            >
-              配置会保存到服务器数据库，不同电脑/手机登录后都会自动使用同一份配置；API Key 只写入服务端，页面永不展示完整密钥。首次配置建议填写新 Key；接口地址和模型变更后保存即可全局生效。
+            <ElAlert title="配置说明" type="success" show-icon :closable="false" class="mb-4">
+              配置会保存到服务器数据库，不同电脑/手机登录后都会自动使用同一份配置；API Key
+              只写入服务端，页面永不展示完整密钥。首次配置建议填写新
+              Key；接口地址和模型变更后保存即可全局生效。
             </ElAlert>
 
             <div class="flex gap-2">
               <ElButton type="primary" :loading="saving" @click="save">保存配置</ElButton>
-              <ElButton :loading="testing" @click="testConnection">{{ testResult || '测试连接' }}</ElButton>
+              <ElButton :loading="testing" @click="testConnection">{{
+                testResult || '测试连接'
+              }}</ElButton>
             </div>
           </ElForm>
         </ElCard>
@@ -60,26 +79,32 @@
 
       <ElCol :xs="24" :lg="10" class="mb-4">
         <ElCard shadow="never" class="mb-4">
-          <template #header><span class="font-500">最近生成记录（本地）</span></template>
-          <div v-if="aiStore.usageLog.length">
-            <div v-for="(u, i) in aiStore.usageLog.slice(0, 8)" :key="i" class="flex-cb py-2 border-b border-gray-100 last:border-0 dark:border-gray-800 text-xs">
-              <span>{{ u.time }}</span>
-              <span>{{ u.platform }}</span>
-              <ElTag size="small" :type="u.source === 'llm' ? 'success' : 'warning'">{{ u.source === 'llm' ? 'API' : '模板' }}</ElTag>
-              <span class="text-gray-400">{{ u.chars }}字</span>
+          <template #header>
+            <div class="flex-cb">
+              <span class="font-500">模型生成记录</span>
+              <ElButton link type="primary" @click="$router.push('/yimai/model-generations')"
+                >查看全部</ElButton
+              >
             </div>
+          </template>
+          <div class="py-4 text-center">
+            <div class="mb-2 text-sm">服务端统一记录模型与模板生成结果</div>
+            <div class="mb-4 text-xs text-gray-400"
+              >可按操作人、日期、功能和状态筛选，并查看耗时及 Token 用量</div
+            >
+            <ElButton @click="$router.push('/yimai/model-generations')">进入模型生成记录</ElButton>
           </div>
-          <ElEmpty v-else description="暂无生成记录" :image-size="60" />
         </ElCard>
 
         <ElCard shadow="never">
           <template #header><span class="font-500">接入说明</span></template>
           <div class="text-xs leading-6 text-gray-500 dark:text-gray-400">
-            · 使用 OpenAI 兼容协议（/chat/completions），DeepSeek / 通义千问 / Kimi / 智谱 / 豆包 均可直接接入<br />
+            · 使用 OpenAI 兼容协议（/chat/completions），DeepSeek / 通义千问 / Kimi / 智谱 / 豆包
+            均可直接接入<br />
             · 朋友圈按「人设+分类主题+语气目标+表达方式」编排提示词<br />
             · 小红书要求模型输出结构化 JSON（标题/正文/话题标签）<br />
             · 所有生成内容需人工确认后发布，系统不自动对外发送<br />
-            · 每次生成自动写入操作留痕，可在「操作留痕」溯源
+            · 每次生成自动写入服务端记录，可在「模型生成记录」查看
           </div>
         </ElCard>
       </ElCol>
@@ -88,7 +113,11 @@
 </template>
 
 <script setup lang="ts">
-  import { AI_PROVIDER_PRESETS, SERVER_CONFIGURED_PLACEHOLDER, useAiConfigStore } from '@/store/modules/ai-config'
+  import {
+    AI_PROVIDER_PRESETS,
+    SERVER_CONFIGURED_PLACEHOLDER,
+    useAiConfigStore
+  } from '@/store/modules/ai-config'
   import { useYimaiStore } from '@/store/modules/yimai'
   import { fetchAvailableModels, initAiConfig } from '@/api/ai'
   import { USE_BACKEND, apiPost, apiPut } from '@/api/backend'
@@ -123,11 +152,15 @@
   })
 
   /** 模型下拉选项：优先展示从服务商拉取的真实列表 */
-  const modelOptions = computed(() => (fetchedModels.value.length ? fetchedModels.value : presetModels.value))
+  const modelOptions = computed(() =>
+    fetchedModels.value.length ? fetchedModels.value : presetModels.value
+  )
 
   async function loadModels() {
     if (form.apiKey === SERVER_CONFIGURED_PLACEHOLDER) {
-      ElMessage.warning('当前使用服务端已保存的 Key，无法在页面上复用；如需拉取模型列表请先填写新 Key')
+      ElMessage.warning(
+        '当前使用服务端已保存的 Key，无法在页面上复用；如需拉取模型列表请先填写新 Key'
+      )
       return
     }
     if (!form.baseUrl || !form.apiKey) {
@@ -158,10 +191,10 @@
   async function save() {
     saving.value = true
     try {
-       if (USE_BACKEND) {
-         await apiPut('/ai/config', form as unknown as Record<string, unknown>)
-       }
-       Object.assign(aiStore.config, form)
+      if (USE_BACKEND) {
+        await apiPut('/ai/config', form as unknown as Record<string, unknown>)
+      }
+      Object.assign(aiStore.config, form)
       yimaiStore.writeAudit(
         '修改',
         '模型配置',
@@ -185,7 +218,10 @@
         // 演示模式：浏览器直连（仅对支持CORS的服务商可用）
         const resp = await fetch(`${aiStore.config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${aiStore.config.apiKey}` },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${aiStore.config.apiKey}`
+          },
           body: JSON.stringify({
             model: aiStore.config.model,
             messages: [{ role: 'user', content: '回复OK' }],
@@ -201,7 +237,7 @@
         const r = await apiPost<{ code?: number; message?: string; content?: string }>('/ai/test', {
           baseUrl: aiStore.config.baseUrl,
           apiKey: aiStore.config.apiKey,
-          model: aiStore.config.model,
+          model: aiStore.config.model
         })
         // 后端失败时 HTTP 200 + code:1，需显式判断
         if (r && r.code !== undefined && r.code !== 0) {
@@ -213,7 +249,9 @@
       ElMessage.success('连接成功，模型可用')
     } catch (e) {
       testResult.value = '连接失败'
-      ElMessage.error(`连接失败：${extractErrMsg(e)}${USE_BACKEND ? '' : '（演示模式受浏览器跨域限制，请启用后端模式）'}`)
+      ElMessage.error(
+        `连接失败：${extractErrMsg(e)}${USE_BACKEND ? '' : '（演示模式受浏览器跨域限制，请启用后端模式）'}`
+      )
     } finally {
       testing.value = false
       setTimeout(() => (testResult.value = ''), 6000)

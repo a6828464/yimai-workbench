@@ -195,7 +195,19 @@ export const yimaiRoutes: AppRouteRecord[] = [
         path: '/yimai/audit',
         name: 'YimaiAudit',
         component: '/yimai/audit',
-        meta: { title: '操作留痕', icon: 'ri:history-line', roles: SUPER, keepAlive: false }
+        meta: { title: '人员操作日志', icon: 'ri:history-line', roles: SUPER, keepAlive: false }
+      },
+      {
+        path: '/yimai/system-logs',
+        name: 'YimaiSystemLogs',
+        component: '/yimai/system-logs',
+        meta: { title: '系统日志', icon: 'ri:file-warning-line', roles: SUPER, keepAlive: false }
+      },
+      {
+        path: '/yimai/model-generations',
+        name: 'YimaiModelGenerations',
+        component: '/yimai/model-generations',
+        meta: { title: '模型生成记录', icon: 'ri:sparkling-2-line', roles: SUPER, keepAlive: false }
       },
       {
         path: '/yimai/version',

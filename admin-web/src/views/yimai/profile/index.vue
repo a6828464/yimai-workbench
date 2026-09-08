@@ -32,6 +32,16 @@
                 @change="pickAvatar"
               />
             </div>
+            <ElButton
+              v-if="form.avatar"
+              class="mt-2"
+              size="small"
+              type="danger"
+              link
+              @click="removeAvatar"
+            >
+              移除头像
+            </ElButton>
             <div class="mt-3 text-base font-600 text-g-900">{{ form.name || '未设置姓名' }}</div>
             <div class="mt-1 flex items-center gap-2">
               <ElTag size="small" type="primary">{{ roleLabel }}</ElTag>
@@ -67,10 +77,25 @@
           </template>
           <ElForm label-width="90px" label-position="left">
             <ElRow :gutter="12">
-              <ElCol :xs="12"
+              <ElCol :xs="24" :sm="12"
                 ><ElFormItem label="姓名"><ElInput :model-value="form.name" disabled /></ElFormItem
               ></ElCol>
-              <ElCol :xs="12">
+              <ElCol :xs="24" :sm="12">
+                <ElFormItem label="昵称">
+                  <ElInput
+                    v-model="form.nickname"
+                    maxlength="30"
+                    show-word-limit
+                    placeholder="选填"
+                  />
+                </ElFormItem>
+              </ElCol>
+              <ElCol :xs="24" :sm="12">
+                <ElFormItem label="邮箱">
+                  <ElInput v-model="form.email" maxlength="254" placeholder="请输入邮箱" />
+                </ElFormItem>
+              </ElCol>
+              <ElCol :xs="24" :sm="12">
                 <ElFormItem label="手机号">
                   <ElInput v-model="form.phone" maxlength="20" placeholder="用于客户联系，选填" />
                 </ElFormItem>
@@ -165,10 +190,11 @@
   const roleLabel = computed(() => ROLE_LABELS[form.value.role] ?? form.value.role ?? '—')
 
   onMounted(async () => {
-    const p = await fetchMyProfile(true)
-    // 姓名/邮箱以后端账号信息为准（兼容旧会话缓存）
-    const info = userStore.getUserInfo
-    form.value = { ...p, name: info.userName || p.name, email: info.email || p.email }
+    try {
+      form.value = await fetchMyProfile(true)
+    } catch (e) {
+      ElMessage.error(`资料加载失败：${errorMessage(e)}`)
+    }
   })
 
   /** 选择头像 → canvas 压缩为 128px jpeg data URI（不落盘，需点保存） */
@@ -181,12 +207,21 @@
       ElMessage.warning('请选择图片文件')
       return
     }
+    if (file.size > 5 * 1024 * 1024) {
+      ElMessage.warning('原始图片不能超过 5MB')
+      return
+    }
     try {
       form.value.avatar = await compressAvatar(file)
       ElMessage.success('头像已就绪，点击「保存」生效')
     } catch {
       ElMessage.error('图片处理失败，请换一张图片')
     }
+  }
+
+  function removeAvatar() {
+    form.value.avatar = ''
+    ElMessage.success('头像已移除，点击「保存」生效')
   }
 
   function compressAvatar(file: File): Promise<string> {
@@ -221,20 +256,39 @@
   }
 
   async function save() {
+    const nickname = form.value.nickname.trim()
+    const email = form.value.email.trim()
+    const phone = form.value.phone.trim()
+    if (nickname.length > 30) return ElMessage.warning('昵称不能超过 30 个字符')
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return ElMessage.warning('请输入有效的邮箱地址')
+    }
+    const phoneDigits = phone.replace(/\D/g, '')
+    if (
+      phone &&
+      (!/^\+?\d+(?:[ -]\d+)*$/.test(phone) || phoneDigits.length < 6 || phoneDigits.length > 15)
+    ) {
+      return ElMessage.warning('请输入有效的手机号，可使用 +、空格或连字符')
+    }
     saving.value = true
     try {
-      await saveMyProfile({
-        phone: form.value.phone,
+      const saved = await saveMyProfile({
+        nickname,
+        email,
+        phone,
         avatar: form.value.avatar,
         gender: form.value.gender,
         age: form.value.age,
         years: form.value.years,
         specialties: form.value.specialties
       })
-      // 联动顶栏/账号菜单头像（刷新 /me 的本地副本）
+      form.value = saved
       userStore.setUserInfo({
         ...userStore.getUserInfo,
-        avatar: form.value.avatar || undefined
+        userName: saved.nickname || saved.name,
+        email: saved.email,
+        phone: saved.phone,
+        avatar: saved.avatar || undefined
       } as Api.Auth.UserInfo)
       ElMessage.success('已保存')
     } catch (e) {
@@ -242,6 +296,12 @@
     } finally {
       saving.value = false
     }
+  }
+
+  function errorMessage(e: unknown): string {
+    return String(
+      (e as { response?: { data?: { message?: string } } })?.response?.data?.message ?? e
+    ).slice(0, 60)
   }
 
   // ---------- 修改密码 ----------

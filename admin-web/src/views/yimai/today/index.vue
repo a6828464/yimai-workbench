@@ -1,5 +1,8 @@
 <template>
-  <component :is="dashboardComponent" />
+  <component :is="dashboardComponent" v-if="dashboardComponent" />
+  <div v-else class="p-4">
+    <ElEmpty description="当前账号无可用工作台" />
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -15,9 +18,10 @@
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
 
   const dashboardComponent = computed(() => {
+    if (roles.value.includes('R_SUPER')) return BossDashboard
     if (roles.value.includes('R_MANAGER')) return ManagerDashboard
     if (roles.value.includes('R_TEACHER')) return TeacherDashboard
     if (roles.value.includes('R_MEDIA')) return MediaDashboard
-    return BossDashboard
+    return null
   })
 </script>

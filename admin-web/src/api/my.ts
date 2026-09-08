@@ -24,6 +24,7 @@ export interface XhsPersonaPrefs {
 /** 用户自助资料（个人中心维护，营销工具自动取用） */
 export interface MyProfile {
   name: string
+  nickname: string
   phone: string
   avatar: string
   email: string
@@ -70,6 +71,7 @@ export const MY_PROFILE_DEFAULTS = {
 export function defaultMyProfile(): MyProfile {
   return {
     name: '',
+    nickname: '',
     email: '',
     role: '',
     venues: [],
@@ -86,28 +88,32 @@ const local = ref<MyProfile | null>(null)
 
 function readLocal(): MyProfile {
   if (local.value) return local.value
+  let stored: Partial<MyProfile> | null = null
   try {
-    local.value = JSON.parse(localStorage.getItem('yimai-my-profile') || 'null')
+    stored = JSON.parse(localStorage.getItem('yimai-my-profile') || 'null')
   } catch {
-    local.value = null
+    stored = null
   }
-  return local.value ?? defaultMyProfile()
+  const defaults = defaultMyProfile()
+  local.value = stored ? mergeProfile(defaults, stored) : defaults
+  return local.value
 }
 
-function mergeProfile(base: Partial<MyProfile>): MyProfile {
-  const cur = readLocal()
+function mergeProfile(cur: MyProfile, patch: Partial<MyProfile>): MyProfile {
   return {
     ...cur,
-    ...base,
-    persona: { ...cur.persona, ...(base.persona ?? {}) },
-    xhs: { ...cur.xhs, ...(base.xhs ?? {}) }
+    ...patch,
+    persona: { ...cur.persona, ...(patch.persona ?? {}) },
+    xhs: { ...cur.xhs, ...(patch.xhs ?? {}) }
   }
 }
 
 function toPayload(p: MyProfile): Record<string, unknown> {
   return {
+    nickname: p.nickname,
+    email: p.email,
     phone: p.phone,
-    avatar: p.avatar,
+    avatar: p.avatar || null,
     profile: {
       gender: p.gender,
       age: p.age,
@@ -116,6 +122,44 @@ function toPayload(p: MyProfile): Record<string, unknown> {
       persona: p.persona,
       xhs: p.xhs
     }
+  }
+}
+
+interface MyProfileResponse {
+  name: string
+  nickname: string | null
+  phone: string | null
+  avatar: string | null
+  email: string | null
+  role: string
+  venues: string[]
+  profile: Partial<{
+    gender: string
+    age: string
+    years: string
+    specialties: string[]
+    persona: Partial<MomentsPersonaPrefs>
+    xhs: Partial<XhsPersonaPrefs>
+  }> | null
+}
+
+function normalizeProfile(d: MyProfileResponse): MyProfile {
+  return {
+    name: d.name ?? '',
+    nickname: d.nickname ?? '',
+    phone: d.phone ?? '',
+    avatar: d.avatar ?? '',
+    email: d.email ?? '',
+    role: d.role ?? '',
+    venues: d.venues ?? [],
+    gender: d.profile?.gender ?? MY_PROFILE_DEFAULTS.gender,
+    age: d.profile?.age ?? '',
+    years: d.profile?.years ?? '',
+    specialties: d.profile?.specialties?.length
+      ? d.profile.specialties
+      : clone(MY_PROFILE_DEFAULTS.specialties),
+    persona: { ...clone(MY_PROFILE_DEFAULTS.persona), ...(d.profile?.persona ?? {}) },
+    xhs: { ...clone(MY_PROFILE_DEFAULTS.xhs), ...(d.profile?.xhs ?? {}) }
   }
 }
 
@@ -130,57 +174,24 @@ export async function fetchMyProfile(force = false): Promise<MyProfile> {
     cached = readLocal()
     return cached
   }
-  try {
-    const d = await apiGet<{
-      name: string
-      phone: string | null
-      avatar: string | null
-      email: string | null
-      role: string
-      venues: string[]
-      profile: Partial<{
-        gender: string
-        age: string
-        years: string
-        specialties: string[]
-        persona: Partial<MomentsPersonaPrefs>
-        xhs: Partial<XhsPersonaPrefs>
-      }> | null
-    }>('/my/profile')
-    cached = {
-      name: d.name ?? '',
-      phone: d.phone ?? '',
-      avatar: d.avatar ?? '',
-      email: d.email ?? '',
-      role: d.role ?? '',
-      venues: d.venues ?? [],
-      gender: d.profile?.gender ?? MY_PROFILE_DEFAULTS.gender,
-      age: d.profile?.age ?? '',
-      years: d.profile?.years ?? '',
-      specialties: d.profile?.specialties?.length
-        ? d.profile.specialties
-        : clone(MY_PROFILE_DEFAULTS.specialties),
-      persona: { ...clone(MY_PROFILE_DEFAULTS.persona), ...(d.profile?.persona ?? {}) },
-      xhs: { ...clone(MY_PROFILE_DEFAULTS.xhs), ...(d.profile?.xhs ?? {}) }
-    }
-    return cached
-  } catch {
-    cached = readLocal()
-    return cached
-  }
+  const d = await apiGet<MyProfileResponse>('/my/profile')
+  cached = normalizeProfile(d)
+  return cached
 }
 
 /** 保存我的资料（局部字段合并后整体提交） */
 export async function saveMyProfile(patch: Partial<MyProfile>): Promise<MyProfile> {
-  const next = mergeProfile({ ...(cached ?? readLocal()), ...patch })
   if (!USE_BACKEND) {
+    const next = mergeProfile(cached ?? readLocal(), patch)
     localStorage.setItem('yimai-my-profile', JSON.stringify(next))
     cached = next
     return next
   }
-  await apiPut('/my/profile', toPayload(next))
-  cached = next
-  return next
+  const current = cached ?? (await fetchMyProfile())
+  const next = mergeProfile(current, patch)
+  const saved = await apiPut<MyProfileResponse>('/my/profile', toPayload(next))
+  cached = normalizeProfile(saved)
+  return cached
 }
 
 export async function changeMyPassword(oldPassword: string, newPassword: string): Promise<void> {

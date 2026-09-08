@@ -59,10 +59,10 @@
           :disabled="!connected"
           @click="importAll"
         >
-          全量导入会员到客户池
+          同步会员、卡项和预约
         </ElButton>
         <span class="text-xs text-gray-400"
-          >服务器直连随心瑜拉取双店会员，按外部ID去重合并（已有建档/负责人不被覆盖）</span
+          >会员/卡项全量同步，预约首次近两年、后续增量回溯 3 天；每次保存带日期的私有 CSV 快照</span
         >
       </div>
       <ElAlert
@@ -214,6 +214,30 @@
         @pagination:current-change="handleCurrentChange"
       />
     </ElCard>
+
+    <ElDialog v-model="artifactDialog.visible" title="历史导入表格" width="820px">
+      <ElTable v-loading="artifactDialog.loading" :data="artifactDialog.rows" border stripe>
+        <ElTableColumn prop="displayName" label="表格名称" min-width="280" show-overflow-tooltip />
+        <ElTableColumn label="范围" width="150">
+          <template #default="{ row }">{{
+            row.isFull ? '全量' : `${row.dateFrom || '-'} ~ ${row.dateTo || '-'}`
+          }}</template>
+        </ElTableColumn>
+        <ElTableColumn prop="rowCount" label="行数" width="90" />
+        <ElTableColumn label="大小" width="100"
+          ><template #default="{ row }">{{ formatSize(row.size) }}</template></ElTableColumn
+        >
+        <ElTableColumn label="操作" width="90"
+          ><template #default="{ row }"
+            ><ElButton link type="primary" @click="downloadArtifact(row)">下载</ElButton></template
+          ></ElTableColumn
+        >
+      </ElTable>
+      <ElEmpty
+        v-if="!artifactDialog.loading && !artifactDialog.rows.length"
+        description="该批次暂无可下载表格"
+      />
+    </ElDialog>
   </div>
 </template>
 
@@ -221,12 +245,12 @@
   import ArtButtonTable from '@/components/core/forms/art-button-table/index.vue'
   import { useTable } from '@/hooks/core/useTable'
   import { querySyncJobs } from '@/api/yimai'
-  import type { YimaiSyncJob } from '@/api/yimai'
+  import type { SyncArtifactItem, YimaiSyncJob } from '@/api/yimai'
   import { fetchKyCounts, fetchKyToday, fetchKyMembers, kySession, KY_STORES } from '@/api/keepyoga'
   import type { KyCounts, KyMemberRow } from '@/api/keepyoga'
   import { useYimaiStore } from '@/store/modules/yimai'
-  import { addLead, importKyMembersToPool } from '@/api/yimai'
-  import { apiGet, apiPut, USE_BACKEND } from '@/api/backend'
+  import { addLead, getSyncArtifacts, importKyMembersToPool } from '@/api/yimai'
+  import { apiDownload, apiGet, apiPut, USE_BACKEND } from '@/api/backend'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiSync' })
@@ -380,7 +404,12 @@
 
   // ---------- 今日 ----------
   const todayLoading = ref(false)
-  const today = ref<Record<string, { total: number; trialHits: number; kinds: { 私教: number; 小班: number; 团课: number } }>>({
+  const today = ref<
+    Record<
+      string,
+      { total: number; trialHits: number; kinds: { 私教: number; 小班: number; 团课: number } }
+    >
+  >({
     绿地店: { total: 0, trialHits: 0, kinds: { 私教: 0, 小班: 0, 团课: 0 } },
     东部店: { total: 0, trialHits: 0, kinds: { 私教: 0, 小班: 0, 团课: 0 } }
   })
@@ -499,7 +528,8 @@
             minWidth: 170,
             formatter: (row: YimaiSyncJob) =>
               h('div', [
-                h('p', { class: 'font-500' }, row.batchNo),
+                h('p', { class: 'font-500' }, row.displayName || row.batchNo),
+                h('p', { class: 'text-xs text-gray-400' }, row.batchNo),
                 h('p', { class: 'text-xs text-gray-400' }, row.dataType)
               ])
           },
@@ -548,20 +578,64 @@
             width: 130,
             fixed: 'right',
             formatter: (row: YimaiSyncJob) =>
-              row.failCount > 0
-                ? h(ArtButtonTable, {
-                    type: 'view',
-                    title: '查看错误明细',
-                    onClick: () => showErrors(row)
-                  })
-                : h('span', { class: 'text-xs text-gray-400' }, '—')
+              h('div', { class: 'flex gap-1' }, [
+                row.artifactsCount
+                  ? h(ArtButtonTable, {
+                      type: 'view',
+                      title: `表格(${row.artifactsCount})`,
+                      onClick: () => showArtifacts(row)
+                    })
+                  : null,
+                row.failCount > 0 || row.errorMessage
+                  ? h(ArtButtonTable, {
+                      type: 'view',
+                      title: '错误',
+                      onClick: () => showErrors(row)
+                    })
+                  : null
+              ])
           }
         ]
       }
     })
 
   function showErrors(row: YimaiSyncJob) {
-    ElMessage.info(`批次 ${row.batchNo} 包含 ${row.failCount} 条未处理记录，请重新同步该门店`)
+    ElMessage.info(row.errorMessage || `批次 ${row.batchNo} 包含 ${row.failCount} 条未处理记录`)
+  }
+
+  const artifactDialog = reactive({
+    visible: false,
+    loading: false,
+    rows: [] as SyncArtifactItem[]
+  })
+
+  async function showArtifacts(row: YimaiSyncJob) {
+    artifactDialog.visible = true
+    artifactDialog.loading = true
+    try {
+      artifactDialog.rows = await getSyncArtifacts(row.id)
+    } catch {
+      artifactDialog.rows = []
+      ElMessage.error('历史表格读取失败')
+    } finally {
+      artifactDialog.loading = false
+    }
+  }
+
+  async function downloadArtifact(row: SyncArtifactItem) {
+    try {
+      await apiDownload(`/sync-artifacts/${row.id}/download`, row.displayName)
+    } catch {
+      ElMessage.error('表格下载失败')
+    }
+  }
+
+  function formatSize(size: number): string {
+    return size < 1024
+      ? `${size} B`
+      : size < 1048576
+        ? `${(size / 1024).toFixed(1)} KB`
+        : `${(size / 1048576).toFixed(1)} MB`
   }
 
   onMounted(() => {
