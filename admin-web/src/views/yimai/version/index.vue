@@ -189,7 +189,8 @@
     try {
       const r = await apiPost<{ updated: boolean; message?: string; output?: string[] }>(
         '/system/update',
-        {}
+        {},
+        600000
       )
       if (r.output?.length) updateOutput.value = r.output
       ElMessage.success(
