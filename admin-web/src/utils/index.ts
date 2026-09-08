@@ -32,3 +32,13 @@ export * from './form'
 
 // socket 相关
 export * from './socket'
+
+/**
+ * 按本地时区格式化为 YYYY-MM-DD（避免 toISOString 在 UTC+8 早间跨天少一天）
+ */
+export function toLocalDateString(date: Date): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}

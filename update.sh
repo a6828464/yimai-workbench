@@ -7,8 +7,12 @@ SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SITE_ROOT="${SITE_ROOT:-$SCRIPT_ROOT}"
 APP_ROOT="$SITE_ROOT/backend"
 WORK_ROOT="${WORK_ROOT:-$SITE_ROOT/.update-work}"
-GITEE_API="https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/releases/latest"
+# 只用固定可信发布 URL，不采用 Gitee release API 动态返回的 browser_download_url，
+# 避免 release 仓库被接管时资产 URL 被投毒（curl 侧 SSRF）。
+GITEE_PACKAGE_URL="https://gitee.com/meng-taoo/yimai-workbench/releases/download/auto-latest/yimai-workbench-latest.zip"
 GITHUB_PACKAGE_URL="https://github.com/a6828464/yimai-workbench/releases/download/auto-latest/yimai-workbench-latest.zip"
+# 期望 sha256（发布方在受控配置中提供；为空则跳过强校验并告警，可经 RELEASE_SHA256 注入）
+EXPECTED_SHA256="${RELEASE_SHA256:-}"
 
 if [ ! -d "$APP_ROOT" ]; then
   echo "错误：站点目录不存在：$APP_ROOT（请设置 SITE_ROOT 后重试）"
@@ -19,22 +23,15 @@ rm -rf "$WORK_ROOT"
 mkdir -p "$WORK_ROOT"
 trap 'rm -rf "$WORK_ROOT"' EXIT
 
-PACKAGE_URL=""
-if command -v python3 >/dev/null 2>&1; then
-  PACKAGE_URL="$(curl --fail --silent --show-error --location --connect-timeout 15 --max-time 30 "$GITEE_API" \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next((a["browser_download_url"] for a in d.get("assets",[]) if a.get("name")=="yimai-workbench-latest.zip"), ""))' || true)"
-else
-  PACKAGE_URL="$(curl --fail --silent --show-error --location --connect-timeout 15 --max-time 30 "$GITEE_API" \
-    | grep -o '"browser_download_url":"[^"]*yimai-workbench-latest\.zip"' | head -n1 | sed 's/.*":"//' || true)"
-fi
-
-echo "── 下载发行包来源：${PACKAGE_URL:-GitHub auto-latest}"
+echo "── 下载发行包：GitHub auto-latest（优先）；Gitee auto-latest（兜底）"
 
 download_ok=0
-for url in "${PACKAGE_URL:-}" "$GITHUB_PACKAGE_URL"; do
-  [ -z "$url" ] && continue
+for url in "$GITHUB_PACKAGE_URL" "$GITEE_PACKAGE_URL"; do
   echo "  尝试: $url"
-  if curl --fail --location --retry 3 --retry-delay 3 --connect-timeout 15 --max-time 600 -o "$WORK_ROOT/release.zip" "$url"; then
+  # 仅 HTTPS、强制 TLS1.2+、禁止降级到非 https 的内网跳转，杜绝供应链/SSRF 投毒
+  if curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    --retry 3 --retry-delay 3 --connect-timeout 15 --max-time 600 \
+    -o "$WORK_ROOT/release.zip" "$url"; then
     download_ok=1
     break
   else
@@ -43,15 +40,34 @@ for url in "${PACKAGE_URL:-}" "$GITHUB_PACKAGE_URL"; do
 done
 
 if [ "$download_ok" -ne 1 ]; then
-  echo "致命错误：发行包下载失败（Gitee 与 GitHub 均不可达）。请检查服务器外网连通性后重试。"
+  echo "致命错误：发行包下载失败（GitHub 与 Gitee 均不可达）。请检查服务器外网连通性后重试。"
   exit 1
 fi
 
 test -s "$WORK_ROOT/release.zip" || { echo "致命错误：下载的发行包为空文件"; exit 1; }
 
+if [ -n "$EXPECTED_SHA256" ]; then
+  ACTUAL_SHA256="$(sha256sum "$WORK_ROOT/release.zip" | awk '{print $1}')"
+  echo "  校验 sha256：期望 ${EXPECTED_SHA256} 实际 ${ACTUAL_SHA256}"
+  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+    echo "致命错误：发行包 sha256 校验失败，已中止更新（请确认发布包与校验值一致）。"
+    exit 1
+  fi
+else
+  echo "  警告：未提供 RELEASE_SHA256，本次跳过强完整性校验。建议发布侧提供预期 sha256 注入。"
+fi
+
 unzip -q "$WORK_ROOT/release.zip" -d "$WORK_ROOT/unpacked"
 RELEASE_ROOT="$WORK_ROOT/unpacked/app"
 [ -d "$RELEASE_ROOT/backend" ] || { echo "致命错误：发行包结构异常（缺少 app/backend）"; exit 1; }
+
+# 校验包内更新脚本存在，防止加载残缺升级通道；不存在则不覆盖（保留现网可用脚本）
+if [ -f "$RELEASE_ROOT/update.sh" ] && [ -s "$RELEASE_ROOT/update.sh" ]; then
+  PACKED_UPDATE_OK=1
+else
+  PACKED_UPDATE_OK=0
+  echo "  警告：发行包未携带有效 update.sh，跳过更新脚本自举升级（继续以现有脚本完成本次更新）。"
+fi
 
 # Preserve production-only files while replacing application code and built assets.
 # 发布包不携带 vendor，保留服务器现有生产依赖。
@@ -63,9 +79,10 @@ rsync -a \
   "$RELEASE_ROOT/backend/" "$APP_ROOT/"
 
 # 升级包同时携带最新版更新脚本；在当前进程结束前覆盖自身不影响本次执行。
-if [ -f "$RELEASE_ROOT/update.sh" ]; then
+if [ "$PACKED_UPDATE_OK" -eq 1 ]; then
   cp "$RELEASE_ROOT/update.sh" "$SITE_ROOT/update.sh"
   chmod 755 "$SITE_ROOT/update.sh"
+  echo "  已自举更新安装脚本 update.sh"
 fi
 
 cd "$APP_ROOT"

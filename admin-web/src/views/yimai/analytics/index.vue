@@ -135,6 +135,7 @@
 
 <script setup lang="ts">
   import { apiGet } from '@/api/backend'
+  import { toLocalDateString } from '@/utils'
 
   defineOptions({ name: 'YimaiAnalytics' })
 
@@ -173,7 +174,7 @@
     const end = new Date()
     const start = new Date()
     start.setDate(start.getDate() - 29)
-    const iso = (dt: Date) => dt.toISOString().slice(0, 10)
+    const iso = (dt: Date) => toLocalDateString(dt)
     return { start: iso(start), end: iso(end) }
   }
 

@@ -23,7 +23,12 @@ const app = createApp(App)
 initStore(app)
 initRouter(app)
 registerSessionLifecycleHandlers({
-  resetSensitiveState: () => useTrainingStore().reset(),
+  resetSensitiveState: () => {
+    useTrainingStore().reset()
+    // 切换账号/会话失效时同步清理可能含 PII 的持久化业务缓存
+    localStorage.removeItem('yimai-store')
+    localStorage.removeItem('yimai-ai-config')
+  },
   onUserChange: (userId) => useTrainingStore().loadForUser(userId)
 })
 registerSessionExpiredHandler(() => useUserStore().logOut())

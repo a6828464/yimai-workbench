@@ -46,6 +46,11 @@ return [
         'token' => env('GITEE_TOKEN'),
     ],
 
+    // AI 大模型代理（共用一把 key，按账号日配额限制成本滥用）
+    'ai' => [
+        'daily_quota' => env('AI_DAILY_QUOTA', 200),
+    ],
+
     // 自助注册（默认关闭；开启后请同时设置 REGISTRATION_CODE 邀请码兜底）
     'registration' => [
         'enabled' => env('REGISTRATION_ENABLED', false),

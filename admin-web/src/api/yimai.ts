@@ -2,6 +2,7 @@ import { useUserStore } from '@/store/modules/user'
 import { useYimaiStore } from '@/store/modules/yimai'
 import { fetchKyMembers, KY_STORES } from './keepyoga'
 import { USE_BACKEND, apiGet, apiPost, apiPatch, apiPut, apiDelete } from './backend'
+import { toLocalDateString } from '@/utils'
 import type {
   YimaiLead,
   YimaiAuditLog,
@@ -1241,7 +1242,7 @@ function buildVenueDays(
   const cur = new Date(`${start}T00:00:00`)
   const stop = new Date(`${end}T00:00:00`)
   while (cur <= stop) {
-    const iso = cur.toISOString().slice(0, 10)
+    const iso = toLocalDateString(cur)
     const wf = weekdayFactor(cur)
     const r = (k: string, lo: number, hi: number) => lo + seeded(`${iso}-${venue}-${k}`) * (hi - lo)
     const leads = Math.max(0, Math.round(r('leads', 2, 7) * wf * scale))

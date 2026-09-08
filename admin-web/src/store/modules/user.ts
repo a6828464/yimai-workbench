@@ -167,6 +167,9 @@ export const useUserStore = defineStore(
       localStorage.removeItem('backend-token')
       // 清空刷新令牌
       refreshToken.value = ''
+      // 清空可能含客户/留资 PII 的持久化业务数据，避免共用机串号
+      localStorage.removeItem('yimai-store')
+      localStorage.removeItem('yimai-ai-config')
       const worktabStore = useWorktabStore()
       worktabStore.current = {}
       worktabStore.opened = []

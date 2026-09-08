@@ -510,6 +510,7 @@
   } from '@/api/yimai'
   import type { YimaiLead } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { toLocalDateString } from '@/utils'
   import { ElMessage, ElMessageBox } from 'element-plus'
 
   defineOptions({ name: 'YimaiLeads' })
@@ -595,7 +596,7 @@
   function emptyForm() {
     return {
       id: 0,
-      leadDate: new Date().toISOString().slice(0, 10),
+      leadDate: toLocalDateString(new Date()),
       name: '',
       phone: '',
       phoneTail: '',

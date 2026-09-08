@@ -21,6 +21,7 @@
 <script setup lang="ts">
   import * as XLSX from 'xlsx'
   import FileSaver from 'file-saver'
+  import { toLocalDateString } from '@/utils'
   import { ref, computed, nextTick } from 'vue'
   import { Loading } from '@element-plus/icons-vue'
   import type { ButtonType } from 'element-plus'
@@ -91,7 +92,7 @@
   }
 
   const props = withDefaults(defineProps<ExportOptions>(), {
-    filename: () => `export_${new Date().toISOString().slice(0, 10)}`,
+    filename: () => `export_${toLocalDateString(new Date())}`,
     sheetName: 'Sheet1',
     type: 'primary',
     size: 'default',

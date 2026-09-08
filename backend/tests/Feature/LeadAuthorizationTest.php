@@ -112,6 +112,27 @@ class LeadAuthorizationTest extends TestCase
         }
     }
 
+    public function test_lead_amounts_accept_two_decimal_places(): void
+    {
+        $manager = $this->user('manager-decimal', '小数店长', 'R_MANAGER', '绿地店');
+        Sanctum::actingAs($manager);
+
+        $id = $this->postJson('/api/leads', [
+            'name' => '体验课核销',
+            'source' => '到店',
+            'venue' => '绿地店',
+            'redeemAmount' => 99.9,
+            'dealAmount' => 1280.50,
+        ])->assertOk()->json('data.id');
+        $this->assertDatabaseHas('leads', ['id' => $id, 'redeem_amount' => 99.9, 'deal_amount' => 1280.50]);
+
+        $this->patchJson("/api/leads/{$id}", ['redeemAmount' => 88.05])->assertOk();
+        $this->assertDatabaseHas('leads', ['id' => $id, 'redeem_amount' => 88.05]);
+
+        // 超过两位小数应被拒绝
+        $this->patchJson("/api/leads/{$id}", ['redeemAmount' => 88.005])->assertStatus(422);
+    }
+
     public function test_disabled_user_existing_token_is_rejected(): void
     {
         $user = $this->user('disabled-token', '停用用户', 'R_TEACHER', '绿地店');
@@ -197,6 +218,25 @@ class LeadAuthorizationTest extends TestCase
         $this->assertStringContainsString('客资', $mediaAlerts);
         $this->assertStringNotContainsString('任务', $mediaAlerts);
         $this->assertStringNotContainsString('卡项临近到期', $mediaAlerts);
+    }
+
+    public function test_media_is_scoped_out_of_cross_store_tasks_and_analytics(): void
+    {
+        Task::create(['title' => '东部任务', 'customer_name' => '甲', 'venue' => '东部店', 'owner' => '东部老师', 'status' => '待接收']);
+        Task::create(['title' => '新媒体任务', 'customer_name' => '乙', 'venue' => '东部店', 'owner' => '新媒体', 'status' => '待接收']);
+        Lead::create(['lead_date' => now()->toDateString(), 'name' => '东部客资', 'source' => '测试', 'venue' => '东部店', 'status' => '已成交', 'deal_amount' => 100]);
+
+        $media = $this->user('media-scope', '新媒体', 'R_MEDIA', null);
+        Sanctum::actingAs($media);
+
+        // 任务：只能看到指派给自己的
+        $tasks = $this->getJson('/api/tasks')->assertOk()->json('data.records');
+        $this->assertSame(['新媒体任务'], collect($tasks)->pluck('title')->all());
+
+        // 经营看板：即便传入 venue 参数，非超管也只能看到自己的门店范围（media 无门店 → 空）
+        // 经营看板：非超管一律锁定本店范围（media 无门店 → 空），不接受越店读取
+        $this->getJson('/api/analytics/channels')->assertOk()->assertJsonPath('data.total', 0);
+        $this->getJson('/api/analytics/trends')->assertOk();
     }
 
     private function user(string $username, string $name, string $role, ?string $venue): User

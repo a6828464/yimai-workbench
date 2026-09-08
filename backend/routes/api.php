@@ -31,8 +31,8 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Symfony\Component\Process\Process;
 
-Route::post('/auth/login', [AuthController::class, 'login']);
-Route::post('/auth/register', [AuthController::class, 'register']);
+Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
+Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
@@ -258,7 +258,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/leads', function (Request $r) use ($leadFields) {
         $d = $r->validate([
             'name' => 'required|string', 'source' => 'required|string', 'venue' => 'required|string',
-            'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0', 'redeemAmount' => 'nullable|numeric|min:0',
+            'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0|decimal:0,2', 'redeemAmount' => 'nullable|numeric|min:0|decimal:0,2',
         ]);
         $values = array_intersect_key(camelToSnake($r->all()), array_flip($leadFields)) + ['created_by' => $r->user()->name, 'status' => $r->input('status', '新留资')];
         $values['lead_date'] = $values['lead_date'] ?? now()->toDateString();
@@ -589,6 +589,9 @@ Route::middleware('auth:sanctum')->group(function () {
             $q->where('venue', $u->venue)
                 ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
         }
+        if ($u->role === 'R_MEDIA') {
+            $q->where('owner', $u->name);
+        }
         if ($status = $r->query('status')) {
             $q->where('status', $status);
         }
@@ -730,7 +733,10 @@ Route::middleware('auth:sanctum')->group(function () {
             default => false,
         };
         abort_unless($ok, 422, '当前状态不允许该操作');
-        $a->update(['status' => $map[$decision]]);
+        // 乐观条件更新：携带期望旧状态，防止并发双推同一审批单
+        $affected = Approval::where('id', $id)->where('status', $state)->update(['status' => $map[$decision]]);
+        abort_unless($affected === 1, 422, '当前状态已变化，请刷新后重试');
+        $a = Approval::findOrFail($id);
         audit($r, $decision, '价格审批', $id, "价格审批单 #{$id}", '双店', "审批决定：{$decision}");
 
         return ok(camel($a));
@@ -929,7 +935,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // ---------- 随心瑜账号配置（仅超管，存数据库，可切换） ----------
     Route::get('/ky/config', function (Request $r) {
         abort_unless($r->user()->role === 'R_SUPER', 403);
-        $ky = (AppSetting::first()?->ky) ?? [];
+        $ky = (AppSetting::oldest('id')->first()?->ky) ?? [];
 
         return ok([
             'phone' => (string) ($ky['phone'] ?? ''),
@@ -940,7 +946,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/ky/config', function (Request $r) {
         abort_unless($r->user()->role === 'R_SUPER', 403);
         $d = $r->validate(['phone' => 'required|string|max:20', 'password' => 'nullable|string|max:64']);
-        $s = AppSetting::firstOrCreate([]);
+        $s = setting();
         $ky = (array) (($s->ky) ?? []);
         $ky['phone'] = trim($d['phone']);
         if (! empty($d['password'])) {
@@ -960,6 +966,13 @@ Route::middleware('auth:sanctum')->group(function () {
         $venue = (string) $r->input('venue');
         $venueId = (string) $r->input('venueId');
         abort_unless(isset($stores[$venue]) && $stores[$venue] === $venueId, 422, '门店参数无效');
+        // 回收僵尸任务：进程被外部掐断时走不到 catch，会把任务永久留在"进行中"；开跑前先把超时未收尾的判失败
+        SyncJob::where('venue', $venue)->where('status', '进行中')
+            ->where('started_at', '<', now()->subMinutes(30))
+            ->update(['status' => '失败', 'finished_at' => now(), 'error_message' => '同步超时未完成（疑似进程被中断），已自动回收']);
+        // 门店级互斥：同一门店已有进行中的同步则拒绝并发，避免重复拉取压垮上游、游标互相覆盖
+        $lock = Cache::lock("ky:import:{$venue}", 1800);
+        abort_unless($lock->get(), 409, '该门店同步正在进行中，请等待完成或稍后再试');
         $batch = 'IMP-'.now()->format('Ymd-His').'-'.substr((string) mt_rand(1000, 9999), 0, 4);
         $job = SyncJob::create([
             'batch_no' => $batch,
@@ -978,9 +991,11 @@ Route::middleware('auth:sanctum')->group(function () {
             $message = mb_substr($e->getMessage(), 0, 1000);
             $job->update(['status' => '失败', 'finished_at' => now(), 'error_message' => $message]);
             audit($r, '导入失败', 'KeepYoga同步', $job->id, "批次{$batch}", $venue, $message);
+            $lock->release();
 
             return response()->json(['code' => 1, 'message' => 'KeepYoga 多表同步失败：'.$message]);
         }
+        $lock->release();
 
         $detail = sprintf(
             '已保存快照：会员基础表 %d 条 · 会员卡表 %d 条 · 团课预约 %d 条 · 私教预约 %d 条（出勤口径月 %s / %s / %s）；导入落库：新增 %d · 更新 %d · 未变化 %d · 跳过 %d',
@@ -1011,7 +1026,14 @@ Route::middleware('auth:sanctum')->group(function () {
             'stream' => 'nullable|boolean',
             'featureType' => 'nullable|string|in:chat,marketing_moments,marketing_xhs,training_plan',
         ]);
-        $saved = (array) (AppSetting::first()?->ai ?? []);
+        // 按账号每日配额，防止共用同一把付费 key 时被单账号刷爆（throttle 仅限瞬时频率）
+        $dailyQuota = (int) (config('services.ai.daily_quota') ?: 200);
+        abort_if(
+            ModelGenerationRecord::where('user_id', $r->user()->id)
+                ->where('created_at', '>=', now()->startOfDay())->count() >= $dailyQuota,
+            429, '今日 AI 生成次数已达上限，请明天再试或联系管理员'
+        );
+        $saved = (array) (AppSetting::oldest('id')->first()?->ai ?? []);
         $baseUrl = (string) ($saved['baseUrl'] ?? '');
         $apiKey = (string) ($saved['apiKey'] ?? '');
         $model = (string) ($saved['model'] ?? '');
@@ -1065,7 +1087,7 @@ Route::middleware('auth:sanctum')->group(function () {
         try {
             $resp = Http::withToken($apiKey)
                 ->timeout(120)
-                ->withOptions($stream ? ['stream' => true] : [])
+                ->withOptions(array_merge(['allow_redirects' => false], $stream ? ['stream' => true] : []))
                 ->post(rtrim($baseUrl, '/').'/chat/completions', $payload);
         } catch (Throwable $e) {
             finishModelRecord($record, 'failed', $startedAt, '', $e->getMessage());
@@ -1190,6 +1212,7 @@ Route::middleware('auth:sanctum')->group(function () {
         try {
             $resp = Http::withToken($d['apiKey'])
                 ->timeout(30)
+                ->withOptions(['allow_redirects' => false])
                 ->get(rtrim($d['baseUrl'], '/').'/models');
         } catch (Throwable $e) {
             return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
@@ -1221,11 +1244,13 @@ Route::middleware('auth:sanctum')->group(function () {
         ]);
         assertPublicHttpsUrl($d['baseUrl']);
         try {
-            $resp = Http::withToken($d['apiKey'])->timeout(30)->post(rtrim($d['baseUrl'], '/').'/chat/completions', [
-                'model' => $d['model'],
-                'messages' => [['role' => 'user', 'content' => '只回复OK']],
-                'max_tokens' => 512,
-            ]);
+            $resp = Http::withToken($d['apiKey'])->timeout(30)
+                ->withOptions(['allow_redirects' => false])
+                ->post(rtrim($d['baseUrl'], '/').'/chat/completions', [
+                    'model' => $d['model'],
+                    'messages' => [['role' => 'user', 'content' => '只回复OK']],
+                    'max_tokens' => 512,
+                ]);
         } catch (Throwable $e) {
             return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
         }
@@ -1238,7 +1263,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/ai/config', function (Request $r) {
         // 读取接口对全部登录角色开放（不含密钥明文），保证各角色工作台都能水合同一份 AI 配置
-        $ai = (array) (AppSetting::first()?->ai ?? []);
+        $ai = (array) (AppSetting::oldest('id')->first()?->ai ?? []);
 
         return ok(collect($ai)->except('apiKey')->put('configured', ! empty($ai['apiKey']))->all());
     });
@@ -1251,7 +1276,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'model' => 'required|string', 'temperature' => 'required|numeric|min:0|max:2',
         ]);
         assertPublicHttpsUrl($d['baseUrl']);
-        $s = AppSetting::firstOrCreate([]);
+        $s = setting();
         $ai = (array) ($s->ai ?? []);
         if (! empty($d['apiKey']) && $d['apiKey'] !== 'server-configured') {
             $ai['apiKey'] = $d['apiKey'];
@@ -1450,7 +1475,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // ---------- 今日工作台汇总（服务端计算） ----------
     // ---------- 快照（今日预约等，落库供工作台读取） ----------
     Route::get('/today/snapshot', function (Request $r) {
-        $snap = AppSetting::first()?->snapshot ?? [];
+        $snap = AppSetting::oldest('id')->first()?->snapshot ?? [];
 
         return ok($snap);
     });
@@ -1468,7 +1493,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'todayKinds.绿地店' => 'nullable|array',
             'todayKinds.东部店' => 'nullable|array',
         ]);
-        $s = AppSetting::firstOrCreate([]);
+        $s = setting();
         $snap = $s->snapshot ?? [];
         $snap['todayBookings'] = [
             '绿地店' => (int) ($d['todayBookings']['绿地店'] ?? 0),
@@ -1512,10 +1537,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // 待分配以随心瑜顾问字段为准，本地负责人只是后续执行归属。
         $unassigned = $customers->filter(fn ($c) => trim((string) $c->consultant) === '')->count();
 
-        $leadQ = Lead::query();
-        if ($u->role !== 'R_SUPER' && $u->venue) {
-            $leadQ->where('venue', $u->venue);
-        }
+        $leadQ = applyVenueScope(Lead::query(), $u, '');
         $leads = $leadQ->get();
         $newLeads = $leads->where('status', '新留资')->count();
         $leadsWithTeacher = $leads->filter(fn ($l) => $l->service_teacher !== '')->count();
@@ -1529,10 +1551,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $renewalTouched = $renewing->filter(fn ($c) => $c->renewal_plan !== null && $c->renewal_plan !== '')->count();
         $renewalRate = $renewing->count() > 0 ? round($renewalTouched / $renewing->count() * 100) : 0;
 
-        $taskQ = Task::query();
-        if ($u->role !== 'R_SUPER' && $u->venue) {
-            $taskQ->where('venue', $u->venue);
-        }
+        $taskQ = applyVenueScope(Task::query(), $u, '');
         $tasks = $taskQ->get();
         $taskRate = $tasks->count() > 0 ? round($tasks->where('status', '已完成')->count() / $tasks->count() * 100) : 0;
 
@@ -1555,12 +1574,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $u = $r->user();
         $venue = (string) $r->query('venue', '');
         abort_unless($venue === '' || in_array($venue, ['绿地店', '东部店'], true), 422, '门店参数无效');
-        $leadQ = Lead::query();
-        if ($u->role !== 'R_SUPER' && $u->venue) {
-            $leadQ->where('venue', $u->venue);
-        } elseif ($venue !== '') {
-            $leadQ->where('venue', $venue);
-        }
+        $leadQ = applyVenueScope(Lead::query(), $u, $venue);
 
         $start = $r->query('start') ?: now()->startOfMonth()->toDateString();
         $end = $r->query('end') ?: now()->toDateString();
@@ -1597,16 +1611,14 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // 售卡张数/金额：以随心瑜会员卡表落库的售卡事实为准，按售卡时间与实收金额统计，
         // 排除体验/赠卡（is_taste）与退卡；不再依赖工作台留资手动登记的成交卡项。
-        $cardQ = KyCard::query()
-            ->where('is_taste', false)
-            ->where('status_format', '!=', '退卡')
-            ->whereNotNull('sold_at')
-            ->whereBetween('sold_at', [$start, $end]);
-        if ($u->role !== 'R_SUPER' && $u->venue) {
-            $cardQ->where('venue', $u->venue);
-        } elseif ($venue !== '') {
-            $cardQ->where('venue', $venue);
-        }
+        $cardQ = applyVenueScope(
+            KyCard::query()
+                ->where('is_taste', false)
+                ->where('status_format', '!=', '退卡')
+                ->whereNotNull('sold_at')
+                ->whereBetween('sold_at', [$start, $end]),
+            $u, $venue
+        );
         foreach ($cardQ->get() as $card) {
             $date = (string) $card->sold_at;
             $cardVenue = $card->venue ?: '双店';
@@ -1625,13 +1637,10 @@ Route::middleware('auth:sanctum')->group(function () {
         }
 
         // 随心瑜体验预约是实际排课事实；按日、门店、人员去重后补足 CRM 留资状态统计。
-        $bookingQ = KyBooking::query()
-            ->whereBetween('start_at', [$start.' 00:00:00', $end.' 23:59:59']);
-        if ($u->role !== 'R_SUPER' && $u->venue) {
-            $bookingQ->where('venue', $u->venue);
-        } elseif ($venue !== '') {
-            $bookingQ->where('venue', $venue);
-        }
+        $bookingQ = applyVenueScope(
+            KyBooking::query()->whereBetween('start_at', [$start.' 00:00:00', $end.' 23:59:59']),
+            $u, $venue
+        );
         $kyByDate = [];
         foreach ($bookingQ->get() as $booking) {
             $date = $booking->start_at?->toDateString();
@@ -1782,12 +1791,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $u = $r->user();
         $venue = (string) $r->query('venue', '');
         abort_unless($venue === '' || in_array($venue, ['绿地店', '东部店'], true), 422, '门店参数无效');
-        $leadQ = Lead::query();
-        if ($u->role !== 'R_SUPER' && $u->venue) {
-            $leadQ->where('venue', $u->venue);
-        } elseif ($venue !== '') {
-            $leadQ->where('venue', $venue);
-        }
+        $leadQ = applyVenueScope(Lead::query(), $u, $venue);
         $start = $r->query('start') ?: now()->startOfMonth()->toDateString();
         $end = $r->query('end') ?: now()->toDateString();
         $leads = $leadQ->whereBetween('lead_date', [$start, $end])->get();
@@ -1812,12 +1816,7 @@ Route::middleware('auth:sanctum')->group(function () {
         $u = $r->user();
         $venue = (string) $r->query('venue', '');
         abort_unless($venue === '' || in_array($venue, ['绿地店', '东部店'], true), 422, '门店参数无效');
-        $leadQ = Lead::query();
-        if ($u->role !== 'R_SUPER' && $u->venue) {
-            $leadQ->where('venue', $u->venue);
-        } elseif ($venue !== '') {
-            $leadQ->where('venue', $venue);
-        }
+        $leadQ = applyVenueScope(Lead::query(), $u, $venue);
         $start = $r->query('start') ?: now()->startOfMonth()->toDateString();
         $end = $r->query('end') ?: now()->toDateString();
         $leadCohort = (clone $leadQ)->whereBetween('lead_date', [$start, $end])->get();
@@ -1871,22 +1870,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/today/summary', function (Request $r) {
         $u = $r->user();
 
-        $custQ = Customer::query();
-        if ($u->role === 'R_MANAGER') {
-            $custQ->where('venue', $u->venue);
-        }
-        if ($u->role === 'R_TEACHER' && $u->venue) {
-            $custQ->where('venue', $u->venue);
-        }
+        $custQ = scopeCustomersForUser(Customer::query(), $u);
         $scopedCustomers = $custQ->get();
 
-        $leadQ = Lead::query();
-        if ($u->role === 'R_MANAGER') {
-            $leadQ->where('venue', $u->venue);
-        }
-        if ($u->role === 'R_TEACHER') {
-            $leadQ->where(fn ($w) => $w->where('service_teacher', $u->name)->orWhere('service_teacher', ''));
-        }
+        $leadQ = scopeLeadsForUser(Lead::query(), $u);
         $leads = $leadQ->get();
 
         $taskQ = Task::query();
@@ -1896,13 +1883,16 @@ Route::middleware('auth:sanctum')->group(function () {
         if ($u->role === 'R_TEACHER') {
             $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
         }
+        if ($u->role === 'R_MEDIA') {
+            $taskQ->where('owner', $u->name);
+        }
         $overdueTasks = $taskQ->where('status', '已逾期')->count();
 
         $renewalIds = filteredIds('待续课');
         $expiringMembers = $scopedCustomers->whereIn('id', $renewalIds)->count();
         $tomorrow = now()->addDay()->toDateString();
 
-        $setting = AppSetting::first();
+        $setting = AppSetting::oldest('id')->first();
         $snap = $setting?->snapshot;
 
         return ok([
@@ -2349,48 +2339,50 @@ Route::middleware('auth:sanctum')->group(function () {
             'birthdays' => '生日关怀', 'trials' => '体验课', 'newLeads' => '新客首响',
         ];
 
-        // 业务流转 1：新客首响 → 留资状态机（已首响→已联系、无效客资→已流失）
-        if ($d['type'] === 'newLeads' && ! empty($d['leadId'])) {
-            $lead = Lead::find($d['leadId']);
-            if ($lead) {
-                $canHandle = in_array($u->role, ['R_SUPER', 'R_MANAGER'], true)
-                    || (string) $lead->service_teacher === (string) $u->name
-                    || (string) $lead->service_teacher === '';
-                abort_unless($canHandle, 403, '无权处理该客资');
-                $next = match ($d['action']) {
-                    '已首响' => '已联系',
-                    '无效客资' => '已流失',
-                    default => null,
-                };
-                if ($next !== null && (string) $lead->status !== $next) {
-                    $lead->update(['status' => $next]);
-                    audit($r, '标记处理', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue, "今日待办标记：状态变更为 {$next}");
+        DB::transaction(function () use ($r, $u, $d, $today, $typeLabels) {
+            // 业务流转 1：新客首响 → 留资状态机（已首响→已联系、无效客资→已流失）
+            if ($d['type'] === 'newLeads' && ! empty($d['leadId'])) {
+                $lead = Lead::find($d['leadId']);
+                if ($lead) {
+                    $canHandle = in_array($u->role, ['R_SUPER', 'R_MANAGER'], true)
+                        || (string) $lead->service_teacher === (string) $u->name
+                        || (string) $lead->service_teacher === '';
+                    abort_unless($canHandle, 403, '无权处理该客资');
+                    $next = match ($d['action']) {
+                        '已首响' => '已联系',
+                        '无效客资' => '已流失',
+                        default => null,
+                    };
+                    if ($next !== null && (string) $lead->status !== $next) {
+                        $lead->update(['status' => $next]);
+                        audit($r, '标记处理', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue, "今日待办标记：状态变更为 {$next}");
+                    }
                 }
             }
-        }
 
-        // 业务流转 2：续费/流失沟通 → 更新会员最近触达，保证 2 周触达口径不断档
-        if (! empty($d['customerId']) && ! empty($d['touch'])) {
-            $c = Customer::find($d['customerId']);
-            if ($c) {
-                abort_unless(canAccessCustomer($u, $c), 403, '无权处理该会员');
-                $c->update(['last_touch' => $today]);
+            // 业务流转 2：续费/流失沟通 → 更新会员最近触达，保证 2 周触达口径不断档
+            if (! empty($d['customerId']) && ! empty($d['touch'])) {
+                $c = Customer::find($d['customerId']);
+                if ($c) {
+                    abort_unless(canAccessCustomer($u, $c), 403, '无权处理该会员');
+                    $c->update(['last_touch' => $today]);
+                }
             }
-        }
 
-        TodoAction::updateOrCreate(
-            ['todo_key' => $d['key'], 'action_date' => $today],
-            [
-                'todo_type' => $d['type'],
-                'action' => $d['action'],
-                'remark' => (string) ($d['remark'] ?? ''),
-                'user_id' => $u->id,
-                'user_name' => $u->name,
-                'user_role' => $u->role,
-                'venue' => (string) ($u->venue ?? ''),
-            ]
-        );
-        audit($r, '标记处理', '今日待办', $d['key'], $typeLabels[$d['type']], (string) ($u->venue ?? '双店'), $d['action'].((string) ($d['remark'] ?? '') !== '' ? '：'.$d['remark'] : ''));
+            TodoAction::updateOrCreate(
+                ['todo_key' => $d['key'], 'action_date' => $today],
+                [
+                    'todo_type' => $d['type'],
+                    'action' => $d['action'],
+                    'remark' => (string) ($d['remark'] ?? ''),
+                    'user_id' => $u->id,
+                    'user_name' => $u->name,
+                    'user_role' => $u->role,
+                    'venue' => (string) ($u->venue ?? ''),
+                ]
+            );
+            audit($r, '标记处理', '今日待办', $d['key'], $typeLabels[$d['type']], (string) ($u->venue ?? '双店'), $d['action'].((string) ($d['remark'] ?? '') !== '' ? '：'.$d['remark'] : ''));
+        });
 
         return ok(['done' => true]);
     });
@@ -2398,10 +2390,20 @@ Route::middleware('auth:sanctum')->group(function () {
     // ---------- 对外发布（H5 分享快照） ----------
     Route::post('/shares/publish', function (Request $r) {
         $d = $r->validate([
-            'type' => 'required|string|max:16',
-            'token' => 'required|string|max:40',
+            'type' => 'required|string|in:sales,training',
+            'token' => ['required', 'string', 'min:4', 'max:40', 'regex:/^[A-Za-z0-9_-]+$/'],
             'payload' => 'required|array',
         ]);
+        abort_if(
+            strlen((string) json_encode($d['payload'], JSON_UNESCAPED_UNICODE)) > 200000,
+            422, '分享内容过大，请精简后重试'
+        );
+        // 归属校验：已有同 token 分享非本人创建时，仅超管可覆盖，防止劫持他人对外 H5
+        $existing = PublishedShare::where('type', $d['type'])->where('token', $d['token'])->first();
+        abort_if(
+            $existing && $existing->created_by !== $r->user()->name && $r->user()->role !== 'R_SUPER',
+            403, '无权覆盖他人创建的分享'
+        );
         PublishedShare::updateOrCreate(
             ['type' => $d['type'], 'token' => $d['token']],
             ['payload' => $d['payload'], 'created_by' => $r->user()->name]
@@ -2500,7 +2502,7 @@ Route::middleware('auth:sanctum')->group(function () {
             'auditLogDays' => 'present|nullable|integer|min:1|max:3650',
             'modelGenerationDays' => 'present|nullable|integer|min:1|max:3650',
         ]);
-        $setting = AppSetting::firstOrCreate([]);
+        $setting = setting();
         $before = retentionSettings();
         $setting->update(['retention' => $data]);
         audit($r, '修改', '系统日志', 0, '日志保留策略', '双店', json_encode(['before' => $before, 'after' => $data], JSON_UNESCAPED_UNICODE));
@@ -2556,14 +2558,20 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 // ---------- 公开接口（免登录，H5 分享页用） ----------
-Route::prefix('public')->group(function () {
+Route::prefix('public')->middleware('throttle:60,1')->group(function () {
     Route::get('/training/{code}', function (string $code) {
         $plan = TrainingPlan::where('share->code', $code)->first();
         if (! $plan || ($plan->share['enabled'] ?? false) !== true || $plan->status !== '已确认') {
             return response()->json(['errno' => 404, 'emsg' => '分享不存在或已停用'], 404);
         }
-        $plan->share = array_merge($plan->share ?? [], ['views' => ($plan->share['views'] ?? 0) + 1]);
-        $plan->save();
+        // 行锁内读改写，避免并发访问丢计数（views 存于 share JSON，跨库不便原子自增）
+        DB::transaction(function () use ($plan) {
+            $locked = TrainingPlan::whereKey($plan->id)->lockForUpdate()->first();
+            if ($locked) {
+                $locked->share = array_merge($locked->share ?? [], ['views' => (int) ($locked->share['views'] ?? 0) + 1]);
+                $locked->save();
+            }
+        });
 
         return ok([
             'memberName' => $plan->member_name,
@@ -2595,6 +2603,18 @@ if (! function_exists('ok')) {
     function requireSuper(Request $request): void
     {
         abort_unless($request->user()?->role === 'R_SUPER', 403, '仅超管可执行此操作');
+    }
+
+    /** 配置单例访问器：带锁获取唯一 AppSetting 行，规避并发 firstOrCreate 造出重复行后读到陈旧副本 */
+    function setting(): AppSetting
+    {
+        $existing = AppSetting::oldest('id')->first();
+        if ($existing) {
+            return $existing;
+        }
+        $lock = Cache::lock('appsetting:singleton', 10);
+
+        return $lock->get(fn () => AppSetting::firstOrCreate([])) ?? AppSetting::oldest('id')->firstOrFail();
     }
 
     function profilePayload(User $user): array
@@ -2682,7 +2702,7 @@ if (! function_exists('ok')) {
             'systemLogDays' => 7,
             'auditLogDays' => null,
             'modelGenerationDays' => 90,
-        ], (array) (AppSetting::first()?->retention ?? []));
+        ], (array) (AppSetting::oldest('id')->first()?->retention ?? []));
     }
 
     function pruneSystemRecords(): array
@@ -2837,6 +2857,20 @@ if (! function_exists('ok')) {
         } elseif ($user->role === 'R_TEACHER') {
             $query->where('venue', $user->venue)
                 ->where(fn ($q) => $q->where('service_teacher', $user->name)->orWhere('service_teacher', ''));
+        }
+
+        return $query;
+    }
+
+    /** 经营看板 venue 下推：非超管一律锁定本店，禁止用查询参数越店读取 */
+    function applyVenueScope($query, User $user, string $venue)
+    {
+        if ($user->role === 'R_SUPER') {
+            if ($venue !== '') {
+                $query->where('venue', $venue);
+            }
+        } else {
+            $query->where('venue', $user->venue ?: '__none__');
         }
 
         return $query;
@@ -3025,7 +3059,7 @@ if (! function_exists('ok')) {
 
     function rules(): array
     {
-        $s = AppSetting::first();
+        $s = setting();
         $defaults = [
             'renewalThreshold' => 10,
             'renewalCountPercent' => 20,
@@ -3044,7 +3078,7 @@ if (! function_exists('ok')) {
     function setRules(array $rules): void
     {
         unset($rules['vipThreshold']);
-        $s = AppSetting::firstOrCreate([]);
+        $s = setting();
         $s->update(['rules' => $rules]);
     }
 

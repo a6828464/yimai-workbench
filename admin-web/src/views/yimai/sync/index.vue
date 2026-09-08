@@ -251,6 +251,7 @@
   import { useYimaiStore } from '@/store/modules/yimai'
   import { addLead, getSyncArtifacts, importKyMembersToPool } from '@/api/yimai'
   import { apiDownload, apiGet, apiPut, USE_BACKEND } from '@/api/backend'
+  import { toLocalDateString } from '@/utils'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiSync' })
@@ -486,7 +487,7 @@
 
   async function importLead(row: KyMemberRow) {
     await addLead({
-      leadDate: new Date().toISOString().slice(0, 10),
+      leadDate: toLocalDateString(new Date()),
       name: row.name || `KeepYoga#${row.memberId}`,
       phone: row.phone,
       phoneTail: row.phone.slice(-4),

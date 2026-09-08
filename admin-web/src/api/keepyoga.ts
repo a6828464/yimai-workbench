@@ -5,6 +5,7 @@
  * - 演示模式：沿用 Vite 开发服务器代理（.env.local 凭据），token 存于前端内存
  */
 import { USE_BACKEND, apiPost } from './backend'
+import { toLocalDateString } from '@/utils'
 
 const BRAND_ID = '108193'
 const VERSION = '10.1.3'
@@ -323,7 +324,7 @@ export async function fetchKyMembers(
     consultant: pick(r, ['consultant_name', 'consultant']),
     createdAt: (() => {
       const t = Number(r.create_time ?? 0)
-      return t > 0 ? new Date(t * 1000).toISOString().slice(0, 10) : ''
+      return t > 0 ? toLocalDateString(new Date(t * 1000)) : ''
     })()
   }))
 }

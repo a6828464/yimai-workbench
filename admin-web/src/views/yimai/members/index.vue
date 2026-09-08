@@ -661,6 +661,7 @@
     CustomerCardItem
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { toLocalDateString } from '@/utils'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiMembers' })
@@ -985,7 +986,7 @@
 
   async function saveTouch() {
     if (!touchDlg.row) return
-    const today = new Date().toISOString().slice(0, 10)
+    const today = toLocalDateString(new Date())
     try {
       await updateMemberFields(
         touchDlg.row.id,
@@ -1009,7 +1010,7 @@
     try {
       await updateMemberFields(
         row.id,
-        { inRevive: true, lastTouch: new Date().toISOString().slice(0, 10) },
+        { inRevive: true, lastTouch: toLocalDateString(new Date()) },
         '转待复活'
       )
       ElMessage.success(`${row.name} 已转入待复活清单`)
