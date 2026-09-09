@@ -16,11 +16,14 @@ class KyMemberSyncService
 {
     private const ACTIVE_CARD_STATUSES = ['4', '5', '7'];
 
+    private const MAX_SYNC_SECONDS = 6600;
+
     /**
      * @param  array{sync_job?: SyncJob, run_key?: string, display_name?: string, metadata?: array}|SyncJob|null  $artifactContext
      */
     public static function sync(string $venue, string $venueId, SyncJob|array|null $artifactContext = null): array
     {
+        $deadline = microtime(true) + self::MAX_SYNC_SECONDS;
         if (! Schema::hasColumns('customers', ['enrolled_at', 'visit_at'])) {
             throw new RuntimeException('数据库结构未升级，请先执行 php artisan migrate --force 后重试');
         }
@@ -34,7 +37,7 @@ class KyMemberSyncService
 
         $members = self::pagedRows('member/api/getmembersbycondwithpager', [
             'cond' => '', 'consultant_id' => -1, 'venue_id' => $venueId,
-        ], ['members', 'list']);
+        ], ['members', 'list'], $deadline);
         if ($members === []) {
             throw new RuntimeException('未读取到会员基础表');
         }
@@ -45,7 +48,7 @@ class KyMemberSyncService
 
         $cards = self::pagedRows('mcard/api/getmcardsbycond', [
             'cond' => '', 'search' => '', 'consultant_id' => -1, 'venue_id' => $venueId,
-        ], ['mcards', 'list']);
+        ], ['mcards', 'list'], $deadline);
         if ($cards === []) {
             throw new RuntimeException('未读取到会员卡表');
         }
@@ -87,6 +90,7 @@ class KyMemberSyncService
         $privateBookingCount = 0;
         $bookingFactCount = 0;
         for ($start = $rangeStart; $start->lte($today); $start = $start->addDays(180)) {
+            self::ensureBeforeDeadline($deadline);
             $candidateEnd = $start->addDays(179);
             $end = $candidateEnd->lte($today) ? $candidateEnd : $today;
             foreach (['course/api/queryreversionleague', 'course/api/queryreversionprivate'] as $path) {
@@ -101,6 +105,7 @@ class KyMemberSyncService
                 }
                 $previousPageSignature = '';
                 for ($page = 1; $page <= 100; $page++) {
+                    self::ensureBeforeDeadline($deadline);
                     $form['page_index'] = $page;
                     $batchRows = self::rows(KyClient::call($path, $form), ['reservations', 'list', 'rows']);
                     $count = count($batchRows);
@@ -263,6 +268,7 @@ class KyMemberSyncService
             $setting->update(['sync_meta' => $meta, 'snapshot' => $snapshot]);
         });
 
+        self::ensureBeforeDeadline($deadline);
         $artifacts = $artifactWriter?->finalize() ?? [];
 
         return [
@@ -554,7 +560,11 @@ class KyMemberSyncService
     private static function upsertBookingFacts(array $facts): void
     {
         foreach (array_chunk($facts, 500) as $chunk) {
-            KyBooking::upsert($chunk, ['source_key'], [
+            $changed = self::changedFacts('ky_bookings', $chunk, [
+                'member_id', 'member_name', 'phone', 'start_at', 'course_name', 'teacher_name',
+                'status_raw', 'status', 'is_trial', 'raw',
+            ]);
+            KyBooking::upsert($changed, ['source_key'], [
                 'member_id', 'member_name', 'phone', 'start_at', 'course_name', 'teacher_name',
                 'status_raw', 'status', 'is_trial', 'raw', 'updated_at',
             ]);
@@ -589,11 +599,81 @@ class KyMemberSyncService
     private static function upsertCardFacts(array $facts): void
     {
         foreach (array_chunk($facts, 500) as $chunk) {
-            KyCard::upsert($chunk, ['source_key'], [
+            $changed = self::changedFacts('ky_cards', $chunk, [
+                'venue', 'external_id', 'card_title', 'member_id', 'member_name', 'phone',
+                'consultant_name', 'deal_price', 'price', 'status', 'status_format',
+                'is_taste', 'sold_at',
+            ]);
+            KyCard::upsert($changed, ['source_key'], [
                 'venue', 'external_id', 'card_title', 'member_id', 'member_name', 'phone',
                 'consultant_name', 'deal_price', 'price', 'status', 'status_format',
                 'is_taste', 'sold_at', 'updated_at',
             ]);
+        }
+    }
+
+    private static function changedFacts(string $table, array $facts, array $columns): array
+    {
+        if ($facts === []) {
+            return [];
+        }
+
+        $existing = DB::table($table)
+            ->whereIn('source_key', array_column($facts, 'source_key'))
+            ->get(array_merge(['source_key'], $columns))
+            ->keyBy('source_key');
+
+        return array_values(array_filter($facts, function (array $fact) use ($existing, $columns) {
+            $stored = $existing->get($fact['source_key']);
+            if (! $stored) {
+                return true;
+            }
+
+            foreach ($columns as $column) {
+                $incoming = $fact[$column] ?? null;
+                $current = $stored->{$column} ?? null;
+                if ($column === 'raw') {
+                    if (self::normalizeJson($incoming) !== self::normalizeJson($current)) {
+                        return true;
+                    }
+                } elseif (in_array($column, ['deal_price', 'price'], true)) {
+                    if ((float) $incoming !== (float) $current) {
+                        return true;
+                    }
+                } elseif (in_array($column, ['is_trial', 'is_taste'], true)) {
+                    if ((bool) $incoming !== (bool) $current) {
+                        return true;
+                    }
+                } elseif ((string) ($incoming ?? '') !== (string) ($current ?? '')) {
+                    return true;
+                }
+            }
+
+            return false;
+        }));
+    }
+
+    private static function normalizeJson(mixed $json): mixed
+    {
+        $value = json_decode((string) $json, true);
+        $normalize = function (mixed $item) use (&$normalize): mixed {
+            if (! is_array($item)) {
+                return $item;
+            }
+            if (! array_is_list($item)) {
+                ksort($item);
+            }
+
+            return array_map($normalize, $item);
+        };
+
+        return $normalize($value);
+    }
+
+    private static function ensureBeforeDeadline(float $deadline): void
+    {
+        if (microtime(true) >= $deadline) {
+            throw new RuntimeException('同步超过 110 分钟安全时限，已停止本次任务，请稍后重试');
         }
     }
 
@@ -633,14 +713,23 @@ class KyMemberSyncService
         return [];
     }
 
-    private static function pagedRows(string $path, array $form, array $keys): array
+    private static function pagedRows(string $path, array $form, array $keys, ?float $deadline = null): array
     {
         $rows = [];
+        $previousPageSignature = '';
         for ($page = 1; $page <= 100; $page++) {
+            if ($deadline !== null) {
+                self::ensureBeforeDeadline($deadline);
+            }
             $batch = self::rows(KyClient::call($path, $form + [
                 'page_index' => $page,
                 'page_size' => 5000,
             ]), $keys);
+            $pageSignature = sha1(json_encode($batch, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
+            if ($page > 1 && $pageSignature === $previousPageSignature) {
+                break;
+            }
+            $previousPageSignature = $pageSignature;
             $rows = array_merge($rows, $batch);
             if (count($batch) < 5000) {
                 break;

@@ -34,7 +34,7 @@
               <ElInput
                 class="custom-height"
                 placeholder="请输入密码"
-                v-model.trim="formData.password"
+                v-model="formData.password"
                 type="password"
                 autocomplete="off"
                 show-password

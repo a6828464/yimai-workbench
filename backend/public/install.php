@@ -15,6 +15,11 @@ use Illuminate\Support\Facades\Hash;
 
 error_reporting(E_ALL & ~E_DEPRECATED);
 ini_set('display_errors', '1');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Expires: 0');
+header('Referrer-Policy: no-referrer');
+header('X-Content-Type-Options: nosniff');
 
 $ROOT = dirname(__DIR__);
 $LOCK = $ROOT.'/storage/install.lock';
@@ -50,6 +55,7 @@ $checks = [
     'mbstring 扩展' => extension_loaded('mbstring'),
     'openssl 扩展' => extension_loaded('openssl'),
     'fileinfo 扩展' => extension_loaded('fileinfo'),
+    'zlib 扩展' => extension_loaded('zlib'),
     'storage 目录可写' => is_writable($ROOT.'/storage'),
     'bootstrap/cache 可写' => is_writable($ROOT.'/bootstrap/cache'),
 ];
@@ -123,11 +129,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $allPass && ym_post('action') === '
             if ($kyPhone !== '') {
                 $env .= "\nKY_PHONE=".ym_env($kyPhone)."\nKY_PASSWORD=".ym_env($kyPass)."\n";
             }
-            file_put_contents($ENV, $env);
+            $envTemp = $ENV.'.installing';
+            if (file_put_contents($envTemp, $env, LOCK_EX) !== strlen($env) || ! rename($envTemp, $ENV)) {
+                @unlink($envTemp);
+                throw new RuntimeException('.env 配置写入失败，请检查目录权限和磁盘空间');
+            }
             chmod($ENV, 0640);
             $log[] = '.env 配置已写入';
 
             // 3. 引导框架执行迁移 + 种子
+            @unlink($ROOT.'/bootstrap/cache/config.php');
             require $ROOT.'/vendor/autoload.php';
             $app = require $ROOT.'/bootstrap/app.php';
             $app->make(Kernel::class)->bootstrap();
@@ -158,8 +169,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $allPass && ym_post('action') === '
             // 4. 恢复 SPA 首页后上锁；任一步失败都保留安装入口供重试。
             $stagedIndex = $ROOT.'/public/app.html';
             $publicIndex = $ROOT.'/public/index.html';
-            $indexRestored = is_file($stagedIndex) && rename($stagedIndex, $publicIndex);
-            if (is_file($stagedIndex)) {
+            if (! is_file($stagedIndex) || filesize($stagedIndex) === 0) {
+                throw new RuntimeException('安装包缺少前端入口 app.html，请重新上传完整安装包');
+            }
+            $indexRestored = rename($stagedIndex, $publicIndex);
+            if (! $indexRestored || is_file($stagedIndex)) {
                 throw new RuntimeException('前端首页恢复失败，请检查 public 目录写权限');
             }
             if (file_put_contents($LOCK, 'installed at '.date('c')) === false) {
@@ -223,11 +237,13 @@ button:disabled{background:#aab5b0;cursor:not-allowed}
     <div class="ok-box">
       <h2>✔ 安装完成</h2>
       <div class="acc">
-        <b>前端访问</b>：前端站点域名（dist 已部署）<br>
+        <b>前端访问</b>：<?= ym_h($appUrl) ?><br>
         <b>接口地址</b>：<?= ym_h($appUrl) ?><br>
-        <b>超管账号</b>：<?= ym_h($adminUser) ?><br>
-        <span style="color:#1d9a5b">安装入口将在本次请求结束后自动删除；请妥善保存刚设置的密码。</span>
+        <b>登录账号</b>：<?= ym_h($adminUser) ?><br>
+        <b>登录密码</b>：<?= ym_h($adminPass) ?><br>
+        <span style="color:#d47b33">账号密码仅在本页最后展示一次，请先妥善保存。</span>
       </div>
+      <button type="button" onclick="window.location.replace('/#/auth/login')">我已保存，进入登录</button>
     </div>
     <pre class="log"><?= ym_h(implode("\n", $log)) ?></pre>
 

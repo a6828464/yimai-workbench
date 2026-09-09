@@ -3,9 +3,11 @@
 namespace Tests\Feature;
 
 use App\Models\SyncJob;
+use App\Models\User;
 use App\Services\SyncArtifactWriter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
+use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 class SyncArtifactWriterTest extends TestCase
@@ -42,12 +44,23 @@ class SyncArtifactWriterTest extends TestCase
         $this->assertCount(1, $job->artifacts);
         Storage::disk('local')->assertExists($artifact->path);
 
-        $contents = Storage::disk('local')->get($artifact->path);
+        $compressed = Storage::disk('local')->get($artifact->path);
+        $contents = gzdecode($compressed);
         $this->assertStringStartsWith("\xEF\xBB\xBF", $contents);
         $this->assertStringContainsString('会员甲', $contents);
         $this->assertStringContainsString('remark', $contents);
+        $this->assertStringEndsWith('.csv', $artifact->display_name);
+        $this->assertStringEndsWith('.csv.gz', $artifact->path);
         $this->assertSame(strlen($contents), $artifact->size);
         $this->assertSame(hash('sha256', $contents), $artifact->sha256);
+
+        Sanctum::actingAs(User::factory()->create(['role' => 'R_SUPER', 'status' => '启用']));
+        $download = $this->get("/api/sync-artifacts/{$artifact->id}/download");
+        $download->assertOk();
+        $disposition = (string) $download->headers->get('content-disposition');
+        $this->assertStringContainsString("filename*=utf-8''", $disposition);
+        $this->assertStringContainsString(rawurlencode($artifact->display_name), $disposition);
+        $this->assertSame($contents, $download->streamedContent());
     }
 
     public function test_array_context_can_persist_an_unassociated_artifact(): void

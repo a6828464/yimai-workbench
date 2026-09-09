@@ -42,9 +42,7 @@ cd "$ROOT/backend"
 rsync -a \
   --exclude '.env' --exclude '.env.*' \
   --exclude 'vendor/' \
-  --exclude 'storage/logs/*' --exclude 'storage/app/private/*' \
-  --exclude 'storage/framework/cache/data/*' --exclude 'storage/framework/sessions/*' \
-  --exclude 'storage/framework/views/*' --exclude 'storage/oauth-*' \
+  --exclude 'storage/' \
   --exclude 'database/database.sqlite*' \
   --exclude 'bootstrap/cache/*.php' \
   ./ "$COMMON/backend/"
@@ -87,6 +85,7 @@ echo "── 4/4 压缩..."
 VERSION="$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' "$ROOT/CHANGELOG.md" | head -1 | tr -d 'v')"
 ZIP="$REL/yimai-workbench-v${VERSION}.zip"
 INSTALLER_ZIP="$REL/yimai-workbench-installer-v${VERSION}.zip"
+rm -f "$ZIP" "$INSTALLER_ZIP"
 cd "$WORK/update"
 zip -qr "$ZIP" app -x '*.DS_Store'
 cd "$WORK/installer"

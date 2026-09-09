@@ -98,8 +98,8 @@ class SyncArtifactWriter
 
         $directory = "sync-artifacts/.staging/{$this->runKey}";
         Storage::disk(self::DISK)->makeDirectory($directory);
-        $spoolPath = "{$directory}/{$safeType}.jsonl";
-        $handle = fopen(Storage::disk(self::DISK)->path($spoolPath), 'wb');
+        $spoolPath = "{$directory}/{$safeType}.jsonl.gz";
+        $handle = gzopen(Storage::disk(self::DISK)->path($spoolPath), 'wb6');
         if ($handle === false) {
             throw new RuntimeException("Unable to create artifact staging file: {$spoolPath}");
         }
@@ -132,7 +132,7 @@ class SyncArtifactWriter
                 $this->artifacts[$type]['columns'][(string) $column] = true;
             }
             $json = json_encode($row, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-            if ($json === false || fwrite($this->artifacts[$type]['handle'], $json."\n") === false) {
+            if ($json === false || gzwrite($this->artifacts[$type]['handle'], $json."\n") === false) {
                 throw new RuntimeException("Unable to stage artifact row: {$type}");
             }
             $this->artifacts[$type]['row_count']++;
@@ -149,39 +149,54 @@ class SyncArtifactWriter
         $saved = [];
 
         foreach ($this->artifacts as $artifact) {
-            fclose($artifact['handle']);
+            gzclose($artifact['handle']);
             $datePath = str_replace('-', '/', $this->runDate);
-            $path = "sync-artifacts/{$datePath}/{$this->runKey}/{$artifact['safe_type']}.csv";
+            $path = "sync-artifacts/{$datePath}/{$this->runKey}/{$artifact['safe_type']}.csv.gz";
             Storage::disk(self::DISK)->makeDirectory(dirname($path));
-            $output = fopen(Storage::disk(self::DISK)->path($path), 'wb');
-            $input = fopen(Storage::disk(self::DISK)->path($artifact['spool_path']), 'rb');
+            $output = gzopen(Storage::disk(self::DISK)->path($path), 'wb6');
+            $input = gzopen(Storage::disk(self::DISK)->path($artifact['spool_path']), 'rb');
             if ($output === false || $input === false) {
                 throw new RuntimeException("Unable to finalize artifact: {$path}");
             }
 
-            fwrite($output, "\xEF\xBB\xBF");
+            $contentHash = hash_init('sha256');
+            $contentSize = 0;
+            $write = function (string $content) use ($output, $contentHash, &$contentSize, $path): void {
+                if (gzwrite($output, $content) !== strlen($content)) {
+                    throw new RuntimeException("Unable to write artifact: {$path}");
+                }
+                hash_update($contentHash, $content);
+                $contentSize += strlen($content);
+            };
+
+            $write("\xEF\xBB\xBF");
             $columns = array_keys($artifact['columns']);
             if ($columns !== []) {
-                fputcsv($output, $columns, ',', '"', '');
+                $write($this->csvLine($columns));
             }
-            while (($line = fgets($input)) !== false) {
+            while (($line = gzgets($input)) !== false) {
                 $row = json_decode($line, true);
                 if (! is_array($row)) {
                     continue;
                 }
-                fputcsv(
-                    $output,
-                    array_map(fn (string $column) => $this->csvValue($row[$column] ?? null), $columns),
-                    ',',
-                    '"',
-                    ''
-                );
+                $write($this->csvLine(
+                    array_map(fn (string $column) => $this->csvValue($row[$column] ?? null), $columns)
+                ));
             }
-            fclose($input);
-            fclose($output);
+            if (! gzeof($input)) {
+                throw new RuntimeException("Unable to read artifact staging file: {$path}");
+            }
+            if (! gzclose($input) || ! gzclose($output)) {
+                throw new RuntimeException("Unable to close artifact: {$path}");
+            }
             Storage::disk(self::DISK)->delete($artifact['spool_path']);
 
-            $absolutePath = Storage::disk(self::DISK)->path($path);
+            $verified = self::gzipContentMeta(Storage::disk(self::DISK)->path($path));
+            if ($verified['size'] !== $contentSize || $verified['sha256'] !== hash_final($contentHash)) {
+                Storage::disk(self::DISK)->delete($path);
+                throw new RuntimeException("Artifact verification failed: {$path}");
+            }
+
             $range = $artifact['date_from'] && $artifact['date_to']
                 ? "_{$artifact['date_from']}_至_{$artifact['date_to']}"
                 : '';
@@ -196,8 +211,8 @@ class SyncArtifactWriter
                 'path' => $path,
                 'mime' => 'text/csv; charset=UTF-8',
                 'row_count' => $artifact['row_count'],
-                'size' => filesize($absolutePath),
-                'sha256' => hash_file('sha256', $absolutePath),
+                'size' => $verified['size'],
+                'sha256' => $verified['sha256'],
                 'date_from' => $artifact['date_from'],
                 'date_to' => $artifact['date_to'],
                 'is_full' => $artifact['is_full'],
@@ -214,7 +229,7 @@ class SyncArtifactWriter
     {
         foreach ($this->artifacts as $artifact) {
             if (is_resource($artifact['handle'])) {
-                fclose($artifact['handle']);
+                gzclose($artifact['handle']);
             }
         }
         Storage::disk(self::DISK)->deleteDirectory("sync-artifacts/.staging/{$this->runKey}");
@@ -245,5 +260,41 @@ class SyncArtifactWriter
 
         // Prevent spreadsheet applications from evaluating upstream text as formulas.
         return preg_match('/^[=+\-@]/', $text) ? "'{$text}" : $text;
+    }
+
+    private function csvLine(array $values): string
+    {
+        $handle = fopen('php://temp', 'w+');
+        fputcsv($handle, $values, ',', '"', '');
+        rewind($handle);
+        $line = stream_get_contents($handle);
+        fclose($handle);
+
+        return (string) $line;
+    }
+
+    /** @return array{size: int, sha256: string} */
+    public static function gzipContentMeta(string $path): array
+    {
+        $stream = gzopen($path, 'rb');
+        if ($stream === false) {
+            throw new RuntimeException('Unable to open compressed artifact');
+        }
+        $hash = hash_init('sha256');
+        $size = 0;
+        try {
+            while (! gzeof($stream)) {
+                $chunk = gzread($stream, 1024 * 1024);
+                if ($chunk === false) {
+                    throw new RuntimeException('Unable to decompress artifact');
+                }
+                hash_update($hash, $chunk);
+                $size += strlen($chunk);
+            }
+        } finally {
+            gzclose($stream);
+        }
+
+        return ['size' => $size, 'sha256' => hash_final($hash)];
     }
 }

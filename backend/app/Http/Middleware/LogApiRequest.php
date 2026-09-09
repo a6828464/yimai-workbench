@@ -24,7 +24,9 @@ class LogApiRequest
         }
 
         $context = $this->context($request, $startedAt) + ['status' => $response->getStatusCode()];
-        Log::channel('runtime')->info('API request completed', $context);
+        if ($context['latency_ms'] >= 1000 || $response->getStatusCode() >= 400) {
+            Log::channel('runtime')->info('API request completed', $context);
+        }
         if ($response->getStatusCode() >= 500) {
             Log::channel('system_error')->error('API request returned server error', $context);
         }

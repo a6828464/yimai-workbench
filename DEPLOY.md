@@ -12,7 +12,7 @@
 | PHP | **8.4.1+** | 当前锁定依赖要求 PHP ≥8.4.1 |
 
 PHP 必装扩展（软件商店 → PHP → 设置 → 安装扩展）：
-`fileinfo` `opcache` `pdo_mysql` `mbstring` `curl` `zip` `gd` `bcmath`
+`fileinfo` `opcache` `pdo_mysql` `mbstring` `curl` `zip` `zlib` `gd` `bcmath`
 
 ### 在线升级按钮依赖（重要）
 

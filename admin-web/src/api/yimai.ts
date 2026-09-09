@@ -1206,7 +1206,7 @@ export async function importKyMembersToPool(
     return apiPost<KyImportResult>(
       '/ky/import',
       { venue: storeKey, venueId: KY_STORES[storeKey] },
-      1800000
+      7200000
     )
   }
 

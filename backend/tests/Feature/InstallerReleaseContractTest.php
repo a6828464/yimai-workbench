@@ -19,6 +19,11 @@ class InstallerReleaseContractTest extends TestCase
         $this->assertStringContainsString("'status' => '启用'", $source);
         $this->assertStringContainsString('Hash::check($adminPass, $admin->password)', $source);
         $this->assertStringContainsString('minlength="6"', $source);
+        $this->assertStringContainsString('登录密码</b>：<?= ym_h($adminPass) ?>', $source);
+        $this->assertStringContainsString("window.location.replace('/#/auth/login')", $source);
+        $this->assertStringContainsString("header('Cache-Control: no-store", $source);
+        $this->assertStringContainsString('is_file($stagedIndex)', $source);
+        $this->assertStringContainsString("extension_loaded('zlib')", $source);
     }
 
     public function test_release_builders_replace_the_installer_landing_page_only_in_fresh_packages(): void
@@ -28,11 +33,22 @@ class InstallerReleaseContractTest extends TestCase
         $ciBuilder = file_get_contents($root.'/.github/workflows/release-latest.yml');
         $landingPage = file_get_contents(resource_path('install-index.html'));
 
-        $this->assertStringContainsString('url=/install.php', $landingPage);
+        $this->assertStringContainsString("location.replace('/install.php')", $landingPage);
         $this->assertStringContainsString('public/app.html', $localBuilder);
         $this->assertStringContainsString('resources/install-index.html', $localBuilder);
         $this->assertStringContainsString('public/app.html', $ciBuilder);
         $this->assertStringContainsString('resources/install-index.html', $ciBuilder);
+    }
+
+    public function test_router_uses_root_base_and_login_does_not_trim_passwords(): void
+    {
+        $root = dirname(base_path());
+        $router = file_get_contents($root.'/admin-web/src/router/index.ts');
+        $login = file_get_contents($root.'/admin-web/src/views/auth/login/index.vue');
+
+        $this->assertStringContainsString('createWebHashHistory(import.meta.env.BASE_URL)', $router);
+        $this->assertStringContainsString('v-model="formData.password"', $login);
+        $this->assertStringNotContainsString('v-model.trim="formData.password"', $login);
     }
 
     public function test_installed_six_character_admin_is_enabled_and_can_log_in(): void

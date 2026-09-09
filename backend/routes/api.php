@@ -20,12 +20,14 @@ use App\Models\TrainingPlan;
 use App\Models\User;
 use App\Services\KyClient;
 use App\Services\KyMemberSyncService;
+use App\Services\SyncArtifactWriter;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -1136,51 +1138,58 @@ Route::middleware('auth:sanctum')->group(function () {
         abort_unless(isset($stores[$venue]) && $stores[$venue] === $venueId, 422, '门店参数无效');
         // 回收僵尸任务：进程被外部掐断时走不到 catch，会把任务永久留在"进行中"；开跑前先把超时未收尾的判失败
         SyncJob::where('venue', $venue)->where('status', '进行中')
-            ->where('started_at', '<', now()->subMinutes(30))
+            ->where('started_at', '<', now()->subMinutes(125))
             ->update(['status' => '失败', 'finished_at' => now(), 'error_message' => '同步超时未完成（疑似进程被中断），已自动回收']);
-        // 门店级互斥：同一门店已有进行中的同步则拒绝并发，避免重复拉取压垮上游、游标互相覆盖
-        $lock = Cache::lock("ky:import:{$venue}", 1800);
-        abort_unless($lock->get(), 409, '该门店同步正在进行中，请等待完成或稍后再试');
+        // 2H2G 单机一次只跑一个门店，避免双任务叠加数据库、内存和系统盘写入峰值。
+        $lock = Cache::lock('ky:import:global', 7200);
+        abort_unless($lock->get(), 409, '服务器正在执行其他门店同步，请等待完成或稍后再试');
         $batch = 'IMP-'.now()->format('Ymd-His').'-'.substr((string) mt_rand(1000, 9999), 0, 4);
-        $job = SyncJob::create([
-            'batch_no' => $batch,
-            'run_key' => $batch,
-            'display_name' => now()->format('Y-m-d H:i')." {$venue} KeepYoga同步",
-            'data_type' => '会员/卡项/出勤多表',
-            'venue' => $venue,
-            'status' => '进行中',
-            'operator' => $r->user()->name,
-            'started_at' => now(),
-            'metadata' => ['venueId' => $venueId, 'operatorId' => $r->user()->id],
-        ]);
+        $job = null;
         try {
+            $job = SyncJob::create([
+                'batch_no' => $batch,
+                'run_key' => $batch,
+                'display_name' => now()->format('Y-m-d H:i')." {$venue} KeepYoga同步",
+                'data_type' => '会员/卡项/出勤多表',
+                'venue' => $venue,
+                'status' => '进行中',
+                'operator' => $r->user()->name,
+                'started_at' => now(),
+                'metadata' => ['venueId' => $venueId, 'operatorId' => $r->user()->id],
+            ]);
             $result = KyMemberSyncService::sync($venue, $venueId, $job);
+
+            $detail = sprintf(
+                '已保存快照：会员基础表 %d 条 · 会员卡表 %d 条 · 团课预约 %d 条 · 私教预约 %d 条（出勤口径月 %s / %s / %s）；导入落库：新增 %d · 更新 %d · 未变化 %d · 跳过 %d',
+                $result['total'], $result['cards'], $result['leagueBookings'] ?? 0, $result['privateBookings'] ?? 0,
+                $result['attendancePeriod']['m1'] ?? '-', $result['attendancePeriod']['m2'] ?? '-', $result['attendancePeriod']['m3'] ?? '-',
+                $result['created'], $result['updated'], $result['unchanged'], $result['skipped']
+            );
+            $job->update([
+                'total_count' => $result['total'],
+                'success_count' => $result['created'] + $result['updated'] + $result['unchanged'],
+                'fail_count' => $result['skipped'],
+                'status' => $result['skipped'] > 0 ? '部分失败' : '成功',
+                'finished_at' => now(), 'detail' => $detail, 'error_message' => null,
+            ]);
+            audit($r, '导入', 'KeepYoga同步', $job->id, "批次{$batch}", $venue, $detail);
+
+            return ok($result + ['batchNo' => $batch]);
         } catch (Throwable $e) {
             $message = mb_substr($e->getMessage(), 0, 1000);
-            $job->update(['status' => '失败', 'finished_at' => now(), 'error_message' => $message]);
-            audit($r, '导入失败', 'KeepYoga同步', $job->id, "批次{$batch}", $venue, $message);
-            $lock->release();
+            $job?->update(['status' => '失败', 'finished_at' => now(), 'error_message' => $message]);
+            Log::channel('system_error')->error('KeepYoga import failed', [
+                'batch' => $batch, 'venue' => $venue, 'job_id' => $job?->id,
+                'exception' => $e::class, 'error' => $message,
+            ]);
+            if ($job) {
+                audit($r, '导入失败', 'KeepYoga同步', $job->id, "批次{$batch}", $venue, $message);
+            }
 
             return response()->json(['code' => 1, 'message' => 'KeepYoga 多表同步失败：'.$message]);
+        } finally {
+            $lock->release();
         }
-        $lock->release();
-
-        $detail = sprintf(
-            '已保存快照：会员基础表 %d 条 · 会员卡表 %d 条 · 团课预约 %d 条 · 私教预约 %d 条（出勤口径月 %s / %s / %s）；导入落库：新增 %d · 更新 %d · 未变化 %d · 跳过 %d',
-            $result['total'], $result['cards'], $result['leagueBookings'] ?? 0, $result['privateBookings'] ?? 0,
-            $result['attendancePeriod']['m1'] ?? '-', $result['attendancePeriod']['m2'] ?? '-', $result['attendancePeriod']['m3'] ?? '-',
-            $result['created'], $result['updated'], $result['unchanged'], $result['skipped']
-        );
-        $job->update([
-            'total_count' => $result['total'],
-            'success_count' => $result['created'] + $result['updated'] + $result['unchanged'],
-            'fail_count' => $result['skipped'],
-            'status' => $result['skipped'] > 0 ? '部分失败' : '成功',
-            'finished_at' => now(), 'detail' => $detail, 'error_message' => null,
-        ]);
-        audit($r, '导入', 'KeepYoga同步', $job->id, "批次{$batch}", $venue, $detail);
-
-        return ok($result + ['batchNo' => $batch]);
     });
 
     // ---------- AI 大模型代理（OpenAI 兼容协议，解决浏览器跨域） ----------
@@ -1637,6 +1646,31 @@ Route::middleware('auth:sanctum')->group(function () {
         requireSuper($r);
         abort_unless(Storage::disk($artifact->disk)->exists($artifact->path), 404, '历史导入表格不存在');
         audit($r, '下载', 'KeepYoga同步', $artifact->id, $artifact->display_name, $artifact->syncJob?->venue ?? '双店', '下载历史导入快照');
+
+        if (str_ends_with($artifact->path, '.gz')) {
+            $absolutePath = Storage::disk($artifact->disk)->path($artifact->path);
+            $meta = SyncArtifactWriter::gzipContentMeta($absolutePath);
+            abort_unless($meta['size'] === $artifact->size && hash_equals($artifact->sha256, $meta['sha256']), 409, '历史导入表格校验失败');
+            $stream = gzopen($absolutePath, 'rb');
+            abort_unless($stream !== false, 500, '历史导入表格读取失败');
+
+            return response()->streamDownload(function () use ($stream) {
+                try {
+                    while (! gzeof($stream)) {
+                        $chunk = gzread($stream, 1024 * 1024);
+                        if ($chunk === false) {
+                            throw new RuntimeException('历史导入表格解压失败');
+                        }
+                        echo $chunk;
+                    }
+                } finally {
+                    gzclose($stream);
+                }
+            }, $artifact->display_name, [
+                'Content-Type' => $artifact->mime,
+                'Content-Length' => (string) $artifact->size,
+            ]);
+        }
 
         return Storage::disk($artifact->disk)->download($artifact->path, $artifact->display_name, ['Content-Type' => $artifact->mime]);
     });
