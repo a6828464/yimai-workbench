@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Models\SyncArtifact;
 use App\Models\SyncJob;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
 
@@ -97,9 +96,9 @@ class SyncArtifactWriter
         }
 
         $directory = "sync-artifacts/.staging/{$this->runKey}";
-        Storage::disk(self::DISK)->makeDirectory($directory);
+        SyncArtifactStorage::makeDirectory($directory);
         $spoolPath = "{$directory}/{$safeType}.jsonl.gz";
-        $handle = gzopen(Storage::disk(self::DISK)->path($spoolPath), 'wb6');
+        $handle = gzopen(SyncArtifactStorage::path($spoolPath), 'wb6');
         if ($handle === false) {
             throw new RuntimeException("Unable to create artifact staging file: {$spoolPath}");
         }
@@ -152,9 +151,9 @@ class SyncArtifactWriter
             gzclose($artifact['handle']);
             $datePath = str_replace('-', '/', $this->runDate);
             $path = "sync-artifacts/{$datePath}/{$this->runKey}/{$artifact['safe_type']}.csv.gz";
-            Storage::disk(self::DISK)->makeDirectory(dirname($path));
-            $output = gzopen(Storage::disk(self::DISK)->path($path), 'wb6');
-            $input = gzopen(Storage::disk(self::DISK)->path($artifact['spool_path']), 'rb');
+            SyncArtifactStorage::makeDirectory(dirname($path));
+            $output = gzopen(SyncArtifactStorage::path($path), 'wb6');
+            $input = gzopen(SyncArtifactStorage::path($artifact['spool_path']), 'rb');
             if ($output === false || $input === false) {
                 throw new RuntimeException("Unable to finalize artifact: {$path}");
             }
@@ -189,11 +188,11 @@ class SyncArtifactWriter
             if (! gzclose($input) || ! gzclose($output)) {
                 throw new RuntimeException("Unable to close artifact: {$path}");
             }
-            Storage::disk(self::DISK)->delete($artifact['spool_path']);
+            SyncArtifactStorage::delete($artifact['spool_path']);
 
-            $verified = self::gzipContentMeta(Storage::disk(self::DISK)->path($path));
+            $verified = self::gzipContentMeta(SyncArtifactStorage::path($path));
             if ($verified['size'] !== $contentSize || $verified['sha256'] !== hash_final($contentHash)) {
-                Storage::disk(self::DISK)->delete($path);
+                SyncArtifactStorage::delete($path);
                 throw new RuntimeException("Artifact verification failed: {$path}");
             }
 
@@ -220,7 +219,7 @@ class SyncArtifactWriter
             ]);
         }
 
-        Storage::disk(self::DISK)->deleteDirectory("sync-artifacts/.staging/{$this->runKey}");
+        SyncArtifactStorage::deleteDirectory("sync-artifacts/.staging/{$this->runKey}");
 
         return $saved;
     }
@@ -232,7 +231,7 @@ class SyncArtifactWriter
                 gzclose($artifact['handle']);
             }
         }
-        Storage::disk(self::DISK)->deleteDirectory("sync-artifacts/.staging/{$this->runKey}");
+        SyncArtifactStorage::deleteDirectory("sync-artifacts/.staging/{$this->runKey}");
     }
 
     private function safeSegment(string $value): string

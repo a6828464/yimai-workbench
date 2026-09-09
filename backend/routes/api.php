@@ -20,6 +20,7 @@ use App\Models\TrainingPlan;
 use App\Models\User;
 use App\Services\KyClient;
 use App\Services\KyMemberSyncService;
+use App\Services\SyncArtifactStorage;
 use App\Services\SyncArtifactWriter;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
@@ -29,7 +30,6 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Symfony\Component\Process\Process;
 
@@ -1644,11 +1644,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/sync-artifacts/{artifact}/download', function (Request $r, SyncArtifact $artifact) {
         requireSuper($r);
-        abort_unless(Storage::disk($artifact->disk)->exists($artifact->path), 404, '历史导入表格不存在');
+        abort_unless($artifact->disk === 'local' && SyncArtifactStorage::exists($artifact->path), 404, '历史导入表格不存在');
         audit($r, '下载', 'KeepYoga同步', $artifact->id, $artifact->display_name, $artifact->syncJob?->venue ?? '双店', '下载历史导入快照');
 
         if (str_ends_with($artifact->path, '.gz')) {
-            $absolutePath = Storage::disk($artifact->disk)->path($artifact->path);
+            $absolutePath = SyncArtifactStorage::path($artifact->path);
             $meta = SyncArtifactWriter::gzipContentMeta($absolutePath);
             abort_unless($meta['size'] === $artifact->size && hash_equals($artifact->sha256, $meta['sha256']), 409, '历史导入表格校验失败');
             $stream = gzopen($absolutePath, 'rb');
@@ -1672,7 +1672,7 @@ Route::middleware('auth:sanctum')->group(function () {
             ]);
         }
 
-        return Storage::disk($artifact->disk)->download($artifact->path, $artifact->display_name, ['Content-Type' => $artifact->mime]);
+        return response()->download(SyncArtifactStorage::path($artifact->path), $artifact->display_name, ['Content-Type' => $artifact->mime]);
     });
 
     // ---------- 今日工作台汇总（服务端计算） ----------

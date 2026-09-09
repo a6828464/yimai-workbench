@@ -51,6 +51,15 @@ class InstallerReleaseContractTest extends TestCase
         $this->assertStringNotContainsString('v-model.trim="formData.password"', $login);
     }
 
+    public function test_sync_artifacts_do_not_boot_flysystem_finfo_detector(): void
+    {
+        $writer = file_get_contents(app_path('Services/SyncArtifactWriter.php'));
+        $routes = file_get_contents(base_path('routes/api.php'));
+
+        $this->assertStringNotContainsString('Storage::disk(self::DISK)', $writer);
+        $this->assertStringNotContainsString('Storage::disk($artifact->disk)', $routes);
+    }
+
     public function test_installed_six_character_admin_is_enabled_and_can_log_in(): void
     {
         User::create([
