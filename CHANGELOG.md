@@ -1,5 +1,10 @@
 # 更新日志
 
+## 2026-09-09 ｜ fix: v3.1.43 修复 PHP 8.5 弃用常量污染登录响应
+
+### 修复
+- **PHP 8.5 登录报「账号或密码错误」**：数据库连接配置使用已弃用的 `PDO::MYSQL_ATTR_INIT_COMMAND` 常量，PHP 8.5 触发 deprecation 警告并随 `display_errors` 输出到 JSON 响应前，导致前端解析失败、兜底误报密码错误；改用非弃用的 `Pdo\Mysql::ATTR_INIT_COMMAND`（带旧版回退，与 `ATTR_SSL_CA` 同写法）。
+
 ## 2026-09-09 ｜ fix: v3.1.42 修复新媒体工作台数据卡片
 
 ### 修复
