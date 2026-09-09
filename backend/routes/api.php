@@ -3080,12 +3080,20 @@ if (! function_exists('ok')) {
         return $query;
     }
 
-    /** 经营看板 venue 下推：非超管一律锁定本店，禁止用查询参数越店读取 */
+    /** 经营看板 venue 下推：超管看双店，新媒体按 venues 授权，店长/老师锁定本店。 */
     function applyVenueScope($query, User $user, string $venue)
     {
         if ($user->role === 'R_SUPER') {
             if ($venue !== '') {
                 $query->where('venue', $venue);
+            }
+        } elseif ($user->role === 'R_MEDIA') {
+            $allowed = array_values(array_intersect((array) $user->venues, ['绿地店', '东部店']));
+            if ($venue !== '') {
+                abort_unless(in_array($venue, $allowed, true), 403, '无权查看该门店');
+                $query->where('venue', $venue);
+            } else {
+                $query->whereIn('venue', $allowed);
             }
         } else {
             $query->where('venue', $user->venue ?: '__none__');

@@ -4,9 +4,10 @@
     <div class="mb-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-500">运营数据</span>
       <ElRadioGroup v-model="venueScope" @change="reload">
-        <ElRadioButton value="双店">全部门店</ElRadioButton>
-        <ElRadioButton value="绿地店">绿地店</ElRadioButton>
-        <ElRadioButton value="东部店">东部店</ElRadioButton>
+        <ElRadioButton v-if="allowedVenues.length > 1" value="双店">全部门店</ElRadioButton>
+        <ElRadioButton v-for="venue in allowedVenues" :key="venue" :value="venue">
+          {{ venue }}
+        </ElRadioButton>
       </ElRadioGroup>
       <DateRangeControl
         :start="range[0]"
@@ -17,6 +18,9 @@
       <div class="flex-1" />
       <span class="text-xs text-gray-400">默认为本月1号至今</span>
     </div>
+    <ElAlert v-if="dashboardError" class="mb-4" type="error" show-icon :closable="false">
+      {{ dashboardError }}
+    </ElAlert>
 
     <!-- KPI -->
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
@@ -75,9 +79,9 @@
           </template>
           <div style="height: 300px">
             <ArtTreeMapChart
-              v-if="platformRows.length"
+              v-if="dealRows.length"
               height="300px"
-              :data="platformRows.map((x) => ({ name: x.platform, value: x.deal }))"
+              :data="dealRows.map((x) => ({ name: x.platform, value: x.deal }))"
             />
             <ElEmpty v-else description="该时间段暂无成交数据" :image-size="60" />
           </div>
@@ -87,18 +91,15 @@
         <ElCard shadow="never">
           <template #header><span class="font-500">各平台核销金额</span></template>
           <ArtBarChart
+            v-if="redeemRows.length"
             height="300px"
-            :data="platformRows.map((x) => x.redeem)"
-            :x-axis-data="platformLabels"
+            :data="redeemRows.map((x) => x.redeem)"
+            :x-axis-data="redeemRows.map((x) => x.platform)"
             bar-width="26"
             :border-radius="6"
             show-split-line
           />
-          <ElEmpty
-            v-if="!platformRows.length"
-            description="该时间段暂无核销数据"
-            :image-size="60"
-          />
+          <ElEmpty v-else description="该时间段暂无核销数据" :image-size="60" />
         </ElCard>
       </ElCol>
     </ElRow>
@@ -145,17 +146,28 @@
   import { DataLine, UserFilled, ShoppingBag, Coin, Odometer, Money } from '@element-plus/icons-vue'
   import type { LineDataItem } from '@/types/component/chart'
   import DateRangeControl from './date-range-control.vue'
+  import { useUserStore } from '@/store/modules/user'
 
   defineOptions({ name: 'MediaDashboard' })
 
   const loading = ref(true)
-  const venueScope = ref<'双店' | '绿地店' | '东部店'>('双店')
+  const dashboardError = ref('')
+  let reloadSequence = 0
+  const userStore = useUserStore()
+  const allowedVenues = computed(() =>
+    (userStore.getUserInfo.venues ?? []).filter(
+      (venue): venue is '绿地店' | '东部店' => venue === '绿地店' || venue === '东部店'
+    )
+  )
+  const venueScope = ref<'双店' | '绿地店' | '东部店'>(
+    allowedVenues.value.length > 1 ? '双店' : (allowedVenues.value[0] ?? '双店')
+  )
   const range = ref<[string, string]>(defaultRange())
   const daily = ref<DashboardDayPoint[]>([])
   const summary = ref<DashboardSummary | null>(null)
   const channels = ref<ChannelLeadItem[]>([])
   const platforms = ref<PlatformAmountItem[]>([])
-  const platformTotal = ref<{ deal: number; redeem: number }>({ deal: 0, redeem: 0 })
+  const platformTotal = ref<{ deal: number; redeem: number } | null>(null)
 
   function defaultRange(): [string, string] {
     const now = new Date()
@@ -199,8 +211,8 @@
   ])
   const channelLabels = computed(() => channels.value.map((c) => c.channel))
   const channelSeries = computed(() => channels.value.map((c) => c.leads))
-  const platformLabels = computed(() => platforms.value.map((p) => p.platform))
-  const platformRows = computed(() => platforms.value.filter((p) => p.deal > 0 || p.redeem > 0))
+  const dealRows = computed(() => platforms.value.filter((p) => p.deal > 0))
+  const redeemRows = computed(() => platforms.value.filter((p) => p.redeem > 0))
 
   const kpis = computed(() => [
     {
@@ -231,7 +243,7 @@
     },
     {
       label: '所选周期成交金额',
-      value: platformTotal.value.deal > 0 ? platformTotal.value.deal : '-',
+      value: platformTotal.value?.deal ?? '-',
       prefix: '¥',
       hint: `${summary.value?.dealCount ?? 0} 人成交`,
       icon: markRaw(Money),
@@ -239,7 +251,7 @@
     },
     {
       label: '核销金额',
-      value: platformTotal.value.redeem > 0 ? platformTotal.value.redeem : '-',
+      value: platformTotal.value?.redeem ?? '-',
       prefix: '¥',
       hint: '平台团购券核销',
       icon: markRaw(Coin),
@@ -250,9 +262,10 @@
   const funnelRows = computed(() => {
     const s = summary.value
     if (!s) return []
-    const pct = (v: number) => (s.leadCount > 0 ? Math.round((v / s.leadCount) * 100) : 0)
+    const pct = (v: number) =>
+      s.leadCount > 0 ? Math.min(100, Math.round((v / s.leadCount) * 100)) : 0
     return [
-      { stage: '留资', value: s.leadCount, percent: 100, rateText: '' },
+      { stage: '留资', value: s.leadCount, percent: s.leadCount > 0 ? 100 : 0, rateText: '' },
       {
         stage: '到店',
         value: s.visitCount,
@@ -274,7 +287,9 @@
   }
 
   async function reload() {
+    const sequence = ++reloadSequence
     loading.value = true
+    dashboardError.value = ''
     try {
       const settled = await Promise.allSettled([
         getDashboardSeries(range.value[0], range.value[1], venueScope.value),
@@ -284,17 +299,31 @@
       const dash = settled[0].status === 'fulfilled' ? settled[0].value : null
       const ch = settled[1].status === 'fulfilled' ? settled[1].value : null
       const plat = settled[2].status === 'fulfilled' ? settled[2].value : null
+      if (sequence !== reloadSequence) return
       if (dash) {
         daily.value = dash.daily
         summary.value = dash.summary
+      } else {
+        daily.value = []
+        summary.value = null
       }
-      if (ch) channels.value = ch
+      channels.value = ch ?? []
       if (plat) {
         platforms.value = plat.rows
         platformTotal.value = { deal: plat.totalDeal, redeem: plat.totalRedeem }
+      } else {
+        platforms.value = []
+        platformTotal.value = null
+      }
+      const requestNames = ['趋势与指标', '渠道数据', '平台金额']
+      const failedNames = settled.flatMap((item, index) =>
+        item.status === 'rejected' ? [requestNames[index]] : []
+      )
+      if (failedNames.length > 0) {
+        dashboardError.value = `${failedNames.join('、')}加载失败，请稍后重试`
       }
     } finally {
-      loading.value = false
+      if (sequence === reloadSequence) loading.value = false
     }
   }
 

@@ -220,11 +220,12 @@ class LeadAuthorizationTest extends TestCase
         $this->assertStringNotContainsString('卡项临近到期', $mediaAlerts);
     }
 
-    public function test_media_is_scoped_out_of_cross_store_tasks_and_analytics(): void
+    public function test_media_tasks_are_personal_and_analytics_follow_allowed_venues(): void
     {
         Task::create(['title' => '东部任务', 'customer_name' => '甲', 'venue' => '东部店', 'owner' => '东部老师', 'status' => '待接收']);
         Task::create(['title' => '新媒体任务', 'customer_name' => '乙', 'venue' => '东部店', 'owner' => '新媒体', 'status' => '待接收']);
         Lead::create(['lead_date' => now()->toDateString(), 'name' => '东部客资', 'source' => '测试', 'venue' => '东部店', 'status' => '已成交', 'deal_amount' => 100]);
+        Lead::create(['lead_date' => now()->toDateString(), 'name' => '绿地客资', 'source' => '小红书', 'venue' => '绿地店', 'status' => '新留资']);
 
         $media = $this->user('media-scope', '新媒体', 'R_MEDIA', null);
         Sanctum::actingAs($media);
@@ -233,10 +234,20 @@ class LeadAuthorizationTest extends TestCase
         $tasks = $this->getJson('/api/tasks')->assertOk()->json('data.records');
         $this->assertSame(['新媒体任务'], collect($tasks)->pluck('title')->all());
 
-        // 经营看板：即便传入 venue 参数，非超管也只能看到自己的门店范围（media 无门店 → 空）
-        // 经营看板：非超管一律锁定本店范围（media 无门店 → 空），不接受越店读取
-        $this->getJson('/api/analytics/channels')->assertOk()->assertJsonPath('data.total', 0);
-        $this->getJson('/api/analytics/trends')->assertOk();
+        $this->getJson('/api/analytics/channels')->assertOk()->assertJsonPath('data.total', 2);
+        $this->getJson('/api/analytics/channels?venue='.urlencode('东部店'))->assertOk()->assertJsonPath('data.total', 1);
+        $this->getJson('/api/analytics/trends')->assertOk()->assertJsonPath('data.summary.leadCount', 2);
+        $this->getJson('/api/analytics/platforms')->assertOk()->assertJsonPath('data.totalDeal', 100);
+
+        $greenOnly = $this->user('media-green', '绿地新媒体', 'R_MEDIA', null);
+        $greenOnly->update(['venues' => ['绿地店']]);
+        Sanctum::actingAs($greenOnly);
+        $this->getJson('/api/analytics/channels?venue='.urlencode('东部店'))->assertForbidden();
+        $this->getJson('/api/analytics/trends?venue='.urlencode('东部店'))->assertForbidden();
+        $this->getJson('/api/analytics/platforms?venue='.urlencode('东部店'))->assertForbidden();
+        $this->getJson('/api/analytics/channels')->assertOk()->assertJsonPath('data.total', 1);
+        $this->getJson('/api/analytics/trends')->assertOk()->assertJsonPath('data.summary.leadCount', 1);
+        $this->getJson('/api/analytics/platforms')->assertOk()->assertJsonPath('data.totalDeal', 0);
     }
 
     private function user(string $username, string $name, string $role, ?string $venue): User
