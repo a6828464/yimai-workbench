@@ -13,3 +13,6 @@ Artisan::command('records:prune', function () {
 })->purpose('Prune system logs and model/audit records using configured retention');
 
 Schedule::command('records:prune')->dailyAt('03:30')->withoutOverlapping();
+
+// KeepYoga 双店定时增量同步（幂等：当天已同步的门店自动跳过；与手动导入共用全局锁互斥）
+Schedule::command('ky:autosync')->dailyAt('05:30')->withoutOverlapping();

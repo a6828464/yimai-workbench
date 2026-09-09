@@ -58,7 +58,11 @@ export interface NewMemberCultivation {
   enrolledDays: number | null
   consultant: string
   mainCard: string
-  categories: { private: CultivationCategory; small: CultivationCategory; group: CultivationCategory }
+  categories: {
+    private: CultivationCategory
+    small: CultivationCategory
+    group: CultivationCategory
+  }
   totalSigned: number
   primaryKind: 'private' | 'small' | 'group'
   primaryProgress: { signed: number; target: number }
@@ -99,7 +103,10 @@ export async function queryNewMemberCultivation(params: {
       syncTime: ''
     }
     try {
-      return await apiGet<NewMemberCultivationResult>('/new-members/cultivation', params as Record<string, unknown>)
+      return await apiGet<NewMemberCultivationResult>(
+        '/new-members/cultivation',
+        params as Record<string, unknown>
+      )
     } catch {
       return empty
     }
@@ -109,7 +116,11 @@ export async function queryNewMemberCultivation(params: {
   return {
     records: [],
     summary: { total: 0, private: 0, small: 0, group: 0, idle: 0, cultivating: 0, cultured: 0 },
-    targets: { private: r.cultivationPrivate, small: r.cultivationSmall, group: r.cultivationGroup },
+    targets: {
+      private: r.cultivationPrivate,
+      small: r.cultivationSmall,
+      group: r.cultivationGroup
+    },
     range: { start: '', end: '' },
     syncTime: ''
   }
@@ -558,6 +569,44 @@ export function queryAuditLogs(
 
 // ==================== 客户经营池 ====================
 
+/** 会籍顾问下拉选项（轻量接口，取代 size:5000 全量拉取后去重） */
+export async function queryCustomerOptions(): Promise<{ consultants: string[] }> {
+  if (USE_BACKEND) {
+    return apiGet<{ consultants: string[] }>('/customers/options')
+  }
+  const a = actor()
+  const set = new Set<string>()
+  for (const c of allCustomers()) {
+    if (a.isMedia && c.layer !== 'P5') continue
+    if (
+      a.isTeacher &&
+      c.venue !== a.scopeVenue &&
+      c.owner !== a.userName &&
+      c.consultant !== a.userName
+    )
+      continue
+    const name = (c.consultant ?? '').trim()
+    if (name) set.add(name)
+  }
+  return Promise.resolve({ consultants: [...set].sort((x, y) => x.localeCompare(y, 'zh')) })
+}
+
+/** 五清单徽标计数（服务端一次扫描 + 角色范围求交集） */
+export async function queryMemberListCounts(): Promise<Record<string, number>> {
+  if (USE_BACKEND) {
+    const d = await apiGet<{ counts: Record<string, number> }>('/customers/list-counts')
+    return d.counts ?? {}
+  }
+  const a = actor()
+  let pool = allCustomers().filter((c) => inScope(c.venue, a.scopeVenue))
+  if (a.isTeacher) pool = pool.filter((c) => c.owner === a.userName || c.consultant === a.userName)
+  const out: Record<string, number> = {}
+  for (const key of ['待续课', '出勤降低', 'VIP', '预流失', '待复活'] as MemberListKey[]) {
+    out[key] = pool.filter((c) => computeMemberLists(c).includes(key)).length
+  }
+  return Promise.resolve(out)
+}
+
 export function queryCustomers(
   params: PageParams & {
     name?: string
@@ -627,6 +676,9 @@ export function queryCustomers(
     list = list.filter(
       (c) => Boolean(c.evalAt) && Date.now() - new Date(c.evalAt!).getTime() > 30 * 86400000
     )
+  // 演示模式顾问回填：与后端 /customers 的留资服务老师回填同口径（按手机号，仅显示层）
+  const leadsPool = useYimaiStore().state.leads
+  list = matchConsultants(list, leadsPool)
   return Promise.resolve({
     records: paginate(list, params),
     total: list.length,
@@ -1199,11 +1251,19 @@ export interface KyImportResult {
   attendancePeriod: { m1: string; m2: string; m3: string }
 }
 
-export async function importKyMembersToPool(
-  storeKey: '绿地店' | '东部店'
-): Promise<KyImportResult> {
+/** /ky/import 受理响应：FPM 生产立即返回（background=true 需轮询任务），本地同步执行返回全量结果 */
+export interface KyImportAck extends Partial<KyImportResult> {
+  jobId: number
+  batchNo: string
+  venue?: string
+  status: '成功' | '部分失败' | '进行中' | '失败'
+  background: boolean
+  message?: string
+}
+
+export async function importKyMembersToPool(storeKey: '绿地店' | '东部店'): Promise<KyImportAck> {
   if (USE_BACKEND) {
-    return apiPost<KyImportResult>(
+    return apiPost<KyImportAck>(
       '/ky/import',
       { venue: storeKey, venueId: KY_STORES[storeKey] },
       7200000
@@ -1240,8 +1300,17 @@ export async function importKyMembersToPool(
     cards: 0,
     bookings: 0,
     signedBookings: 0,
-    attendancePeriod: { m1: '', m2: '', m3: '' }
+    attendancePeriod: { m1: '', m2: '', m3: '' },
+    jobId: 0,
+    batchNo: 'LOCAL',
+    status: '成功',
+    background: false
   }
+}
+
+/** 查询单个同步任务（异步同步的进度轮询通道） */
+export async function getSyncJob(jobId: number): Promise<YimaiSyncJob> {
+  return apiGet<YimaiSyncJob>(`/sync-jobs/${jobId}`)
 }
 
 // ==================== 数据看板 ====================
@@ -1422,12 +1491,12 @@ export async function getDashboardSeries(
       privateClassCount: s.privateClassCount ?? 0,
       smallClassCount: s.smallClassCount ?? 0,
       groupClassCount: s.groupClassCount ?? 0,
-       onlineLeadCount: s.onlineLeadCount ?? 0,
-       onlineDealCount: s.onlineDealCount ?? 0,
-       onlineDealRate: s.onlineDealRate ?? 0,
-       registeredDealCount: s.registeredDealCount ?? 0,
-       registeredDealAmount: s.registeredDealAmount ?? 0
-     }
+      onlineLeadCount: s.onlineLeadCount ?? 0,
+      onlineDealCount: s.onlineDealCount ?? 0,
+      onlineDealRate: s.onlineDealRate ?? 0,
+      registeredDealCount: s.registeredDealCount ?? 0,
+      registeredDealAmount: s.registeredDealAmount ?? 0
+    }
     return { daily, summary }
   }
 

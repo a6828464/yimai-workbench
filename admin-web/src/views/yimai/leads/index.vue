@@ -505,7 +505,7 @@
     deleteLead,
     getLeadHistory,
     queryLeads,
-    queryCustomers,
+    queryCustomerOptions,
     updateLead
   } from '@/api/yimai'
   import type { YimaiLead } from '@/api/yimai'
@@ -570,17 +570,11 @@
   const list = ref<YimaiLead[]>([])
   const total = ref(0)
 
-  /** 会籍顾问选项：从在册会员的会籍顾问去重得到 */
+  /** 会籍顾问选项：轻量接口（服务端去重），不再全量拉取会员 */
   const consultantOptions = ref<string[]>([])
   async function loadConsultants() {
     try {
-      const res = await queryCustomers({ type: 'member', current: 1, size: 5000 })
-      const set = new Set<string>()
-      for (const c of res.records ?? []) {
-        const name = (c.consultant ?? '').trim()
-        if (name) set.add(name)
-      }
-      consultantOptions.value = [...set].sort((a, b) => a.localeCompare(b, 'zh'))
+      consultantOptions.value = (await queryCustomerOptions()).consultants ?? []
     } catch {
       /* 静默失败，允许手输 */
     }

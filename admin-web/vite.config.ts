@@ -64,6 +64,33 @@ export default ({ mode }: { mode: string }) => {
           drop_debugger: true
         }
       },
+      rollupOptions: {
+        output: {
+          // 大体积供应商独立分包：主业务改动时浏览器可继续命中缓存，
+          // 避免 element-plus/echarts 全量打进单个 1.4MB 主 chunk
+          manualChunks(id: string) {
+            if (!id.includes('node_modules')) return undefined
+            // highlight.js 走动态 import（v-highlight 指令首次使用才加载），不归入静态 vendor
+            if (id.includes('highlight.js')) return undefined
+            if (id.includes('echarts') || id.includes('zrender')) return 'echarts'
+            if (
+              id.includes('element-plus') ||
+              id.includes('@element-plus') ||
+              id.includes('lodash-es')
+            )
+              return 'element-plus'
+            if (
+              id.includes('/vue/') ||
+              id.includes('/@vue/') ||
+              id.includes('vue-router') ||
+              id.includes('pinia') ||
+              id.includes('vue-demi')
+            )
+              return 'vue-vendor'
+            return 'vendor'
+          }
+        }
+      },
       dynamicImportVarsOptions: {
         warnOnError: true,
         exclude: [],

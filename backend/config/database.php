@@ -60,10 +60,11 @@ return [
             'strict' => true,
             'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
-                (defined('Pdo\Mysql::ATTR_SSL_CA') ? Mysql::ATTR_SSL_CA : (defined('PDO::MYSQL_ATTR_SSL_CA') ? PDO::MYSQL_ATTR_SSL_CA : 1003)) => env('MYSQL_ATTR_SSL_CA'),
+                // PHP 8.4+ 用非弃用的 Pdo\Mysql 常量；注意类名是 Pdo\Mysql（不存在裸 Mysql 类）
+                (defined('Pdo\Mysql::ATTR_SSL_CA') ? Pdo\Mysql::ATTR_SSL_CA : (defined('PDO::MYSQL_ATTR_SSL_CA') ? PDO::MYSQL_ATTR_SSL_CA : 1003)) => env('MYSQL_ATTR_SSL_CA'),
                 // 固定会话时区为 +08:00，保证 audit_logs.time(useCurrent) 与 PHP now() 口径一致，避免审计日期偏移 8 小时
                 // PHP 8.4+ 用非弃用的 Pdo\Mysql::ATTR_INIT_COMMAND，避免 8.5 触发 deprecation 污染 JSON 响应
-                (defined('Pdo\Mysql::ATTR_INIT_COMMAND') ? Mysql::ATTR_INIT_COMMAND : (defined('PDO::MYSQL_ATTR_INIT_COMMAND') ? PDO::MYSQL_ATTR_INIT_COMMAND : 1002)) => "SET time_zone = '+08:00'",
+                (defined('Pdo\Mysql::ATTR_INIT_COMMAND') ? Pdo\Mysql::ATTR_INIT_COMMAND : (defined('PDO::MYSQL_ATTR_INIT_COMMAND') ? PDO::MYSQL_ATTR_INIT_COMMAND : 1002)) => "SET time_zone = '+08:00'",
             ]) : [],
         ],
 
@@ -83,8 +84,8 @@ return [
             'strict' => true,
             'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
-                (defined('Pdo\Mysql::ATTR_SSL_CA') ? Mysql::ATTR_SSL_CA : (defined('PDO::MYSQL_ATTR_SSL_CA') ? PDO::MYSQL_ATTR_SSL_CA : 1003)) => env('MYSQL_ATTR_SSL_CA'),
-                (defined('Pdo\Mysql::ATTR_INIT_COMMAND') ? Mysql::ATTR_INIT_COMMAND : (defined('PDO::MYSQL_ATTR_INIT_COMMAND') ? PDO::MYSQL_ATTR_INIT_COMMAND : 1002)) => "SET time_zone = '+08:00'",
+                (defined('Pdo\Mysql::ATTR_SSL_CA') ? Pdo\Mysql::ATTR_SSL_CA : (defined('PDO::MYSQL_ATTR_SSL_CA') ? PDO::MYSQL_ATTR_SSL_CA : 1003)) => env('MYSQL_ATTR_SSL_CA'),
+                (defined('Pdo\Mysql::ATTR_INIT_COMMAND') ? Pdo\Mysql::ATTR_INIT_COMMAND : (defined('PDO::MYSQL_ATTR_INIT_COMMAND') ? PDO::MYSQL_ATTR_INIT_COMMAND : 1002)) => "SET time_zone = '+08:00'",
             ]) : [],
         ],
 

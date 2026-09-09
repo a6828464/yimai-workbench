@@ -114,10 +114,15 @@ class KyContractsOverviewTest extends TestCase
     }
 
     /**
-     * 按随心瑜后台解读实测口径伪造上游：登录 + 合同（status=1 签署中 / 5 已过期）+ 数据三件套
+     * 按随心瑜后台解读实测口径伪造上游：登录 + 合同（status=1 签署中 / 5 已过期）+ 数据三件套。
+     * KY 凭据走测试内 config，避免依赖开发者本地 .env（KyClient 优先读数据库，其次 services 配置）。
      */
     private function fakeKeepYoga(): void
     {
+        config([
+            'services.ky.phone' => '13800000000',
+            'services.ky.password' => 'test-password',
+        ]);
         Http::fake([
             'cloud.keepyoga.com/passport/api/login' => Http::response([
                 'errno' => '0', 'data' => ['access_token' => 'test-token'],

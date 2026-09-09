@@ -66,9 +66,17 @@
         >
       </div>
       <ElAlert
+        v-if="importProgress"
+        :title="importProgress"
+        type="info"
+        show-icon
+        :closable="false"
+        class="mt-3"
+      />
+      <ElAlert
         v-if="importResult"
         :title="importResult"
-        type="success"
+        :type="importResult.includes('部分失败') ? 'warning' : 'success'"
         show-icon
         :closable="false"
         class="mt-3"
@@ -245,11 +253,11 @@
   import ArtButtonTable from '@/components/core/forms/art-button-table/index.vue'
   import { useTable } from '@/hooks/core/useTable'
   import { querySyncJobs } from '@/api/yimai'
-  import type { SyncArtifactItem, YimaiSyncJob } from '@/api/yimai'
+  import type { KyImportAck, KyImportResult, SyncArtifactItem, YimaiSyncJob } from '@/api/yimai'
   import { fetchKyCounts, fetchKyToday, fetchKyMembers, kySession, KY_STORES } from '@/api/keepyoga'
   import type { KyCounts, KyMemberRow } from '@/api/keepyoga'
   import { useYimaiStore } from '@/store/modules/yimai'
-  import { addLead, getSyncArtifacts, importKyMembersToPool } from '@/api/yimai'
+  import { addLead, getSyncArtifacts, getSyncJob, importKyMembersToPool } from '@/api/yimai'
   import { apiDownload, apiGet, apiPut, USE_BACKEND } from '@/api/backend'
   import { toLocalDateString } from '@/utils'
   import { ElMessage, ElTag } from 'element-plus'
@@ -321,48 +329,92 @@
     }
   }
 
-  // ---------- 全量导入 ----------
+  // ---------- 全量导入（受理 → 轮询任务状态 → 汇总） ----------
   const importing = ref(false)
   const importResult = ref('')
+  const importProgress = ref('')
+  let pollTimer: ReturnType<typeof setInterval> | null = null
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  }
+
+  onBeforeUnmount(stopPolling)
+
+  /** 等待后台任务收尾：4 秒轮询，130 分钟兜底（超过按失败处理，与后端僵尸回收一致） */
+  function waitForJob(jobId: number, store: string): Promise<YimaiSyncJob> {
+    return new Promise((resolve, reject) => {
+      let elapsed = 0
+      stopPolling()
+      pollTimer = setInterval(async () => {
+        elapsed += 4
+        if (elapsed > 130 * 60) {
+          stopPolling()
+          reject(new Error(`${store} 同步超过 130 分钟未收尾，请稍后在历史批次中确认状态`))
+          return
+        }
+        try {
+          const job = await getSyncJob(jobId)
+          if (job.status !== '进行中') {
+            stopPolling()
+            resolve(job)
+          }
+        } catch (e) {
+          // 单次轮询失败不中断（网络抖动），连续失败由超时兜底
+          console.warn('[sync] poll failed', e)
+        }
+      }, 4000)
+    })
+  }
 
   async function importAll() {
     importing.value = true
     importResult.value = ''
-    let created = 0
-    let updated = 0
-    let unchanged = 0
-    let skipped = 0
-    let total = 0
-    let cards = 0
-    let bookings = 0
-    let signedBookings = 0
-    let attendancePeriod = ''
+    importProgress.value = ''
+    const details: string[] = []
     const failedStores: string[] = []
     try {
       for (const store of Object.keys(KY_STORES) as ('绿地店' | '东部店')[]) {
         try {
-          const r = await importKyMembersToPool(store)
-          created += r.created
-          updated += r.updated
-          unchanged += r.unchanged
-          skipped += r.skipped
-          total += r.total
-          cards += r.cards
-          bookings += r.bookings
-          signedBookings += r.signedBookings
-          attendancePeriod = `${r.attendancePeriod.m1} / ${r.attendancePeriod.m2} / ${r.attendancePeriod.m3}`
+          importProgress.value = `${store} 同步已受理，服务器后台执行中…`
+          const ack = await importKyMembersToPool(store)
+          if (ack.background) {
+            // 生产：立即拿到受理回执，轮询直到任务收尾
+            const job = await waitForJob(ack.jobId, store)
+            if (job.status === '失败') {
+              failedStores.push(store)
+              ElMessage.error(
+                `${store} 同步失败：${(job.errorMessage || '详见错误详情').slice(0, 80)}`
+              )
+            } else {
+              details.push(job.detail || `${store} 同步完成`)
+            }
+          } else {
+            // 本地/测试：同步执行返回全量结果（兼容旧契约）
+            const r = ack as KyImportAck & KyImportResult
+            details.push(
+              `${store}：会员 ${r.total}，卡项 ${r.cards}，预约 ${r.bookings}，有效签到 ${r.signedBookings}；新增 ${r.created}，更新 ${r.updated}，未变化 ${r.unchanged}，跳过 ${r.skipped}`
+            )
+            if (r.skipped > 0) failedStores.push(store)
+          }
         } catch (e) {
           failedStores.push(store)
           ElMessage.error(`${store} 导入失败：${String(e).slice(0, 80)}`)
         }
       }
       const status = failedStores.length ? `部分失败（${failedStores.join('、')}）` : '成功'
-      importResult.value = `多表同步${status}：会员 ${total}，卡项 ${cards}，预约 ${bookings}，有效签到 ${signedBookings}；新增 ${created}，更新 ${updated}，未变化 ${unchanged}，跳过 ${skipped}；出勤月份 ${attendancePeriod}`
+      importResult.value = `多表同步${status}：${details.join(' ；')}`
+      importProgress.value = ''
       await refreshData()
-      if (skipped > 0 || failedStores.length) ElMessage.warning(importResult.value)
-      else ElMessage.success(importResult.value)
+      if (failedStores.length) ElMessage.warning(importResult.value.slice(0, 120))
+      else ElMessage.success('两店多表同步完成')
     } finally {
+      stopPolling()
       importing.value = false
+      importProgress.value = ''
     }
   }
 

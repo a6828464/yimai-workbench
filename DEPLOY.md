@@ -103,7 +103,7 @@ window.__YIMAI_API_BASE__ = '/api'
 4. 服务器下载已构建的 Release 包，只替换应用代码和前端资源，保留线上 `.env`、`storage`、`vendor` 和数据库。
 5. 更新脚本执行 `php artisan migrate --force` 和 `php artisan optimize:clear`，完成后自动刷新页面。
 
-生产环境需配置 Laravel 调度器，用于执行系统日志、人员操作日志和模型生成记录的保留策略：
+生产环境需配置 Laravel 调度器，用于执行系统日志、人员操作日志和模型生成记录的保留策略，以及 KeepYoga 双店每日定时增量同步（`ky:autosync`，05:30 自动执行，当天已同步的门店自动跳过，也可在后台「KeepYoga同步」手动触发）：
 
 ```cron
 * * * * * cd /www/wwwroot/站点目录/app && php artisan schedule:run >> /dev/null 2>&1

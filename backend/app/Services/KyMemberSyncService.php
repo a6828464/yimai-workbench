@@ -270,6 +270,8 @@ class KyMemberSyncService
 
         self::ensureBeforeDeadline($deadline);
         $artifacts = $artifactWriter?->finalize() ?? [];
+        // 客户/预约/卡项事实已更新：立即失效五清单与经营看板缓存
+        invalidateBusinessCaches();
 
         return [
             'created' => $created, 'updated' => $updated, 'unchanged' => $unchanged,
@@ -294,6 +296,17 @@ class KyMemberSyncService
                 'm3' => $month3->format('Y-m'),
             ],
         ];
+    }
+
+    /** 同步结果 → 任务明细文案（HTTP 导入与定时同步共用同一口径） */
+    public static function resultDetail(array $result): string
+    {
+        return sprintf(
+            '已保存快照：会员基础表 %d 条 · 会员卡表 %d 条 · 团课预约 %d 条 · 私教预约 %d 条（出勤口径月 %s / %s / %s）；导入落库：新增 %d · 更新 %d · 未变化 %d · 跳过 %d',
+            $result['total'] ?? 0, $result['cards'] ?? 0, $result['leagueBookings'] ?? 0, $result['privateBookings'] ?? 0,
+            $result['attendancePeriod']['m1'] ?? '-', $result['attendancePeriod']['m2'] ?? '-', $result['attendancePeriod']['m3'] ?? '-',
+            $result['created'] ?? 0, $result['updated'] ?? 0, $result['unchanged'] ?? 0, $result['skipped'] ?? 0
+        );
     }
 
     private static function summarizeCards(array $cards): array

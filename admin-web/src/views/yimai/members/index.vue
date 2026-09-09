@@ -30,14 +30,14 @@
           placeholder="会员姓名"
           clearable
           class="!w-36"
-          @change="load"
+          @change="reloadFromFirstPage"
         />
         <ElInput
           v-model="searchForm.phone"
           placeholder="手机号 / 尾号"
           clearable
           class="!w-40"
-          @change="load"
+          @change="reloadFromFirstPage"
         />
         <ElSelect
           v-if="!isManager"
@@ -45,7 +45,7 @@
           placeholder="门店"
           clearable
           class="!w-28"
-          @change="load"
+          @change="reloadFromFirstPage"
         >
           <ElOption label="绿地店" value="绿地店" />
           <ElOption label="东部店" value="东部店" />
@@ -56,7 +56,7 @@
           placeholder="运营清单"
           clearable
           class="!w-36"
-          @change="load"
+          @change="reloadFromFirstPage"
         >
           <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
         </ElSelect>
@@ -65,7 +65,7 @@
           placeholder="会籍顾问"
           clearable
           class="!w-36"
-          @change="load"
+          @change="reloadFromFirstPage"
         >
           <ElOption value="待分配" label="待分配" />
           <ElOption v-for="c in consultantOptions" :key="c" :label="c" :value="c" />
@@ -75,7 +75,7 @@
           placeholder="评估状态"
           clearable
           class="!w-32"
-          @change="load"
+          @change="reloadFromFirstPage"
         >
           <ElOption
             v-for="status in EVALUATION_STATUSES"
@@ -84,7 +84,7 @@
             :value="status"
           />
         </ElSelect>
-        <ElButton type="primary" plain @click="load">查询</ElButton>
+        <ElButton type="primary" plain @click="reloadFromFirstPage">查询</ElButton>
       </div>
 
       <ArtTableHeader :columns="[]" :loading="loading">
@@ -93,7 +93,7 @@
         >
       </ArtTableHeader>
 
-      <ElTable v-loading="loading" :data="pagedList" border stripe max-height="520">
+      <ElTable v-loading="loading" :data="list" border stripe max-height="520">
         <ElTableColumn label="会员" min-width="130" fixed="left">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
@@ -341,8 +341,10 @@
           v-model:current-page="page.current"
           v-model:page-size="page.size"
           :page-sizes="[10, 20, 50, 100]"
-          :total="filteredList.length"
+          :total="total"
           layout="total, sizes, prev, pager, next"
+          @current-change="handlePageChange"
+          @size-change="handlePageChange"
         />
       </div>
     </ElCard>
@@ -661,8 +663,8 @@
     updateMemberFields,
     birthdayOffset,
     isBirthdayToday,
-    queryLeads,
-    matchConsultants,
+    queryCustomerOptions,
+    queryMemberListCounts,
     EVAL_DIMENSIONS,
     EVAL_RISKS,
     evalTotalScore,
@@ -674,7 +676,6 @@
   import type {
     YimaiCustomer,
     MemberListKey,
-    YimaiLead,
     RenewalEvaluationAnswers,
     RenewalEvaluationContext,
     CustomerCardItem
@@ -687,7 +688,6 @@
 
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
-  const isTeacher = computed(() => roles.value.includes('R_TEACHER'))
   const isSuper = computed(() => roles.value.includes('R_SUPER'))
   const isManager = computed(() => roles.value.includes('R_MANAGER'))
   /** 数据范围说明：随当前门店/清单/顾问筛选动态显示 */
@@ -744,23 +744,77 @@
     evaluationStatus: ''
   })
   const page = ref({ current: 1, size: 20 })
-  const all = ref<YimaiCustomer[]>([])
+  /** 当前页数据（服务端分页） */
+  const list = ref<YimaiCustomer[]>([])
+  const total = ref(0)
+  /** 五清单徽标计数：服务端一次扫描后返回 */
+  const listCounts = ref<Record<string, number>>({})
   const rules = ref(getMemberRules())
 
   watch(activeTab, (tab) => {
     if (tab !== 'all') searchForm.value.list = ''
-    load()
+    reloadFromFirstPage()
   })
 
-  /** 会籍顾问下拉选项：来自在册会员（含手机号匹配留资）的去重会籍顾问名单 */
-  const consultantOptions = computed<string[]>(() => {
-    const set = new Set<string>()
-    for (const c of all.value) {
-      const name = (c.consultant ?? '').trim()
-      if (name) set.add(name)
+  /** 生效清单过滤：页签优先，其次下拉清单（仅总览页签展示） */
+  function effectiveListFilter(): MemberListKey | undefined {
+    if (activeTab.value !== 'all') return TAB_KEY_TO_LIST[activeTab.value]
+    return (searchForm.value.list || undefined) as MemberListKey | undefined
+  }
+
+  async function load(keepPage = false) {
+    loading.value = true
+    try {
+      if (!keepPage) page.value.current = 1
+      await refreshMemberRules()
+      rules.value = getMemberRules()
+      const res = await queryCustomers({
+        name: searchForm.value.name,
+        phone: searchForm.value.phone,
+        list: effectiveListFilter(),
+        venue: searchForm.value.venue || undefined,
+        consultant: searchForm.value.consultant || undefined,
+        evaluationStatus: searchForm.value.evaluationStatus || undefined,
+        type: 'member',
+        current: page.value.current,
+        size: page.value.size
+      })
+      list.value = res.records ?? []
+      total.value = res.total ?? list.value.length
+      if (!keepPage) loadListCounts()
+    } catch (e) {
+      console.error('[members.load]', e)
+      ElMessage.error('会员列表加载失败，请稍后重试')
+    } finally {
+      loading.value = false
     }
-    return [...set].sort((a, b) => a.localeCompare(b, 'zh'))
-  })
+  }
+
+  async function loadListCounts() {
+    try {
+      listCounts.value = await queryMemberListCounts()
+    } catch {
+      /* 徽标计数失败不阻塞列表，保留上次值 */
+    }
+  }
+
+  function reloadFromFirstPage() {
+    load(false)
+  }
+
+  function handlePageChange() {
+    load(true)
+  }
+
+  /** 会籍顾问下拉选项：轻量接口返回去重名单 */
+  const consultantOptions = ref<string[]>([])
+  async function loadConsultants() {
+    try {
+      consultantOptions.value = (await queryCustomerOptions()).consultants ?? []
+    } catch {
+      /* 静默失败，允许手输 */
+    }
+  }
 
   function memberLists(row: YimaiCustomer): MemberListKey[] {
     return computeMemberLists(row)
@@ -776,94 +830,6 @@
     if (l === 'VIP') return 'success'
     if (l === '预流失') return 'primary'
     return 'info'
-  }
-
-  const listCounts = computed<Record<string, number>>(() => {
-    const out: Record<string, number> = {}
-    for (const k of LIST_KEYS)
-      out[k] = filteredBase().filter((c) =>
-        computeMemberLists(c).includes(k as MemberListKey)
-      ).length
-    return out
-  })
-
-  function filteredBase(): YimaiCustomer[] {
-    let list = all.value
-    if (isTeacher.value) {
-      // 老师在总览看自己的；五清单页签同样只看自己名下
-      list = list.filter(
-        (c) =>
-          c.owner === userStore.getUserInfo.userName ||
-          c.consultant === userStore.getUserInfo.userName
-      )
-    }
-    if (activeTab.value !== 'all') {
-      list = list.filter((c) => computeMemberLists(c).includes(TAB_KEY_TO_LIST[activeTab.value]))
-    }
-    return list
-  }
-
-  const filteredList = computed(() => {
-    let list = filteredBase()
-    if (searchForm.value.name) list = list.filter((c) => c.name.includes(searchForm.value.name))
-    if (searchForm.value.phone) {
-      const p = searchForm.value.phone
-      list = list.filter((c) => (c.phone ?? '').includes(p) || (c.phoneTail ?? '').includes(p))
-    }
-    if (searchForm.value.venue) list = list.filter((c) => c.venue === searchForm.value.venue)
-    if (searchForm.value.consultant) {
-      const target = searchForm.value.consultant
-      list = list.filter((c) => (c.consultant || '待分配') === target)
-    }
-    if (searchForm.value.evaluationStatus === '未评估')
-      list = list.filter((c) => c.evalScore == null)
-    if (searchForm.value.evaluationStatus === '高机会')
-      list = list.filter((c) => c.evalLevel === 'high')
-    if (searchForm.value.evaluationStatus === '重点培育')
-      list = list.filter((c) => c.evalLevel === 'medium')
-    if (searchForm.value.evaluationStatus === '风险修复')
-      list = list.filter((c) => c.evalLevel === 'low')
-    if (searchForm.value.evaluationStatus === '已过期') list = list.filter(evaluationExpired)
-    return list
-  })
-
-  const pagedList = computed(() =>
-    filteredList.value.slice(
-      (page.value.current - 1) * page.value.size,
-      page.value.current * page.value.size
-    )
-  )
-
-  async function load() {
-    loading.value = true
-    try {
-      page.value.current = 1
-      await refreshMemberRules()
-      rules.value = getMemberRules()
-      const listFilter = searchForm.value.list
-        ? (searchForm.value.list as MemberListKey)
-        : undefined
-      const [res, leadsRes] = await Promise.all([
-        queryCustomers({
-          name: searchForm.value.name,
-          phone: searchForm.value.phone,
-          list: listFilter,
-          venue: searchForm.value.venue || undefined,
-          consultant: searchForm.value.consultant || undefined,
-          evaluationStatus: searchForm.value.evaluationStatus || undefined,
-          type: 'member',
-          current: 1,
-          size: 5000
-        }),
-        queryLeads({ current: 1, size: 5000 }).catch(() => ({ records: [] as YimaiLead[] }))
-      ])
-      all.value = matchConsultants(res.records ?? [], leadsRes.records ?? [])
-    } catch (e) {
-      console.error('[members.load]', e)
-      ElMessage.error('会员列表加载失败，请稍后重试')
-    } finally {
-      loading.value = false
-    }
   }
 
   function daysAgo(date: string | null): number {
@@ -1033,7 +999,7 @@
         '转待复活'
       )
       ElMessage.success(`${row.name} 已转入待复活清单`)
-      load()
+      load(false)
     } catch (e) {
       console.error('[members.toRevive]', e)
       ElMessage.error('操作失败，请稍后重试')
@@ -1105,7 +1071,7 @@
       ElMessage.success(
         `评估已保存，已生成任务「${result.task?.title ?? ''}」，负责人：${result.task?.owner ?? ''}`
       )
-      await load()
+      await load(false)
     } catch (e) {
       console.error('[members.saveEval]', e)
       ElMessage.error('评估保存失败，请稍后重试')
@@ -1127,7 +1093,7 @@
       await setMemberRules({ ...rulesForm })
       rules.value = getMemberRules()
       rulesDlg.value = false
-      load()
+      load(false)
       ElMessage.success('规则已更新，清单实时重算')
     } catch (e) {
       console.error('[members.applyRules]', e)
@@ -1135,5 +1101,8 @@
     }
   }
 
-  onMounted(load)
+  onMounted(() => {
+    loadConsultants()
+    load(false)
+  })
 </script>

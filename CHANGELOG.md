@@ -1,5 +1,26 @@
 # 更新日志
 
+## 2026-09-10 ｜ feat: v3.1.44 性能与架构专项（索引+分页+缓存+异步同步+控制器化）
+
+### 修复
+- **PHP 8.5 配置加载崩溃隐患**：v3.1.43 数据库配置误写裸 `Mysql::ATTR_*` 常量（该类不存在），干净 PHP 8.5 环境（CI、新装机、清空 opcache 后）在加载 `config/database.php` 时直接抛 `Class "Mysql" not found`，本机因 opcache 旧字节码未被暴露；改为 `Pdo\Mysql::ATTR_*`（值不变，仍带回退与弃用告警消除）。
+- **测试对本地 `.env` 的隐性依赖**：`KyContractsOverviewTest` 依赖开发者 `.env` 中的 KeepYoga 凭据，凭据清理后 2 个用例失败；改为测试内自含凭据配置，用例完全封闭。
+- **五清单徽标计数错误**：会员管理页非「总览」页签下，其余清单徽标恒为 0（只统计当前页签数据）；改由服务端返回全局计数后顺带修复。
+
+### 新增
+- **KeepYoga 定时自动同步**：新增 `ky:autosync` 命令并注册每日 05:30 调度（复用既有 `schedule:run` cron，生产零新增配置）；双店增量同步、当天已同步自动跳过（手动同步也算）、与手动导入共用全局锁互斥、SyncJob 批次与「系统定时」审计留痕。
+- **全量同步异步化**：`POST /ky/import` 改为受理即返回任务号（生产 FPM 经 `fastcgi_finish_request` 后台执行，无需部署队列 worker），浏览器不再挂起最长 2 小时；新增 `GET /sync-jobs/{job}` 轮询接口，同步页轮询进度、可离开页面、完成自动刷新历史批次；非 FPM 环境保留同步返回全量结果的兼容契约。
+- **轻量选项接口**：`GET /customers/options`（会籍顾问下拉去重）、`GET /customers/list-counts`（五清单徽标计数，一次清单扫描+角色范围求交集）。
+
+### 优化
+- **数据库索引**：customers（venue/phone/layer/last_visit/expire_date）、leads（phone/venue/status/lead_date/service_teacher）、tasks（owner+status/venue+status/deadline）、training_plans（created_by）、sync_jobs（venue+status+started_at）、ky_cards（member_id）共 16 个索引，迁移幂等可重跑。
+- **列表页真服务端分页**：会员/客户页移除 `size:5000` 全量拉取与客户端切片，筛选（清单/评估状态/顾问/姓名/手机号/门店）全部下推；会籍顾问回填下沉到 `/customers` 分页内（当页一次索引查询，替代全量拉 5000 条留资匹配）；顾问下拉改轻量接口。
+- **业务缓存**：五清单引擎（`memberListIds`）与经营看板四聚合接口（summary/trends/channels/platforms）按「缓存版本+规则哈希+客户表指纹」缓存，留资/任务/审批/待办/同步写入即时失效，TTL 60~120 秒兜底；`/today/todo`、通知中心等热路径从每次全表 chunk 扫描变为缓存命中。
+- **路由层架构**：`routes/api.php` 由 3544 行拆为薄路由 152 行 + `app/Support/helpers.php` 731 行（composer autoload，顺带删除无调用方的 `ArtisanBinary`/`runInRepo`）+ 17 个域控制器，闭包体逐字迁移逻辑零改动。
+- **前端分包**：主 chunk 1385KB→约 108KB；element-plus/echarts/vue 供应商独立分包；发现 `v-highlight` 指令零使用但全语言 highlight.js（约 1MB）被打入主包，改为动态 import 按需加载，vendor 1277KB→314KB。
+- **登出 PII 清理补全**：新增共享 `clearBusinessPiiStorage()`，登出与会话失效时同时清理 `yimai-sales-store`（谈单门店资料）与 `yimai-training-store:user:*`（按用户键训练计划），共用电脑换账号不再串号。
+- **凭据卫生**：`admin-web/.env.local` 清空 KeepYoga 凭据（本地开发代理不再持有真实密码）、`backend/.env` 凭据置空改走后台「登录账号设置」（存数据库）、`.gitignore` 增加 `*.env.bak` 备份形态防护。
+
 ## 2026-09-09 ｜ fix: v3.1.43 修复 PHP 8.5 弃用常量污染登录响应
 
 ### 修复

@@ -164,7 +164,7 @@
 <script setup lang="ts">
   import ArtButtonTable from '@/components/core/forms/art-button-table/index.vue'
   import { useTable } from '@/hooks/core/useTable'
-  import { queryCustomers, queryLeads, getCustomerDetail, matchConsultants } from '@/api/yimai'
+  import { queryCustomers, getCustomerDetail } from '@/api/yimai'
   import type { YimaiCustomer, YimaiAuditLog, YimaiLead } from '@/api/yimai'
   import { ElMessage, ElTag } from 'element-plus'
   import { useUserStore } from '@/store/modules/user'
@@ -237,16 +237,8 @@
     handleCurrentChange
   } = useTable({
     core: {
-      apiFn: async (p: Parameters<typeof queryCustomers>[0]) => {
-        const res = await queryCustomers(p)
-        if (res.records?.length) {
-          const leadsRes = await queryLeads({ current: 1, size: 5000 }).catch(() => ({
-            records: [] as YimaiLead[]
-          }))
-          res.records = matchConsultants(res.records, leadsRes.records)
-        }
-        return res
-      },
+      // 会籍顾问回填已由后端 /customers 在分页内完成（按手机号取留资服务老师），前端不再全量拉留资
+      apiFn: queryCustomers,
       apiParams: {
         current: 1,
         size: 20

@@ -42,12 +42,13 @@
  */
 
 import { App, Directive } from 'vue'
-import hljs from 'highlight.js'
 
 export type HighlightDirective = Directive<HTMLElement>
 
-// 高亮代码
-function highlightCode(block: HTMLElement) {
+// 高亮代码（按需动态加载 highlight.js：全语言包 ~1MB，项目暂无调用方，
+// 动态 import 使其独立成 chunk，只有真正使用 v-highlight 时才会下载）
+async function highlightCode(block: HTMLElement) {
+  const hljs = (await import('highlight.js')).default
   hljs.highlightElement(block)
 }
 

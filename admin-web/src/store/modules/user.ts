@@ -45,6 +45,28 @@ import { StorageConfig } from '@/utils/storage/storage-config'
 import { notifySessionReset, notifyUserChange } from '@/utils/session-lifecycle'
 
 /**
+ * 清理可能含客户/留资 PII 的持久化业务数据（登出 / 会话失效 / 切换账号共用），
+ * 避免共用电脑换账号后数据串号：
+ * - yimai-store：演示态客户/留资/审计快照
+ * - yimai-ai-config：AI 配置与营销人设
+ * - yimai-sales-store：谈单工具门店资料/产品/教练/案例
+ * - yimai-training-store:user:*：训练计划按用户键持久化
+ */
+export function clearBusinessPiiStorage(): void {
+  localStorage.removeItem('yimai-store')
+  localStorage.removeItem('yimai-ai-config')
+  localStorage.removeItem('yimai-sales-store')
+  const prefix = 'yimai-training-store:user:'
+  const stale: string[] = []
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i)
+    if (key && key.startsWith(prefix)) stale.push(key)
+  }
+  stale.forEach((key) => localStorage.removeItem(key))
+  localStorage.removeItem('yimai-training-store')
+}
+
+/**
  * 用户状态管理
  * 管理用户登录状态、个人信息、语言设置、搜索历史、锁屏状态等
  */
@@ -168,8 +190,7 @@ export const useUserStore = defineStore(
       // 清空刷新令牌
       refreshToken.value = ''
       // 清空可能含客户/留资 PII 的持久化业务数据，避免共用机串号
-      localStorage.removeItem('yimai-store')
-      localStorage.removeItem('yimai-ai-config')
+      clearBusinessPiiStorage()
       const worktabStore = useWorktabStore()
       worktabStore.current = {}
       worktabStore.opened = []

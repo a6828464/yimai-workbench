@@ -9,6 +9,9 @@ dist-ssr/
 .env.*
 !.env.example
 !admin-web/.env.production
+# 环境变量备份文件（编辑器/脚本可能生成，同样可能含密钥）
+*.env.bak
+.env.backup
 
 # 会话导出（含GitHub token等敏感信息，严禁入库）
 new-session-*.json
@@ -36,3 +39,6 @@ admin-web/src/mock/
 
 # 随心瑜后台解读材料（截图含会员手机号等真实敏感数据，严禁入库）
 随心瑜后台解读/
+
+# AI 会话工作记忆（本地产物，不入库）
+.ai-memory/
