@@ -88,6 +88,14 @@ fi
 cd "$APP_ROOT"
 php artisan migrate --force
 php artisan optimize:clear
+# composer.json 的 autoload.files 变更（如 helpers.php）需要重建 autoload 列表；
+# 服务器无 composer 时由 bootstrap/app.php 的 require_once 兜底加载助手函数，
+# 此处仅作最佳努力：存在 composer 则重建，失败不阻断更新。
+if command -v composer >/dev/null 2>&1; then
+  composer dump-autoload --no-scripts --quiet || echo "  警告：composer dump-autoload 失败（不影响本次更新，助手函数由 bootstrap 兜底加载）"
+else
+  echo "  提示：服务器未安装 composer，跳过 autoload 重建（助手函数由 bootstrap 兜底加载）"
+fi
 php -r 'require "vendor/autoload.php"; $app = require "bootstrap/app.php"; $app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); if (! Illuminate\Support\Facades\Schema::hasColumns("customers", ["enrolled_at", "visit_at"])) { fwrite(STDERR, "customers 同步字段迁移未生效\n"); exit(1); }'
 
 # 在线升级后清理首次安装专用入口；普通 SPA 首页存在时才执行，避免残包导致站点无入口。

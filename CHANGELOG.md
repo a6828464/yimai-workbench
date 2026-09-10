@@ -1,5 +1,13 @@
 # 更新日志
 
+## 2026-09-10 ｜ fix: v3.1.46 修复在线升级后全站 500（composer autoload 未重建）
+
+### 修复
+- **在线升级后所有接口 500「Call to undefined function ok()」**：v3.1.44 将全局助手函数迁入 `app/Support/helpers.php` 并登记 composer `autoload.files`，但在线升级保留服务器现有 vendor、未重建 autoload 列表；此前生产靠 OPcache 旧字节码侥幸运行，一旦 OPcache 失效重新编译，新控制器调用的 `ok()`/`requireSuper()` 等全部未定义、全站 500。修复三管齐下：
+  1. `bootstrap/app.php` 增加 `require_once app/Support/helpers.php` 兜底加载，任何部署路径下助手函数必然可用（双保险，重复加载无副作用）；
+  2. `update.sh` 在服务器存在 composer 时执行 `composer dump-autoload`，不存在则提示（由 bootstrap 兜底）；
+  3. 生产服务器 vendor 的 `autoload_static.php`/`autoload_files.php` 已补登记 helpers.php 并重启 PHP-FPM，恢复线上服务。
+
 ## 2026-09-10 ｜ fix: v3.1.45 修复生产白屏（vendor 循环分包）与在线更新 proc_open 报错
 
 ### 修复
