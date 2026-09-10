@@ -1,5 +1,11 @@
 # 更新日志
 
+## 2026-09-10 ｜ fix: v3.1.45 修复生产白屏（vendor 循环分包）与在线更新 proc_open 报错
+
+### 修复
+- **生产环境整站白屏**：v3.1.44 引入的 `manualChunks` 分包将 vue/vue-router/pinia 与其余依赖拆成 `vue-vendor` 与 `vendor` 两个 chunk，但 `pinia-plugin-persistedstate` 依赖的 `destr`、`deep-pick-omit` 落在 `vendor`，形成 vue-vendor→vendor→vue-vendor 循环引用；浏览器按 ES 模块语义先完整求值 vendor（vue-i18n 的 i18n-t 组件定义在求值时调用 defineAsyncComponent，触发对 vue-vendor 中尚处于 TDZ 的 `isFunction` 的访问），抛 `Uncaught ReferenceError: Cannot access 'O' before initialization`，Vue 应用无法挂载，页面全白。现将 `destr`、`deep-pick-omit` 归入 `vue-vendor` 分包，打破循环依赖。
+- **在线更新按钮报「Server Error」**：宝塔 PHP 默认把 `proc_open` 列入 disable_functions，`runShell()` 构造 Symfony Process 时抛未捕获的 `LogicException`，前端只收到笼统的 500「Server Error」；现 `runShell()` 在 proc_open 不可用时返回明确指引（宝塔面板 → PHP 设置 → 禁用函数移除 proc_open），更新接口兜底捕获异常并输出原因。
+
 ## 2026-09-10 ｜ feat: v3.1.44 性能与架构专项（索引+分页+缓存+异步同步+控制器化）
 
 ### 修复

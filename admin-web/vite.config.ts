@@ -84,7 +84,12 @@ export default ({ mode }: { mode: string }) => {
               id.includes('/@vue/') ||
               id.includes('vue-router') ||
               id.includes('pinia') ||
-              id.includes('vue-demi')
+              id.includes('vue-demi') ||
+              // destr / deep-pick-omit（pinia-plugin-persistedstate 依赖）：
+              // 与 vue-vendor 同包，避免 vue-vendor→vendor→vue-vendor
+              // 循环 chunk 导致 TDZ 报错白屏
+              id.includes('destr') ||
+              id.includes('deep-pick-omit')
             )
               return 'vue-vendor'
             return 'vendor'

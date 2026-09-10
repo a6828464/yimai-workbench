@@ -148,7 +148,17 @@ final class SystemController extends Controller
         if (! is_file($script)) {
             return response()->json(['code' => 1, 'message' => '服务器未配置受控更新脚本（站点 app/update.sh 不存在），请先安装 update.sh'], 503);
         }
-        $result = runShell('bash '.escapeshellarg($script), 900);
+        try {
+            $result = runShell('bash '.escapeshellarg($script), 900);
+        } catch (Throwable $e) {
+            // 宝塔 PHP 默认禁用 proc_open 时，Symfony Process 构造即抛 LogicException，
+            // 统一转成可读提示，避免前端只看到笼统的 "Server Error"
+            return response()->json([
+                'code' => 1,
+                'message' => '更新脚本无法启动',
+                'output' => [mb_substr($e->getMessage(), 0, 500)],
+            ], 500);
+        }
         if (! $result['ok']) {
             $lines = array_slice($result['output'], -15);
 

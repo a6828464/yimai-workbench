@@ -651,6 +651,15 @@ function isBirthdayToday(?string $birthday): bool
 /** 执行一段 shell 脚本（在线更新用），返回 [ok, output[]] */
 function runShell(string $script, int $timeout = 180): array
 {
+    if (! function_exists('proc_open')) {
+        return [
+            'ok' => false,
+            'output' => [
+                'PHP 已禁用 proc_open（宝塔 PHP 默认禁用的函数之一），无法执行受控更新脚本。',
+                '请在宝塔面板 → 软件商店 → PHP 设置 → 禁用函数中移除 proc_open（建议同时移除 exec、popen、shell_exec）后重试。',
+            ],
+        ];
+    }
     $process = new Process(['bash', '-c', $script], base_path());
     $process->setTimeout($timeout)->run();
 
