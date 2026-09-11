@@ -510,11 +510,28 @@ final class BackupService
         if (isset($opts['sink'])) {
             $http = $http->withOptions(['sink' => $opts['sink']]);
         }
+        try {
+            return $http->send($method, $url, [
+                'headers' => $opts['headers'] ?? [],
+                'body' => $opts['body'] ?? null,
+            ]);
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            throw new RuntimeException(self::friendlyNetworkError($e), 0, $e);
+        }
+    }
 
-        return $http->send($method, $url, [
-            'headers' => $opts['headers'] ?? [],
-            'body' => $opts['body'] ?? null,
-        ]);
+    /** 把 cURL 底层网络错误翻译成可操作的提示（注意：60 含子串 6，必须先判 60） */
+    private static function friendlyNetworkError(\Throwable $e): string
+    {
+        $msg = $e->getMessage();
+
+        return match (true) {
+            str_contains($msg, 'cURL error 60') || str_contains($msg, 'SSL certificate problem') => 'HTTPS 证书校验失败（NAS 自签名证书常见），建议改用 http:// 地址或给 NAS 配置有效证书',
+            str_contains($msg, 'cURL error 6:') => '无法解析主机名，请检查 WebDAV 地址拼写',
+            str_contains($msg, 'cURL error 7') => '无法连接到服务器，请检查地址端口、NAS 的 WebDAV 服务是否开启及防火墙放行',
+            str_contains($msg, 'cURL error 28') => '连接超时，请检查服务器到 NAS/网盘的网络连通性',
+            default => '网络请求失败：'.mb_substr($msg, 0, 160),
+        };
     }
 
     private static function davPut(string $localPath, string $url): void
@@ -525,11 +542,15 @@ final class BackupService
             throw new RuntimeException('无法读取备份文件');
         }
         try {
-            $res = Http::withBasicAuth((string) $remote['username'], (string) $remote['password'])
-                ->timeout(1800)
-                ->connectTimeout(15)
-                ->withBody($fh, 'application/zip')
-                ->put($url);
+            try {
+                $res = Http::withBasicAuth((string) $remote['username'], (string) $remote['password'])
+                    ->timeout(1800)
+                    ->connectTimeout(15)
+                    ->withBody($fh, 'application/zip')
+                    ->put($url);
+            } catch (\Illuminate\Http\Client\ConnectionException $e) {
+                throw new RuntimeException('上传失败：'.self::friendlyNetworkError($e), 0, $e);
+            }
             if (! in_array($res->status(), [200, 201, 204], true)) {
                 throw new RuntimeException("WebDAV 上传失败（HTTP {$res->status()}），请检查网盘容量与账号权限");
             }

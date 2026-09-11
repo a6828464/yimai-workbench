@@ -52,7 +52,13 @@ final class BackupController extends Controller
         if ($config['remote']['type'] === 'webdav' && $config['remote']['url'] === '') {
             abort(422, '启用 WebDAV 远端时必须填写地址');
         }
-        BackupService::saveConfig($config);
+        try {
+            BackupService::saveConfig($config);
+        } catch (Throwable $e) {
+            Log::channel('system_error')->error('Backup config save failed', ['error' => $e->getMessage()]);
+
+            return response()->json(['code' => 1, 'message' => '保存失败：'.mb_substr($e->getMessage(), 0, 200)]);
+        }
         audit($r, '修改', '数据备份', 0, '备份配置', '双店', sprintf(
             '自动备份 %s · 时间 %s · 本地保留 %d 份 · %s',
             $config['enabled'] ? '开' : '关', $config['run_at'], $config['keep_local'],
@@ -62,20 +68,37 @@ final class BackupController extends Controller
         return ok(['config' => BackupService::config(), 'status' => BackupService::status()]);
     }
 
-    /** POST /backup/test-connection：支持用页面里尚未保存的草稿参数测试 */
+    /** POST /backup/test-connection：支持用页面里尚未保存的草稿参数测试；所有失败返回可读原因而非 500 */
     public function testConnection(Request $r)
     {
         requireSuper($r);
-        if (is_array($r->json('remote'))) {
-            $saved = BackupService::config();
-            $draft = $r->json()->all();
-            // 密码留空 = 保持已保存的密码
-            if ((string) ($draft['remote']['password'] ?? '') === '') {
-                $draft['remote']['password'] = (string) ($saved['remote']['password'] ?? '');
+        try {
+            if (is_array($r->json('remote'))) {
+                $saved = BackupService::config();
+                $draft = $r->json()->all();
+                // 密码留空 = 保持已保存的密码
+                if ((string) ($draft['remote']['password'] ?? '') === '') {
+                    $draft['remote']['password'] = (string) ($saved['remote']['password'] ?? '');
+                }
+                BackupService::saveConfig(array_replace_recursive($saved, $draft));
             }
-            BackupService::saveConfig(array_replace_recursive($saved, $draft));
+            if (! BackupService::davConfigured()) {
+                return response()->json([
+                    'code' => 1,
+                    'message' => '请先把「远端存储」切换为 WebDAV 并填写地址后再测试',
+                ]);
+            }
+            $message = BackupService::testWebDav();
+        } catch (Throwable $e) {
+            Log::channel('system_error')->error('WebDAV test connection failed', [
+                'exception' => $e::class, 'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'code' => 1,
+                'message' => 'WebDAV 测试失败：'.mb_substr($e->getMessage(), 0, 200),
+            ]);
         }
-        $message = BackupService::testWebDav();
         audit($r, '测试连接', '数据备份', 0, 'WebDAV', '双店', $message);
 
         return ok(['message' => $message]);

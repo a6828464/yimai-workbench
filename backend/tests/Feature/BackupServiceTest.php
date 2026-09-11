@@ -3,10 +3,12 @@
 namespace Tests\Feature;
 
 use App\Models\Lead;
+use App\Models\User;
 use App\Services\BackupService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 class BackupServiceTest extends TestCase
@@ -146,5 +148,35 @@ class BackupServiceTest extends TestCase
         foreach ($names as $n) {
             @unlink($dir.'/'.$n);
         }
+    }
+
+    public function test_webdav_errors_surface_as_readable_messages_not_500(): void
+    {
+        Sanctum::actingAs(User::factory()->create([
+            'username' => 'super-bk', 'name' => '超管备份', 'role' => 'R_SUPER', 'venue' => null,
+        ]));
+
+        // 未切换 WebDAV 类型：返回可读提示而非异常/500
+        $res = $this->postJson('/api/backup/test-connection', ['remote' => [
+            'type' => 'none', 'url' => '', 'username' => '', 'password' => '', 'path' => 'yimai-backup',
+        ]]);
+        $res->assertOk()->assertJsonPath('code', 1);
+        $this->assertStringContainsString('切换为 WebDAV', (string) $res->json('message'));
+
+        // 模拟 NAS 自签名证书失败：翻译成可操作的中文提示
+        BackupService::saveConfig(array_replace(BackupService::defaultConfig(), [
+            'remote' => ['type' => 'webdav', 'url' => 'https://nas.local:5006', 'username' => 'u', 'password' => 'p', 'path' => 'bk'],
+        ]));
+        Http::fake(function () {
+            throw new \Illuminate\Http\Client\ConnectionException(
+                'cURL error 60: SSL certificate problem: self signed certificate'
+            );
+        });
+
+        $res2 = $this->postJson('/api/backup/test-connection', ['remote' => [
+            'type' => 'webdav', 'url' => 'https://nas.local:5006', 'username' => 'u', 'password' => 'p', 'path' => 'bk',
+        ]]);
+        $res2->assertOk()->assertJsonPath('code', 1);
+        $this->assertStringContainsString('证书', (string) $res2->json('message'));
     }
 }
