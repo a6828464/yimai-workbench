@@ -243,7 +243,12 @@
             <ElTableColumn prop="mtime" label="时间" width="180" />
             <ElTableColumn label="操作" width="260" fixed="right">
               <template #default="{ row }">
-                <ElButton link type="primary" size="small" @click="onAction(row, 'download')"
+                <ElButton
+                  link
+                  type="primary"
+                  size="small"
+                  :loading="downloading === row.name"
+                  @click="onAction(row, 'download')"
                   >下载</ElButton
                 >
                 <ElButton link type="primary" size="small" @click="onAction(row, 'verify')"
@@ -271,7 +276,12 @@
             <ElTableColumn prop="mtime" label="时间" width="180" />
             <ElTableColumn label="操作" width="260" fixed="right">
               <template #default="{ row }">
-                <ElButton link type="primary" size="small" @click="onAction(row, 'download')"
+                <ElButton
+                  link
+                  type="primary"
+                  size="small"
+                  :loading="downloading === row.name"
+                  @click="onAction(row, 'download')"
                   >下载</ElButton
                 >
                 <ElButton link type="primary" size="small" @click="onAction(row, 'verify')"
@@ -362,6 +372,7 @@
   const remoteFiles = ref<BackupFileInfo[]>([])
   const remoteLoading = ref(false)
   const fileRef = ref<HTMLInputElement | null>(null)
+  const downloading = ref('')
 
   const connected = computed(() => USE_BACKEND)
   const currentFiles = computed(() =>
@@ -517,7 +528,17 @@
     const scopeArg = scope.value
     try {
       if (key === 'download') {
-        await downloadBackupFile(scopeArg, row.name)
+        // 远端下载需要服务器先从 NAS/网盘拉取再中转，可能耗时较长，必须给出可见反馈
+        downloading.value = row.name
+        if (scopeArg === 'remote') {
+          ElMessage.info('正在从远端拉取备份（服务器中转），请稍候…')
+        }
+        try {
+          await downloadBackupFile(scopeArg, row.name)
+          ElMessage.success('备份包已下载到本地')
+        } finally {
+          downloading.value = ''
+        }
         return
       }
       if (key === 'delete') {

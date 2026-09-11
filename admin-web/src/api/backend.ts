@@ -55,11 +55,19 @@ const http = axios.create({
 /** API 基址（供 fetch 流式请求复用，含后端鉴权头） */
 export const API_BASE = window.__YIMAI_API_BASE__ || import.meta.env.VITE_API_BASE || '/api'
 
-function unwrap<T>(body: { code?: number; data?: T; message?: string; ok?: boolean; errno?: number | string; emsg?: string }): T {
+function unwrap<T>(body: {
+  code?: number
+  data?: T
+  message?: string
+  ok?: boolean
+  errno?: number | string
+  emsg?: string
+}): T {
   if (body?.code !== undefined && body.code !== 0) throw new Error(body.message || '请求失败')
   // 兼容契约外的失败形态：{ok:false} / {errno}（KeepYoga 风格），避免被静默判成功
   if (body?.ok === false) throw new Error(body.message || body.emsg || '请求失败')
-  if (body?.errno !== undefined && String(body.errno) !== '0') throw new Error(body.emsg || body.message || '请求失败')
+  if (body?.errno !== undefined && String(body.errno) !== '0')
+    throw new Error(body.emsg || body.message || '请求失败')
   return body?.data as T
 }
 
@@ -130,7 +138,7 @@ export async function apiDelete<T = unknown>(path: string): Promise<T> {
 }
 
 export async function apiDownload(path: string, filename: string): Promise<void> {
-  const response = await http.get(path, { responseType: 'blob', timeout: 120000 })
+  const response = await http.get(path, { responseType: 'blob', timeout: 300000 })
   const url = URL.createObjectURL(response.data)
   const link = document.createElement('a')
   link.href = url

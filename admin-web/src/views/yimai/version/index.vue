@@ -199,10 +199,17 @@
       if (r.updated) setTimeout(() => window.location.reload(), 2500)
     } catch (e) {
       const anyE = e as {
-        response?: { data?: { message?: string; output?: string[] } }
+        response?: { status?: number; data?: { message?: string; output?: string[] } }
         message?: string
       }
-      updateError.value = anyE.response?.data?.message || anyE.message || '更新失败'
+      if (anyE.response?.status === 502 || anyE.response?.status === 504) {
+        updateError.value =
+          '无法连接到后端 PHP 进程（HTTP ' +
+          anyE.response.status +
+          '）：请在宝塔面板检查 PHP-FPM 是否在运行、服务器内存是否耗尽，并查看 PHP 错误日志后重试'
+      } else {
+        updateError.value = anyE.response?.data?.message || anyE.message || '更新失败'
+      }
       if (anyE.response?.data?.output?.length) updateOutput.value = anyE.response.data.output
       ElMessage.error(`更新失败：${updateError.value}`)
     } finally {
