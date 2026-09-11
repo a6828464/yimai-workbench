@@ -201,6 +201,42 @@ class BackupServiceTest extends TestCase
         $this->assertStringContainsString('连接成功', BackupService::testRemote());
     }
 
+    public function test_config_api_uses_camel_case_contract_and_can_disable_auto_backup(): void
+    {
+        Sanctum::actingAs(User::factory()->create([
+            'username' => 'super-bk3', 'name' => '超管配置', 'role' => 'R_SUPER', 'venue' => null,
+        ]));
+
+        // 页面提交的载荷（前端 BackupConfig 契约，camelCase）
+        $payload = [
+            'enabled' => true, 'runAt' => '04:10', 'keepLocal' => 5, 'keepEnv' => true,
+            'remote' => [
+                'type' => 'none', 'url' => '', 'username' => '', 'password' => '', 'path' => 'yimai-backup',
+                's3' => ['endpoint' => '', 'bucket' => '', 'region' => 'us-east-1', 'accessKey' => '', 'secretKey' => '', 'prefix' => 'yimai-backup/', 'style' => 'path'],
+            ],
+        ];
+        $this->putJson('/api/backup/config', $payload)
+            ->assertOk()
+            ->assertJsonPath('code', 0)
+            ->assertJsonPath('data.config.enabled', true)
+            ->assertJsonPath('data.config.runAt', '04:10')
+            ->assertJsonPath('data.status.nextRunAt', today()->toDateString().' 04:10');
+
+        // 回读也必须是 camelCase（历史上回 snake_case 导致表单 runAt/keepLocal 丢失）
+        $this->getJson('/api/backup/config')
+            ->assertOk()
+            ->assertJsonPath('data.config.runAt', '04:10')
+            ->assertJsonPath('data.config.keepLocal', 5)
+            ->assertJsonPath('data.config.remote.password', '');
+
+        // 关闭自动备份：字段齐全时必须成功（v3.1.48~52 因键名错位必 422，导致无法关闭）
+        $this->putJson('/api/backup/config', array_replace($payload, ['enabled' => false]))
+            ->assertOk()
+            ->assertJsonPath('code', 0)
+            ->assertJsonPath('data.config.enabled', false)
+            ->assertJsonPath('data.status.nextRunAt', '');
+    }
+
     public function test_webdav_errors_surface_as_readable_messages_not_500(): void
     {
         Sanctum::actingAs(User::factory()->create([

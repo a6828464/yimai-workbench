@@ -59,14 +59,35 @@ final class BackupService
         return $config;
     }
 
-    /** 对外展示用：密钥一律不回显，留空保存 = 保持原值 */
+    /** 对外展示用（camelCase，前端契约）：密钥一律不回显，留空保存 = 保持原值 */
     public static function exportConfig(): array
     {
         $config = self::config();
-        $config['remote']['password'] = '';
-        $config['remote']['s3']['secretKey'] = '';
 
-        return $config;
+        return [
+            'enabled' => (bool) $config['enabled'],
+            'runAt' => (string) $config['run_at'],
+            'keepLocal' => (int) $config['keep_local'],
+            'keepEnv' => (bool) $config['keep_env'],
+            'remote' => [
+                'type' => (string) $config['remote']['type'],
+                'url' => (string) $config['remote']['url'],
+                'username' => (string) $config['remote']['username'],
+                // 密钥不回显
+                'password' => '',
+                'path' => (string) $config['remote']['path'],
+                's3' => [
+                    'endpoint' => (string) $config['remote']['s3']['endpoint'],
+                    'bucket' => (string) $config['remote']['s3']['bucket'],
+                    'region' => (string) $config['remote']['s3']['region'],
+                    // 密钥不回显
+                    'secretKey' => '',
+                    'accessKey' => (string) $config['remote']['s3']['accessKey'],
+                    'prefix' => (string) $config['remote']['s3']['prefix'],
+                    'style' => (string) $config['remote']['s3']['style'],
+                ],
+            ],
+        ];
     }
 
     public static function saveConfig(array $config): array
@@ -85,19 +106,20 @@ final class BackupService
         return self::config();
     }
 
+    /** 状态总览（camelCase，前端契约） */
     public static function status(): array
     {
         $config = self::config();
         $local = self::listLocal();
 
         return [
-            'last_run_at' => (string) ($config['status']['last_run_at'] ?? ''),
-            'last_result' => (string) ($config['status']['last_result'] ?? ''),
-            'last_detail' => (string) ($config['status']['last_detail'] ?? ''),
-            'next_run_at' => $config['enabled'] ? today()->toDateString().' '.$config['run_at'] : '',
-            'local_count' => count($local),
-            'local_size' => array_sum(array_column($local, 'size')),
-            'remote_configured' => self::remoteConfigured(),
+            'lastRunAt' => (string) ($config['status']['last_run_at'] ?? ''),
+            'lastResult' => (string) ($config['status']['last_result'] ?? ''),
+            'lastDetail' => (string) ($config['status']['last_detail'] ?? ''),
+            'nextRunAt' => $config['enabled'] ? today()->toDateString().' '.$config['run_at'] : '',
+            'localCount' => count($local),
+            'localSize' => array_sum(array_column($local, 'size')),
+            'remoteConfigured' => self::remoteConfigured(),
         ];
     }
 
