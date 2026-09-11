@@ -133,7 +133,9 @@
                 v-for="v in MOMENT_LENGTHS"
                 :key="v.label"
                 :label="v.label"
-                :value="v.label" /></ElSelect></ElFormItem
+                :value="v.label" /><ElOption
+                :label="MOMENT_LENGTH_CUSTOM"
+                :value="MOMENT_LENGTH_CUSTOM" /></ElSelect></ElFormItem
         ></ElCol>
         <ElCol :xs="12" :md="4"
           ><ElFormItem label="多分行"><ElSwitch v-model="multiLine" /></ElFormItem
@@ -146,6 +148,28 @@
                 :key="v"
                 :label="v"
                 :value="v" /></ElSelect></ElFormItem
+        ></ElCol>
+      </ElRow>
+      <ElRow v-if="isCustomLength" :gutter="12">
+        <ElCol :xs="12" :md="6"
+          ><ElFormItem label="最少字数"
+            ><ElInputNumber
+              v-model="customLengthMin"
+              :min="10"
+              :max="490"
+              :step="10"
+              controls-position="right"
+              class="!w-full" /></ElFormItem
+        ></ElCol>
+        <ElCol :xs="12" :md="6"
+          ><ElFormItem label="最多字数"
+            ><ElInputNumber
+              v-model="customLengthMax"
+              :min="20"
+              :max="500"
+              :step="10"
+              controls-position="right"
+              class="!w-full" /></ElFormItem
         ></ElCol>
       </ElRow>
       <ElFormItem label="我想说">
@@ -308,16 +332,21 @@
         <ElEmpty v-else-if="!historyLoading" description="每次生成的文案都会自动记录在这里" />
       </div>
     </ElDrawer>
+
+    <!-- 朋友圈防折叠（同一条文案换号发布时避免被折叠成相似内容） -->
+    <AntiFoldTool :latest-result="result" />
   </div>
 </template>
 
 <script setup lang="ts">
+  import AntiFoldTool from './anti-fold-tool.vue'
   import {
     MOMENTS_CATEGORIES,
     MOMENT_TONES,
     MOMENT_GOALS,
     MOMENT_EXPRESSIONS,
     MOMENT_LENGTHS,
+    MOMENT_LENGTH_CUSTOM,
     EMOJI_LEVELS,
     PERSONA_ROLES,
     SPECIALTY_OPTIONS,
@@ -392,6 +421,9 @@
   const goal = ref(MOMENT_GOALS[0])
   const expression = ref(MOMENT_EXPRESSIONS[0])
   const lengthLabel = ref(MOMENT_LENGTHS[1].label)
+  const isCustomLength = computed(() => lengthLabel.value === MOMENT_LENGTH_CUSTOM)
+  const customLengthMin = ref(60)
+  const customLengthMax = ref(100)
   const multiLine = ref(true)
   const emojiLevel = ref(EMOJI_LEVELS[0])
   const userInput = ref('')
@@ -451,6 +483,10 @@
       ElMessage.warning('请先选择主题或在输入框写下想表达的内容')
       return
     }
+    if (isCustomLength.value && customLengthMax.value <= customLengthMin.value) {
+      ElMessage.warning('自定义字数范围无效：最多字数需大于最少字数')
+      return
+    }
     generating.value = true
     warning.value = ''
     try {
@@ -462,6 +498,9 @@
         goal: goal.value,
         expression: expression.value,
         lengthLabel: lengthLabel.value,
+        customLength: isCustomLength.value
+          ? { min: customLengthMin.value, max: customLengthMax.value }
+          : undefined,
         multiLine: multiLine.value,
         emojiLevel: emojiLevel.value,
         userInput: userInput.value

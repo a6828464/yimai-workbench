@@ -418,6 +418,9 @@ final class TodayController extends Controller
                     'teacher' => (string) $b->teacher_name,
                     'source' => 'ky',
                     'status' => (string) $b->status,
+                    // KY 预约无直接留资，处理时后端按手机号唯一命中反查（见 todoAction 业务流转 3）
+                    'leadId' => null,
+                    'session' => null,
                 ] + $doneInfo('trial:ky-'.$b->id);
             }
         }
@@ -441,6 +444,9 @@ final class TodayController extends Controller
                         'teacher' => (string) ($card['teacher'] ?? ''),
                         'source' => 'lead',
                         'status' => (string) $l->status,
+                        // 携带留资定位，处理时回写留资状态机与体验课卡片（见 todoAction 业务流转 3）
+                        'leadId' => (int) $l->id,
+                        'session' => (int) ($card['session'] ?? 0),
                     ] + $doneInfo($trialKey);
                 }
             }
@@ -531,6 +537,7 @@ final class TodayController extends Controller
         ];
 
         DB::transaction(function () use ($r, $u, $d, $today, $typeLabels) {
+            $flowNote = '';
             // 业务流转 1：新客首响 → 留资状态机（已首响→已联系、无效客资→已流失）
             if ($d['type'] === 'newLeads' && ! empty($d['leadId'])) {
                 $lead = Lead::find($d['leadId']);
@@ -547,6 +554,75 @@ final class TodayController extends Controller
                     if ($next !== null && (string) $lead->status !== $next) {
                         $lead->update(['status' => $next]);
                         audit($r, '标记处理', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue, "今日待办标记：状态变更为 {$next}");
+                    }
+                }
+            }
+
+            // 业务流转 3：体验课接待/爽约 → 留资状态机 + 体验课卡片结果
+            // 爽约不清空跟进时限（时限仅随体验课卡片「已取消」留白），客户爽约后仍需跟进促改约
+            if ($d['type'] === 'trials') {
+                $lead = null;
+                $session = 0;
+                $enforceLeadPermission = true;
+                if (preg_match('/^trial:lead-(\d+)-(\d*)$/', $d['key'], $m)) {
+                    // 留资体验课卡片：key 直接携带留资 ID 与节次
+                    $lead = Lead::find((int) $m[1]);
+                    $session = (int) ($m[2] ?? 0);
+                } elseif (preg_match('/^trial:ky-(\d+)$/', $d['key'], $m)) {
+                    // 随心瑜体验预约：按手机号反查留资，仅「唯一命中一条进行中留资」时联动，
+                    // 多命中视为歧义跳过（避免把状态写到重复留资/他人留资上），当日标记不受影响
+                    $booking = KyBooking::find((int) $m[1]);
+                    $digits = preg_replace('/\D+/', '', (string) ($booking->phone ?? '')) ?? '';
+                    if ($digits !== '') {
+                        $candidates = Lead::where('phone', $digits)
+                            ->whereNotIn('status', ['已成交', '已流失'])
+                            ->orderByDesc('id')->get();
+                        if ($candidates->count() === 1) {
+                            $lead = $candidates->first();
+                            $enforceLeadPermission = false;
+                        } elseif ($candidates->count() > 1) {
+                            $flowNote = '；同手机号命中多条进行中留资，未联动状态';
+                        }
+                    }
+                } elseif (! empty($d['leadId'])) {
+                    $lead = Lead::find((int) $d['leadId']);
+                    if (preg_match('/(\d+)$/', $d['key'], $m)) {
+                        $session = (int) $m[1];
+                    }
+                }
+                if ($lead) {
+                    $canHandle = in_array($u->role, ['R_SUPER', 'R_MANAGER'], true)
+                        || (string) $lead->service_teacher === (string) $u->name
+                        || (string) $lead->service_teacher === '';
+                    if ($enforceLeadPermission) {
+                        abort_unless($canHandle, 403, '无权处理该客资');
+                    }
+                    if ($canHandle) {
+                        $next = match ($d['action']) {
+                            '已接待' => '已体验',
+                            '爽约' => '爽约',
+                            default => null,
+                        };
+                        if ($next !== null && ! in_array((string) $lead->status, ['已成交', '已流失'], true) && (string) $lead->status !== $next) {
+                            $lead->update(['status' => $next]);
+                            audit($r, '标记处理', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue, "今日待办体验课标记 {$d['action']}：状态变更为 {$next}");
+                        }
+                        // 卡片结果标记：仅明确到节的留资体验课回写（已接待=已上课、爽约=已爽约）
+                        if ($session > 0 && in_array($d['action'], ['已接待', '爽约'], true)) {
+                            $cards = (array) ($lead->trial_cards ?? []);
+                            foreach ($cards as $i => $card) {
+                                if ((int) ($card['session'] ?? ($i + 1)) === $session) {
+                                    if ($d['action'] === '爽约') {
+                                        $cards[$i]['noShow'] = true;
+                                    } else {
+                                        $cards[$i]['attended'] = true;
+                                        $cards[$i]['noShow'] = false;
+                                    }
+                                    $lead->update(['trial_cards' => $cards]);
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -573,7 +649,7 @@ final class TodayController extends Controller
                 ]
             );
             invalidateBusinessCaches();
-            audit($r, '标记处理', '今日待办', $d['key'], $typeLabels[$d['type']], (string) ($u->venue ?? '双店'), $d['action'].((string) ($d['remark'] ?? '') !== '' ? '：'.$d['remark'] : ''));
+            audit($r, '标记处理', '今日待办', $d['key'], $typeLabels[$d['type']], (string) ($u->venue ?? '双店'), $d['action'].((string) ($d['remark'] ?? '') !== '' ? '：'.$d['remark'] : '').$flowNote);
         });
 
         return ok(['done' => true]);

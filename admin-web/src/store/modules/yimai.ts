@@ -47,6 +47,10 @@ export interface YimaiLead {
     redeem?: number | null
     /** 本课是否已取消（取消后跟进时限留空白） */
     cancelled?: boolean
+    /** 本课已上课（今日待办体验课标记「已接待」自动回写） */
+    attended?: boolean
+    /** 本课已爽约（今日待办标记「爽约」自动回写；爽约不影响跟进时限计算） */
+    noShow?: boolean
   }>
   remark: string
   createdBy: string

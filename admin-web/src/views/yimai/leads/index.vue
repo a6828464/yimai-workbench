@@ -85,6 +85,11 @@
             <template v-if="row.trialCards?.length">
               <div v-for="(t, i) in row.trialCards" :key="i" class="text-xs leading-4">
                 <span class="text-gray-500">第{{ t.session }}节</span>
+                <ElTag v-if="t.noShow" size="small" type="danger" class="mx-1">已爽约</ElTag>
+                <ElTag v-else-if="t.attended" size="small" type="success" class="mx-1"
+                  >已上课</ElTag
+                >
+                <ElTag v-if="t.cancelled" size="small" type="info" class="mx-1">已取消</ElTag>
                 <template v-if="t.time || t.topic || t.teacher">
                   <span class="text-gray-400"> · </span>
                   <span>{{
@@ -357,7 +362,8 @@
           </template>
           <div class="text-xs text-gray-400 mb-3 leading-5">
             每一节体验课填写上课时间、主题、上课老师以及核销用的券信息（下单平台 / 券名称 / 券码 /
-            次数）。若第一节体验课取消，请勾选「已取消」，跟进时限将留空白。
+            次数）。若第一节体验课取消，请勾选「已取消」，跟进时限将留空白；「已上课 /
+            已爽约」由今日待办的体验课处理自动回写，不影响跟进时限。
           </div>
           <div v-if="dialog.form.trialCards.length" class="space-y-3">
             <div
@@ -367,7 +373,13 @@
               :class="{ 'bg-red-50/40 dark:bg-red-900/10': card.cancelled }"
             >
               <div class="flex-cb mb-2">
-                <span class="text-sm font-500">第 {{ card.session }} 节体验课</span>
+                <span class="text-sm font-500">
+                  第 {{ card.session }} 节体验课
+                  <ElTag v-if="card.noShow" size="small" type="danger" class="ml-1">已爽约</ElTag>
+                  <ElTag v-else-if="card.attended" size="small" type="success" class="ml-1"
+                    >已上课</ElTag
+                  >
+                </span>
                 <div class="flex items-center gap-3">
                   <ElCheckbox v-model="card.cancelled" size="small">已取消</ElCheckbox>
                   <ElButton link type="danger" size="small" @click="removeTrialCard(idx)">

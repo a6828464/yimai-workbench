@@ -1955,6 +1955,10 @@ export interface TodayTodoTrialItem extends TodayTodoDoneInfo {
   /** ky=随心瑜体验预约事实 / lead=留资体验课卡片 */
   source: 'ky' | 'lead'
   status: string
+  /** 留资来源携带：处理时回写留资状态与体验课卡片（KY 来源为 null，后端按手机号反查） */
+  leadId: number | null
+  /** 第几节体验课（KY 来源为 null） */
+  session: number | null
 }
 
 export interface TodayTodoLeadItem extends TodayTodoDoneInfo {
@@ -2126,7 +2130,9 @@ export function getTodayTodo(): Promise<TodayTodo> {
           topic: card.topic ?? '',
           teacher: card.teacher ?? '',
           source: 'lead' as const,
-          status: l.status
+          status: l.status,
+          leadId: l.id,
+          session: card.session ?? idx + 1
         }))
     )
     .sort((x, y) => (x.time ?? '').localeCompare(y.time ?? ''))

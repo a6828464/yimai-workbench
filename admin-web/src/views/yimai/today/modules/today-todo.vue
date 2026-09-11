@@ -696,7 +696,13 @@
         action,
         customerId:
           group === 'renewals' || group === 'churnRisks' ? row.id : (row.customerId ?? null),
-        leadId: group === 'newLeads' ? row.id : null,
+        // 体验课携带留资定位，后端据此回写留资状态机与体验课卡片（KY 来源传 null 由后端反查）
+        leadId:
+          group === 'newLeads'
+            ? row.id
+            : group === 'trials'
+              ? ((row as TodayTodoTrialItem).leadId ?? null)
+              : null,
         touch: group === 'renewals' || group === 'churnRisks'
       })
       ElMessage.success(`已标记：${action}`)

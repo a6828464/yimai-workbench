@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Customer;
+use App\Models\KyBooking;
 use App\Models\Lead;
 use App\Models\Task;
 use App\Models\User;
@@ -104,6 +105,122 @@ class TodoActionTest extends TestCase
 
         $this->assertSame(1, TodoAction::where('todo_key', 'birthday:'.$c->id)->count());
         $this->assertDatabaseHas('todo_actions', ['todo_key' => 'birthday:'.$c->id, 'action' => '已邀约到店']);
+    }
+
+    public function test_mark_trial_no_show_flows_lead_status_and_marks_card(): void
+    {
+        Sanctum::actingAs($this->user('manager-green', '绿地店长', 'R_MANAGER', '绿地店'));
+        $lead = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '体验小王', 'phone' => '13900000011',
+            'source' => '大众点评', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '已约体验',
+            'trial_cards' => [
+                ['session' => 1, 'time' => now()->format('Y-m-d 10:00'), 'topic' => '普拉提体验', 'teacher' => '老师A', 'couponName' => '', 'voucherCode' => '', 'platform' => '美团'],
+                ['session' => 2, 'time' => now()->addDay()->format('Y-m-d 10:00'), 'topic' => '二次体验', 'teacher' => '老师A', 'couponName' => '', 'voucherCode' => '', 'platform' => '美团'],
+            ],
+        ]);
+
+        // 待办体验课项携带留资定位信息
+        $todo = $this->getJson('/api/today/todo')->assertOk()->json('data');
+        $item = collect($todo['trials'])->firstWhere('key', 'trial:lead-'.$lead->id.'-1');
+        $this->assertNotNull($item);
+        $this->assertSame($lead->id, $item['leadId']);
+        $this->assertSame(1, $item['session']);
+
+        // 标记爽约 → 留资状态流转为「爽约」，第1节卡片标记已爽约，第2节不受影响（跟进时限不受爽约影响）
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'trials', 'key' => 'trial:lead-'.$lead->id.'-1', 'action' => '爽约',
+        ])->assertOk()->assertJsonPath('data.done', true);
+
+        $fresh = $lead->fresh();
+        $this->assertSame('爽约', $fresh->status);
+        $this->assertTrue($fresh->trial_cards[0]['noShow']);
+        $this->assertArrayNotHasKey('noShow', $fresh->trial_cards[1]);
+    }
+
+    public function test_mark_trial_attended_flows_lead_status(): void
+    {
+        Sanctum::actingAs($this->user('manager-green', '绿地店长', 'R_MANAGER', '绿地店'));
+        $lead = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '体验小李', 'phone' => '13900000012',
+            'source' => '美团', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '已联系',
+            'trial_cards' => [
+                ['session' => 1, 'time' => now()->format('Y-m-d 15:00'), 'topic' => '体态评估', 'teacher' => '老师B', 'couponName' => '', 'voucherCode' => '', 'platform' => '大众点评'],
+            ],
+        ]);
+
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'trials', 'key' => 'trial:lead-'.$lead->id.'-1', 'action' => '已接待',
+        ])->assertOk();
+
+        $fresh = $lead->fresh();
+        $this->assertSame('已体验', $fresh->status);
+        $this->assertTrue($fresh->trial_cards[0]['attended']);
+    }
+
+    public function test_mark_trial_does_not_overwrite_terminal_lead_status(): void
+    {
+        Sanctum::actingAs($this->user('manager-green', '绿地店长', 'R_MANAGER', '绿地店'));
+        $lead = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '已成单客户', 'phone' => '13900000013',
+            'source' => '小红书', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '已成交',
+            'trial_cards' => [
+                ['session' => 1, 'time' => now()->format('Y-m-d 11:00'), 'topic' => '加练体验', 'teacher' => '老师A', 'couponName' => '', 'voucherCode' => '', 'platform' => ''],
+            ],
+        ]);
+
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'trials', 'key' => 'trial:lead-'.$lead->id.'-1', 'action' => '爽约',
+        ])->assertOk();
+
+        // 终态（已成交/已流失）不被回退，但卡片结果仍如实记录
+        $fresh = $lead->fresh();
+        $this->assertSame('已成交', $fresh->status);
+        $this->assertTrue($fresh->trial_cards[0]['noShow']);
+        $this->assertDatabaseHas('todo_actions', ['todo_key' => 'trial:lead-'.$lead->id.'-1']);
+    }
+
+    public function test_ky_trial_links_unique_lead_and_skips_on_ambiguous_phone(): void
+    {
+        Sanctum::actingAs($this->user('manager-green', '绿地店长', 'R_MANAGER', '绿地店'));
+        $booking = KyBooking::create([
+            'source_key' => 'GV:团课:test-1', 'venue' => '绿地店', 'booking_type' => '团课',
+            'member_name' => 'KY体验客', 'phone' => '13900000022',
+            'start_at' => now()->format('Y-m-d 10:00'), 'course_name' => '体验团课',
+            'status' => 'booked', 'is_trial' => true,
+        ]);
+        $unique = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '唯一留资', 'phone' => '13900000022',
+            'source' => '大众点评', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '已约体验',
+        ]);
+
+        // 手机号唯一命中一条进行中留资 → 状态联动
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'trials', 'key' => 'trial:ky-'.$booking->id, 'action' => '爽约',
+        ])->assertOk();
+        $this->assertSame('爽约', $unique->fresh()->status);
+
+        // 同手机号两条进行中留资 → 视为歧义跳过联动，当日标记仍生效
+        $ambiguous = KyBooking::create([
+            'source_key' => 'GV:团课:test-2', 'venue' => '绿地店', 'booking_type' => '团课',
+            'member_name' => '共用号码', 'phone' => '13900000033',
+            'start_at' => now()->format('Y-m-d 14:00'), 'course_name' => '体验团课',
+            'status' => 'booked', 'is_trial' => true,
+        ]);
+        Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '留资甲', 'phone' => '13900000033',
+            'source' => '大众点评', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '已约体验',
+        ]);
+        $leadB = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '留资乙', 'phone' => '13900000033',
+            'source' => '美团', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '已联系',
+        ]);
+
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'trials', 'key' => 'trial:ky-'.$ambiguous->id, 'action' => '爽约',
+        ])->assertOk();
+        $this->assertSame('已约体验', Lead::where('name', '留资甲')->value('status'));
+        $this->assertSame('已联系', $leadB->fresh()->status);
+        $this->assertDatabaseHas('todo_actions', ['todo_key' => 'trial:ky-'.$ambiguous->id]);
     }
 
     private function user(string $username, string $name, string $role, ?string $venue): User

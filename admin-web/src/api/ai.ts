@@ -171,10 +171,12 @@ export const MOMENT_GOALS = [
 ]
 export const MOMENT_EXPRESSIONS = ['说事理', '讲故事', '清单体', '对话体']
 export const MOMENT_LENGTHS = [
-  { label: '简短版 50-80字', min: 50, max: 80 },
-  { label: '标准版 100-180字', min: 100, max: 180 },
-  { label: '完整版 200-300字', min: 200, max: 300 }
+  { label: '简短版 30-50字', min: 30, max: 50 },
+  { label: '标准版 50-120字', min: 50, max: 120 },
+  { label: '完整版 100-150字', min: 100, max: 150 }
 ]
+/** 「内容长度」下拉里的自定义档位标识，选中后配合 MomentsInput.customLength 生效 */
+export const MOMENT_LENGTH_CUSTOM = '自定义字数'
 export const EMOJI_LEVELS = ['不使用', '少量（约每50字1个）', '适量（约每30字1个）']
 
 export interface MomentsPersona {
@@ -197,6 +199,8 @@ export interface MomentsInput {
   goal: string
   expression: string
   lengthLabel: string
+  /** lengthLabel 为「自定义字数」时生效的正文长度范围 */
+  customLength?: { min: number; max: number }
   multiLine: boolean
   emojiLevel: string
   userInput: string
@@ -311,7 +315,9 @@ function personaText(p: MomentsPersona): string {
 }
 
 function buildMomentsMessages(input: MomentsInput): ChatMessage[] {
-  const len = MOMENT_LENGTHS.find((l) => l.label === input.lengthLabel) ?? MOMENT_LENGTHS[1]
+  const preset = MOMENT_LENGTHS.find((l) => l.label === input.lengthLabel) ?? MOMENT_LENGTHS[1]
+  const len =
+    input.lengthLabel === MOMENT_LENGTH_CUSTOM && input.customLength ? input.customLength : preset
   const system = [
     `你是一名瑜伽普拉提馆（品牌「${BRAND_NAME}」，城市「${BRAND_CITY}」）的社交媒体内容助手，为${BRAND_NAME}的教练/顾问生成朋友圈文案草稿。`,
     '硬性规则：始终以本人第一人称视角撰写，不虚构具体会员隐私信息，不使用医疗诊断或疗效承诺用语，不过度促销。',
@@ -659,6 +665,101 @@ export async function generateMomentsCopy(
     }).catch(() => undefined)
   }
   return { content, reply, source, warning }
+}
+
+// ==================== 朋友圈防折叠改写（同文案换号发布，避免被折叠成相似内容） ====================
+
+export interface AntiFoldInput {
+  /** 会被折叠的原文案 */
+  content: string
+  /** 可选补充要求（如：语气更口语一点 / 突出限时福利） */
+  extra?: string
+}
+
+function buildAntiFoldMessages(input: AntiFoldInput): ChatMessage[] {
+  const system = [
+    '你是朋友圈防折叠改写专家。同一条朋友圈文案在多个微信号重复发布时，微信会因内容高度相似把后续发布折叠成一行。你的任务：基于原文产出一个「骨子里一样、皮肤不同」的防折叠变体——意思不变、情绪气质不变、像同一个人写的，但文字表述差异足够大，绕过微信的相似内容检测。',
+    '改写硬性规则：',
+    '1. 开头句必须完全不同（首句是折叠检测的重点）。',
+    '2. 至少60%的句子换一种说法重写；任何位置不得出现连续10个及以上相同的字。',
+    '3. 核心信息完整保留：品牌/地点/价格/时间/联系方式（电话、微信号、链接、小程序口令）等原样保留，不增不减不改。',
+    '4. 情绪、人设、口吻保持一致：不换风格、不升华主题、不增删关键卖点。',
+    '5. 篇幅与原文相当（±20%以内），保留原文的分行排版风格。',
+    '6. emoji可保留但调整位置，或替换为含义相近的emoji，密度与原文接近。',
+    '7. 话题标签（#xx）可保留，但标签前后衔接的文字必须改写。',
+    '8. 语气词与口头禅必须更换（如「哈哈哈」→「笑死」）；引号统一使用「」；不使用markdown。',
+    '严格输出 JSON（不要代码块、不要多余解释）：{"content": string, "notes": string}。',
+    'content 为改写后的完整朋友圈正文；notes 为2句话以内的改写说明（做了哪些类型的改动）。'
+  ].join('\n')
+
+  const user = [
+    `【原文】\n${input.content.trim()}`,
+    input.extra?.trim() && `【补充要求】${input.extra.trim()}`
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: user }
+  ]
+}
+
+/** 防折叠 JSON 解析失败时的宽容处理：整段视为正文，说明留空 */
+function parseAntiFoldLoose(text: string): { content: string; notes: string } {
+  const m = text.match(/\{[\s\S]*\}/)
+  if (m) {
+    try {
+      const obj = JSON.parse(m[0])
+      if (obj.content) {
+        return { content: String(obj.content), notes: obj.notes ? String(obj.notes).trim() : '' }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return { content: text.trim(), notes: '' }
+}
+
+/**
+ * 朋友圈防折叠改写：仅支持大模型（本地模板无法做语义级改写）。
+ * 未接入AI或调用失败时返回 content 为空 + warning，由调用方提示。
+ */
+export async function generateAntiFoldCopy(
+  input: AntiFoldInput
+): Promise<{ content: string; notes: string; warning?: string }> {
+  const store = useAiConfigStore()
+  if (!store.isReady()) {
+    return {
+      content: '',
+      notes: '',
+      warning: '防折叠改写需要大模型支持，超管可在「模型配置」接入API后使用'
+    }
+  }
+  try {
+    const raw = await callLLM(buildAntiFoldMessages(input), 'marketing_anti_fold')
+    const parsed = parseAntiFoldLoose(raw.trim().replace(/^["“]|["”]$/g, ''))
+    if (!parsed.content) throw new Error('LLM_EMPTY_RESPONSE')
+    store.logUsage('朋友圈防折叠', 'llm', parsed.content.length)
+    auditGenerate('朋友圈防折叠', input.content.slice(0, 16), 'llm')
+    saveMarketingHistory({
+      platform: '朋友圈',
+      title: '防折叠改写',
+      content: parsed.content,
+      source: 'llm'
+    })
+    return parsed
+  } catch (e) {
+    const warning = `大模型调用失败（${String(e).slice(0, 80)}）`
+    if (USE_BACKEND) {
+      apiPost('/model-generations/fallback', {
+        featureType: 'marketing_anti_fold',
+        outputPreview: '',
+        errorMessage: warning
+      }).catch(() => undefined)
+    }
+    return { content: '', notes: '', warning }
+  }
 }
 
 export async function generateXhsNote(input: XhsInput): Promise<{

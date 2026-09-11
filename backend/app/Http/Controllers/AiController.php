@@ -23,7 +23,7 @@ final class AiController extends Controller
             'temperature' => 'nullable|numeric|min:0|max:2',
             'maxTokens' => 'nullable|integer|min:16|max:32768',
             'stream' => 'nullable|boolean',
-            'featureType' => 'nullable|string|in:chat,marketing_moments,marketing_xhs,training_plan',
+            'featureType' => 'nullable|string|in:chat,marketing_moments,marketing_anti_fold,marketing_xhs,training_plan',
         ]);
         // 按账号每日配额，防止共用同一把付费 key 时被单账号刷爆（throttle 仅限瞬时频率）
         $dailyQuota = (int) (config('services.ai.daily_quota') ?: 200);
@@ -147,7 +147,7 @@ final class AiController extends Controller
     public function fallbackRecord(Request $r)
     {
         $d = $r->validate([
-            'featureType' => 'required|string|in:marketing_moments,marketing_xhs,training_plan',
+            'featureType' => 'required|string|in:marketing_moments,marketing_anti_fold,marketing_xhs,training_plan',
             'outputPreview' => 'nullable|string|max:1000',
             'errorMessage' => 'nullable|string|max:500',
         ]);
