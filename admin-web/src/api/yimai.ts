@@ -1,7 +1,7 @@
 import { useUserStore } from '@/store/modules/user'
 import { useYimaiStore } from '@/store/modules/yimai'
 import { fetchKyMembers, KY_STORES } from './keepyoga'
-import { USE_BACKEND, apiGet, apiPost, apiPatch, apiPut, apiDelete } from './backend'
+import { USE_BACKEND, apiGet, apiPost, apiPatch, apiPut, apiDelete, apiDownload } from './backend'
 import { toLocalDateString } from '@/utils'
 import type {
   YimaiLead,
@@ -1261,11 +1261,17 @@ export interface KyImportAck extends Partial<KyImportResult> {
   message?: string
 }
 
-export async function importKyMembersToPool(storeKey: '绿地店' | '东部店'): Promise<KyImportAck> {
+/** 同步模式：incremental=日常增量（预约按上次同步回溯 3 天）；full=全量重建（预约重新拉近两年） */
+export type KySyncMode = 'incremental' | 'full'
+
+export async function importKyMembersToPool(
+  storeKey: '绿地店' | '东部店',
+  mode: KySyncMode = 'incremental'
+): Promise<KyImportAck> {
   if (USE_BACKEND) {
     return apiPost<KyImportAck>(
       '/ky/import',
-      { venue: storeKey, venueId: KY_STORES[storeKey] },
+      { venue: storeKey, venueId: KY_STORES[storeKey], mode },
       7200000
     )
   }
@@ -1311,6 +1317,107 @@ export async function importKyMembersToPool(storeKey: '绿地店' | '东部店')
 /** 查询单个同步任务（异步同步的进度轮询通道） */
 export async function getSyncJob(jobId: number): Promise<YimaiSyncJob> {
   return apiGet<YimaiSyncJob>(`/sync-jobs/${jobId}`)
+}
+
+// ==================== 数据备份（仅超管） ====================
+
+export interface BackupRemoteConfig {
+  type: 'none' | 'webdav'
+  url: string
+  username: string
+  /** 仅写入：读取时后端不回传明文密码（留空 = 保持原值） */
+  password: string
+  path: string
+}
+
+export interface BackupConfig {
+  enabled: boolean
+  /** 每日自动备份时间 HH:mm */
+  runAt: string
+  /** 本地保留份数 */
+  keepLocal: number
+  /** 是否把 .env（含凭据）纳入备份包 */
+  keepEnv: boolean
+  remote: BackupRemoteConfig
+}
+
+export interface BackupStatus {
+  lastRunAt: string
+  lastResult: string
+  lastDetail: string
+  nextRunAt: string
+  localCount: number
+  localSize: number
+  remoteConfigured: boolean
+}
+
+export interface BackupFileInfo {
+  name: string
+  size: number
+  mtime: string
+}
+
+export function getBackupConfig(): Promise<{ config: BackupConfig; status: BackupStatus }> {
+  return apiGet<{ config: BackupConfig; status: BackupStatus }>('/backup/config')
+}
+
+export function saveBackupConfig(
+  config: BackupConfig
+): Promise<{ config: BackupConfig; status: BackupStatus }> {
+  return apiPut('/backup/config', {
+    enabled: config.enabled,
+    runAt: config.runAt,
+    keepLocal: config.keepLocal,
+    keepEnv: config.keepEnv,
+    remote: config.remote
+  } as unknown as Record<string, unknown>)
+}
+
+export function testBackupConnection(remote: BackupRemoteConfig): Promise<{ message: string }> {
+  return apiPost('/backup/test-connection', { remote } as unknown as Record<string, unknown>)
+}
+
+/** 立即备份（uploadRemote=是否同时上传远端），返回任务受理回执 */
+export function runBackup(uploadRemote: boolean): Promise<KyImportAck> {
+  return apiPost('/backup/run', { uploadRemote } as unknown as Record<string, unknown>)
+}
+
+export function listBackupFiles(scope: 'local' | 'remote'): Promise<{ files: BackupFileInfo[] }> {
+  return apiGet<{ files: BackupFileInfo[] }>('/backup/files', { scope } as Record<string, unknown>)
+}
+
+export function deleteBackupFile(
+  scope: 'local' | 'remote',
+  name: string
+): Promise<{ deleted: string }> {
+  return apiDelete(
+    `/backup/file?scope=${encodeURIComponent(scope)}&name=${encodeURIComponent(name)}`
+  )
+}
+
+/** 下载备份包（本地直下；远端由服务器中转流式下载） */
+export function downloadBackupFile(scope: 'local' | 'remote', name: string): Promise<void> {
+  return apiDownload(
+    `/backup/download?scope=${encodeURIComponent(scope)}&name=${encodeURIComponent(name)}`,
+    name
+  )
+}
+
+/** 恢复：scope 方式（本地/远端备份包），返回任务受理回执 */
+export function restoreBackup(scope: 'local' | 'remote', name: string): Promise<KyImportAck> {
+  return apiPost('/backup/restore', { scope, name } as unknown as Record<string, unknown>)
+}
+
+/** 恢复：上传备份包（multipart） */
+export function restoreBackupUpload(file: File): Promise<KyImportAck> {
+  const form = new FormData()
+  form.append('file', file)
+  return apiPost('/backup/restore', form as unknown as Record<string, unknown>, 7200000)
+}
+
+/** 校验备份包完整性（远端包由服务器先拉取再逐文件核对校验和） */
+export function verifyBackup(scope: 'local' | 'remote', name: string): Promise<KyImportAck> {
+  return apiPost('/backup/verify', { scope, name } as unknown as Record<string, unknown>)
 }
 
 // ==================== 数据看板 ====================
@@ -2119,7 +2226,8 @@ export function getTodayTodo(): Promise<TodayTodo> {
   const trials: TodayTodoTrialItem[] = leads
     .flatMap((l) =>
       (l.trialCards ?? [])
-        .filter((card) => (card.time ?? '').slice(0, 10) === today)
+        // 已取消的体验课卡片不进入今日待办（与后端口径一致）
+        .filter((card) => !card.cancelled && (card.time ?? '').slice(0, 10) === today)
         .map((card, idx) => ({
           key: `trial:lead-${l.id}-${idx}`,
           time: (card.time ?? '').slice(11, 16) || (card.time ?? ''),

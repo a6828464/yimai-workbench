@@ -16,3 +16,6 @@ Schedule::command('records:prune')->dailyAt('03:30')->withoutOverlapping();
 
 // KeepYoga 双店定时增量同步（幂等：当天已同步的门店自动跳过；与手动导入共用全局锁互斥）
 Schedule::command('ky:autosync')->dailyAt('05:30')->withoutOverlapping();
+
+// 数据备份：每 10 分钟触发一次，由命令内部按配置的 run_at（默认 03:30）判断窗口并保证每天只跑一次
+Schedule::command('backup:run')->everyTenMinutes()->withoutOverlapping();

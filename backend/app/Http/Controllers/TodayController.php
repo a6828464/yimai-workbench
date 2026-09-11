@@ -428,8 +428,11 @@ final class TodayController extends Controller
         $newLeads = [];
         foreach ($leadQ->get() as $l) {
             $arr = camel($l);
-            // 留资体验课卡片中的今日体验
+            // 留资体验课卡片中的今日体验（已取消的卡片不再进入待办）
             foreach ((array) ($l->trial_cards ?? []) as $card) {
+                if (! empty($card['cancelled'])) {
+                    continue;
+                }
                 $cardDate = substr((string) ($card['time'] ?? ''), 0, 10);
                 if ($cardDate === $today->format('Y-m-d')) {
                     $trialKey = 'trial:lead-'.$l->id.'-'.($card['session'] ?? '');

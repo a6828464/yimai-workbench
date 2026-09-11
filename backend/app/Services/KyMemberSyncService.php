@@ -20,8 +20,9 @@ class KyMemberSyncService
 
     /**
      * @param  array{sync_job?: SyncJob, run_key?: string, display_name?: string, metadata?: array}|SyncJob|null  $artifactContext
+     * @param  string|null  $bookingMode  预约拉取模式：null/增量=按上次同步回溯 3 天（默认，定时与手动共用）；full=强制全量拉近两年（手动数据修复用）
      */
-    public static function sync(string $venue, string $venueId, SyncJob|array|null $artifactContext = null): array
+    public static function sync(string $venue, string $venueId, SyncJob|array|null $artifactContext = null, ?string $bookingMode = null): array
     {
         $deadline = microtime(true) + self::MAX_SYNC_SECONDS;
         if (! Schema::hasColumns('customers', ['enrolled_at', 'visit_at'])) {
@@ -69,10 +70,11 @@ class KyMemberSyncService
         $meta = (array) (AppSetting::first()?->sync_meta ?? []);
         $lastSync = isset($meta[$venue]) && $meta[$venue] !== '' ? $meta[$venue] : null;
         $hasBookingFacts = KyBooking::where('venue', $venue)->exists();
-        $rangeStart = $lastSync && $hasBookingFacts
+        $forceFullBooking = $bookingMode === 'full';
+        $rangeStart = ! $forceFullBooking && $lastSync && $hasBookingFacts
             ? CarbonImmutable::parse($lastSync)->subDays(3)
             : $today->subDays(730);
-        $isFullBookingSync = ! ($lastSync && $hasBookingFacts);
+        $isFullBookingSync = $forceFullBooking || ! ($lastSync && $hasBookingFacts);
         if ($artifactWriter) {
             $artifactWriter->setDateRange($rangeStart->toDateString(), $today->toDateString(), $isFullBookingSync);
             $artifactWriter->start(

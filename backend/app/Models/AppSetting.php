@@ -8,7 +8,7 @@ class AppSetting extends Model
 {
     protected $guarded = [];
 
-    protected $casts = ['rules' => 'array', 'snapshot' => 'array', 'ky' => 'array', 'ai' => 'array', 'sync_meta' => 'array', 'retention' => 'array'];
+    protected $casts = ['rules' => 'array', 'snapshot' => 'array', 'ky' => 'array', 'ai' => 'array', 'sync_meta' => 'array', 'retention' => 'array', 'backup' => 'array'];
 
     protected $table = 'app_settings';
 }

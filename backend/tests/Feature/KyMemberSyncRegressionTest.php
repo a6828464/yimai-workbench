@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AppSetting;
 use App\Models\Customer;
 use App\Models\KyBooking;
 use App\Models\KyCard;
@@ -171,6 +172,56 @@ class KyMemberSyncRegressionTest extends TestCase
 
         $this->assertCount(5000, $result);
         Http::assertSentCount(3);
+    }
+
+    public function test_sync_mode_controls_booking_date_range(): void
+    {
+        config(['services.ky.phone' => '13800000000', 'services.ky.password' => 'secret']);
+
+        // 模拟「已有历史同步」：sync_meta 记录上次同步日期，且预约事实表已有数据
+        AppSetting::create(['sync_meta' => ['绿地店' => now()->subDays(10)->toDateString()]]);
+        KyBooking::create([
+            'source_key' => '1:团课:seed-1', 'venue' => '绿地店', 'booking_type' => '团课',
+            'member_id' => '1001', 'member_name' => '会员甲', 'phone' => '13800000001',
+            'start_at' => now()->subDays(5)->format('Y-m-d 10:00:00'), 'course_name' => '瑜伽',
+            'teacher_name' => '老师甲', 'status_raw' => '已预约', 'status' => 'booked',
+            'is_trial' => false, 'raw' => ['id' => 'seed-1'],
+        ]);
+        $this->fakeKyHappyPath();
+
+        // 增量模式（默认）：预约区间从上次同步日回溯 3 天
+        KyMemberSyncService::sync('绿地店', '1');
+        $incrementalStart = now()->subDays(13)->format('Ymd');
+        Http::assertSent(
+            fn (Request $r) => str_contains($r->url(), 'queryreversionleague') && $r['s_date'] === $incrementalStart
+        );
+
+        // 全量模式：无视同步记录，预约重新拉近两年
+        KyMemberSyncService::sync('绿地店', '1', null, 'full');
+        $fullStart = now()->subDays(730)->format('Ymd');
+        Http::assertSent(
+            fn (Request $r) => str_contains($r->url(), 'queryreversionleague') && $r['s_date'] === $fullStart
+        );
+    }
+
+    private function fakeKyHappyPath(): void
+    {
+        Http::fake([
+            KyClient::BASE.'/passport/api/login' => Http::response(['data' => ['access_token' => 'token']]),
+            KyClient::BASE.'/member/api/getmembersbycondwithpager' => Http::response([
+                'errno' => 0, 'data' => ['members' => [[
+                    'member_id' => '1001', 'name' => '会员甲', 'phone' => '13800000001',
+                ]]],
+            ]),
+            KyClient::BASE.'/mcard/api/getmcardsbycond' => Http::response([
+                'errno' => 0, 'data' => ['mcards' => [[
+                    'id' => 'card-1', 'member_id' => '1001', 'card_title' => '瑜伽次卡',
+                    'status' => '5', 'type' => '1', 'residue_amount' => 10,
+                ]]],
+            ]),
+            KyClient::BASE.'/course/api/queryreversionleague' => Http::response(['errno' => 0, 'data' => ['reservations' => []]]),
+            KyClient::BASE.'/course/api/queryreversionprivate' => Http::response(['errno' => 0, 'data' => ['reservations' => []]]),
+        ]);
     }
 
     private function invokePrivate(string $method, array $arguments): mixed

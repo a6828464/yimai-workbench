@@ -212,6 +212,9 @@ final class KyController extends Controller
         $venue = (string) $r->input('venue');
         $venueId = (string) $r->input('venueId');
         abort_unless(isset($stores[$venue]) && $stores[$venue] === $venueId, 422, '门店参数无效');
+        // 同步模式：incremental=日常增量（预约按上次同步回溯 3 天，默认）；full=全量重建（预约重新拉近两年，数据修复用）
+        $mode = (string) $r->input('mode', 'incremental');
+        abort_unless(in_array($mode, ['incremental', 'full'], true), 422, '同步模式无效');
         // 回收僵尸任务：进程被外部掐断时走不到 catch，会把任务永久留在"进行中"；开跑前先把超时未收尾的判失败
         SyncJob::where('venue', $venue)->where('status', '进行中')
             ->where('started_at', '<', now()->subMinutes(125))
@@ -223,13 +226,13 @@ final class KyController extends Controller
         $job = SyncJob::create([
             'batch_no' => $batch,
             'run_key' => $batch,
-            'display_name' => now()->format('Y-m-d H:i')." {$venue} KeepYoga同步",
+            'display_name' => now()->format('Y-m-d H:i')." {$venue} ".($mode === 'full' ? '全量' : '增量').'同步',
             'data_type' => '会员/卡项/出勤多表',
             'venue' => $venue,
             'status' => '进行中',
             'operator' => $r->user()->name,
             'started_at' => now(),
-            'metadata' => ['venueId' => $venueId, 'operatorId' => $r->user()->id],
+            'metadata' => ['venueId' => $venueId, 'operatorId' => $r->user()->id, 'mode' => $mode],
         ]);
         $ack = [
             'jobId' => $job->id,
@@ -239,9 +242,9 @@ final class KyController extends Controller
             'background' => function_exists('fastcgi_finish_request'),
         ];
 
-        $runSync = function () use ($r, $venue, $venueId, $job, $batch, $lock): array {
+        $runSync = function () use ($r, $venue, $venueId, $job, $batch, $lock, $mode): array {
             try {
-                $result = KyMemberSyncService::sync($venue, $venueId, $job);
+                $result = KyMemberSyncService::sync($venue, $venueId, $job, $mode);
 
                 $detail = sprintf(
                     '已保存快照：会员基础表 %d 条 · 会员卡表 %d 条 · 团课预约 %d 条 · 私教预约 %d 条（出勤口径月 %s / %s / %s）；导入落库：新增 %d · 更新 %d · 未变化 %d · 跳过 %d',

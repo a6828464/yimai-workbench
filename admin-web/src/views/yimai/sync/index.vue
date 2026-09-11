@@ -52,17 +52,22 @@
       </ElDialog>
 
       <div class="mt-3 flex flex-wrap items-center gap-2">
+        <ElButton type="primary" :loading="importing" :disabled="!connected" @click="importAll()">
+          增量同步（日常）
+        </ElButton>
         <ElButton
           type="warning"
           plain
           :loading="importing"
           :disabled="!connected"
-          @click="importAll"
+          @click="importAll('full')"
         >
-          同步会员、卡项和预约
+          全量同步（重建）
         </ElButton>
         <span class="text-xs text-gray-400"
-          >会员/卡项全量同步，预约首次近两年、后续增量回溯 3 天；每次保存带日期的私有 CSV 快照</span
+          >增量：会员/卡项全量核对，预约按上次同步回溯 3
+          天，日常推荐；全量：预约重新拉近两年，仅数据异常修复时用，耗时可达 2
+          小时；每次保存带日期的私有 CSV 快照</span
         >
       </div>
       <ElAlert
@@ -260,7 +265,7 @@
   import { addLead, getSyncArtifacts, getSyncJob, importKyMembersToPool } from '@/api/yimai'
   import { apiDownload, apiGet, apiPut, USE_BACKEND } from '@/api/backend'
   import { toLocalDateString } from '@/utils'
-  import { ElMessage, ElTag } from 'element-plus'
+  import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiSync' })
 
@@ -370,7 +375,19 @@
     })
   }
 
-  async function importAll() {
+  async function importAll(mode: 'incremental' | 'full' = 'incremental') {
+    if (mode === 'full') {
+      try {
+        await ElMessageBox.confirm(
+          '全量同步会重新拉取近两年的全部预约与出勤并重建统计，服务器负载高、耗时可能接近 2 小时，仅在数据异常需要修复时使用。确定继续吗？',
+          '全量同步确认',
+          { type: 'warning', confirmButtonText: '开始全量同步', cancelButtonText: '取消' }
+        )
+      } catch {
+        return
+      }
+    }
+    const modeLabel = mode === 'full' ? '全量' : '增量'
     importing.value = true
     importResult.value = ''
     importProgress.value = ''
@@ -379,8 +396,8 @@
     try {
       for (const store of Object.keys(KY_STORES) as ('绿地店' | '东部店')[]) {
         try {
-          importProgress.value = `${store} 同步已受理，服务器后台执行中…`
-          const ack = await importKyMembersToPool(store)
+          importProgress.value = `${store} ${modeLabel}同步已受理，服务器后台执行中…`
+          const ack = await importKyMembersToPool(store, mode)
           if (ack.background) {
             // 生产：立即拿到受理回执，轮询直到任务收尾
             const job = await waitForJob(ack.jobId, store)
@@ -406,11 +423,11 @@
         }
       }
       const status = failedStores.length ? `部分失败（${failedStores.join('、')}）` : '成功'
-      importResult.value = `多表同步${status}：${details.join(' ；')}`
+      importResult.value = `两店${modeLabel}同步${status}：${details.join(' ；')}`
       importProgress.value = ''
       await refreshData()
       if (failedStores.length) ElMessage.warning(importResult.value.slice(0, 120))
-      else ElMessage.success('两店多表同步完成')
+      else ElMessage.success(`两店${modeLabel}同步完成`)
     } finally {
       stopPolling()
       importing.value = false

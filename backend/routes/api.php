@@ -6,6 +6,7 @@ use App\Http\Controllers\AnalyticsController;
 use App\Http\Controllers\ApprovalController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\BackupController;
 use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\KyController;
 use App\Http\Controllers\LeadController;
@@ -112,6 +113,17 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/sync-jobs/{job}', [SyncJobController::class, 'show']);
     Route::get('/sync-jobs/{job}/artifacts', [SyncJobController::class, 'artifacts']);
     Route::get('/sync-artifacts/{artifact}/download', [SyncJobController::class, 'downloadArtifact']);
+
+    // ---------- 数据备份（仅超管：配置/立即备份/恢复/列表/下载/校验，控制器内 requireSuper） ----------
+    Route::get('/backup/config', [BackupController::class, 'configShow']);
+    Route::put('/backup/config', [BackupController::class, 'configUpdate']);
+    Route::post('/backup/test-connection', [BackupController::class, 'testConnection']);
+    Route::post('/backup/run', [BackupController::class, 'run']);
+    Route::get('/backup/files', [BackupController::class, 'files']);
+    Route::get('/backup/download', [BackupController::class, 'download']);
+    Route::delete('/backup/file', [BackupController::class, 'deleteFile']);
+    Route::post('/backup/restore', [BackupController::class, 'restore']);
+    Route::post('/backup/verify', [BackupController::class, 'verify']);
 
     // ---------- 今日工作台（快照 / 汇总 / 待办闭环） ----------
     Route::get('/today/snapshot', [TodayController::class, 'snapshotShow']);

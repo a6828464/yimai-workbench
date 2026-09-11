@@ -117,7 +117,7 @@ chmod -R 775 "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
 
 # 平滑重载 PHP-FPM：长驻进程可能持有旧 OPcache（含旧 autoload），导致新增类短暂 500。
 # 按常见命名逐个尝试，找不到服务则跳过（宝塔各版本命名不同）。
-for svc in php-fpm-84 php-fpm-83 php-fpm-82 php-fpm php8.4-fpm php8.3-fpm php-fpm; do
+for svc in php-fpm-85 php-fpm-84 php-fpm-83 php-fpm-82 php-fpm php8.5-fpm php8.4-fpm php8.3-fpm php-fpm; do
   if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}.service"; then
     systemctl reload "$svc" 2>/dev/null && echo "已平滑重载 $svc" && break
   fi

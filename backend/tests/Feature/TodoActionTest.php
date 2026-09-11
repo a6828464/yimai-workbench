@@ -223,6 +223,25 @@ class TodoActionTest extends TestCase
         $this->assertDatabaseHas('todo_actions', ['todo_key' => 'trial:ky-'.$ambiguous->id]);
     }
 
+    public function test_cancelled_trial_card_is_hidden_from_today_todo(): void
+    {
+        Sanctum::actingAs($this->user('manager-green', '绿地店长', 'R_MANAGER', '绿地店'));
+        $lead = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '改约客户', 'phone' => '13900000014',
+            'source' => '大众点评', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '已约体验',
+            'trial_cards' => [
+                ['session' => 1, 'time' => now()->format('Y-m-d 10:00'), 'topic' => '第一节已取消', 'teacher' => '老师A', 'couponName' => '', 'voucherCode' => '', 'platform' => '', 'cancelled' => true],
+                ['session' => 2, 'time' => now()->format('Y-m-d 16:00'), 'topic' => '改约后第一节', 'teacher' => '老师A', 'couponName' => '', 'voucherCode' => '', 'platform' => ''],
+            ],
+        ]);
+
+        // 已取消的卡片不进入待办，改约后的正常卡片正常出现
+        $todo = $this->getJson('/api/today/todo')->assertOk()->json('data');
+        $keys = collect($todo['trials'])->pluck('key')->all();
+        $this->assertContains('trial:lead-'.$lead->id.'-2', $keys);
+        $this->assertNotContains('trial:lead-'.$lead->id.'-1', $keys);
+    }
+
     private function user(string $username, string $name, string $role, ?string $venue): User
     {
         return User::factory()->create(compact('username', 'name', 'role', 'venue'));

@@ -216,6 +216,12 @@ export const yimaiRoutes: AppRouteRecord[] = [
         meta: { title: '模型生成记录', icon: 'ri:sparkling-2-line', roles: SUPER, keepAlive: false }
       },
       {
+        path: '/yimai/backup',
+        name: 'YimaiBackup',
+        component: '/yimai/backup',
+        meta: { title: '数据备份', icon: 'ri:database-2-line', roles: SUPER, keepAlive: false }
+      },
+      {
         path: '/yimai/version',
         name: 'YimaiVersion',
         component: '/yimai/version',
