@@ -1321,13 +1321,28 @@ export async function getSyncJob(jobId: number): Promise<YimaiSyncJob> {
 
 // ==================== 数据备份（仅超管） ====================
 
+export interface BackupS3Config {
+  /** S3 兼容端点，如 https://s3.example.com:9000（MinIO/COS/R2/B2 等） */
+  endpoint: string
+  bucket: string
+  region: string
+  accessKey: string
+  /** 仅写入：读取时后端不回传明文（留空 = 保持原值） */
+  secretKey: string
+  /** 对象 key 前缀，默认 yimai-backup/ */
+  prefix: string
+  /** 寻址方式：path=路径式（MinIO/R2/B2，默认） virtual=虚拟主机式（AWS/COS） */
+  style: 'path' | 'virtual'
+}
+
 export interface BackupRemoteConfig {
-  type: 'none' | 'webdav'
+  type: 'none' | 'webdav' | 's3'
   url: string
   username: string
   /** 仅写入：读取时后端不回传明文密码（留空 = 保持原值） */
   password: string
   path: string
+  s3: BackupS3Config
 }
 
 export interface BackupConfig {

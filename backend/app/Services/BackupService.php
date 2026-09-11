@@ -38,7 +38,13 @@ final class BackupService
             'run_at' => '03:30',
             'keep_local' => 7,
             'keep_env' => true,
-            'remote' => ['type' => 'none', 'url' => '', 'username' => '', 'password' => '', 'path' => 'yimai-backup'],
+            'remote' => [
+                'type' => 'none', 'url' => '', 'username' => '', 'password' => '', 'path' => 'yimai-backup',
+                's3' => [
+                    'endpoint' => '', 'bucket' => '', 'region' => 'us-east-1', 'accessKey' => '', 'secretKey' => '',
+                    'prefix' => 'yimai-backup/', 'style' => 'path',
+                ],
+            ],
             'status' => ['last_run_at' => '', 'last_run_date' => '', 'last_result' => '', 'last_detail' => ''],
         ];
     }
@@ -48,6 +54,17 @@ final class BackupService
         $saved = (array) (AppSetting::oldest('id')->first()?->backup ?? []);
         $config = array_merge(self::defaultConfig(), $saved);
         $config['remote'] = array_merge(self::defaultConfig()['remote'], (array) ($saved['remote'] ?? []));
+        $config['remote']['s3'] = array_merge(self::defaultConfig()['remote']['s3'], (array) ($saved['remote']['s3'] ?? []));
+
+        return $config;
+    }
+
+    /** 对外展示用：密钥一律不回显，留空保存 = 保持原值 */
+    public static function exportConfig(): array
+    {
+        $config = self::config();
+        $config['remote']['password'] = '';
+        $config['remote']['s3']['secretKey'] = '';
 
         return $config;
     }
@@ -56,9 +73,12 @@ final class BackupService
     {
         $setting = AppSetting::oldest('id')->firstOrCreate([]);
         $current = self::config();
-        // 密码留空 = 保持原值，避免前端回显明文
+        // 密钥留空 = 保持原值，避免前端回显明文
         if ((string) ($config['remote']['password'] ?? '') === '') {
             $config['remote']['password'] = (string) ($current['remote']['password'] ?? '');
+        }
+        if ((string) ($config['remote']['s3']['secretKey'] ?? '') === '') {
+            $config['remote']['s3']['secretKey'] = (string) ($current['remote']['s3']['secretKey'] ?? '');
         }
         $setting->update(['backup' => $config]);
 
@@ -77,7 +97,7 @@ final class BackupService
             'next_run_at' => $config['enabled'] ? today()->toDateString().' '.$config['run_at'] : '',
             'local_count' => count($local),
             'local_size' => array_sum(array_column($local, 'size')),
-            'remote_configured' => self::davConfigured(),
+            'remote_configured' => self::remoteConfigured(),
         ];
     }
 
@@ -158,11 +178,10 @@ final class BackupService
             $size = filesize($zipPath) ?: 0;
             $remoteUploaded = false;
             $remoteNote = '未配置远端存储';
-            if ($uploadRemote && self::davConfigured()) {
-                self::davEnsureDir(self::davBase());
-                self::davPut($zipPath, self::davBase().'/'.$name);
+            if ($uploadRemote && self::remoteConfigured()) {
+                self::uploadRemote($zipPath, $name);
                 $remoteUploaded = true;
-                $remoteNote = '已上传至 WebDAV';
+                $remoteNote = self::remoteType() === 's3' ? '已上传至 S3 对象存储' : '已上传至 WebDAV';
                 self::pruneRemote();
             } elseif ($uploadRemote) {
                 $remoteNote = '远端未配置或未启用，仅保留本地';
@@ -368,6 +387,74 @@ final class BackupService
         }
     }
 
+    // ==================== 远端分发（WebDAV / S3 兼容对象存储） ====================
+
+    /** 当前已配置的远端类型：webdav / s3 / null（未配置） */
+    public static function remoteType(): ?string
+    {
+        if (self::davConfigured()) {
+            return 'webdav';
+        }
+        if (self::s3Configured()) {
+            return 's3';
+        }
+
+        return null;
+    }
+
+    public static function remoteConfigured(): bool
+    {
+        return self::remoteType() !== null;
+    }
+
+    public static function testRemote(): string
+    {
+        return match (self::remoteType()) {
+            'webdav' => self::testWebDav(),
+            's3' => self::testS3(),
+            default => throw new RuntimeException('请先选择 WebDAV 或 S3 并填写配置'),
+        };
+    }
+
+    public static function uploadRemote(string $zipPath, string $name): void
+    {
+        match (self::remoteType()) {
+            'webdav' => (function () use ($zipPath, $name) {
+                self::davEnsureDir(self::davBase());
+                self::davPut($zipPath, self::davBase().'/'.$name);
+            })(),
+            's3' => self::s3Upload($zipPath, $name),
+            default => throw new RuntimeException('远端存储未配置'),
+        };
+    }
+
+    public static function listRemote(): array
+    {
+        return match (self::remoteType()) {
+            'webdav' => self::listWebDav(),
+            's3' => self::s3List(),
+            default => [],
+        };
+    }
+
+    public static function fetchRemote(string $name): string
+    {
+        return match (self::remoteType()) {
+            'webdav' => self::fetchWebDav($name),
+            's3' => self::s3Fetch($name),
+            default => throw new RuntimeException('远端存储未配置'),
+        };
+    }
+
+    public static function deleteRemote(string $name): void
+    {
+        match (self::remoteType()) {
+            'webdav' => self::deleteWebDav($name),
+            's3' => self::s3Delete($name),
+            default => null,
+        };
+    }
+
     // ==================== WebDAV 远端 ====================
 
     public static function davConfigured(): bool
@@ -397,11 +484,8 @@ final class BackupService
         return '连接成功：'.$base;
     }
 
-    public static function listRemote(): array
+    public static function listWebDav(): array
     {
-        if (! self::davConfigured()) {
-            return [];
-        }
         $res = self::davRequest('PROPFIND', self::davBase(), ['headers' => ['Depth' => '1']]);
         if ($res->status() === 404) {
             return [];
@@ -432,7 +516,7 @@ final class BackupService
     }
 
     /** 下载远端备份到本地临时文件（服务端中转，供恢复/校验/下载） */
-    public static function fetchRemote(string $name): string
+    public static function fetchWebDav(string $name): string
     {
         if (! preg_match('/^'.preg_quote(self::FILE_PREFIX, '/').'[A-Za-z0-9._-]+\.zip$/', $name)) {
             throw new RuntimeException('非法备份文件名');
@@ -447,7 +531,7 @@ final class BackupService
         return $tmp;
     }
 
-    public static function deleteRemote(string $name): void
+    public static function deleteWebDav(string $name): void
     {
         $res = self::davRequest('DELETE', self::davBase().'/'.$name);
         if (! in_array($res->status(), [200, 202, 204, 404], true)) {
@@ -571,6 +655,195 @@ final class BackupService
             if (! in_array($res->status(), [201, 200, 204, 405, 301], true)) {
                 throw new RuntimeException("WebDAV 创建目录失败（HTTP {$res->status()}）：{$part}");
             }
+        }
+    }
+
+    // ==================== S3 兼容对象存储（原生 SigV4，零新增依赖） ====================
+
+    public static function s3Configured(): bool
+    {
+        $s3 = self::config()['remote']['s3'] ?? [];
+
+        return trim((string) ($s3['endpoint'] ?? '')) !== ''
+            && trim((string) ($s3['bucket'] ?? '')) !== '';
+    }
+
+    private static function s3Prefix(): string
+    {
+        $prefix = trim((string) (self::config()['remote']['s3']['prefix'] ?? 'yimai-backup/'));
+
+        return $prefix === '' ? '' : rtrim($prefix, '/').'/';
+    }
+
+    /** @return array{0: string, 1: string, 2: string} [签名用 host, 请求 origin, 路径前缀(含桶)] */
+    private static function s3EndpointParts(): array
+    {
+        $s3 = self::config()['remote']['s3'];
+        $p = parse_url(trim((string) $s3['endpoint']));
+        $scheme = $p['scheme'] ?? 'https';
+        $host = ($p['host'] ?? '').(isset($p['port']) ? ':'.$p['port'] : '');
+        $basePath = rtrim($p['path'] ?? '', '/');
+        $bucket = trim((string) $s3['bucket']);
+        if (($s3['style'] ?? 'path') === 'virtual') {
+            $requestHost = $bucket.'.'.$host;
+            $origin = $scheme.'://'.$requestHost;
+            $base = '';
+        } else {
+            $requestHost = $host;
+            $origin = $scheme.'://'.$host;
+            $base = $basePath !== '' ? $basePath.'/'.$bucket : '/'.$bucket;
+        }
+
+        return [$requestHost, $origin, $base];
+    }
+
+    /**
+     * S3 兼容请求（AWS Signature V4，path/virtual 寻址均可）。
+     *
+     * @param  array{payload_hash?: string, body?: mixed, sink?: string, timeout?: int}  $opts
+     * @return \Illuminate\Http\Client\Response
+     */
+    private static function s3Request(string $method, string $key, array $query = [], array $opts = [])
+    {
+        $s3 = self::config()['remote']['s3'];
+        $region = trim((string) ($s3['region'] ?? '')) !== '' ? (string) $s3['region'] : 'us-east-1';
+        [$host, $origin, $base] = self::s3EndpointParts();
+        $amzDate = now()->utc()->format('Ymd\THis\Z');
+        $dateStamp = now()->utc()->format('Ymd');
+        $payloadHash = (string) ($opts['payload_hash'] ?? hash('sha256', ''));
+
+        $encodedKey = str_replace('%2F', '/', rawurlencode(trim($key, '/')));
+        $uriPath = rtrim($base, '/').($encodedKey !== '' ? '/'.$encodedKey : '');
+        ksort($query);
+        $canonicalQuery = implode('&', array_map(
+            fn ($k, $v) => rawurlencode((string) $k).'='.rawurlencode((string) $v),
+            array_keys($query), array_values($query)
+        ));
+        $signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+        $canonicalRequest = "{$method}\n".($uriPath === '' ? '/' : $uriPath)."\n{$canonicalQuery}\n"
+            ."host:{$host}\nx-amz-content-sha256:{$payloadHash}\nx-amz-date:{$amzDate}\n\n"
+            ."{$signedHeaders}\n{$payloadHash}";
+        $scope = "{$dateStamp}/{$region}/s3/aws4_request";
+        $stringToSign = "AWS4-HMAC-SHA256\n{$amzDate}\n{$scope}\n".hash('sha256', $canonicalRequest);
+        $kDate = hash_hmac('sha256', $dateStamp, 'AWS4'.(string) $s3['secretKey'], true);
+        $kRegion = hash_hmac('sha256', $region, $kDate, true);
+        $kService = hash_hmac('sha256', 's3', $kRegion, true);
+        $kSigning = hash_hmac('sha256', 'aws4_request', $kService, true);
+        $signature = hash_hmac('sha256', $stringToSign, $kSigning);
+        $headers = [
+            'x-amz-date' => $amzDate,
+            'x-amz-content-sha256' => $payloadHash,
+            'Authorization' => 'AWS4-HMAC-SHA256 Credential='.trim((string) $s3['accessKey'])."/{$scope}, SignedHeaders={$signedHeaders}, Signature={$signature}",
+        ];
+
+        $http = Http::timeout($opts['timeout'] ?? 60)->connectTimeout(15);
+        if (isset($opts['sink'])) {
+            $http = $http->withOptions(['sink' => $opts['sink']]);
+        }
+        $url = $origin.$uriPath.($canonicalQuery !== '' ? '?'.$canonicalQuery : '');
+        try {
+            return $http->send($method, $url, [
+                'headers' => $headers,
+                'body' => $opts['body'] ?? null,
+            ]);
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            throw new RuntimeException(self::friendlyNetworkError($e), 0, $e);
+        }
+    }
+
+    /** 从 S3 错误响应提取可读原因 */
+    private static function s3ErrorMessage($res): string
+    {
+        $xml = @simplexml_load_string((string) $res->body());
+        $code = $xml !== false ? (string) $xml->Code : '';
+        $message = $xml !== false ? (string) $xml->Message : '';
+
+        return trim($code.' '.$message);
+    }
+
+    public static function testS3(): string
+    {
+        if (! self::s3Configured()) {
+            throw new RuntimeException('请先填写 S3 端点与桶名');
+        }
+        $bucket = trim((string) self::config()['remote']['s3']['bucket']);
+        $res = self::s3Request('GET', '', ['list-type' => '2', 'prefix' => self::s3Prefix(), 'max-keys' => '1']);
+        if ($res->status() === 200) {
+            return '连接成功：桶 '.$bucket;
+        }
+        if ($res->status() === 403) {
+            throw new RuntimeException('S3 鉴权失败（HTTP 403），请检查 AccessKey/SecretKey');
+        }
+        if ($res->status() === 404) {
+            throw new RuntimeException('S3 桶不存在（HTTP 404），请检查桶名、端点与区域');
+        }
+        throw new RuntimeException('S3 连接失败（HTTP '.$res->status().'）：'.mb_substr(self::s3ErrorMessage($res), 0, 120));
+    }
+
+    private static function s3Upload(string $localPath, string $name): void
+    {
+        $key = self::s3Prefix().$name;
+        $payloadHash = hash_file('sha256', $localPath);
+        if ($payloadHash === false) {
+            throw new RuntimeException('无法读取备份文件');
+        }
+        $fh = fopen($localPath, 'rb');
+        if ($fh === false) {
+            throw new RuntimeException('无法读取备份文件');
+        }
+        try {
+            $res = self::s3Request('PUT', $key, [], ['payload_hash' => $payloadHash, 'body' => $fh, 'timeout' => 1800]);
+            if (! in_array($res->status(), [200, 201, 204], true)) {
+                throw new RuntimeException('S3 上传失败（HTTP '.$res->status().'）：'.mb_substr(self::s3ErrorMessage($res), 0, 120));
+            }
+        } finally {
+            fclose($fh);
+        }
+    }
+
+    private static function s3List(): array
+    {
+        $res = self::s3Request('GET', '', ['list-type' => '2', 'prefix' => self::s3Prefix(), 'max-keys' => '1000']);
+        if ($res->status() !== 200) {
+            throw new RuntimeException('S3 列表获取失败（HTTP '.$res->status().'）：'.mb_substr(self::s3ErrorMessage($res), 0, 120));
+        }
+        $list = [];
+        $xml = @simplexml_load_string((string) $res->body());
+        if ($xml !== false) {
+            foreach ($xml->Contents ?? [] as $c) {
+                $basename = basename((string) $c->Key);
+                if (! str_starts_with($basename, self::FILE_PREFIX)) {
+                    continue;
+                }
+                $list[] = [
+                    'name' => $basename,
+                    'size' => (int) $c->Size,
+                    'mtime' => date('Y-m-d H:i:s', strtotime((string) $c->LastModified) ?: time()),
+                ];
+            }
+        }
+        usort($list, fn ($a, $b) => strcmp($b['name'], $a['name']));
+
+        return $list;
+    }
+
+    private static function s3Fetch(string $name): string
+    {
+        $tmp = self::ensureBackupDir().'/tmp-'.Str::random(8).'.zip';
+        $res = self::s3Request('GET', self::s3Prefix().$name, [], ['sink' => $tmp, 'timeout' => 1800]);
+        if ($res->status() !== 200) {
+            @unlink($tmp);
+            throw new RuntimeException("S3 下载失败（HTTP {$res->status()}）：{$name}");
+        }
+
+        return $tmp;
+    }
+
+    private static function s3Delete(string $name): void
+    {
+        $res = self::s3Request('DELETE', self::s3Prefix().$name);
+        if (! in_array($res->status(), [200, 202, 204, 404], true)) {
+            throw new RuntimeException("S3 删除失败（HTTP {$res->status()}）：{$name}");
         }
     }
 

@@ -1,5 +1,17 @@
 # 更新日志
 
+## 2026-09-12 ｜ feat: v3.1.50 数据备份新增 S3 兼容对象存储远端（OSS/COS/MinIO/R2）
+
+### 新增
+- **备份远端支持 S3 兼容对象存储**：「远端存储」新增 S3 类型，与 WebDAV 并列。备份上传/远端列表/下载/校验/恢复/删除/GFS 保留策略全链路可用，配置页可切换并分别测试连接。
+  - 配置项：S3 端点、桶名、区域（默认 us-east-1，R2 用 auto）、AccessKey/SecretKey（均不回显、留空保持原值）、key 前缀（默认 yimai-backup/）、寻址方式（路径式 path 适配 MinIO/R2/B2，虚拟主机式 virtual 适配 AWS/腾讯云 COS）。
+  - **零新增依赖**：AWS Signature V4 签名按规范用 PHP 原生实现（canonical request / HMAC 链派生密钥），复用 Laravel HTTP 客户端流式上传（sha256 分块校验、文件不经内存整读），与 v3.1.41 起「不引入 Flysystem 重依赖」的低配服务器约束一致。
+  - 兼容对象存储：MinIO、腾讯云 COS、Cloudflare R2、Backblaze B2、AWS S3；阿里云 OSS 走其 S3 兼容模式（部分新账号受限时建议改用 WebDAV）。
+- **密钥安全加固**：备份配置接口不再回显任何密钥明文（WebDAV 密码 / S3 SecretKey 读取恒为空、留空保存即保持原值），测试连接与保存均使用服务端留存值。
+
+### 测试
+- BackupServiceTest 新增 S3 用例：path 寻址上传落点（{endpoint}/{bucket}/{prefix}{name}）、AWS4-HMAC-SHA256 签名头、列表 XML 解析、测试连接；原「未配置提示」断言同步更新为 WebDAV/S3 通用文案。
+
 ## 2026-09-12 ｜ fix: v3.1.49 修复 WebDAV 测试连接报 500，改为返回具体失败原因
 
 ### 修复

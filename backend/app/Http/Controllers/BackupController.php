@@ -18,7 +18,7 @@ final class BackupController extends Controller
     {
         requireSuper($r);
 
-        return ok(['config' => BackupService::config(), 'status' => BackupService::status()]);
+        return ok(['config' => BackupService::exportConfig(), 'status' => BackupService::status()]);
     }
 
     /** PUT /backup/config */
@@ -30,11 +30,18 @@ final class BackupController extends Controller
             'runAt' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
             'keepLocal' => 'required|integer|min:1|max:90',
             'keepEnv' => 'required|boolean',
-            'remote.type' => 'required|in:none,webdav',
+            'remote.type' => 'required|in:none,webdav,s3',
             'remote.url' => 'nullable|url|max:300',
             'remote.username' => 'nullable|string|max:200',
             'remote.password' => 'nullable|string|max:300',
             'remote.path' => 'nullable|string|max:200',
+            'remote.s3.endpoint' => 'nullable|url|max:300',
+            'remote.s3.bucket' => 'nullable|string|max:200',
+            'remote.s3.region' => 'nullable|string|max:64',
+            'remote.s3.accessKey' => 'nullable|string|max:200',
+            'remote.s3.secretKey' => 'nullable|string|max:300',
+            'remote.s3.prefix' => 'nullable|string|max:200',
+            'remote.s3.style' => 'nullable|in:path,virtual',
         ]);
         $config = [
             'enabled' => (bool) $d['enabled'],
@@ -47,10 +54,23 @@ final class BackupController extends Controller
                 'username' => (string) ($d['remote']['username'] ?? ''),
                 'password' => (string) ($d['remote']['password'] ?? ''),
                 'path' => (string) ($d['remote']['path'] ?? 'yimai-backup'),
+                's3' => [
+                    'endpoint' => (string) ($d['remote']['s3']['endpoint'] ?? ''),
+                    'bucket' => trim((string) ($d['remote']['s3']['bucket'] ?? '')),
+                    'region' => (string) ($d['remote']['s3']['region'] ?? 'us-east-1'),
+                    'accessKey' => (string) ($d['remote']['s3']['accessKey'] ?? ''),
+                    'secretKey' => (string) ($d['remote']['s3']['secretKey'] ?? ''),
+                    'prefix' => (string) ($d['remote']['s3']['prefix'] ?? 'yimai-backup/'),
+                    'style' => (string) ($d['remote']['s3']['style'] ?? 'path'),
+                ],
             ],
         ];
         if ($config['remote']['type'] === 'webdav' && $config['remote']['url'] === '') {
             abort(422, '启用 WebDAV 远端时必须填写地址');
+        }
+        if ($config['remote']['type'] === 's3'
+            && ($config['remote']['s3']['endpoint'] === '' || $config['remote']['s3']['bucket'] === '')) {
+            abort(422, '启用 S3 远端时必须填写端点与桶名');
         }
         try {
             BackupService::saveConfig($config);
@@ -62,10 +82,14 @@ final class BackupController extends Controller
         audit($r, '修改', '数据备份', 0, '备份配置', '双店', sprintf(
             '自动备份 %s · 时间 %s · 本地保留 %d 份 · %s',
             $config['enabled'] ? '开' : '关', $config['run_at'], $config['keep_local'],
-            $config['remote']['type'] === 'webdav' ? '远端 WebDAV' : '仅本地'
+            match ($config['remote']['type']) {
+                'webdav' => '远端 WebDAV',
+                's3' => '远端 S3 对象存储',
+                default => '仅本地',
+            }
         ));
 
-        return ok(['config' => BackupService::config(), 'status' => BackupService::status()]);
+        return ok(['config' => BackupService::exportConfig(), 'status' => BackupService::status()]);
     }
 
     /** POST /backup/test-connection：支持用页面里尚未保存的草稿参数测试；所有失败返回可读原因而非 500 */
@@ -76,30 +100,33 @@ final class BackupController extends Controller
             if (is_array($r->json('remote'))) {
                 $saved = BackupService::config();
                 $draft = $r->json()->all();
-                // 密码留空 = 保持已保存的密码
+                // 密钥留空 = 保持已保存的密钥
                 if ((string) ($draft['remote']['password'] ?? '') === '') {
                     $draft['remote']['password'] = (string) ($saved['remote']['password'] ?? '');
                 }
+                if ((string) ($draft['remote']['s3']['secretKey'] ?? '') === '') {
+                    $draft['remote']['s3']['secretKey'] = (string) ($saved['remote']['s3']['secretKey'] ?? '');
+                }
                 BackupService::saveConfig(array_replace_recursive($saved, $draft));
             }
-            if (! BackupService::davConfigured()) {
+            if (! BackupService::remoteConfigured()) {
                 return response()->json([
                     'code' => 1,
-                    'message' => '请先把「远端存储」切换为 WebDAV 并填写地址后再测试',
+                    'message' => '请先把「远端存储」切换为 WebDAV 或 S3 并填写配置后再测试',
                 ]);
             }
-            $message = BackupService::testWebDav();
+            $message = BackupService::testRemote();
         } catch (Throwable $e) {
-            Log::channel('system_error')->error('WebDAV test connection failed', [
+            Log::channel('system_error')->error('Remote storage test connection failed', [
                 'exception' => $e::class, 'error' => $e->getMessage(),
             ]);
 
             return response()->json([
                 'code' => 1,
-                'message' => 'WebDAV 测试失败：'.mb_substr($e->getMessage(), 0, 200),
+                'message' => '远端存储测试失败：'.mb_substr($e->getMessage(), 0, 200),
             ]);
         }
-        audit($r, '测试连接', '数据备份', 0, 'WebDAV', '双店', $message);
+        audit($r, '测试连接', '数据备份', 0, '远端存储', '双店', $message);
 
         return ok(['message' => $message]);
     }

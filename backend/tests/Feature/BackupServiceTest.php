@@ -150,6 +150,57 @@ class BackupServiceTest extends TestCase
         }
     }
 
+    public function test_s3_remote_upload_list_and_signature(): void
+    {
+        $this->seedLeads();
+        BackupService::saveConfig(array_replace(BackupService::defaultConfig(), [
+            'remote' => [
+                'type' => 's3',
+                'url' => '', 'username' => '', 'password' => '', 'path' => 'yimai-backup',
+                's3' => [
+                    'endpoint' => 'http://minio.local:9000', 'bucket' => 'yimai', 'region' => 'us-east-1',
+                    'accessKey' => 'AKIDEXAMPLE', 'secretKey' => 'secret-key-1', 'prefix' => 'yimai-backup/',
+                    'style' => 'path',
+                ],
+            ],
+        ]));
+
+        Http::fake(function (Request $request) {
+            $url = $request->url();
+            if ($request->method() === 'PUT') {
+                return Http::response('', 200);
+            }
+            if ($request->method() === 'GET' && str_contains($url, 'list-type=2')) {
+                return Http::response(
+                    '<?xml version="1.0"?><ListBucketResult><Contents>'
+                    .'<Key>yimai-backup/yimai-backup-20260912-030000-abcd.zip</Key><Size>999</Size>'
+                    .'<LastModified>2026-09-12T03:00:00.000Z</LastModified></Contents></ListBucketResult>',
+                    200
+                );
+            }
+
+            return Http::response('', 204);
+        });
+
+        $result = BackupService::create('S3测试', uploadRemote: true);
+        $this->assertTrue($result['remote_uploaded']);
+        $this->assertSame('已上传至 S3 对象存储', $result['remote_note']);
+        // path 寻址：PUT 落在 {endpoint}/{bucket}/{prefix}{name}，且带 AWS SigV4 签名头
+        Http::assertSent(function (Request $r) use ($result) {
+            return $r->method() === 'PUT'
+                && str_contains($r->url(), 'http://minio.local:9000/yimai/yimai-backup/'.$result['file'])
+                && str_starts_with((string) ($r->header('Authorization')[0] ?? ''), 'AWS4-HMAC-SHA256');
+        });
+
+        // 列表解析
+        $remote = BackupService::listRemote();
+        $this->assertSame('yimai-backup-20260912-030000-abcd.zip', $remote[0]['name']);
+        $this->assertSame(999, $remote[0]['size']);
+
+        // 测试连接走 LIST
+        $this->assertStringContainsString('连接成功', BackupService::testRemote());
+    }
+
     public function test_webdav_errors_surface_as_readable_messages_not_500(): void
     {
         Sanctum::actingAs(User::factory()->create([

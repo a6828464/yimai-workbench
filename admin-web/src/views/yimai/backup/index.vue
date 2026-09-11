@@ -31,10 +31,10 @@
         </div>
         <div class="rounded-lg bg-gray-50 dark:bg-gray-800 p-3">
           <div class="text-xs text-gray-400">远端存储</div>
-          <div class="text-sm font-600 mt-1">
-            {{ status.remoteConfigured ? 'WebDAV 已配置' : '未配置' }}
-          </div>
-          <div class="text-xs text-gray-400 mt-0.5">NAS / 坚果云 / Alist</div>
+          <div class="text-sm font-600 mt-1">{{
+            status.remoteConfigured ? '已配置' : '未配置'
+          }}</div>
+          <div class="text-xs text-gray-400 mt-0.5">WebDAV · NAS / 坚果云 / S3 兼容</div>
         </div>
       </div>
       <ElAlert
@@ -93,38 +93,93 @@
             <ElSelect v-model="form.remote.type">
               <ElOption label="不使用" value="none" />
               <ElOption label="WebDAV（NAS/坚果云/Alist）" value="webdav" />
+              <ElOption label="S3 对象存储（MinIO/COS/R2）" value="s3" />
             </ElSelect>
           </ElFormItem>
         </ElCol>
-        <ElCol :xs="24" :md="10">
-          <ElFormItem label="WebDAV 地址">
-            <ElInput
-              v-model="form.remote.url"
-              placeholder="如 https://dav.jianguoyun.com/dav/ 或 https://nas.local:5006"
-            />
-          </ElFormItem>
-        </ElCol>
-        <ElCol :xs="12" :md="5">
-          <ElFormItem label="账号">
-            <ElInput v-model="form.remote.username" placeholder="WebDAV 账号" />
-          </ElFormItem>
-        </ElCol>
-        <ElCol :xs="12" :md="5">
-          <ElFormItem label="密码/应用密码">
-            <ElInput
-              v-model="form.remote.password"
-              type="password"
-              show-password
-              :placeholder="passwordPlaceholder"
-              autocomplete="new-password"
-            />
-          </ElFormItem>
-        </ElCol>
-        <ElCol :xs="16" :md="9">
-          <ElFormItem label="远端目录">
-            <ElInput v-model="form.remote.path" placeholder="yimai-backup（不存在会自动创建）" />
-          </ElFormItem>
-        </ElCol>
+        <template v-if="form.remote.type === 'webdav'">
+          <ElCol :xs="24" :md="10">
+            <ElFormItem label="WebDAV 地址">
+              <ElInput
+                v-model="form.remote.url"
+                placeholder="如 https://dav.jianguoyun.com/dav/ 或 https://nas.local:5006"
+              />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="12" :md="5">
+            <ElFormItem label="账号">
+              <ElInput v-model="form.remote.username" placeholder="WebDAV 账号" />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="12" :md="5">
+            <ElFormItem label="密码/应用密码">
+              <ElInput
+                v-model="form.remote.password"
+                type="password"
+                show-password
+                :placeholder="passwordPlaceholder"
+                autocomplete="new-password"
+              />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="16" :md="9">
+            <ElFormItem label="远端目录">
+              <ElInput v-model="form.remote.path" placeholder="yimai-backup（不存在会自动创建）" />
+            </ElFormItem>
+          </ElCol>
+        </template>
+        <template v-else-if="form.remote.type === 's3'">
+          <ElCol :xs="24" :md="10">
+            <ElFormItem label="S3 端点">
+              <ElInput
+                v-model="form.remote.s3.endpoint"
+                placeholder="如 http://minio.local:9000 或 https://cos.ap-guangzhou.myqcloud.com"
+              />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="12" :md="5">
+            <ElFormItem label="桶名">
+              <ElInput v-model="form.remote.s3.bucket" placeholder="bucket" />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="12" :md="5">
+            <ElFormItem label="区域">
+              <ElInput
+                v-model="form.remote.s3.region"
+                placeholder="us-east-1 / ap-guangzhou / auto"
+              />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="12" :md="7">
+            <ElFormItem label="AccessKey">
+              <ElInput v-model="form.remote.s3.accessKey" placeholder="AccessKey ID" />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="12" :md="5">
+            <ElFormItem label="SecretKey">
+              <ElInput
+                v-model="form.remote.s3.secretKey"
+                type="password"
+                show-password
+                :placeholder="secretPlaceholder"
+                autocomplete="new-password"
+              />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="16" :md="9">
+            <ElFormItem label="key 前缀">
+              <ElInput v-model="form.remote.s3.prefix" placeholder="yimai-backup/" />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="8" :md="6">
+            <ElFormItem label="寻址方式">
+              <ElSelect v-model="form.remote.s3.style">
+                <ElOption label="路径式 path（MinIO/R2/B2）" value="path" />
+                <ElOption label="虚拟主机式（AWS/COS）" value="virtual" />
+              </ElSelect>
+            </ElFormItem>
+          </ElCol>
+        </template>
         <ElCol :xs="8" :md="4">
           <ElFormItem label=" ">
             <ElButton class="w-full" @click="testConn">测试连接</ElButton>
@@ -234,8 +289,8 @@
               <ElEmpty
                 :description="
                   status.remoteConfigured
-                    ? '点击右上角「刷新远端列表」查看 NAS/网盘上的备份'
-                    : '未配置 WebDAV 远端存储'
+                    ? '点击右上角「刷新远端列表」查看远端备份'
+                    : '未配置远端存储（WebDAV / S3）'
                 "
                 :image-size="60"
               />
@@ -272,7 +327,22 @@
     runAt: '03:30',
     keepLocal: 7,
     keepEnv: true,
-    remote: { type: 'none', url: '', username: '', password: '', path: 'yimai-backup' }
+    remote: {
+      type: 'none',
+      url: '',
+      username: '',
+      password: '',
+      path: 'yimai-backup',
+      s3: {
+        endpoint: '',
+        bucket: '',
+        region: 'us-east-1',
+        accessKey: '',
+        secretKey: '',
+        prefix: 'yimai-backup/',
+        style: 'path'
+      }
+    }
   })
 
   const form = ref<BackupConfig>(defaultForm())
@@ -300,6 +370,9 @@
   const passwordPlaceholder = computed(() =>
     status.value.remoteConfigured ? '留空保持已保存的密码' : 'WebDAV 密码 / 坚果云应用密码'
   )
+  const secretPlaceholder = computed(() =>
+    status.value.remoteConfigured ? '留空保持已保存的密钥' : 'SecretKey'
+  )
 
   function humanSize(bytes: number): string {
     if (!bytes) return '0KB'
@@ -309,7 +382,14 @@
   async function loadAll(): Promise<void> {
     if (!connected.value) return
     const d = await getBackupConfig()
-    form.value = { ...d.config, remote: { ...d.config.remote, password: '' } }
+    form.value = {
+      ...d.config,
+      remote: {
+        ...d.config.remote,
+        password: '',
+        s3: { ...d.config.remote.s3, secretKey: '' }
+      }
+    }
     status.value = d.status
     localFiles.value = (await listBackupFiles('local')).files
   }
