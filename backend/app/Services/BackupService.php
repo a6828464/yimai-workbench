@@ -863,7 +863,8 @@ final class BackupService
                 fn ($r) => (string) (is_object($r) ? $r->name : $r['name']),
                 DB::select("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
             )
-            : array_map('reset', DB::select('SHOW TABLES'));
+            // SHOW TABLES 的列名随库名变化，取每行第一个值（不能用 reset 做 array_map 回调：按引用传参在 PHP 8 直接报错）
+            : array_map(fn ($row) => (string) array_values((array) $row)[0], DB::select('SHOW TABLES'));
 
         return array_values(array_diff($tables, self::SKIP_TABLES));
     }

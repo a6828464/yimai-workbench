@@ -1,5 +1,10 @@
 # 更新日志
 
+## 2026-09-12 ｜ fix: v3.1.51 修复立即备份报错（reset() 引用传参，MySQL 路径）
+
+### 修复
+- **点击「立即备份」报「reset(): Argument #1 ($array) must be passed by reference」**：备份数据表清单的 MySQL 分支使用 `array_map('reset', DB::select('SHOW TABLES'))`，`reset()` 要求按引用传参而 `array_map` 传值，PHP 8 直接抛错导致备份失败。改为取每行首个值的闭包写法。该分支仅在 MySQL（生产）下执行，自动化测试跑 SQLite（走 sqlite_master 分支）因此未覆盖——已在本地真实 MySQL 上补验备份/校验/恢复全流程（18 张表往返、恢复前快照正常）。
+
 ## 2026-09-12 ｜ feat: v3.1.50 数据备份新增 S3 兼容对象存储远端（OSS/COS/MinIO/R2）
 
 ### 新增
