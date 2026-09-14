@@ -641,6 +641,14 @@
             formatter: (row: YimaiSyncJob) =>
               h(ElTag, { size: 'small', type: STATUS_TAG[row.status] }, () => row.status)
           },
+          {
+            // 手动同步记操作人姓名，定时同步记「系统定时」：一眼区分这一批是谁跑的
+            prop: 'operator',
+            label: '触发方',
+            width: 100,
+            formatter: (row: YimaiSyncJob) =>
+              h('span', { class: 'text-xs' }, row.operator || '—')
+          },
           { prop: 'finishedAt', label: '完成时间', width: 150, sortable: true },
           {
             prop: 'operation',

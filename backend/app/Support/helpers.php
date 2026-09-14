@@ -19,6 +19,7 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\Process\Process;
 
 function ok($data)
@@ -158,6 +159,39 @@ function isOnlineLead(Lead $lead): bool
     $text = implode(' ', [(string) $lead->source, (string) $lead->order_platform]);
 
     return (bool) preg_match('/美团|大众点评|抖音|小红书|视频号|线上|团购/u', $text);
+}
+
+/**
+ * KeepYoga 同步留痕到「系统日志 → 运行日志」。
+ * 手动触发与系统定时都走这里，后台日志能看到同一批次是谁、以什么方式、同步了哪家店、结果如何。
+ * 失败的详细堆栈仍由调用方写 system_error，这里只保证「执行过」这件事在运行日志可见。
+ */
+function logSyncRun(SyncJob $job, string $trigger): void
+{
+    try {
+        $level = match ($job->status) {
+            '成功' => 'info',
+            '进行中' => 'info',
+            default => 'warning',
+        };
+        Log::channel('runtime')->log($level, 'KeepYoga 同步执行', [
+            'trigger' => $trigger,
+            'batch' => $job->batch_no,
+            'venue' => $job->venue,
+            'operator' => $job->operator,
+            'status' => $job->status,
+            'job_id' => $job->id,
+            'started_at' => optional($job->started_at)->format('Y-m-d H:i:s'),
+            'finished_at' => optional($job->finished_at)->format('Y-m-d H:i:s'),
+            'detail' => mb_substr((string) $job->detail, 0, 300),
+            'error' => mb_substr((string) $job->error_message, 0, 300),
+        ]);
+    } catch (Throwable $e) {
+        // 日志写入失败不能反过来打断同步本身
+        Log::channel('system_error')->error('同步运行日志写入失败', [
+            'job_id' => $job->id, 'error' => $e->getMessage(),
+        ]);
+    }
 }
 
 function contractRows(array $response): array

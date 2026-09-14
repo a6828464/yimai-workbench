@@ -108,15 +108,27 @@ final class AnalyticsController extends Controller
         $leads = (clone $leadQ)->whereBetween('lead_date', [$start, $end])->get();
 
         $byDate = [];
+        // 同一批留资队列内按日期分桶：线上（新媒体登记来源）单独记一套，
+        // 供新媒体工作台展示「留资 → 到店 → 成交」线上口径漏斗，与全店口径互不混淆。
         $bucket = function (string $date, string $venue, $l) use (&$byDate): void {
             $byDate[$date][$venue]['leads'] = ($byDate[$date][$venue]['leads'] ?? 0) + 1;
+            $online = isOnlineLead($l);
+            if ($online) {
+                $byDate[$date][$venue]['online_leads'] = ($byDate[$date][$venue]['online_leads'] ?? 0) + 1;
+            }
             // 已约体验及以上 → 计入约客/预约
             if (in_array($l->status, ['已约体验', '已体验', '已成交'], true)) {
                 $byDate[$date][$venue]['booked'] = ($byDate[$date][$venue]['booked'] ?? 0) + 1;
             }
-            // 已体验/已成交 → 计入体验
+            // 已体验/已成交 → 计入体验（到店）
             if (in_array($l->status, ['已体验', '已成交'], true)) {
                 $byDate[$date][$venue]['experienced'] = ($byDate[$date][$venue]['experienced'] ?? 0) + 1;
+                if ($online) {
+                    $byDate[$date][$venue]['online_experienced'] = ($byDate[$date][$venue]['online_experienced'] ?? 0) + 1;
+                }
+            }
+            if ($online && $l->status === '已成交') {
+                $byDate[$date][$venue]['online_deals'] = ($byDate[$date][$venue]['online_deals'] ?? 0) + 1;
             }
         };
         foreach ($leads as $l) {
@@ -242,6 +254,12 @@ final class AnalyticsController extends Controller
         $totalAmount = $sumKey('amount');
         $totalRedeem = $sumKey('redeem');
 
+        // 线上新客口径汇总：留资、到店、成交三项同源（都取新媒体登记来源），
+        // 成交率的分母是「线上到店」而非「线上留资」。
+        $onlineLeadCount = (int) $sumKey('online_leads');
+        $onlineVisitCount = (int) $sumKey('online_experienced');
+        $onlineDealCount = (int) $sumKey('online_deals');
+
         // 预约/上课班次按私教 / 小班 / 团课拆分
         $privateBooked = 0;
         $smallBooked = 0;
@@ -273,6 +291,10 @@ final class AnalyticsController extends Controller
                         'classes' => $c['classes'] ?? 0,
                         'amount' => round((float) ($c['amount'] ?? 0), 2),
                         'redeem' => round((float) ($c['redeem'] ?? 0), 2),
+                        // 线上（新媒体登记来源）单独一套，供新媒体工作台做同口径漏斗
+                        'onlineLeads' => $c['online_leads'] ?? 0,
+                        'onlineVisits' => $c['online_experienced'] ?? 0,
+                        'onlineDeals' => $c['online_deals'] ?? 0,
                     ];
                 }
 
@@ -300,10 +322,13 @@ final class AnalyticsController extends Controller
                 'registeredDealAmount' => round((float) $sales->sum('deal_amount'), 2),
                 'dealRate' => $totalExperienced > 0 ? round($totalDeals / $totalExperienced * 100, 1) : 0,
                 'leadToVisitRate' => $totalLeads > 0 ? min(100, round($totalExperienced / $totalLeads * 100, 1)) : 0,
-                'onlineLeadCount' => $leads->filter(fn ($lead) => isOnlineLead($lead))->count(),
-                'onlineDealCount' => $leads->filter(fn ($lead) => isOnlineLead($lead) && $lead->status === '已成交')->count(),
-                'onlineDealRate' => ($onlineLeads = $leads->filter(fn ($lead) => isOnlineLead($lead))->count()) > 0
-                    ? round($leads->filter(fn ($lead) => isOnlineLead($lead) && $lead->status === '已成交')->count() / $onlineLeads * 100, 1) : 0,
+                // 线上新客口径（新媒体登记来源：美团/大众点评/抖音/小红书/视频号/线上/团购）：
+                // 留资、到店、成交三项都只算线上，成交率 = 线上成交 ÷ 线上到店（不是除以留资人数）。
+                'onlineLeadCount' => $onlineLeadCount,
+                'onlineVisitCount' => $onlineVisitCount,
+                'onlineDealCount' => $onlineDealCount,
+                'onlineDealRate' => $onlineVisitCount > 0 ? round($onlineDealCount / $onlineVisitCount * 100, 1) : 0,
+                'onlineLeadToVisitRate' => $onlineLeadCount > 0 ? min(100, round($onlineVisitCount / $onlineLeadCount * 100, 1)) : 0,
             ],
             'visit30' => $visit30,
             'activeCustomers' => $activeCustomers,

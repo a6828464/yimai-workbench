@@ -16,7 +16,7 @@
         @change="onRangeChange"
       />
       <div class="flex-1" />
-      <span class="text-xs text-gray-400">默认为本月1号至今</span>
+      <span class="text-xs text-gray-400">默认为本月1号至今 · 本页仅统计新媒体登记来源</span>
     </div>
     <ElAlert v-if="dashboardError" class="mb-4" type="error" show-icon :closable="false">
       {{ dashboardError }}
@@ -36,7 +36,7 @@
         <ElCard shadow="never">
           <template #header>
             <div class="flex-cb">
-              <span class="font-500">留资 / 到店趋势（人）</span>
+              <span class="font-500">留资 / 到店趋势（人，新媒体登记来源）</span>
               <div class="flex gap-3 text-xs text-gray-400">
                 <span>— 留资</span><span style="color: var(--el-color-success)">— 到店</span>
               </div>
@@ -167,7 +167,7 @@
   const summary = ref<DashboardSummary | null>(null)
   const channels = ref<ChannelLeadItem[]>([])
   const platforms = ref<PlatformAmountItem[]>([])
-  const platformTotal = ref<{ deal: number; redeem: number } | null>(null)
+  const platformTotal = ref<{ deal: number; redeem: number; dealCount: number } | null>(null)
 
   function defaultRange(): [string, string] {
     const now = new Date()
@@ -205,19 +205,29 @@
   ]
 
   const labels = computed(() => daily.value.map((p) => p.label))
+  // 趋势同样只画新媒体登记来源，与上方卡片口径一致
   const trendSeries = computed<LineDataItem[]>(() => [
-    { name: '留资', data: daily.value.map((p) => p.leads) },
-    { name: '到店', data: daily.value.map((p) => p.visits), color: '#67C23A' }
+    { name: '留资', data: daily.value.map((p) => p.onlineLeads ?? 0) },
+    { name: '到店', data: daily.value.map((p) => p.onlineVisits ?? 0), color: '#67C23A' }
   ])
   const channelLabels = computed(() => channels.value.map((c) => c.channel))
   const channelSeries = computed(() => channels.value.map((c) => c.leads))
   const dealRows = computed(() => platforms.value.filter((p) => p.deal > 0))
   const redeemRows = computed(() => platforms.value.filter((p) => p.redeem > 0))
 
+  // 本工作台是新媒体口径：留资、到店、成交三项都只算「新媒体登记来源」（美团/大众点评/抖音/小红书/视频号/线上/团购），
+  // 不含门店自然到店等其他渠道；成交率的分母是线上到店人数，不是线上留资人数。
+  const online = computed(() => ({
+    leads: summary.value?.onlineLeadCount ?? 0,
+    visits: summary.value?.onlineVisitCount ?? 0,
+    deals: summary.value?.onlineDealCount ?? 0
+  }))
+
   const kpis = computed(() => [
     {
       label: '留资人数',
-      value: summary.value?.leadCount ?? '-',
+      value: summary.value ? online.value.leads : '-',
+      hint: '仅新媒体登记来源',
       icon: markRaw(DataLine),
       accent: '#409EFF'
     },
@@ -225,19 +235,21 @@
       label: '线上新客成交率',
       value: summary.value ? `${summary.value.onlineDealRate}` : '-',
       suffix: '%',
-      hint: `${summary.value?.onlineDealCount ?? 0}/${summary.value?.onlineLeadCount ?? 0} 人`,
+      hint: `成交 ${online.value.deals} / 到店 ${online.value.visits} 人`,
       icon: markRaw(Odometer),
       accent: '#E6A23C'
     },
     {
       label: '到店人数',
-      value: summary.value?.visitCount ?? '-',
+      value: summary.value ? online.value.visits : '-',
+      hint: '仅新媒体登记来源',
       icon: markRaw(UserFilled),
       accent: '#9C27B0'
     },
     {
       label: '成交人数',
-      value: summary.value?.dealCount ?? '-',
+      value: summary.value ? online.value.deals : '-',
+      hint: '仅新媒体登记来源',
       icon: markRaw(ShoppingBag),
       accent: '#67C23A'
     },
@@ -245,7 +257,7 @@
       label: '所选周期成交金额',
       value: platformTotal.value?.deal ?? '-',
       prefix: '¥',
-      hint: `${summary.value?.dealCount ?? 0} 人成交`,
+      hint: `${platformTotal.value?.dealCount ?? 0} 人登记成交`,
       icon: markRaw(Money),
       accent: '#67C23A'
     },
@@ -262,21 +274,21 @@
   const funnelRows = computed(() => {
     const s = summary.value
     if (!s) return []
-    const pct = (v: number) =>
-      s.leadCount > 0 ? Math.min(100, Math.round((v / s.leadCount) * 100)) : 0
+    const { leads, visits, deals } = online.value
+    const pct = (v: number) => (leads > 0 ? Math.min(100, Math.round((v / leads) * 100)) : 0)
     return [
-      { stage: '留资', value: s.leadCount, percent: s.leadCount > 0 ? 100 : 0, rateText: '' },
+      { stage: '线上留资', value: leads, percent: leads > 0 ? 100 : 0, rateText: '' },
       {
-        stage: '到店',
-        value: s.visitCount,
-        percent: pct(s.visitCount),
-        rateText: `留资→到店 ${s.leadToVisitRate}%`
+        stage: '线上到店',
+        value: visits,
+        percent: pct(visits),
+        rateText: `留资→到店 ${s.onlineLeadToVisitRate ?? 0}%`
       },
       {
         stage: '线上新客成交',
-        value: s.onlineDealCount,
-        percent: pct(s.onlineDealCount),
-        rateText: `线上新客成交率 ${s.onlineDealRate}%`
+        value: deals,
+        percent: pct(deals),
+        rateText: `线上新客成交率 ${s.onlineDealRate}%（成交/到店）`
       }
     ]
   })
@@ -310,7 +322,11 @@
       channels.value = ch ?? []
       if (plat) {
         platforms.value = plat.rows
-        platformTotal.value = { deal: plat.totalDeal, redeem: plat.totalRedeem }
+        platformTotal.value = {
+          deal: plat.totalDeal,
+          redeem: plat.totalRedeem,
+          dealCount: plat.dealCount
+        }
       } else {
         platforms.value = []
         platformTotal.value = null

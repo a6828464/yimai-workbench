@@ -408,7 +408,8 @@
     {
       label: '留资登记成交',
       value: `¥${money(summary.value?.registeredDealAmount ?? 0)}`,
-      hint: `${summary.value?.registeredDealCount ?? 0} 人 · 按成交日，编辑留资成交即联动`,
+      // 店长端是全店口径：含新媒体与自然到店等全部来源，区别于新媒体工作台只算线上来源
+      hint: `${summary.value?.registeredDealCount ?? 0} 人 · 全店各渠道合计，按成交日联动`,
       icon: markRaw(Coin),
       accent: '#13C2C2'
     }

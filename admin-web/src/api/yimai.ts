@@ -334,6 +334,9 @@ export interface YimaiSyncJob {
   successCount: number
   failCount: number
   status: '成功' | '部分失败' | '进行中' | '失败'
+  /** 触发方：手动同步为操作人姓名，系统定时为「系统定时」 */
+  operator?: string
+  startedAt?: string
   finishedAt: string
   /** 同步明细：导出的表格与导入落库统计 */
   detail?: string
@@ -1450,6 +1453,10 @@ export interface DashboardDayPoint {
   redeem: number
   classes: number
   cardSales: number
+  /** 线上（新媒体登记来源）留资 / 到店 / 成交，新媒体工作台同口径漏斗用 */
+  onlineLeads?: number
+  onlineVisits?: number
+  onlineDeals?: number
 }
 
 export interface DashboardSummary {
@@ -1476,8 +1483,13 @@ export interface DashboardSummary {
   smallClassCount?: number
   groupClassCount?: number
   onlineLeadCount: number
+  /** 线上（新媒体登记来源）到店人数：线上成交率的分母 */
+  onlineVisitCount?: number
   onlineDealCount: number
+  /** 线上新客成交率 = 线上成交 ÷ 线上到店 */
   onlineDealRate: number
+  /** 线上留资 → 到店转化率 */
+  onlineLeadToVisitRate?: number
 }
 
 export interface ChannelLeadItem {
@@ -1589,7 +1601,10 @@ export async function getDashboardSeries(
         privateDomain: sum('leads'),
         redeem: sum('redeem'),
         classes: sum('classes'),
-        cardSales: sum('cardSales')
+        cardSales: sum('cardSales'),
+        onlineLeads: sum('onlineLeads'),
+        onlineVisits: sum('onlineVisits'),
+        onlineDeals: sum('onlineDeals')
       }
     })
     const s = t.summary ?? {}
@@ -1614,8 +1629,10 @@ export async function getDashboardSeries(
       smallClassCount: s.smallClassCount ?? 0,
       groupClassCount: s.groupClassCount ?? 0,
       onlineLeadCount: s.onlineLeadCount ?? 0,
+      onlineVisitCount: s.onlineVisitCount ?? 0,
       onlineDealCount: s.onlineDealCount ?? 0,
       onlineDealRate: s.onlineDealRate ?? 0,
+      onlineLeadToVisitRate: s.onlineLeadToVisitRate ?? 0,
       registeredDealCount: s.registeredDealCount ?? 0,
       registeredDealAmount: s.registeredDealAmount ?? 0
     }
@@ -1680,8 +1697,11 @@ export async function getDashboardSeries(
     classCount: sum((p) => p.classes),
     cardSalesCount: sum((p) => p.cardSales),
     onlineLeadCount: leadCount,
+    onlineVisitCount: visitCount,
     onlineDealCount: dealCount,
-    onlineDealRate: leadCount > 0 ? Number(((dealCount / leadCount) * 100).toFixed(1)) : 0,
+    // 与线上口径一致：成交率分母是到店人数
+    onlineDealRate: visitCount > 0 ? Number(((dealCount / visitCount) * 100).toFixed(1)) : 0,
+    onlineLeadToVisitRate: leadCount > 0 ? Number(((visitCount / leadCount) * 100).toFixed(1)) : 0,
     registeredDealCount: dealCount,
     registeredDealAmount: sum((p) => p.amount)
   }

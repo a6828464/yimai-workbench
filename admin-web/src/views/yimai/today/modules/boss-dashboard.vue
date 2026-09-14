@@ -86,7 +86,7 @@
     <!-- 新媒体运营 KPI -->
     <div class="text-sm font-500 mb-3 flex items-center gap-2">
       <span>新媒体运营</span>
-      <span class="text-xs font-400 text-gray-400">留资 · 到店 · 线上成交率 · 核销</span>
+      <span class="text-xs font-400 text-gray-400">留资 · 到店 · 线上成交率（仅新媒体登记来源） · 核销</span>
     </div>
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
       <YimaiKpiCard v-for="k in mediaKpis" :key="k.label" v-bind="k" />
@@ -97,7 +97,7 @@
         <ElCard shadow="never">
           <template #header>
             <div class="flex-cb">
-              <span class="font-500">留资 / 到店趋势（人）</span>
+              <span class="font-500">留资 / 到店趋势（人，新媒体登记来源）</span>
               <div class="flex gap-3 text-xs text-gray-400">
                 <span>— 留资</span><span style="color: var(--el-color-success)">— 到店</span>
               </div>
@@ -458,9 +458,10 @@
 
   const labels = computed(() => daily.value.map((p) => p.label))
   const amountSeries = computed(() => daily.value.map((p) => p.amount))
+  // 新媒体板块趋势只画线上登记来源，与 mediaKpis 同口径
   const mediaTrendSeries = computed<LineDataItem[]>(() => [
-    { name: '留资', data: daily.value.map((p) => p.leads) },
-    { name: '到店', data: daily.value.map((p) => p.visits), color: '#67C23A' }
+    { name: '留资', data: daily.value.map((p) => p.onlineLeads ?? 0) },
+    { name: '到店', data: daily.value.map((p) => p.onlineVisits ?? 0), color: '#67C23A' }
   ])
   const channelLabels = computed(() => channels.value.map((c) => c.channel))
   const channelSeries = computed(() => channels.value.map((c) => c.leads))
@@ -560,10 +561,19 @@
     }
   ])
 
+  // 新媒体运营板块只统计新媒体登记来源（线上），与上方门店经营板块的全店口径刻意分开：
+  // 门店板块是约课/上课/售卡等全店事实，这里只看线上留资→到店→成交。
+  const mediaOnline = computed(() => ({
+    leads: summary.value?.onlineLeadCount ?? 0,
+    visits: summary.value?.onlineVisitCount ?? 0,
+    deals: summary.value?.onlineDealCount ?? 0
+  }))
+
   const mediaKpis = computed(() => [
     {
       label: '留资人数',
-      value: summary.value?.leadCount ?? '-',
+      value: summary.value ? mediaOnline.value.leads : '-',
+      hint: '仅新媒体登记来源',
       icon: markRaw(DataLine),
       accent: '#409EFF'
     },
@@ -571,13 +581,14 @@
       label: '线上新客成交率',
       value: summary.value ? `${summary.value.onlineDealRate}` : '-',
       suffix: '%',
-      hint: `${summary.value?.onlineDealCount ?? 0}/${summary.value?.onlineLeadCount ?? 0} 人`,
+      hint: `成交 ${mediaOnline.value.deals} / 到店 ${mediaOnline.value.visits} 人`,
       icon: markRaw(Odometer),
       accent: '#E6A23C'
     },
     {
       label: '到店人数',
-      value: summary.value?.visitCount ?? '-',
+      value: summary.value ? mediaOnline.value.visits : '-',
+      hint: '仅新媒体登记来源',
       icon: markRaw(User),
       accent: '#9C27B0'
     },

@@ -152,6 +152,42 @@ class AnalyticsTrendsTest extends TestCase
         $this->assertSame(99.0, (float) $summary['redeemAmount']);
     }
 
+    public function test_online_deal_rate_divides_by_online_visits_not_online_leads(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'online-rate', 'role' => 'R_SUPER']));
+        $venue = '绿地店';
+
+        // 线上留资 4 人：到店 2 人（其中 1 人成交），另 1 人仅留资、1 人到店未成交
+        foreach ([
+            ['线上到店并成交', '美团', '已成交'],
+            ['线上到店未成交', '大众点评', '已体验'],
+            ['线上仅留资', '抖音', '新留资'],
+            ['线上约体验未到店', '小红书', '已约体验'],
+        ] as [$name, $source, $status]) {
+            Lead::create([
+                'lead_date' => '2026-08-29', 'name' => $name, 'venue' => $venue,
+                'source' => $source, 'order_platform' => $source, 'status' => $status,
+                'deal_at' => $status === '已成交' ? '2026-08-29 12:00:00' : null,
+            ]);
+        }
+        // 非线上来源（自然到店）成交 1 人：不得计入线上口径
+        Lead::create([
+            'lead_date' => '2026-08-29', 'name' => '自然到店成交', 'venue' => $venue,
+            'source' => '自然到店', 'status' => '已成交', 'deal_at' => '2026-08-29 12:00:00',
+        ]);
+
+        $summary = $this->getJson('/api/analytics/trends?start=2026-08-29&end=2026-08-29&venue='.urlencode($venue))
+            ->assertOk()->json('data.summary');
+
+        // 三项都只算线上：留资 4 / 到店 2 / 成交 1，自然到店不进任何一项
+        $this->assertSame(4, (int) $summary['onlineLeadCount']);
+        $this->assertSame(2, (int) $summary['onlineVisitCount']);
+        $this->assertSame(1, (int) $summary['onlineDealCount']);
+        // 成交率 = 成交 ÷ 到店 = 1/2；若误按「成交 ÷ 留资」会得到 25
+        $this->assertSame(50.0, (float) $summary['onlineDealRate']);
+        $this->assertSame(50.0, (float) $summary['onlineLeadToVisitRate']);
+    }
+
     private function booking(
         string $key,
         string $venue,

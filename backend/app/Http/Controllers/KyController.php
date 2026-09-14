@@ -260,6 +260,7 @@ final class KyController extends Controller
                     'finished_at' => now(), 'detail' => $detail, 'error_message' => null,
                 ]);
                 audit($r, '导入', 'KeepYoga同步', $job->id, "批次{$batch}", $venue, $detail);
+                logSyncRun($job, $mode === 'full' ? '手动全量同步' : '手动增量同步');
 
                 return $result;
             } catch (Throwable $e) {
@@ -270,6 +271,7 @@ final class KyController extends Controller
                     'exception' => $e::class, 'error' => $message,
                 ]);
                 audit($r, '导入失败', 'KeepYoga同步', $job->id, "批次{$batch}", $venue, $message);
+                logSyncRun($job, $mode === 'full' ? '手动全量同步' : '手动增量同步');
 
                 throw $e;
             } finally {

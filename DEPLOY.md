@@ -106,8 +106,15 @@ window.__YIMAI_API_BASE__ = '/api'
 生产环境需配置 Laravel 调度器，用于执行系统日志、人员操作日志和模型生成记录的保留策略，以及 KeepYoga 双店每日定时增量同步（`ky:autosync`，05:30 自动执行，当天已同步的门店自动跳过，也可在后台「KeepYoga同步」手动触发）：
 
 ```cron
-* * * * * cd /www/wwwroot/站点目录/app && php artisan schedule:run >> /dev/null 2>&1
+* * * * * cd /www/wwwroot/站点目录/backend && php artisan schedule:run >> /dev/null 2>&1
 ```
+
+> 路径以站点实际部署为准：宝塔站点根目录下的 Laravel 目录为 `backend`（发行包内为 `app/backend`）。
+>
+> 未配置此计划任务时，`ky:autosync` 每日定时同步与保留策略清理都不会执行，且没有任何报错——手工同步不受影响。排查方式：
+>
+> 1. 服务器执行 `cd /www/wwwroot/站点目录/backend && php artisan schedule:list`，能列出 `ky:autosync`（每日 05:30）等条目即为正常。
+> 2. 后台「系统管理 → 系统日志 → 运行日志」按关键词 `KeepYoga 同步` 过滤，手动同步与系统定时同步（含「当天已同步，跳过」）都会逐条留痕；「KeepYoga同步 → 历史同步批次」的「触发方」列可区分操作人与「系统定时」。
 
 系统日志默认保留 7 天，人员操作日志默认永久保留；超管可在对应日志页面调整。未配置调度器时，修改保留策略会立即清理一次，但之后不会按日自动清理。
 
@@ -130,5 +137,6 @@ Gitee Release 自动发布需要在 GitHub 仓库配置 Actions Secret：`GITEE_
 | install.php 环境检测红叉 | 装对应 PHP 扩展；目录权限改 www 可写 |
 | 登录报网络错误 | config.js 的接口地址与实际不符；或后端站点 SSL 未配 |
 | KeepYoga 同步失败 | 检查后台“登录账号设置”；数据库配置优先于 `backend/.env`，再查看 Laravel 当日日志 |
+| 定时同步没执行 | 服务器 crontab 缺少 `schedule:run`（见「七、日常更新」调度器说明）；缺它时手工同步仍可用，「系统日志 → 运行日志」也不会出现定时留痕 |
 | 页面刷新 404 | 前端伪静态未配 try_files index.html |
 | 接口 500 | 看 `backend/storage/logs/` 当天日志；多为权限或 .env 配置问题 |

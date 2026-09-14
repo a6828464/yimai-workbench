@@ -26,6 +26,9 @@ class KyAutoSync extends Command
     {
         if (! KyClient::configured()) {
             $this->info('KeepYoga 未配置凭据，跳过定时同步');
+            Log::channel('runtime')->warning('KeepYoga 定时同步跳过', [
+                'trigger' => '系统定时同步', 'reason' => '未配置随心瑜凭据',
+            ]);
 
             return self::SUCCESS;
         }
@@ -60,11 +63,22 @@ class KyAutoSync extends Command
         // 幂等：sync_meta 记录了每店最近同步日期，当天已有成功同步（含手动）就不再跑
         $meta = (array) (AppSetting::oldest('id')->first()?->sync_meta ?? []);
         if (($meta[$venue] ?? '') === CarbonImmutable::today()->toDateString()) {
+            // 跳过也要留痕：否则日志里分不清「定时任务没跑」和「跑了但当天已同步」
+            Log::channel('runtime')->info('KeepYoga 定时同步跳过', [
+                'trigger' => '系统定时同步', 'venue' => $venue,
+                'reason' => '当天已同步（含手动同步），幂等跳过',
+            ]);
+
             return '今天已同步，跳过';
         }
 
         $lock = Cache::lock('ky:import:global', 7200);
         if (! $lock->get()) {
+            Log::channel('runtime')->warning('KeepYoga 定时同步跳过', [
+                'trigger' => '系统定时同步', 'venue' => $venue,
+                'reason' => '全局锁占用（正在执行其他门店同步）',
+            ]);
+
             return '跳过：正在执行其他门店同步（全局锁占用）';
         }
 
@@ -92,6 +106,7 @@ class KyAutoSync extends Command
                 'finished_at' => now(), 'detail' => $detail, 'error_message' => null,
             ]);
             $this->audit($venue, '定时同步', $job->id, $detail);
+            logSyncRun($job, '系统定时同步');
 
             return $detail;
         } catch (Throwable $e) {
@@ -102,6 +117,7 @@ class KyAutoSync extends Command
                 'exception' => $e::class, 'error' => $message,
             ]);
             $this->audit($venue, '定时同步失败', $job->id, $message);
+            logSyncRun($job, '系统定时同步');
 
             return '同步失败：'.$message;
         } finally {
