@@ -18,11 +18,18 @@
             <ElTag v-if="row.self" size="small" effect="plain" class="ml-1">本人</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="角色" width="100">
+        <ElTableColumn label="角色" width="190">
           <template #default="{ row }">
-            <ElTag size="small" :type="roleType(row.roleCode)" effect="dark">{{
-              row.roleLabel
-            }}</ElTag>
+            <ElTag
+              v-for="r in row.roles"
+              :key="r"
+              size="small"
+              :type="roleType(r)"
+              effect="dark"
+              class="mr-1"
+            >
+              {{ ROLE_OPTIONS[r] ?? r }}
+            </ElTag>
           </template>
         </ElTableColumn>
         <ElTableColumn label="门店范围" min-width="160">
@@ -82,25 +89,24 @@
           <ElInput v-model="form.userName" placeholder="字母数字，将用于登录" />
         </ElFormItem>
         <ElFormItem label="角色">
-          <ElSelect v-model="form.roleCode" class="!w-full">
-            <ElOption
-              v-for="(label, code) in ROLE_OPTIONS"
-              :key="code"
-              :label="label"
-              :value="code"
-            />
-          </ElSelect>
+          <ElCheckboxGroup v-model="form.roles">
+            <ElCheckbox v-for="(label, code) in ROLE_OPTIONS" :key="code" :value="code">
+              {{ label }}
+            </ElCheckbox>
+          </ElCheckboxGroup>
+          <div class="text-xs text-gray-400">
+            可多选：权限叠加，可见范围取并集（例如同时是服务老师 + 授课老师时，
+            名下会籍会员与私教课学员都能看到；叠加店长则放大到全店）
+          </div>
         </ElFormItem>
         <ElFormItem label="门店范围">
           <ElCheckboxGroup v-model="form.venues">
             <ElCheckbox value="绿地店">绿地店</ElCheckbox>
             <ElCheckbox value="东部店">东部店</ElCheckbox>
           </ElCheckboxGroup>
-          <span
-            v-if="form.roleCode === 'R_SUPER' || form.roleCode === 'R_MEDIA'"
-            class="text-xs text-gray-400"
-            >超管/新媒体默认为双店</span
-          >
+          <span v-if="!needsVenue(form.roles)" class="text-xs text-gray-400">
+            仅超管/新媒体时默认为双店；勾选店长或老师侧角色后锁定单一门店
+          </span>
         </ElFormItem>
         <ElFormItem label="初始化密码">
           <ElInput
@@ -144,25 +150,23 @@
     >
       <ElForm label-width="92px">
         <ElFormItem label="角色">
-          <ElSelect v-model="editForm.roleCode" class="!w-full">
-            <ElOption
-              v-for="(label, code) in ROLE_OPTIONS"
-              :key="code"
-              :label="label"
-              :value="code"
-            />
-          </ElSelect>
+          <ElCheckboxGroup v-model="editForm.roles">
+            <ElCheckbox v-for="(label, code) in ROLE_OPTIONS" :key="code" :value="code">
+              {{ label }}
+            </ElCheckbox>
+          </ElCheckboxGroup>
+          <div class="text-xs text-gray-400">
+            调整角色会立即失效该账号的登录状态，需要重新登录后生效
+          </div>
         </ElFormItem>
         <ElFormItem label="门店范围">
           <ElCheckboxGroup v-model="editForm.venues">
             <ElCheckbox value="绿地店">绿地店</ElCheckbox>
             <ElCheckbox value="东部店">东部店</ElCheckbox>
           </ElCheckboxGroup>
-          <span
-            v-if="editForm.roleCode === 'R_SUPER' || editForm.roleCode === 'R_MEDIA'"
-            class="text-xs text-gray-400"
-            >超管/新媒体默认为双店</span
-          >
+          <span v-if="!needsVenue(editForm.roles)" class="text-xs text-gray-400">
+            仅超管/新媒体时默认为双店；勾选店长或老师侧角色后锁定单一门店
+          </span>
         </ElFormItem>
       </ElForm>
       <template #footer>
@@ -192,11 +196,17 @@
   const saving = ref(false)
   const accounts = ref<AccountRow[]>([])
 
+  /** 需要锁定单一门店的角色（与后端 VENUE_BOUND 一致） */
+  const VENUE_BOUND = ['R_MANAGER', 'R_SERVICE', 'R_TEACHER']
+  function needsVenue(roles: string[]): boolean {
+    return roles.some((r) => VENUE_BOUND.includes(r))
+  }
+
   const createDlg = ref(false)
   const form = reactive({
     name: '',
     userName: '',
-    roleCode: 'R_TEACHER',
+    roles: ['R_TEACHER'] as string[],
     venues: ['绿地店'] as string[],
     password: ''
   })
@@ -211,7 +221,7 @@
     visible: false,
     row: null
   })
-  const editForm = reactive({ roleCode: 'R_TEACHER', venues: ['绿地店'] as string[] })
+  const editForm = reactive({ roles: ['R_TEACHER'] as string[], venues: ['绿地店'] as string[] })
 
   function roleType(code: string): 'warning' | 'success' | 'primary' | 'info' | 'danger' {
     if (code === 'R_SUPER') return 'warning'
@@ -234,7 +244,7 @@
     Object.assign(form, {
       name: '',
       userName: '',
-      roleCode: 'R_TEACHER',
+      roles: ['R_TEACHER'],
       venues: ['绿地店'],
       password: ''
     })
@@ -245,17 +255,15 @@
     if (!form.userName.trim()) return ElMessage.warning('请填写登录名')
     if (!/^[A-Za-z0-9]+$/.test(form.userName)) return ElMessage.warning('登录名只能包含字母和数字')
     if (form.password.length < 8) return ElMessage.warning('密码至少8位')
-    const venues =
-      form.roleCode === 'R_SUPER' || form.roleCode === 'R_MEDIA'
-        ? ['绿地店', '东部店']
-        : [...form.venues]
+    if (!form.roles.length) return ElMessage.warning('请至少选择一个角色')
+    const venues = needsVenue(form.roles) ? [...form.venues] : ['绿地店', '东部店']
     if (!venues.length) return ElMessage.warning('请至少选择一个门店')
     saving.value = true
     try {
       await createAccount({
         userName: form.userName.trim(),
         name: form.name.trim() || form.userName.trim(),
-        roleCode: form.roleCode,
+        roles: [...form.roles],
         venues,
         password: form.password
       })
@@ -271,21 +279,19 @@
 
   function openEdit(row: AccountRow) {
     editDlg.row = row
-    editForm.roleCode = row.roleCode
+    editForm.roles = [...(row.roles?.length ? row.roles : [row.roleCode])]
     editForm.venues = [...(row.venues?.length ? row.venues : ['绿地店', '东部店'])]
     editDlg.visible = true
   }
 
   async function doEdit() {
     if (!editDlg.row) return
-    const venues =
-      editForm.roleCode === 'R_SUPER' || editForm.roleCode === 'R_MEDIA'
-        ? ['绿地店', '东部店']
-        : [...editForm.venues]
+    if (!editForm.roles.length) return ElMessage.warning('请至少选择一个角色')
+    const venues = needsVenue(editForm.roles) ? [...editForm.venues] : ['绿地店', '东部店']
     if (!venues.length) return ElMessage.warning('请至少选择一个门店')
     saving.value = true
     try {
-      await updateAccount(editDlg.row.key, 'update', { roleCode: editForm.roleCode, venues })
+      await updateAccount(editDlg.row.key, 'update', { roles: [...editForm.roles], venues })
       ElMessage.success('账号信息已更新')
       editDlg.visible = false
       await load()

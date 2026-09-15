@@ -23,6 +23,8 @@ export interface XhsPersonaPrefs {
 
 /** 用户自助资料（个人中心维护，营销工具自动取用） */
 export interface MyProfile {
+  /** 全部角色（账号支持多角色叠加） */
+  roles?: string[]
   name: string
   nickname: string
   phone: string

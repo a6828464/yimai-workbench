@@ -43,6 +43,9 @@ export interface TrainingPlan {
   status: TrainingStatus
   content: PlanContent | null
   source: '' | 'llm' | 'fallback'
+  /** 上游来源：由哪次课后分析 / 哪份体测流转而来（后端只读，不由前端维护） */
+  sourceReviewId?: number | null
+  sourceBodyTestId?: number | null
   createdBy: string
   createdAt: string
   confirmedAt: string
@@ -70,9 +73,17 @@ const SEEDS: TrainingPlan[] = [
     content: {
       summary: '以呼吸重建与核心激活为主线的6周入门计划，配合肩颈放松练习。',
       phases: [
-        { name: '第1-2周 基础建立', duration: '2周', items: ['腹式呼吸与肋间呼吸', '仰卧中立位找发力', '猫牛式脊柱灵活'] },
+        {
+          name: '第1-2周 基础建立',
+          duration: '2周',
+          items: ['腹式呼吸与肋间呼吸', '仰卧中立位找发力', '猫牛式脊柱灵活']
+        },
         { name: '第3-4周 核心激活', duration: '2周', items: ['死虫式', '鸟狗式', '肩颈松解系列'] },
-        { name: '第5-6周 力量整合', duration: '2周', items: ['平板支撑进阶', '桥式系列', '全身串联流'] }
+        {
+          name: '第5-6周 力量整合',
+          duration: '2周',
+          items: ['平板支撑进阶', '桥式系列', '全身串联流']
+        }
       ],
       cautions: ['练习中如出现手麻头晕立即停止并告知教练', '生理期前三天降低强度']
     },
@@ -162,7 +173,20 @@ export const useTrainingStore = defineStore('trainingStore', () => {
     useYimaiStore().writeAudit(action, '训练计划', 0, targetLabel, '双店', detail)
   }
 
-  function saveDraft(plan: Omit<TrainingPlan, 'id' | 'status' | 'content' | 'source' | 'createdBy' | 'createdAt' | 'confirmedAt' | 'images' | 'share'> & { id?: number }): number {
+  function saveDraft(
+    plan: Omit<
+      TrainingPlan,
+      | 'id'
+      | 'status'
+      | 'content'
+      | 'source'
+      | 'createdBy'
+      | 'createdAt'
+      | 'confirmedAt'
+      | 'images'
+      | 'share'
+    > & { id?: number }
+  ): number {
     const name = plan.memberName || '未命名会员'
     if (plan.id) {
       const i = state.value.plans.findIndex((p) => p.id === plan.id)
@@ -175,7 +199,18 @@ export const useTrainingStore = defineStore('trainingStore', () => {
     }
     const id = state.value.nextId++
     state.value.plans.unshift({
-      ...(plan as Omit<TrainingPlan, 'id' | 'status' | 'content' | 'source' | 'createdBy' | 'createdAt' | 'confirmedAt' | 'images' | 'share'>),
+      ...(plan as Omit<
+        TrainingPlan,
+        | 'id'
+        | 'status'
+        | 'content'
+        | 'source'
+        | 'createdBy'
+        | 'createdAt'
+        | 'confirmedAt'
+        | 'images'
+        | 'share'
+      >),
       id,
       status: '待生成',
       content: null,
@@ -186,7 +221,11 @@ export const useTrainingStore = defineStore('trainingStore', () => {
       images: [],
       share: { enabled: false, code: '', views: 0 }
     })
-    audit('新增', `训练计划 #${id} ${name}`, `录入会员情况：目标[${plan.coreGoal}] 频率[${plan.freq}]`)
+    audit(
+      '新增',
+      `训练计划 #${id} ${name}`,
+      `录入会员情况：目标[${plan.coreGoal}] 频率[${plan.freq}]`
+    )
     return id
   }
 
@@ -196,7 +235,11 @@ export const useTrainingStore = defineStore('trainingStore', () => {
     p.content = content
     p.source = source
     p.status = '待老师确认'
-    audit('生成', `训练计划 #${id} ${p.memberName}`, `AI生成草稿（${source === 'llm' ? '大模型' : '本地模板'}），待有权限老师确认`)
+    audit(
+      '生成',
+      `训练计划 #${id} ${p.memberName}`,
+      `AI生成草稿（${source === 'llm' ? '大模型' : '本地模板'}），待有权限老师确认`
+    )
   }
 
   function confirmPlan(id: number) {
@@ -224,9 +267,14 @@ export const useTrainingStore = defineStore('trainingStore', () => {
   function setPlanShare(id: number, enabled: boolean) {
     const p = state.value.plans.find((x) => x.id === id)
     if (!p) return
-    if (enabled && !p.share.code) p.share.code = `plan-${p.id}-${Math.random().toString(36).slice(2, 6)}`
+    if (enabled && !p.share.code)
+      p.share.code = `plan-${p.id}-${Math.random().toString(36).slice(2, 6)}`
     p.share.enabled = enabled
-    audit('修改', `训练计划 #${id} ${p.memberName}`, `H5分享${enabled ? '已开启，链接 /s/plan/' + p.share.code : '已停用'}`)
+    audit(
+      '修改',
+      `训练计划 #${id} ${p.memberName}`,
+      `H5分享${enabled ? '已开启，链接 /s/plan/' + p.share.code : '已停用'}`
+    )
   }
 
   function registerPlanView(code: string) {

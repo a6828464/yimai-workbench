@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\PostClassReview;
+use App\Services\BodyTestReportService;
 use App\Models\PublishedShare;
 use App\Models\TrainingPlan;
 use Illuminate\Support\Facades\DB;
@@ -47,6 +48,9 @@ final class PublicShareController extends Controller
             'objective' => $payload['objective'] ?? ($generated['objective'] ?? null),
             'plan' => $payload['plan'] ?? ($generated['plan'] ?? null),
             'script' => $payload['script'] ?? ($generated['script'] ?? null),
+            // 体测解读：只给客观数据（指标/实测值/标准区间）。
+            // 设备原文含「矫正」等表达禁忌词，还有接近诊断的表述，一律不对客。
+            'bodyTest' => BodyTestReportService::toCustomerView($payload['bodyTest'] ?? null),
             'confirmedAt' => $row->confirmed_at?->toDateString(),
         ]);
     }

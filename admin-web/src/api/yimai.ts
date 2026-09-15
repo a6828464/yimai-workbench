@@ -631,9 +631,34 @@ export function queryCustomers(
     remainRange?: string
     evaluationStatus?: string
   }
-): Promise<{ records: YimaiCustomer[]; total: number; current: number; size: number }> {
+): Promise<{
+  records: YimaiCustomer[]
+  total: number
+  current: number
+  size: number
+  /** 出勤三列的口径标签与日期范围（三个连续 30 天滚动窗口） */
+  attendanceMonths?: {
+    m1: string
+    m2: string
+    m3: string
+    m1Range?: string
+    m2Range?: string
+    m3Range?: string
+  }
+}> {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiCustomer[]; total: number }>('/customers', {
+    return apiGet<{
+      records: YimaiCustomer[]
+      total: number
+      attendanceMonths?: {
+        m1: string
+        m2: string
+        m3: string
+        m1Range?: string
+        m2Range?: string
+        m3Range?: string
+      }
+    }>('/customers', {
       name: params.name,
       phone: params.phone,
       venue: params.venue,
@@ -1871,6 +1896,86 @@ export async function getTeacherOverview(
   return apiGet<TeacherOverview>('/today/teacher-overview', { startDate, endDate })
 }
 
+// ==================== 体测报告（门店智能魔镜 / ruleye） ====================
+
+export interface BodyTestCompositionItem {
+  key: string
+  name: string
+  value: number
+  unit: string
+  /** 报告里的标准范围边界 */
+  range: number[] | null
+  /** 正常档位对应的数值区间，展示「标准 18~28」用这个 */
+  normalRange: number[] | null
+  /** 档位名，如 标准 / 高于标准 / 不足 */
+  bandLabel: string
+  isNormal: boolean
+  risk: string
+  suggest: string
+}
+
+export interface BodyTestPostureItem {
+  key: string
+  name: string
+  risk: string
+  suggest: string
+  observations: string[]
+}
+
+export interface BodyTestAnalysis {
+  saved: boolean
+  reportId: number | null
+  profile: {
+    age: number
+    sex: string
+    height: number
+    weight: number
+    bmi: number
+    bodyFatRate: number
+    score: number
+    bodyType: string
+    nickName: string
+    testedAt: string
+    gymName: string
+  }
+  composition: BodyTestCompositionItem[]
+  abnormal: BodyTestCompositionItem[]
+  posture: BodyTestPostureItem[]
+  /** 映射出的训练观察项 key，可直接写进课后分析 */
+  observations: string[]
+  directions: string[]
+  health: Record<string, unknown>
+  redFlags: string[]
+}
+
+/** 只解析不入库：老师当场贴链接预览 */
+export async function parseBodyTestReport(url: string): Promise<BodyTestAnalysis> {
+  requirePostClassBackend()
+  return apiPost<BodyTestAnalysis>('/body-test-reports/parse', { url })
+}
+
+/** 归档体测报告 */
+export async function saveBodyTestReport(body: {
+  url: string
+  memberName?: string
+  phone?: string
+  venue?: string
+  customerId?: number | null
+  leadId?: number | null
+}): Promise<BodyTestAnalysis & { id: number }> {
+  requirePostClassBackend()
+  return apiPost('/body-test-reports', body as unknown as Record<string, unknown>)
+}
+
+/** 按会员/客资查历史体测（同一会员多次可纵向对比） */
+export async function queryBodyTestReports(params: {
+  customerId?: number
+  leadId?: number
+}): Promise<{ records: BodyTestAnalysis[] }> {
+  requirePostClassBackend()
+  return apiGet('/body-test-reports', params as Record<string, unknown>)
+}
+
 // ==================== 课后分析 ＋ 训练方向（P0） ====================
 //
 // 规则库（观察项 / 学员类型 / 红线 / 话术口径）以后端 PostClassPlanEngine 为唯一来源，
@@ -1954,23 +2059,30 @@ export interface PostClassPlanResult {
 }
 
 export interface PostClassCandidate {
-  bookingId: number
-  classAt: string
-  date: string
-  time: string
+  /** class=上过课 / lead=分配给他的留资 / member=会籍归属他的会员 */
+  source: 'class' | 'lead' | 'member'
+  bookingId?: number
+  classAt?: string
+  date?: string
+  time?: string
   venue: string
-  courseName: string
-  teacherName: string
+  courseName?: string
+  teacherName?: string
   studentName: string
   phone: string
   phoneTail: string
-  kind: string
-  isTrial: boolean
-  scene: string
-  status: string
+  kind?: string
+  isTrial?: boolean
+  scene?: string
+  status?: string
   customerId?: number | null
   leadId?: number | null
-  leadStatus: string
+  leadStatus?: string
+  demand?: string
+  leadSource?: string
+  leadDate?: string
+  mainCard?: string
+  remainTimes?: number | null
   hasReview: boolean
 }
 
@@ -2038,9 +2150,12 @@ export async function previewPostClassPlan(
   return apiPost<PostClassPlanResult>('/post-class-reviews/preview', input)
 }
 
-export async function queryPostClassCandidates(
-  days = 7
-): Promise<{ records: PostClassCandidate[]; pendingCount: number }> {
+export async function queryPostClassCandidates(days = 7): Promise<{
+  records: PostClassCandidate[]
+  leads: PostClassCandidate[]
+  members: PostClassCandidate[]
+  pendingCount: number
+}> {
   requirePostClassBackend()
   return apiGet('/post-class-reviews/candidates', { days })
 }
@@ -2101,6 +2216,12 @@ export async function setPostClassShare(
   return apiPost(`/post-class-reviews/${id}/share`, { enabled })
 }
 
+/** 把课后分析流转成训练计划草稿 */
+export async function reviewToTrainingPlan(id: number): Promise<{ planId: number }> {
+  requirePostClassBackend()
+  return apiPost(`/post-class-reviews/${id}/to-plan`)
+}
+
 export async function deletePostClassReview(id: number): Promise<{ id: number }> {
   requirePostClassBackend()
   return apiDelete(`/post-class-reviews/${id}`)
@@ -2118,6 +2239,21 @@ export async function getPublicPostClass(code: string): Promise<{
   objective: PostClassPlanResult['objective']
   plan: PostClassPlanResult['plan']
   script: PostClassPlanResult['script'] | null
+  /** 体测数据（对客安全摘要：只有客观指标与标准区间） */
+  bodyTest: {
+    testedAt: string
+    score: number | null
+    bmi: number | null
+    bodyFatRate: number | null
+    abnormal: {
+      name: string
+      value: number
+      unit: string
+      normalRange: number[] | null
+      bandLabel: string
+    }[]
+    postureCount: number
+  } | null
   confirmedAt: string
 }> {
   requirePostClassBackend()

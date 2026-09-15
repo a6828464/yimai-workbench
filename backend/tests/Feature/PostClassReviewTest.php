@@ -2,11 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Models\BodyTestReport;
 use App\Models\Customer;
 use App\Models\KyBooking;
 use App\Models\Lead;
 use App\Models\PostClassReview;
+use App\Models\TrainingPlan;
 use App\Models\User;
+use App\Services\BodyTestReportService;
 use App\Services\PostClassPlanEngine;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
@@ -75,6 +78,104 @@ class PostClassReviewTest extends TestCase
             'name' => '本人会籍会员丁', 'phone' => '13900001004', 'venue' => '绿地店',
             'external_id' => 'ky:77:1004', 'layer' => 'P2', 'consultant' => '王教练',
         ]);
+    }
+
+    /** 多角色叠加：服务老师 + 授课老师 = 可见范围并集 */
+    public function test_multi_role_union_of_service_and_coach(): void
+    {
+        $this->seedBookings('王教练');
+        $this->seedCustomers();
+
+        // 只挂「王教练」名下会籍、但没上过私教课的会员
+        Customer::create([
+            'name' => '仅会籍会员', 'phone' => '13900001009', 'venue' => '绿地店',
+            'external_id' => 'ky:77:1009', 'layer' => 'P2', 'consultant' => '王教练',
+        ]);
+
+        // 单角色：服务老师 → 只看名下会籍会员（会籍会员丁 + 仅会籍会员），看不到私教学员甲
+        Sanctum::actingAs($this->makeUser('R_SERVICE', '王教练', 'svc-wang'));
+        $serviceOnly = array_column($this->getJson('/api/customers?size=50')->json('data.records'), 'name');
+        $this->assertContains('本人会籍会员丁', $serviceOnly);
+        $this->assertContains('仅会籍会员', $serviceOnly);
+        $this->assertNotContains('私教学员甲', $serviceOnly);
+
+        // 单角色：授课老师 → 私教课学员 + 名下会籍会员
+        Sanctum::actingAs($this->makeUser('R_TEACHER', '王教练', 'coach-wang'));
+        $coachOnly = array_column($this->getJson('/api/customers?size=50')->json('data.records'), 'name');
+        $this->assertContains('私教学员甲', $coachOnly);
+        $this->assertNotContains('小班学员乙', $coachOnly);
+
+        // 双角色：并集（私教学员甲 ∪ 名下会籍会员）
+        $both = $this->makeUser('R_SERVICE', '王教练', 'both-wang');
+        $both->update(['roles' => ['R_SERVICE', 'R_TEACHER']]);
+        Sanctum::actingAs($both->fresh());
+        $union = array_column($this->getJson('/api/customers?size=50')->json('data.records'), 'name');
+        $this->assertContains('私教学员甲', $union);
+        $this->assertContains('本人会籍会员丁', $union);
+        $this->assertContains('仅会籍会员', $union);
+        $this->assertNotContains('小班学员乙', $union);   // 小班仍不计入
+    }
+
+    /** 叠加店长：本店全部（并集被更大的范围吸收） */
+    public function test_manager_role_absorbs_smaller_scopes(): void
+    {
+        $this->seedBookings('王教练');
+        $this->seedCustomers();
+
+        $u = $this->makeUser('R_TEACHER', '王教练', 'mgr-wang');
+        $u->update(['roles' => ['R_TEACHER', 'R_SERVICE', 'R_MANAGER']]);
+        Sanctum::actingAs($u->fresh());
+
+        $names = array_column($this->getJson('/api/customers?size=50')->json('data.records'), 'name');
+        // 店长范围是本店全部，小班学员乙这种跟自己毫无关系的也在内
+        $this->assertContains('小班学员乙', $names);
+        $this->assertContains('团课学员丙', $names);
+        $this->assertContains('私教学员甲', $names);
+    }
+
+    /** 多角色写权限：任一角色够用即可（授课老师能录课后分析） */
+    public function test_multi_role_write_permission_follows_any_role(): void
+    {
+        $this->seedCustomers();
+        $u = $this->makeUser('R_SERVICE', '王教练', 'multi-wang');
+        $u->update(['roles' => ['R_SERVICE', 'R_TEACHER']]);
+        Sanctum::actingAs($u->fresh());
+
+        $this->postJson('/api/post-class-reviews', [
+            'scene' => 'trial', 'studentName' => '私教学员甲', 'studentType' => '塑形线条',
+            'observations' => [['key' => 'glute_weak', 'level' => '中']], 'venue' => '绿地店',
+        ])->assertOk();
+    }
+
+    /** 账号管理支持多角色；改角色要清 token 让新权限立即生效 */
+    public function test_account_multi_role_create_and_update(): void
+    {
+        Sanctum::actingAs($this->makeUser('R_SUPER', '老板', 'boss'));
+
+        $this->postJson('/api/accounts', [
+            'userName' => 'multi-1',
+            'name' => '多角色账号',
+            'roles' => ['R_SERVICE', 'R_TEACHER'],
+            'venues' => ['绿地店'],
+            'password' => 'password123',
+        ])->assertOk();
+
+        $created = User::where('username', 'multi-1')->firstOrFail();
+        $this->assertSame(['R_SERVICE', 'R_TEACHER'], userRoles($created));
+        // 含门店绑定角色 → 锁定单一门店
+        $this->assertSame('绿地店', $created->venue);
+
+        $listed = collect($this->getJson('/api/accounts')->json('data'))->firstWhere('key', 'multi-1');
+        $this->assertSame(['R_SERVICE', 'R_TEACHER'], $listed['roles']);
+        $this->assertSame('授课老师 + 服务老师', $listed['roleLabel']);
+
+        // 改成店长：范围放大到本店，且旧 token 作废
+        $created->createToken('old');
+        $this->patchJson('/api/accounts/multi-1', ['roles' => ['R_MANAGER']])->assertOk();
+        $fresh = $created->fresh();
+        $this->assertSame(['R_MANAGER'], userRoles($fresh));
+        $this->assertSame('R_MANAGER', $fresh->role);      // 主角色同步回写
+        $this->assertSame(0, $fresh->tokens()->count());
     }
 
     public function test_coach_sees_only_private_students_and_own_service_members(): void
@@ -293,6 +394,196 @@ class PostClassReviewTest extends TestCase
         $public = $this->getJson("/api/public/post-class/{$code}")->assertOk()->json('data');
         $this->assertSame('老师当场改过的第一阶段文案', $public['objective']['plan'][0]['goal']);
         $this->assertNotEmpty($public['script']['progress']);
+    }
+
+    /** 体测报告解析：档位判定要按报告自带的 type_name + range 走，不能硬编码 */
+    public function test_body_test_report_analysis_uses_device_bands(): void
+    {
+        $raw = [
+            'score' => 71,
+            'nick_name' => 'Miyako',
+            'create_time' => '2026.09.15 09:45',
+            'yoga_gym_name' => '一麦瑜伽',
+            'shoulder_slope' => 1,
+            'shoulder_slope_risk' => '双肩峰不在同一水平高度。',
+            'shoulder_slope_suggest' => '避免长期单侧背包。',
+            'highlow_pelvis' => 1,
+            'highlow_pelvis_risk' => '两髂骨不在同一水平高度。',
+            // 设备原文含门店的表达禁忌词「矫正」，对客侧不得原样引用
+            'highlow_pelvis_suggest' => '骨盆带活化+激活，静力性复位矫正。',
+            'x_leg' => 1, 'x_leg_risk' => '膝盖内扣。', 'x_leg_suggest' => '建立足弓支撑。',
+            'o_leg' => 0,
+            'body_test_posture' => [],
+            'user_disease_record' => [
+                'train_directions' => '康复,产后恢复',
+                'maternity_bool' => 1, 'maternity' => '已产后 6 个月',
+                'joint' => '', 'operation_bool' => 0, 'medication_bool' => 0, 'vertigo_bool' => 0,
+                'heart' => '', 'blood_pressure' => '',
+            ],
+            'body_base' => [
+                // range 在接口里是 JSON 字符串，必须能解析
+                'age' => 38, 'sex' => 2, 'height' => 155, 'weight' => 53.8,
+                'bmi' => 22.3, 'bmi_range' => '[10.0, 18.5, 24.0, 50.0]',
+                'fat' => 32.9, 'fat_range' => '[13.0, 18.0, 28.0, 33.0]',
+                'visceral_fat' => 7, 'visceral_fat_range' => '[0.0, 1.0, 9.0, 13.0]',
+                'intro' => [
+                    'bmi' => ['flag_name' => 'BMI', 'type_name' => '["偏瘦","标准","偏胖"]'],
+                    'fat' => ['flag_name' => '脂肪率', 'type_name' => '["低于标准","标准","高于标准"]'],
+                    // 正常档在下标 0，不是中间档
+                    'visceral_fat' => ['flag_name' => '内脏脂肪等级', 'type_name' => '["标准","偏差","很差"]'],
+                ],
+            ],
+        ];
+
+        $a = BodyTestReportService::analyze($raw);
+
+        // 档位判定：BMI 22.3 落在 18.5~24 → 标准
+        $bmi = collect($a['composition'])->firstWhere('key', 'bmi');
+        $this->assertSame('标准', $bmi['bandLabel']);
+        $this->assertTrue($bmi['isNormal']);
+        $this->assertSame([18.5, 24.0], $bmi['normalRange']);
+
+        // 脂肪率 32.9 落在 28~33 → 高于标准（不能因为档位名里含「标准」就判成正常）
+        $fat = collect($a['composition'])->firstWhere('key', 'fat');
+        $this->assertSame('高于标准', $fat['bandLabel']);
+        $this->assertFalse($fat['isNormal']);
+
+        // 内脏脂肪：正常档在下标 0，标准区间是 0~1
+        $vf = collect($a['composition'])->firstWhere('key', 'visceral_fat');
+        $this->assertSame('偏差', $vf['bandLabel']);
+        $this->assertSame([0.0, 1.0], $vf['normalRange']);
+
+        // 体态映射出训练观察项
+        $this->assertContains('knee_valgus', $a['observations']);
+        $this->assertContains('pelvis_lateral', $a['observations']);
+
+        // 产后登记进红线（需老师当面确认盆底症状，报告本身不做诊断）
+        $this->assertContains('postpartum_pelvic', $a['redFlags']);
+        $this->assertSame(['康复', '产后恢复'], $a['directions']);
+
+        // 含禁忌词的设备原文标记出来，且对客摘要里完全不带设备文案
+        $pelvis = collect($a['posture'])->firstWhere('key', 'highlow_pelvis');
+        $this->assertFalse($pelvis['deviceTextSafe']);
+        $customer = BodyTestReportService::toCustomerView($a);
+        $this->assertStringNotContainsString('矫正', json_encode($customer, JSON_UNESCAPED_UNICODE));
+        $this->assertNotNull($customer['abnormal'][0]['normalRange']);
+    }
+
+    /** 完整链路：体测 → 课后分析（自动带出观察项）→ 训练计划 */
+    public function test_chain_from_body_test_to_training_plan(): void
+    {
+        $coach = $this->makeUser('R_TEACHER', '王教练', 'coach-wang');
+        Sanctum::actingAs($coach);
+
+        $report = BodyTestReport::create([
+            'venue' => '绿地店',
+            'body_test_id' => '340218',
+            'member_name' => 'Miyako',
+            'tested_at' => '2026-09-15 09:45',
+            'score' => 71,
+            'profile' => ['age' => 38, 'sex' => '女', 'height' => 155, 'weight' => 53.8, 'bodyFatRate' => 32.9, 'score' => 71, 'testedAt' => '2026.09.15 09:45'],
+            'composition' => [], 'abnormal' => [['key' => 'fat', 'name' => '脂肪率', 'bandLabel' => '高于标准', 'value' => 32.9, 'unit' => '%', 'normalRange' => [18, 28]]],
+            'posture' => [['key' => 'x_leg', 'name' => '膝盖内扣', 'risk' => '', 'suggest' => '', 'observations' => ['knee_valgus']]],
+            'observations' => ['knee_valgus', 'pelvis_lateral', 'core_weak'],
+            'directions' => ['康复'],
+            'health' => [], 'red_flags' => [], 'raw' => [],
+        ]);
+
+        // ① 建课后分析：体测观察项自动并入
+        $create = $this->postJson('/api/post-class-reviews', [
+            'scene' => 'trial',
+            'studentName' => 'Miyako',
+            'studentType' => '体态调整',
+            'observations' => [['key' => 'breath_shallow', 'level' => '中']],
+            'venue' => '绿地店',
+            'bodyTestReportId' => $report->id,
+        ])->assertOk();
+        $id = $create->json('data.id');
+
+        $row = PostClassReview::find($id);
+        $keys = array_column($row->payload['observations'], 'key');
+        $this->assertContains('breath_shallow', $keys);   // 老师手选的
+        $this->assertContains('knee_valgus', $keys);      // 体测带出的
+        $this->assertContains('core_weak', $keys);
+        $this->assertSame($report->id, $row->payload['bodyTestReportId']);
+
+        // ② 确认后流转训练计划
+        $this->postJson("/api/post-class-reviews/{$id}/confirm")->assertOk();
+        $planId = $this->postJson("/api/post-class-reviews/{$id}/to-plan")->assertOk()->json('data.planId');
+
+        $plan = TrainingPlan::find($planId);
+        $this->assertNotNull($plan);
+        $this->assertSame($id, $plan->source_review_id);
+        $this->assertSame($report->id, $plan->source_body_test_id);
+        $this->assertSame('待老师确认', $plan->status);
+        $this->assertSame('Miyako', $plan->member_name);
+        // 体成分带进档案，关注要点用体测偏离项
+        $this->assertSame('38', $plan->payload['age']);
+        $this->assertSame('32.9', $plan->payload['bodyFat']);
+        $this->assertStringContainsString('脂肪率', $plan->payload['focus']);
+        $this->assertNotEmpty($plan->payload['content']['phases']);
+
+        // ③ 训练计划列表能读到，且 id 是真实主键（payload 不能覆盖）
+        $list = $this->getJson('/api/training-plans')->assertOk()->json('data');
+        $found = collect($list)->firstWhere('id', $planId);
+        $this->assertNotNull($found);
+        $this->assertSame('Miyako', $found['memberName']);
+    }
+
+    /** 红线记录不允许流转成训练计划 */
+    public function test_red_flag_review_cannot_become_a_plan(): void
+    {
+        $coach = $this->makeUser('R_TEACHER', '王教练', 'coach-wang');
+        Sanctum::actingAs($coach);
+
+        $id = $this->postJson('/api/post-class-reviews', [
+            'scene' => 'trial', 'studentName' => '红线学员', 'studentType' => '康复',
+            'observations' => [['key' => 'core_weak', 'level' => '中']],
+            'redFlags' => ['numb_radiate'], 'venue' => '绿地店',
+        ])->assertOk()->json('data.id');
+
+        $this->postJson("/api/post-class-reviews/{$id}/to-plan")->assertStatus(422);
+    }
+
+    public function test_candidates_return_three_people_sources(): void
+    {
+        // ① 上过课：预约行刻意不带手机号，只有姓名 + 门店
+        KyBooking::create([
+            'source_key' => '77:私教:2001', 'venue' => '绿地店', 'booking_type' => '私教',
+            'course_kind' => 'private', 'member_id' => '2001', 'member_name' => '无手机号学员',
+            'phone' => '', 'start_at' => now()->subDay(), 'teacher_name' => '王教练',
+            'status' => 'signed', 'is_trial' => false,
+        ]);
+        Customer::create([
+            'name' => '无手机号学员', 'phone' => '13900002001', 'venue' => '绿地店',
+            'external_id' => 'ky:77:2001', 'layer' => 'P2', 'consultant' => '李顾问',
+        ]);
+        Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '无手机号学员', 'phone' => '13900002001',
+            'source' => '美团', 'venue' => '绿地店', 'service_teacher' => '李顾问', 'status' => '已体验',
+        ]);
+        // ② 分配给他的留资（没有课次）
+        Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '待约课客资', 'phone' => '13900002002',
+            'source' => '大众点评', 'venue' => '绿地店', 'service_teacher' => '王教练', 'status' => '已联系',
+        ]);
+        // ③ 会籍归属他的会员
+        Customer::create([
+            'name' => '名下会员', 'phone' => '13900002003', 'venue' => '绿地店',
+            'external_id' => 'ky:77:2003', 'layer' => 'P2', 'consultant' => '王教练',
+        ]);
+
+        Sanctum::actingAs($this->makeUser('R_TEACHER', '王教练', 'coach-wang'));
+        $data = $this->getJson('/api/post-class-reviews/candidates?days=7')->assertOk()->json('data');
+
+        // 三类来源都在
+        $this->assertSame(['无手机号学员'], array_column($data['records'], 'studentName'));
+        $this->assertSame(['待约课客资'], array_column($data['leads'], 'studentName'));
+        $this->assertSame(['名下会员'], array_column($data['members'], 'studentName'));
+
+        // 客资状态：预约行没有手机号，靠「姓名 + 门店」也能匹配上留资，不再是空值
+        $this->assertSame('已体验', $data['records'][0]['leadStatus']);
+        $this->assertSame('13900002001', $data['records'][0]['phone']);
     }
 
     public function test_today_todo_exposes_pending_reviews_for_coach_only(): void

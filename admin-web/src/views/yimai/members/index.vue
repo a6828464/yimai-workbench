@@ -148,8 +148,23 @@
           </template>
         </ElTableColumn>
 
-        <!-- 出勤三列：所有清单通用展示 -->
-        <ElTableColumn v-if="activeTab !== 'vip'" label="M1/M2/M3出勤" width="120" align="center">
+        <!-- 出勤三列：所有清单通用展示。口径＝三个连续 30 天滚动窗口的上课次数（近30天含今天） -->
+        <ElTableColumn v-if="activeTab !== 'vip'" width="150" align="center">
+          <template #header>
+            <ElTooltip placement="top">
+              <template #content>
+                <div>三个连续 30 天窗口的上课次数：再前30天 / 前30天 / 近30天</div>
+                <div v-if="attendanceRangeLabel" class="mt-1">
+                  当前区间：{{ attendanceRangeLabel }}
+                </div>
+                <div class="mt-1">同一天上两节算两次</div>
+              </template>
+              <span class="cursor-help">
+                出勤
+                <span class="text-xs text-gray-400">近30天/前30天/再前30天</span>
+              </span>
+            </ElTooltip>
+          </template>
           <template #default="{ row }">
             <span :class="declining(row) ? 'font-500 text-red-500' : ''">
               {{ row.attendM1 ?? '-' }} / {{ row.attendM2 ?? '-' }} / {{ row.attendM3 ?? '-' }}
@@ -749,6 +764,22 @@
   const total = ref(0)
   /** 五清单徽标计数：服务端一次扫描后返回 */
   const listCounts = ref<Record<string, number>>({})
+  // 出勤三列的口径与日期范围由后端给出（三个连续 30 天滚动窗口），
+  // 避免前端再算一遍导致口径漂移
+  const attendanceMonths = ref<{
+    m1: string
+    m2: string
+    m3: string
+    m1Range?: string
+    m2Range?: string
+    m3Range?: string
+  } | null>(null)
+  const attendanceRangeLabel = computed(() => {
+    const m = attendanceMonths.value
+    if (!m?.m3Range) return ''
+
+    return `再前30天 ${m.m1Range} ｜ 前30天 ${m.m2Range} ｜ 近30天 ${m.m3Range}`
+  })
   const rules = ref(getMemberRules())
 
   watch(activeTab, (tab) => {
@@ -780,6 +811,7 @@
         size: page.value.size
       })
       list.value = res.records ?? []
+      attendanceMonths.value = res.attendanceMonths ?? attendanceMonths.value
       total.value = res.total ?? list.value.length
       if (!keepPage) loadListCounts()
     } catch (e) {

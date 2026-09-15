@@ -8,6 +8,7 @@ use App\Models\KyBooking;
 use App\Models\KyCard;
 use App\Models\SyncJob;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
@@ -61,12 +62,10 @@ class KyMemberSyncService
         self::upsertCardFacts(array_map(fn ($card) => self::cardFact($card, $venue, $venueId), $cards));
 
         $today = CarbonImmutable::today();
-        $month3 = $today->startOfMonth()->subMonth();
-        $month2 = $month3->subMonth();
-        $month1 = $month2->subMonth();
+        $windows = self::attendanceWindows($today);
 
         // 增量同步：出勤只拉「上次同步之后」的区间（首次无记录则拉近两年）。
-        // 五清单只依赖最近三个完整自然月；会员基础表/卡表每次全量（数据量小）。
+        // 五清单只依赖最近 90 天；会员基础表/卡表每次全量（数据量小）。
         $meta = (array) (AppSetting::first()?->sync_meta ?? []);
         $lastSync = isset($meta[$venue]) && $meta[$venue] !== '' ? $meta[$venue] : null;
         $hasBookingFacts = KyBooking::where('venue', $venue)->exists();
@@ -85,7 +84,6 @@ class KyMemberSyncService
             );
         }
 
-        $attendance = [];
         $seenBookings = [];
         $bookingCount = 0;
         $leagueBookingCount = 0;
@@ -126,7 +124,7 @@ class KyMemberSyncService
                     $artifactWriter?->append($isLeague ? 'league-bookings' : 'private-bookings', $batchRows);
                     $facts = [];
                     foreach ($batchRows as $row) {
-                        self::addAttendance($row, $path, $attendance, $seenBookings, $month1, $month2, $month3);
+                        self::trackSignedBooking($row, $path, $seenBookings);
                         $facts[] = self::bookingFact($row, $path, $venue, $venueId);
                     }
                     self::upsertBookingFacts($facts);
@@ -138,8 +136,8 @@ class KyMemberSyncService
                 }
             }
         }
-        // 每次都从预约事实表重算三个完整自然月，避免增量区间把历史出勤覆盖为零。
-        $attendance = self::attendanceFromFacts($venue, $month1, $month2, $month3);
+        // 每次都从预约事实表重算三个 30 天窗口，避免增量区间把历史出勤覆盖为零。
+        $attendance = self::attendanceFromFacts($venue, $windows);
 
         $cardsByMember = [];
         foreach ($cards as $card) {
@@ -292,10 +290,11 @@ class KyMemberSyncService
                 'size' => $artifact->size,
                 'sha256' => $artifact->sha256,
             ], $artifacts),
+            // 出勤口径：三个连续 30 天滚动窗口（不再按自然月）
             'attendancePeriod' => [
-                'm1' => $month1->format('Y-m'),
-                'm2' => $month2->format('Y-m'),
-                'm3' => $month3->format('Y-m'),
+                'm1' => '再前30天',
+                'm2' => '前30天',
+                'm3' => '近30天',
             ],
         ];
     }
@@ -465,15 +464,14 @@ class KyMemberSyncService
         return isset($m[0]) ? (float) $m[0] : 0.0;
     }
 
-    private static function addAttendance(
-        array $booking,
-        string $path,
-        array &$attendance,
-        array &$seenBookings,
-        CarbonImmutable $month1,
-        CarbonImmutable $month2,
-        CarbonImmutable $month3
-    ): void {
+    /**
+     * 统计本次同步里去重后的已签到预约数（仅用于同步结果展示）。
+     *
+     * 这里不再顺手算出勤：出勤在同步末尾由 attendanceFromFacts 从预约事实表整段重算，
+     * 在本函数里算一次会被整段覆盖，纯属白跑。
+     */
+    private static function trackSignedBooking(array $booking, string $path, array &$seenBookings): void
+    {
         if ((string) ($booking['status_desc'] ?? '') !== '已签到') {
             return;
         }
@@ -483,40 +481,57 @@ class KyMemberSyncService
             return;
         }
         $recordId = self::pick($booking, ['id', 'reservation_id']);
-        $dedupeKey = $path.':'.$recordId.':'.$memberId;
-        if (isset($seenBookings[$dedupeKey])) {
-            return;
-        }
-        $seenBookings[$dedupeKey] = true;
-
-        $date = CarbonImmutable::parse($visitedAt);
-        $attendance[$memberId]['last_visit'] = max(
-            $attendance[$memberId]['last_visit'] ?? '0000-00-00',
-            $date->toDateString()
-        );
-        foreach ([$month1, $month2, $month3] as $index => $month) {
-            if ($date->betweenIncluded($month->startOfMonth(), $month->endOfMonth())) {
-                $key = 'attend_m'.($index + 1);
-                $attendance[$memberId][$key] = ($attendance[$memberId][$key] ?? 0) + 1;
-            }
-        }
+        $seenBookings[$path.':'.$recordId.':'.$memberId] = true;
     }
 
-    private static function attendanceFromFacts(
-        string $venue,
-        CarbonImmutable $month1,
-        CarbonImmutable $month2,
-        CarbonImmutable $month3
-    ): array {
+    /**
+     * 出勤三窗口：三个连续且等长的 30 天窗口。
+     *
+     *   M3 近 30 天（含今天）／M2 前 30 天／M1 再前 30 天
+     *
+     * 原实现按「近三个完整自然月」统计，本月完全不计入，导致：
+     *  - 会员本月天天来，会员列表里出勤仍显示 0；
+     *  - 「待续课」要求 M3 > 0（最近一个月有出勤）时，上月休假、本月恢复训练的会员被漏掉，
+     *    即使课时快用完也不进清单。
+     * 滚动窗口既包含当期，又保持三档等长（各 30 天）从而互相可比——
+     * 这是「出勤降低（M1 > M2 > M3）」「预流失（M2 > 0 且 M3 = 0）」两条规则成立的前提。
+     *
+     * @return array<int, array{0: CarbonImmutable, 1: CarbonImmutable}> [M1, M2, M3] 各自 [起, 止]
+     */
+    public static function attendanceWindows(CarbonInterface|string|null $today = null): array
+    {
+        $today = CarbonImmutable::parse($today ?? 'today');
+
+        return [
+            // M1 再前 30 天：60~89 天前
+            [$today->subDays(89)->startOfDay(), $today->subDays(60)->endOfDay()],
+            // M2 前 30 天：30~59 天前
+            [$today->subDays(59)->startOfDay(), $today->subDays(30)->endOfDay()],
+            // M3 近 30 天：含今天
+            [$today->subDays(29)->startOfDay(), $today->endOfDay()],
+        ];
+    }
+
+    /**
+     * 从预约事实表整段重算三个窗口的出勤与最近到店日。
+     *
+     * @param  array<int, array{0: CarbonImmutable, 1: CarbonImmutable}>  $windows  [M1, M2, M3] 各自 [起, 止]
+     */
+    private static function attendanceFromFacts(string $venue, array $windows): array
+    {
         $attendance = [];
+        $earliest = $windows[0][0] ?? null;
+        if (! $earliest) {
+            return $attendance;
+        }
         KyBooking::query()
             ->where('venue', $venue)
             ->where('status', 'signed')
             ->whereNotNull('member_id')
             ->where('member_id', '!=', '')
-            ->where('start_at', '>=', $month1->startOfMonth())
+            ->where('start_at', '>=', $earliest)
             ->orderBy('id')
-            ->chunkById(1000, function ($bookings) use (&$attendance, $month1, $month2, $month3) {
+            ->chunkById(1000, function ($bookings) use (&$attendance, $windows) {
                 foreach ($bookings as $booking) {
                     $memberId = (string) $booking->member_id;
                     $date = CarbonImmutable::parse($booking->start_at);
@@ -524,8 +539,8 @@ class KyMemberSyncService
                         $attendance[$memberId]['last_visit'] ?? '0000-00-00',
                         $date->toDateString()
                     );
-                    foreach ([$month1, $month2, $month3] as $index => $month) {
-                        if ($date->betweenIncluded($month->startOfMonth(), $month->endOfMonth())) {
+                    foreach ($windows as $index => [$from, $to]) {
+                        if ($date->betweenIncluded($from, $to)) {
                             $key = 'attend_m'.($index + 1);
                             $attendance[$memberId][$key] = ($attendance[$memberId][$key] ?? 0) + 1;
                         }

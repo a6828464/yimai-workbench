@@ -188,7 +188,14 @@
     R_TEACHER: '授课老师',
     R_MEDIA: '新媒体'
   }
-  const roleLabel = computed(() => ROLE_LABELS[form.value.role] ?? form.value.role ?? '—')
+  // 账号支持多角色：优先展示全部角色，老接口只返回 role 时回退到单角色
+  const roleLabel = computed(() => {
+    const all = (form.value as { roles?: string[] }).roles ?? []
+    const roles = all.length ? all : form.value.role ? [form.value.role] : []
+    if (!roles.length) return '—'
+
+    return roles.map((r) => ROLE_LABELS[r] ?? r).join(' + ')
+  })
 
   onMounted(async () => {
     try {

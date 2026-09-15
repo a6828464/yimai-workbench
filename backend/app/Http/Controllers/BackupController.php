@@ -349,7 +349,7 @@ final class BackupController extends Controller
         AuditLog::create([
             'operator_id' => $r->user()->id,
             'operator_name' => $r->user()->name,
-            'operator_role' => $r->user()->role,
+            'operator_role' => primaryRole(userRoles($r->user())),
             'action' => $action,
             'module' => '数据备份',
             'target_id' => (string) $jobId,

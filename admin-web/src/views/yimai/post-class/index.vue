@@ -38,21 +38,40 @@
           </template>
 
           <div class="mb-2 flex flex-wrap items-center gap-2">
-            <span class="text-xs text-gray-500">范围</span>
-            <ElRadioGroup v-model="days" size="small" @change="loadCandidates">
-              <ElRadioButton :value="3">近 3 天</ElRadioButton>
-              <ElRadioButton :value="7">近 7 天</ElRadioButton>
-              <ElRadioButton :value="30">近 30 天</ElRadioButton>
+            <ElRadioGroup v-model="sourceTab" size="small">
+              <ElRadioButton value="class">
+                上过课<span class="ml-1 text-xs">({{ candidates.length }})</span>
+              </ElRadioButton>
+              <ElRadioButton value="lead">
+                我的留资<span class="ml-1 text-xs">({{ myLeads.length }})</span>
+              </ElRadioButton>
+              <ElRadioButton value="member">
+                我的会员<span class="ml-1 text-xs">({{ myMembers.length }})</span>
+              </ElRadioButton>
             </ElRadioGroup>
-            <span class="text-xs text-gray-400"> 含体验课与私教课；已填写的会自动移出该列表 </span>
+            <template v-if="sourceTab === 'class'">
+              <span class="text-xs text-gray-500">范围</span>
+              <ElRadioGroup v-model="days" size="small" @change="loadCandidates">
+                <ElRadioButton :value="3">近 3 天</ElRadioButton>
+                <ElRadioButton :value="7">近 7 天</ElRadioButton>
+                <ElRadioButton :value="30">近 30 天</ElRadioButton>
+              </ElRadioGroup>
+            </template>
+            <span class="text-xs text-gray-400">{{ sourceHint }}</span>
           </div>
 
-          <ElTable :data="candidates" v-loading="loading" size="default">
+          <!-- ① 上过课：待填写课后分析 -->
+          <ElTable
+            v-if="sourceTab === 'class'"
+            :data="candidates"
+            v-loading="loading"
+            size="default"
+          >
             <ElTableColumn prop="date" label="日期" width="105" />
             <ElTableColumn prop="time" label="时间" width="70" />
             <ElTableColumn prop="studentName" label="学员" width="110" />
             <ElTableColumn prop="courseName" label="课程" min-width="140" show-overflow-tooltip />
-            <ElTableColumn label="课型" width="150">
+            <ElTableColumn label="课型" width="130">
               <template #default="{ row }">
                 <ElTag v-if="row.isTrial" size="small" type="warning" effect="dark">体验课</ElTag>
                 <ElTag
@@ -66,12 +85,12 @@
               </template>
             </ElTableColumn>
             <ElTableColumn prop="teacherName" label="老师" width="90" />
-            <ElTableColumn label="客资状态" width="100">
+            <ElTableColumn label="客资状态" width="110">
               <template #default="{ row }">
                 <ElTag v-if="row.leadStatus" size="small" effect="plain">{{
                   row.leadStatus
                 }}</ElTag>
-                <span v-else class="text-xs text-gray-400">—</span>
+                <span v-else class="text-xs text-gray-400">未建客资</span>
               </template>
             </ElTableColumn>
             <ElTableColumn label="操作" width="110" fixed="right">
@@ -83,9 +102,81 @@
               </template>
             </ElTableColumn>
           </ElTable>
+
+          <!-- ② 留资管理里分配给他的 -->
+          <ElTable
+            v-else-if="sourceTab === 'lead'"
+            :data="myLeads"
+            v-loading="loading"
+            size="default"
+          >
+            <ElTableColumn prop="studentName" label="客户" width="110" />
+            <ElTableColumn label="手机尾号" width="95">
+              <template #default="{ row }">
+                <span class="tabular-nums">{{ row.phoneTail || '—' }}</span>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn prop="venue" label="门店" width="90" />
+            <ElTableColumn prop="leadSource" label="来源" width="110" />
+            <ElTableColumn prop="demand" label="需求" min-width="130" show-overflow-tooltip />
+            <ElTableColumn prop="leadDate" label="留资日期" width="110" />
+            <ElTableColumn label="状态" width="100">
+              <template #default="{ row }">
+                <ElTag
+                  size="small"
+                  :type="
+                    row.leadStatus === '已成交'
+                      ? 'success'
+                      : row.leadStatus === '新留资'
+                        ? 'danger'
+                        : 'primary'
+                  "
+                >
+                  {{ row.leadStatus }}
+                </ElTag>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <ElButton v-if="canWrite" link type="primary" size="small" @click="openWizard(row)">
+                  填写分析
+                </ElButton>
+                <span v-else class="text-xs text-gray-400">—</span>
+              </template>
+            </ElTableColumn>
+          </ElTable>
+
+          <!-- ③ 约课系统里会籍顾问归属他的会员 -->
+          <ElTable v-else :data="myMembers" v-loading="loading" size="default">
+            <ElTableColumn prop="studentName" label="会员" width="120" />
+            <ElTableColumn label="手机尾号" width="95">
+              <template #default="{ row }">
+                <span class="tabular-nums">{{ row.phoneTail || '—' }}</span>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn prop="venue" label="门店" width="90" />
+            <ElTableColumn prop="mainCard" label="主卡" min-width="140" show-overflow-tooltip />
+            <ElTableColumn prop="remainTimes" label="剩余节数" width="100" />
+            <ElTableColumn label="课后分析" width="110">
+              <template #default="{ row }">
+                <ElTag v-if="row.hasReview" size="small" type="success" effect="plain"
+                  >已填写</ElTag
+                >
+                <span v-else class="text-xs text-gray-400">未填写</span>
+              </template>
+            </ElTableColumn>
+            <ElTableColumn label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <ElButton v-if="canWrite" link type="primary" size="small" @click="openWizard(row)">
+                  填写分析
+                </ElButton>
+                <span v-else class="text-xs text-gray-400">—</span>
+              </template>
+            </ElTableColumn>
+          </ElTable>
           <ElEmpty
-            v-if="!loading && !candidates.length"
-            description="范围内没有待填写的课"
+            v-if="!loading && currentSourceEmpty"
+            :description="sourceEmptyText"
             :image-size="70"
           />
         </ElTabPane>
@@ -160,7 +251,7 @@
                 <span v-else class="text-xs text-gray-300">未开启</span>
               </template>
             </ElTableColumn>
-            <ElTableColumn label="操作" width="200" fixed="right">
+            <ElTableColumn label="操作" width="260" fixed="right">
               <template #default="{ row }">
                 <ElButton link type="primary" size="small" @click="viewDetail(row)">查看</ElButton>
                 <ElButton
@@ -170,6 +261,14 @@
                   size="small"
                   @click="openSharePage(row)"
                   >对客页</ElButton
+                >
+                <ElButton
+                  v-if="canWrite && !row.redFlag && row.status === '已确认'"
+                  link
+                  type="warning"
+                  size="small"
+                  @click="toTrainingPlan(row)"
+                  >转计划</ElButton
                 >
                 <ElButton link type="danger" size="small" @click="removeReview(row)">删除</ElButton>
               </template>
@@ -281,6 +380,7 @@
   import {
     deletePostClassReview,
     getPostClassCatalog,
+    reviewToTrainingPlan,
     queryPostClassCandidates,
     queryPostClassReviews
   } from '@/api/yimai'
@@ -291,6 +391,7 @@
 
   // 服务老师（会籍顾问）对本页只读：看自己名下会员的课后分析与顾问衔接，填写由授课老师完成
   const userStore = useUserStore()
+  const router = useRouter()
   const canWrite = computed(() => {
     const roles = userStore.getUserInfo.roles ?? []
     return roles.some((r: string) => ['R_SUPER', 'R_MANAGER', 'R_TEACHER'].includes(r))
@@ -299,7 +400,26 @@
   const tab = ref('pending')
   const loading = ref(false)
   const days = ref(7)
+  /** 三类人群：上过课 / 分配给他的留资 / 会籍归属他的会员 */
+  const sourceTab = ref<'class' | 'lead' | 'member'>('class')
   const candidates = ref<PostClassCandidate[]>([])
+  const myLeads = ref<PostClassCandidate[]>([])
+  const myMembers = ref<PostClassCandidate[]>([])
+  const sourceHint = computed(() => {
+    if (sourceTab.value === 'class') return '含体验课与私教课；已填写的会自动移出该列表'
+    if (sourceTab.value === 'lead') return '留资管理里会籍顾问或体验课老师是本人的客资'
+    return '约课系统里会籍顾问归属于本人的会员'
+  })
+  const currentSourceEmpty = computed(() => {
+    if (sourceTab.value === 'class') return candidates.value.length === 0
+    if (sourceTab.value === 'lead') return myLeads.value.length === 0
+    return myMembers.value.length === 0
+  })
+  const sourceEmptyText = computed(() => {
+    if (sourceTab.value === 'class') return '范围内没有待填写的课'
+    if (sourceTab.value === 'lead') return '暂无分配给你的留资'
+    return '暂无名下会员'
+  })
   const reviews = ref<PostClassReviewRow[]>([])
   const summary = reactive({ total: 0, confirmed: 0, redFlag: 0 })
   const filter = reactive({ studentType: '', status: '', onlyRedFlag: false })
@@ -329,6 +449,8 @@
     try {
       const r = await queryPostClassCandidates(days.value)
       candidates.value = r.records.filter((x) => !x.hasReview)
+      myLeads.value = r.leads ?? []
+      myMembers.value = r.members ?? []
     } catch (e) {
       ElMessage.error(String((e as { message?: string })?.message ?? e).slice(0, 120))
     } finally {
@@ -360,6 +482,8 @@
   }
 
   function openWizard(c: PostClassCandidate | null) {
+    // 三类来源统一走同一个向导：带课次的会预填上课时间与课型，
+    // 只有留资/会员的则预填身份信息，上课时间由老师当场补
     activeCandidate.value = c
     wizardVisible.value = true
   }
@@ -378,6 +502,26 @@
     const code = row.share?.code
     if (!code) return ElMessage.warning('该记录还没有分享码')
     window.open(`${location.origin}/s/post-class/${code}`, '_blank')
+  }
+
+  /** 把课后分析（含体测解读）流转成训练计划草稿，老师到训练计划页继续排课次 */
+  async function toTrainingPlan(row: PostClassReviewRow) {
+    try {
+      await ElMessageBox.confirm(
+        `把「${row.studentName}」的课后分析生成一份训练计划草稿？\n会员情况、三阶段方向会直接带过去，你到训练计划里继续排课次。`,
+        '生成训练计划',
+        { type: 'info', confirmButtonText: '生成' }
+      )
+    } catch {
+      return
+    }
+    try {
+      const { planId } = await reviewToTrainingPlan(row.id)
+      ElMessage.success('已生成训练计划草稿，正在跳转…')
+      router.push({ path: '/yimai/training', query: { planId: String(planId) } })
+    } catch (e) {
+      ElMessage.error(String((e as { message?: string })?.message ?? e).slice(0, 140))
+    }
   }
 
   async function removeReview(row: PostClassReviewRow) {

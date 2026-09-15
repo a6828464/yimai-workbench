@@ -36,7 +36,9 @@
         </ElTableColumn>
         <ElTableColumn label="状态" width="110">
           <template #default="{ row }">
-            <ElTag size="small" :type="statusType(row.status)" effect="dark">{{ row.status }}</ElTag>
+            <ElTag size="small" :type="statusType(row.status)" effect="dark">{{
+              row.status
+            }}</ElTag>
             <ElTag v-if="row.status !== '待生成'" size="small" effect="plain" class="ml-1">
               {{ row.source === 'llm' ? 'AI' : '模板' }}
             </ElTag>
@@ -46,9 +48,30 @@
         <ElTableColumn label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <ElButton link type="primary" size="small" @click="openDetail(row)">查看</ElButton>
-            <ElButton v-if="row.status === '待生成'" link type="warning" size="small" @click="openEdit(row)">继续录入</ElButton>
-            <ElButton v-if="row.status === '待老师确认'" link type="success" size="small" @click="confirm(row)">确认计划</ElButton>
-            <ElButton v-if="row.status === '已确认'" link type="primary" size="small" @click="openDetail(row)">分享/图片</ElButton>
+            <ElButton
+              v-if="row.status === '待生成'"
+              link
+              type="warning"
+              size="small"
+              @click="openEdit(row)"
+              >继续录入</ElButton
+            >
+            <ElButton
+              v-if="row.status === '待老师确认'"
+              link
+              type="success"
+              size="small"
+              @click="confirm(row)"
+              >确认计划</ElButton
+            >
+            <ElButton
+              v-if="row.status === '已确认'"
+              link
+              type="primary"
+              size="small"
+              @click="openDetail(row)"
+              >分享/图片</ElButton
+            >
             <ElButton link type="danger" size="small" @click="removePlan(row)">删除</ElButton>
           </template>
         </ElTableColumn>
@@ -56,33 +79,86 @@
     </ElCard>
 
     <!-- 录入/编辑弹窗 -->
-    <ElDialog v-model="dialog.visible" title="会员训练计划 · 情况录入" width="680px" destroy-on-close>
-      <ElForm :model="form" label-width="92px">
-        <div class="text-xs text-gray-400 mb-2">① 会员情况</div>
-        <ElRow :gutter="12">
-          <ElCol :xs="12" :md="8"><ElFormItem label="姓名" required><ElInput v-model="form.memberName" /></ElFormItem></ElCol>
-          <ElCol :xs="8" :md="4"><ElFormItem label="年龄"><ElInput v-model="form.age" /></ElFormItem></ElCol>
-          <ElCol :xs="8" :md="4"><ElFormItem label="性别"><ElSelect v-model="form.gender"><ElOption label="女" value="女" /><ElOption label="男" value="男" /></ElSelect></ElFormItem></ElCol>
-          <ElCol :xs="8" :md="4"><ElFormItem label="身高cm"><ElInput v-model="form.height" /></ElFormItem></ElCol>
-          <ElCol :xs="8" :md="4"><ElFormItem label="体重kg"><ElInput v-model="form.weight" /></ElFormItem></ElCol>
-        </ElRow>
-        <ElRow :gutter="12">
-          <ElCol :xs="12" :md="8"><ElFormItem label="体脂率%"><ElInput v-model="form.bodyFat" /></ElFormItem></ElCol>
-          <ElCol :xs="12" :md="16"><ElFormItem label="关注要点"><ElInput v-model="form.focus" placeholder="如：肩颈紧张、核心无力、产后腹直肌分离" /></ElFormItem></ElCol>
-        </ElRow>
+    <ElDialog
+      v-model="dialog.visible"
+      title="会员训练计划 · 情况录入"
+      width="760px"
+      destroy-on-close
+    >
+      <ElAlert v-if="dialog.fromReview" type="success" :closable="false" show-icon class="mb-3">
+        <template #title>已从课后分析带入</template>
+        <div class="text-[13px] leading-6">
+          会员情况、三阶段方向、频率都来自那次课后分析（含体测解读），已帮你填好。
+          检查一遍、补上核心目标即可生成计划。
+        </div>
+      </ElAlert>
 
-        <div class="text-xs text-gray-400 mb-2 mt-3">② 目标与阶段</div>
-        <ElRow :gutter="12">
-          <ElCol :xs="24" :md="14"><ElFormItem label="核心目标" required><ElInput v-model="form.coreGoal" placeholder="如：改善骨盆前倾" /></ElFormItem></ElCol>
-          <ElCol :xs="12" :md="5"><ElFormItem label="频率"><ElInput v-model="form.freq" placeholder="每周2-3次" /></ElFormItem></ElCol>
-          <ElCol :xs="12" :md="5"><ElFormItem label="周期(周)"><ElInput v-model="form.stageWeeks" /></ElFormItem></ElCol>
-          <ElCol :span="24"><ElFormItem label="阶段目标"><ElInput v-model="form.stageGoal" maxlength="60" show-word-limit /></ElFormItem></ElCol>
-          <ElCol :span="24">
-            <ElFormItem label="当前风险">
-              <ElInput v-model="form.risks" placeholder="无特殊风险 / 如：孕产、术后、腰痛等（将触发转介提醒）" />
-            </ElFormItem>
-          </ElCol>
-        </ElRow>
+      <ElForm :model="form" label-width="90px" label-position="top">
+        <div class="form-section">
+          <div class="section-title">会员情况</div>
+          <ElRow :gutter="12">
+            <ElCol :xs="24" :sm="8"
+              ><ElFormItem label="姓名" required><ElInput v-model="form.memberName" /></ElFormItem
+            ></ElCol>
+            <ElCol :xs="12" :sm="5"
+              ><ElFormItem label="年龄"><ElInput v-model="form.age" /></ElFormItem
+            ></ElCol>
+            <ElCol :xs="12" :sm="5"
+              ><ElFormItem label="性别"
+                ><ElSelect v-model="form.gender" class="!w-full"
+                  ><ElOption label="女" value="女" /><ElOption
+                    label="男"
+                    value="男" /></ElSelect></ElFormItem
+            ></ElCol>
+            <ElCol :xs="12" :sm="6"
+              ><ElFormItem label="身高(cm)"><ElInput v-model="form.height" /></ElFormItem
+            ></ElCol>
+            <ElCol :xs="12" :sm="6"
+              ><ElFormItem label="体重(kg)"><ElInput v-model="form.weight" /></ElFormItem
+            ></ElCol>
+            <ElCol :xs="12" :sm="6"
+              ><ElFormItem label="体脂率(%)"><ElInput v-model="form.bodyFat" /></ElFormItem
+            ></ElCol>
+            <ElCol :span="24">
+              <ElFormItem label="关注要点">
+                <ElInput
+                  v-model="form.focus"
+                  placeholder="如：肩颈紧张、核心无力、产后腹直肌分离"
+                />
+              </ElFormItem>
+            </ElCol>
+          </ElRow>
+        </div>
+
+        <div class="form-section">
+          <div class="section-title">目标与阶段</div>
+          <ElRow :gutter="12">
+            <ElCol :xs="24" :sm="12"
+              ><ElFormItem label="核心目标" required
+                ><ElInput v-model="form.coreGoal" placeholder="如：改善骨盆前倾" /></ElFormItem
+            ></ElCol>
+            <ElCol :xs="12" :sm="6"
+              ><ElFormItem label="频率"
+                ><ElInput v-model="form.freq" placeholder="每周 2-3 次" /></ElFormItem
+            ></ElCol>
+            <ElCol :xs="12" :sm="6"
+              ><ElFormItem label="周期(周)"><ElInput v-model="form.stageWeeks" /></ElFormItem
+            ></ElCol>
+            <ElCol :span="24">
+              <ElFormItem label="阶段目标">
+                <ElInput v-model="form.stageGoal" maxlength="60" show-word-limit />
+              </ElFormItem>
+            </ElCol>
+            <ElCol :span="24">
+              <ElFormItem label="当前风险">
+                <ElInput
+                  v-model="form.risks"
+                  placeholder="无特殊风险 / 如：孕产、术后、腰痛等（将触发转介提醒）"
+                />
+              </ElFormItem>
+            </ElCol>
+          </ElRow>
+        </div>
 
         <ElAlert
           v-if="highRisk"
@@ -99,8 +175,17 @@
 
       <!-- 生成结果预览 -->
       <template v-if="draftContent">
-        <div class="text-xs text-gray-400 mt-4 mb-2">③ 训练计划草稿（{{ genSource === 'llm' ? '大模型生成' : '本地模板' }} · 需老师确认）</div>
-        <ElAlert v-if="genWarning" :title="genWarning" type="warning" show-icon :closable="false" class="mb-2" />
+        <div class="section-title mt-4"
+          >训练计划草稿（{{ genSource === 'llm' ? '大模型生成' : '本地模板' }} · 需老师确认）</div
+        >
+        <ElAlert
+          v-if="genWarning"
+          :title="genWarning"
+          type="warning"
+          show-icon
+          :closable="false"
+          class="mb-2"
+        />
         <div class="plan-preview">
           <p class="font-500 mb-2">{{ draftContent.summary }}</p>
           <div v-for="(ph, i) in draftContent.phases" :key="i" class="mb-2">
@@ -118,7 +203,13 @@
 
       <template #footer>
         <ElButton @click="dialog.visible = false">取消</ElButton>
-        <ElButton plain :loading="dialog.savingDraft" :disabled="!form.memberName || !form.coreGoal" @click="saveOnly">保存信息</ElButton>
+        <ElButton
+          plain
+          :loading="dialog.savingDraft"
+          :disabled="!form.memberName || !form.coreGoal"
+          @click="saveOnly"
+          >保存信息</ElButton
+        >
         <ElButton
           type="primary"
           :loading="dialog.generating"
@@ -131,7 +222,11 @@
     </ElDialog>
 
     <!-- 详情抽屉 -->
-    <ElDrawer v-model="detail.visible" size="480px" :title="detail.row ? `训练计划 #${detail.row.id} · ${detail.row.memberName}` : ''">
+    <ElDrawer
+      v-model="detail.visible"
+      size="480px"
+      :title="detail.row ? `训练计划 #${detail.row.id} · ${detail.row.memberName}` : ''"
+    >
       <template v-if="detail.row && detail.row.content">
         <ElTag size="small" effect="dark" :type="statusType(detail.row.status)" class="mb-3">
           {{ detail.row.status }} · {{ detail.row.source === 'llm' ? 'AI生成' : '本地模板' }}
@@ -149,20 +244,30 @@
         </ul>
         <div class="mt-4 flex gap-2">
           <ElButton type="primary" plain @click="copyPlan">复制全文发会员</ElButton>
-          <span v-if="detail.row.confirmedAt" class="text-xs text-gray-400 self-center">确认于 {{ detail.row.confirmedAt }} · {{ detail.row.createdBy }}</span>
+          <span v-if="detail.row.confirmedAt" class="text-xs text-gray-400 self-center"
+            >确认于 {{ detail.row.confirmedAt }} · {{ detail.row.createdBy }}</span
+          >
         </div>
 
         <!-- 图片管理（对比照） -->
         <div class="mt-5 pt-4 border-t border-gray-100 dark:border-gray-700">
           <div class="text-sm font-600 mb-2">对比照 / 建档照（分享页展示）</div>
           <div class="flex flex-wrap gap-2 mb-2">
-            <div v-for="img in detail.row.images" :key="img.id" class="relative group w-24 h-24 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600">
+            <div
+              v-for="img in detail.row.images"
+              :key="img.id"
+              class="relative group w-24 h-24 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-600"
+            >
               <img :src="img.url" class="w-full h-full object-cover" />
-              <span class="absolute bottom-0 inset-x-0 bg-black/50 text-white text-xs text-center py-0.5">{{ img.label }}</span>
+              <span
+                class="absolute bottom-0 inset-x-0 bg-black/50 text-white text-xs text-center py-0.5"
+                >{{ img.label }}</span
+              >
               <button
                 class="absolute top-1 right-1 hidden group-hover:flex w-5 h-5 items-center justify-center rounded-full bg-red-500 text-white text-xs"
                 @click="trainingStore.removePlanImage(detail.row!.id, img.id)"
-              >×</button>
+                >×</button
+              >
             </div>
             <label
               v-if="detail.row.images.length < 8"
@@ -173,22 +278,34 @@
               <input type="file" accept="image/*" class="hidden" @change="onPickImage($event)" />
             </label>
           </div>
-          <p class="text-xs text-gray-400">支持 jpg/png，自动压缩至720px宽；建议颈部以下体态照，须取得会员授权</p>
+          <p class="text-xs text-gray-400"
+            >支持 jpg/png，自动压缩至720px宽；建议颈部以下体态照，须取得会员授权</p
+          >
         </div>
 
         <!-- H5 分享 -->
-        <div v-if="detail.row.status === '已确认'" class="mt-5 pt-4 border-t border-gray-100 dark:border-gray-700">
+        <div
+          v-if="detail.row.status === '已确认'"
+          class="mt-5 pt-4 border-t border-gray-100 dark:border-gray-700"
+        >
           <div class="text-sm font-600 mb-2">H5 分享页</div>
           <div class="flex flex-wrap items-center gap-3">
             <ElSwitch
               :model-value="detail.row.share.enabled"
               active-text="开启"
               inactive-text="停用"
-              @change="(v: string | number | boolean) => trainingStore.setPlanShare(detail.row!.id, Boolean(v))"
+              @change="
+                (v: string | number | boolean) =>
+                  trainingStore.setPlanShare(detail.row!.id, Boolean(v))
+              "
             />
             <template v-if="detail.row.share.enabled">
-              <code class="text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{ shareUrl(detail.row) }}</code>
-              <ElButton size="small" type="primary" plain @click="copyShare(shareUrl(detail.row))">复制链接</ElButton>
+              <code class="text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">{{
+                shareUrl(detail.row)
+              }}</code>
+              <ElButton size="small" type="primary" plain @click="copyShare(shareUrl(detail.row))"
+                >复制链接</ElButton
+              >
               <ElButton size="small" plain @click="openSharePreview(detail.row)">预览</ElButton>
               <span class="text-xs text-gray-400">访问 {{ detail.row.share.views }}</span>
             </template>
@@ -212,6 +329,7 @@
 
   defineOptions({ name: 'YimaiTraining' })
 
+  const route = useRoute()
   const trainingStore = useTrainingStore()
   const plans = computed(() => trainingStore.state.plans)
   const loading = ref(false)
@@ -233,6 +351,8 @@
       if (trainingStore.loadedUserId === userId) {
         trainingStore.replacePlans((remote ?? []) as unknown as TrainingPlan[])
       }
+      const planId = String(route.query.planId ?? '')
+      if (planId) focusFromQuery(planId)
     } catch (e) {
       ElMessage.warning(`云端训练计划加载失败：${String(e).slice(0, 80)}`)
     } finally {
@@ -285,7 +405,12 @@
     }
   }
 
-  const dialog = reactive({ visible: false, savingDraft: false, generating: false })
+  const dialog = reactive({
+    visible: false,
+    savingDraft: false,
+    generating: false,
+    fromReview: false
+  })
   const form = reactive(emptyForm())
   const draftContent = ref<PlanContent | null>(null)
   const genSource = ref<'llm' | 'fallback'>('fallback')
@@ -293,19 +418,27 @@
   const currentId = ref(0)
 
   const highRisk = computed(() => detectHighRisk(form.risks))
-  const canGenerate = computed(() => Boolean(form.memberName && form.coreGoal) && (!highRisk.value || form.riskAck))
+  const canGenerate = computed(
+    () => Boolean(form.memberName && form.coreGoal) && (!highRisk.value || form.riskAck)
+  )
 
-  const detail = reactive<{ visible: boolean; row: TrainingPlan | null }>({ visible: false, row: null })
+  const detail = reactive<{ visible: boolean; row: TrainingPlan | null }>({
+    visible: false,
+    row: null
+  })
 
   function openCreate() {
     Object.assign(form, emptyForm())
     draftContent.value = null
     genWarning.value = ''
     currentId.value = 0
+    dialog.fromReview = false
     dialog.visible = true
   }
 
   function openEdit(row: TrainingPlan) {
+    // 由课后分析流转来的计划：把上游信息显性化，老师知道这些字段是带过来的
+    dialog.fromReview = !!row.sourceReviewId
     Object.assign(form, {
       id: row.id,
       memberName: row.memberName,
@@ -401,6 +534,18 @@
     detail.visible = true
   }
 
+  /** 从课后分析跳转过来：定位到刚生成的那份计划 */
+  function focusFromQuery(planId: string) {
+    const target = plans.value.find((p) => String(p.id) === planId)
+    if (!target) return
+    if (target.status === '待老师确认') {
+      // 草稿先带老师过一遍再确认
+      openEdit(target)
+    } else {
+      openDetail(target)
+    }
+  }
+
   async function copyPlan() {
     const r = detail.row
     if (!r?.content) return
@@ -408,7 +553,11 @@
       `${r.memberName} 的训练计划`,
       r.content.summary,
       '',
-      ...r.content.phases.flatMap((p) => [`【${p.name} · ${p.duration}】`, ...p.items.map((i) => `- ${i}`), '']),
+      ...r.content.phases.flatMap((p) => [
+        `【${p.name} · ${p.duration}】`,
+        ...p.items.map((i) => `- ${i}`),
+        ''
+      ]),
       '注意事项：',
       ...r.content.cautions.map((c) => `- ${c}`)
     ].join('\n')
@@ -489,6 +638,20 @@
 </script>
 
 <style scoped lang="scss">
+  .form-section {
+    padding: 12px 14px 2px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    background: var(--el-fill-color-lighter);
+  }
+
+  .section-title {
+    margin-bottom: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--el-text-color-primary);
+  }
+
   .plan-preview {
     max-height: 320px;
     padding: 10px 14px;

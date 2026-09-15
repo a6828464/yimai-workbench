@@ -21,6 +21,7 @@ class User extends Authenticatable
         'password',
         'username',
         'role',
+        'roles',
         'venue',
         'venues',
         'status',
@@ -40,6 +41,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'venues' => 'array',
+            'roles' => 'array',
             'profile' => 'array',
         ];
     }
@@ -49,7 +51,7 @@ class User extends Authenticatable
         return [
             'userId' => $this->id,
             'userName' => $this->nickname ?: $this->name,
-            'roles' => [$this->role],
+            'roles' => userRoles($this),
             'venue' => $this->venue,
             'venues' => $this->venues ?? [],
             'buttons' => [],

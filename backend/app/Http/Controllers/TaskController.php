@@ -13,26 +13,26 @@ final class TaskController extends Controller
     {
         $u = $r->user();
         $q = Task::query();
-        if ($u->role === 'R_MANAGER') {
+        if (userHasRole($u, 'R_MANAGER')) {
             $q->where('venue', $u->venue);
         }
-        if ($u->role === 'R_SERVICE') {
+        if (userHasRole($u, 'R_SERVICE')) {
             // 服务老师（会籍顾问）：本人名下 + 待认领池
             $q->where('venue', $u->venue)
                 ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
         }
-        if ($u->role === 'R_TEACHER') {
+        if (userHasRole($u, 'R_TEACHER')) {
             // 授课老师：只处理派给本人的任务
             $q->where('venue', $u->venue)->where('owner', $u->name);
         }
-        if ($u->role === 'R_MEDIA') {
+        if (userHasRole($u, 'R_MEDIA')) {
             $q->where('owner', $u->name);
         }
         if ($status = $r->query('status')) {
             $q->where('status', $status);
         }
         if ($venue = $r->query('venue')) {
-            abort_if($u->role !== 'R_SUPER' && $venue !== $u->venue, 403, '无权查看其它门店任务');
+            abort_if(! userHasRole($u, 'R_SUPER') && $venue !== $u->venue, 403, '无权查看其它门店任务');
             $q->where('venue', $venue);
         }
         $current = max(1, (int) $r->query('current', 1));
@@ -46,7 +46,7 @@ final class TaskController extends Controller
     /** POST /tasks */
     public function store(Request $r)
     {
-        abort_unless(in_array($r->user()->role, ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER'], true), 403, '无权创建任务');
+        abort_unless(userHasAnyRole($r->user(), ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER']), 403, '无权创建任务');
         $d = $r->validate([
             'title' => 'required|string|max:50',
             'customerName' => 'required|string|max:20',
@@ -56,8 +56,8 @@ final class TaskController extends Controller
             'deadline' => 'nullable|string|max:24',
             'standard' => 'nullable|string|max:200',
         ]);
-        abort_if($r->user()->role !== 'R_SUPER' && $d['venue'] !== $r->user()->venue, 403, '无权创建其它门店任务');
-        if ($r->user()->role === 'R_SERVICE' || $r->user()->role === 'R_TEACHER') {
+        abort_if(! userHasRole($r->user(), 'R_SUPER') && $d['venue'] !== $r->user()->venue, 403, '无权创建其它门店任务');
+        if (userHasRole($r->user(), 'R_SERVICE') || userHasRole($r->user(), 'R_TEACHER')) {
             $d['owner'] = $r->user()->name;
         }
         $task = Task::create([
@@ -80,12 +80,12 @@ final class TaskController extends Controller
     public function update(Request $r, int $id)
     {
         $u = $r->user();
-        abort_if($u->role === 'R_MEDIA', 403, '无权操作任务');
+        abort_if(userHasRole($u, 'R_MEDIA'), 403, '无权操作任务');
         $task = DB::transaction(function () use ($r, $id, $u) {
             $task = Task::whereKey($id)->lockForUpdate()->firstOrFail();
-            abort_if($u->role === 'R_MANAGER' && $task->venue !== $u->venue, 403, '无权操作其它门店任务');
-            if ($u->role === 'R_SERVICE' || $u->role === 'R_TEACHER') {
-                $claimable = $u->role === 'R_SERVICE' ? [$u->name, '未分配'] : [$u->name];
+            abort_if(userHasRole($u, 'R_MANAGER') && $task->venue !== $u->venue, 403, '无权操作其它门店任务');
+            if (userHasRole($u, 'R_SERVICE') || userHasRole($u, 'R_TEACHER')) {
+                $claimable = userHasRole($u, 'R_SERVICE') ? [$u->name, '未分配'] : [$u->name];
                 abort_if($task->venue !== $u->venue || ! in_array($task->owner, $claimable, true), 403, '只能操作本人任务');
                 $requested = (string) $r->input('status', $task->status);
                 $allowedTransitions = [
@@ -97,7 +97,7 @@ final class TaskController extends Controller
                 abort_if($r->hasAny(['title', 'venue', 'priority', 'deadline', 'standard']), 403, '老师只能认领或提报本人任务');
             }
             if (in_array($r->input('status'), ['已完成', '已退回'], true)) {
-                abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可验收');
+                abort_unless(userHasAnyRole($u, ['R_SUPER', 'R_MANAGER']), 403, '仅店长及以上可验收');
                 abort_unless($task->status === '待验收', 422, '仅待验收任务可执行验收');
             }
             $allowed = ['title', 'customer_name', 'venue', 'owner', 'priority', 'deadline', 'standard', 'status'];

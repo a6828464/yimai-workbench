@@ -255,6 +255,7 @@
 </template>
 
 <script setup lang="ts">
+  import { formatDateTime } from '@/utils/date'
   import ArtButtonTable from '@/components/core/forms/art-button-table/index.vue'
   import { useTable } from '@/hooks/core/useTable'
   import { querySyncJobs } from '@/api/yimai'
@@ -646,10 +647,17 @@
             prop: 'operator',
             label: '触发方',
             width: 100,
-            formatter: (row: YimaiSyncJob) =>
-              h('span', { class: 'text-xs' }, row.operator || '—')
+            formatter: (row: YimaiSyncJob) => h('span', { class: 'text-xs' }, row.operator || '—')
           },
-          { prop: 'finishedAt', label: '完成时间', width: 150, sortable: true },
+          {
+            prop: 'finishedAt',
+            label: '完成时间',
+            width: 150,
+            sortable: true,
+            // 后端返回 UTC ISO，直接渲染会比本地时间早 8 小时，与批次号对不上
+            formatter: (row: YimaiSyncJob) =>
+              h('span', { class: 'tabular-nums' }, formatDateTime(row.finishedAt))
+          },
           {
             prop: 'operation',
             label: '操作',

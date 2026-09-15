@@ -89,6 +89,109 @@
       </ElForm>
 
       <!-- 红线：硬拦截 -->
+      <!-- 体测报告：贴链接自动带出观察项 -->
+      <ElCard shadow="never" class="mb-3 bodytest-card">
+        <template #header>
+          <div class="flex items-center justify-between">
+            <span class="font-500 text-[13px]">体测报告（门店智能魔镜，可选）</span>
+            <ElTag v-if="bodyTest" size="small" type="success" effect="dark">
+              已解析 · 异常 {{ bodyTest.abnormal.length }} 项 · 体态
+              {{ bodyTest.posture.length }} 项
+            </ElTag>
+          </div>
+        </template>
+        <div class="flex flex-wrap gap-2">
+          <ElInput
+            v-model="bodyTestUrl"
+            placeholder="粘贴体测报告链接，自动带出观察项（https://bodytest.ruleye.com/#/report-new/…）"
+            class="!w-auto flex-1 min-w-[280px]"
+            clearable
+          />
+          <ElButton :loading="parsingBodyTest" :disabled="!bodyTestUrl" @click="doParseBodyTest">
+            解析报告
+          </ElButton>
+          <ElButton v-if="bodyTest" text type="danger" @click="clearBodyTest">清除</ElButton>
+        </div>
+        <div v-if="bodyTestUrl && !bodyTest" class="mt-1 text-xs text-gray-400">
+          链接来自门店体测设备生成的报告，有效期以设备侧为准
+        </div>
+
+        <template v-if="bodyTest">
+          <!-- 基础档案 -->
+          <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[13px]">
+            <span>测于 {{ bodyTest.profile.testedAt }}</span>
+            <span
+              >体态评分 <b>{{ bodyTest.profile.score }}</b></span
+            >
+            <span>BMI {{ bodyTest.profile.bmi }}</span>
+            <span>体脂率 {{ bodyTest.profile.bodyFatRate }}%</span>
+            <span>
+              年龄 {{ bodyTest.profile.age }} / 身高 {{ bodyTest.profile.height }}cm / 体重
+              {{ bodyTest.profile.weight }}kg
+            </span>
+            <span v-if="bodyTest.directions.length" class="text-gray-500">
+              自选方向：{{ bodyTest.directions.join('、') }}
+            </span>
+          </div>
+
+          <!-- 异常项：值 + 标准区间 + 风险 + 建议 -->
+          <div v-if="bodyTest.abnormal.length" class="mt-3">
+            <div class="mb-1 text-xs text-gray-500">偏离标准的指标</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div v-for="it in bodyTest.abnormal" :key="it.key" class="bt-item">
+                <div class="flex items-baseline justify-between">
+                  <span class="font-500 text-[13px]">{{ it.name }}</span>
+                  <span class="text-[13px]">
+                    <b class="text-danger">{{ it.value }}{{ it.unit }}</b>
+                    <span v-if="it.normalRange" class="ml-1 text-xs text-gray-400">
+                      标准 {{ it.normalRange[0] }}~{{ it.normalRange[1] }}
+                    </span>
+                  </span>
+                </div>
+                <ElTag size="small" type="danger" effect="plain" class="mt-1">{{
+                  it.bandLabel
+                }}</ElTag>
+                <div v-if="it.risk" class="mt-1 text-xs leading-5 text-gray-500">{{ it.risk }}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 体态 -->
+          <div v-if="bodyTest.posture.length" class="mt-3">
+            <div class="mb-1 text-xs text-gray-500">体态评估发现</div>
+            <div class="flex flex-wrap gap-1.5">
+              <ElTooltip
+                v-for="p in bodyTest.posture"
+                :key="p.key"
+                :content="p.risk"
+                placement="top"
+                :show-after="200"
+              >
+                <ElTag size="small" type="warning" effect="plain" class="cursor-help">
+                  {{ postureLabel(p.key) }}
+                </ElTag>
+              </ElTooltip>
+            </div>
+          </div>
+
+          <!-- 自动带出的观察项 -->
+          <ElAlert type="success" :closable="false" class="mt-3" show-icon>
+            已按体测自动勾选
+            <b>{{ bodyTest.observations.length }}</b> 个观察项（下方快筛/详细项中高亮），
+            你可以按今天的实际课堂表现增删。
+          </ElAlert>
+          <ElAlert
+            v-if="bodyTest.redFlags.length"
+            type="error"
+            :closable="false"
+            class="mt-2"
+            show-icon
+          >
+            体测健康问卷提示需先做专业评估（{{ bodyTest.redFlags.length }}
+            项），已同步到下方红线排查。
+          </ElAlert>
+        </template>
+      </ElCard>
       <ElCard shadow="never" class="mb-3 red-flag-card">
         <template #header>
           <div class="flex items-center justify-between">
@@ -424,7 +527,9 @@
     previewPostClassPlan,
     updatePostClassReview
   } from '@/api/yimai'
+  import { parseBodyTestReport } from '@/api/yimai'
   import type {
+    BodyTestAnalysis,
     PostClassCatalog,
     PostClassCatalogGroup,
     PostClassCandidate,
@@ -450,6 +555,9 @@
   const saving = ref(false)
   const result = ref<PostClassPlanResult | null>(null)
   const savedId = ref<number | null>(null)
+  const bodyTestUrl = ref('')
+  const bodyTest = ref<BodyTestAnalysis | null>(null)
+  const parsingBodyTest = ref(false)
 
   const form = reactive({
     scene: 'trial',
@@ -516,6 +624,69 @@
     return savedId.value ? '已生成分享' : '待确认'
   }
 
+  /** 体态项 key → 中文名（报告没给 flag_name，这里补一份展示用的） */
+  const POSTURE_LABELS: Record<string, string> = {
+    shoulder_slope: '双肩不等高',
+    spine_lateral: '脊柱侧弯倾向',
+    pelvis_rolling: '骨盆旋转',
+    x_leg: '膝盖内扣',
+    o_leg: 'O 型腿',
+    highlow_pelvis: '骨盆高低',
+    longshort_leg: '长短腿',
+    lupper_limbs: '上肢紧张',
+    truncal_bones: '躯干骨位',
+    lower_limbs: '下肢力线',
+    spine_restriction: '脊柱侧曲受限',
+    mascular_tension: '肩颈紧张·呼吸浅表',
+    trunk_muscle: '躯干肌张力不平衡',
+    muscle_trunk_rigid: '胸椎活动受限',
+    vertebra_flexible: '脊柱弹性不足',
+    hip_flexion: '髋屈受限',
+    dorsal_abdominal: '腰腹核心弱',
+    leg_power: '腿臀力量不足'
+  }
+  function postureLabel(key: string): string {
+    return POSTURE_LABELS[key] ?? key
+  }
+
+  /**
+   * 解析体测报告：把体态与体成分映射出的观察项并进已选观察项，
+   * 报告里的健康提示并进红线。老师再按课堂表现增删即可。
+   */
+  async function doParseBodyTest() {
+    if (!bodyTestUrl.value.trim()) return
+    parsingBodyTest.value = true
+    try {
+      const r = await parseBodyTestReport(bodyTestUrl.value.trim())
+      bodyTest.value = r
+      if (!form.studentName && r.profile.nickName) form.studentName = r.profile.nickName
+      mergeObservations(r.observations)
+      const flags = r.redFlags.filter((f) => !form.redFlags.includes(f))
+      form.redFlags.push(...flags)
+      ElMessage.success(
+        `已解析：带出 ${r.observations.length} 个观察项${flags.length ? `，${flags.length} 项健康提示已并入红线` : ''}`
+      )
+    } catch (e) {
+      ElMessage.error(String((e as { message?: string }).message ?? e).slice(0, 140))
+    } finally {
+      parsingBodyTest.value = false
+    }
+  }
+
+  /** 合并观察项：已存在的不覆盖老师已调过的等级 */
+  function mergeObservations(keys: string[]) {
+    keys.forEach((k) => {
+      if (!form.observations.some((o) => o.key === k)) {
+        form.observations.push({ key: k, level: '中' })
+      }
+    })
+  }
+
+  function clearBodyTest() {
+    bodyTestUrl.value = ''
+    bodyTest.value = null
+  }
+
   function levelOf(key: string): string {
     return form.observations.find((o) => o.key === key)?.level ?? ''
   }
@@ -560,6 +731,8 @@
     form.goalText = ''
     form.observations = []
     form.redFlags = []
+    bodyTestUrl.value = ''
+    bodyTest.value = null
     form.feedback = { bodyFeel: '', like: '', concern: '' }
     form.issues = []
     form.leadId = c?.leadId ?? null
@@ -595,6 +768,7 @@
       customerId: form.customerId,
       bookingId: form.bookingId,
       phases: editablePhases.value.map((p) => ({ key: p.key, goal: p.goal })),
+      bodyTestReportId: bodyTest.value?.reportId ?? null,
       script: { ...script },
       handoff: { ...handoff, cardDirection: handoff.cardDirection }
     }
@@ -704,6 +878,16 @@
       border-color: var(--el-color-primary);
       background: var(--el-color-primary-light-9);
     }
+  }
+
+  .bodytest-card {
+    border-color: var(--el-color-success-light-5);
+  }
+
+  .bt-item {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--el-fill-color-light);
   }
 
   .red-flag-card {

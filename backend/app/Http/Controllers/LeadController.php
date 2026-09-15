@@ -16,7 +16,7 @@ class LeadController extends Controller
     {
         $u = $r->user();
         $q = Lead::query()->where('venue', 'like', '%');
-        if (in_array($u->role, ['R_MANAGER', 'R_SERVICE', 'R_TEACHER'], true)) {
+        if (userHasAnyRole($u, ['R_MANAGER', 'R_SERVICE', 'R_TEACHER'])) {
             // 按人隔离统一走 scopeLeadsForUser：
             // 服务老师＝本人名下＋待承接池；授课老师＝本人客资＋本人上过体验课的＋本人私教学员的
             scopeLeadsForUser($q, $u);
@@ -136,14 +136,14 @@ class LeadController extends Controller
     {
         $u = $r->user();
         $lead = Lead::findOrFail($id);
-        if ($u->role === 'R_MANAGER' && $lead->venue !== $u->venue) {
+        if (userHasRole($u, 'R_MANAGER') && $lead->venue !== $u->venue) {
             abort(403, '无权限：仅可删除本店留资');
         }
-        if (isTeacherSide($u->role)) {
+        if (userIsTeacherSide($u)) {
             if ($u->venue && $lead->venue !== $u->venue) {
                 abort(403, '无权限：仅可删除本店留资');
             }
-            if ($u->role === 'R_SERVICE') {
+            if (userHasRole($u, 'R_SERVICE')) {
                 if ($lead->service_teacher !== '' && $lead->service_teacher !== $u->name && $lead->created_by !== $u->name) {
                     abort(403, '无权限：仅可删除自己名下或未分配的留资');
                 }
@@ -155,7 +155,7 @@ class LeadController extends Controller
                 }
             }
         }
-        if (! in_array($u->role, ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER', 'R_MEDIA'], true)) {
+        if (! userHasAnyRole($u, ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER', 'R_MEDIA'])) {
             abort(403, '无权限执行此操作');
         }
         audit($r, '删除', '前端客资', $id, "{$lead->name}（{$lead->source}）", $lead->venue, '删除留资记录');

@@ -40,6 +40,27 @@
           </p>
         </section>
 
+        <!-- 体测数据（只展示客观指标与标准区间，不引用设备的风险文案） -->
+        <section v-if="bodyTest && bodyTest.abnormal?.length" class="mt-5 card">
+          <h2 class="sec-title">体测数据</h2>
+          <p v-if="bodyTest.testedAt" class="mb-2 text-xs text-gray-400">
+            测于 {{ bodyTest.testedAt
+            }}<span v-if="bodyTest.score"> · 体态评分 {{ bodyTest.score }}</span>
+          </p>
+          <div v-for="(it, i) in bodyTest.abnormal" :key="i" class="bt-row">
+            <span class="text-sm">{{ it.name }}</span>
+            <span class="text-sm">
+              <b>{{ it.value }}{{ it.unit }}</b>
+              <span v-if="it.normalRange" class="ml-2 text-xs text-gray-400">
+                标准 {{ it.normalRange[0] }}~{{ it.normalRange[1] }}{{ it.unit }}
+              </span>
+            </span>
+          </div>
+          <p class="mt-2 text-xs leading-5 text-gray-400">
+            以上为体测设备测得的数据与参考区间，仅作训练参考。
+          </p>
+        </section>
+
         <!-- 训练方向 -->
         <section v-if="phases.length" class="mt-5">
           <h2 class="sec-title px-1">给你的训练方向</h2>
@@ -114,6 +135,18 @@
   const invalid = ref(false)
 
   const objective = computed(() => data.value?.objective ?? ({} as Record<string, never>))
+  const bodyTest = computed(
+    () =>
+      (
+        data.value as {
+          bodyTest?: {
+            testedAt?: string
+            score?: number
+            abnormal?: { name: string; value: number; unit: string; normalRange: number[] | null }[]
+          }
+        } | null
+      )?.bodyTest ?? null
+  )
   const phases = computed(() => objective.value.plan ?? [])
   const observed = computed(() => objective.value.observed ?? [])
   const homework = computed(() => objective.value.homework ?? [])
@@ -230,6 +263,18 @@
     background: #2f7d5d;
     color: #fff;
     font-size: 12px;
+  }
+
+  .bt-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px dashed #eee;
+
+    &:last-of-type {
+      border-bottom: none;
+    }
   }
 
   .pill {

@@ -11,9 +11,9 @@ final class ApprovalController extends Controller
     public function index(Request $r)
     {
         $u = $r->user();
-        abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER']), 403);
+        abort_unless(userHasAnyRole($u, ['R_SUPER', 'R_MANAGER']), 403);
         $q = Approval::query();
-        if ($u->role === 'R_MANAGER') {
+        if (userHasRole($u, 'R_MANAGER')) {
             $q->where('venue', $u->venue);
         }
         if ($s = $r->query('status')) {
@@ -30,7 +30,7 @@ final class ApprovalController extends Controller
     /** POST /approvals */
     public function store(Request $r)
     {
-        if (! in_array($r->user()->role, ['R_SUPER', 'R_MANAGER'], true)) {
+        if (! userHasAnyRole($r->user(), ['R_SUPER', 'R_MANAGER'])) {
             return response()->json(['code' => 1, 'message' => '仅店长及以上可发起价格审批'], 403);
         }
         $d = $r->validate([
@@ -47,7 +47,7 @@ final class ApprovalController extends Controller
         $a = Approval::create([
             'customer_name' => $d['customerName'],
             'applicant' => $r->user()->name,
-            'venue' => $r->user()->role === 'R_MANAGER' ? $r->user()->venue : ($d['venue'] ?? '双店'),
+            'venue' => userHasRole($r->user(), 'R_MANAGER') ? $r->user()->venue : ($d['venue'] ?? '双店'),
             'card_name' => $d['cardName'],
             'standard_price' => (int) $d['standardPrice'],
             'request_price' => (int) $d['requestPrice'],
@@ -64,9 +64,9 @@ final class ApprovalController extends Controller
     public function decide(Request $r, int $id)
     {
         $u = $r->user();
-        abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可审批');
+        abort_unless(userHasAnyRole($u, ['R_SUPER', 'R_MANAGER']), 403, '仅店长及以上可审批');
         $a = Approval::findOrFail($id);
-        if ($u->role === 'R_MANAGER') {
+        if (userHasRole($u, 'R_MANAGER')) {
             abort_unless($a->venue === $u->venue, 403, '无权操作其他门店审批');
         }
         $decision = $r->input('decision');
@@ -75,11 +75,11 @@ final class ApprovalController extends Controller
         // 状态机守卫：按当前状态与角色限制可执行的动作
         $state = $a->status;
         $ok = match ($decision) {
-            '初审通过' => $state === '待店长初审' && in_array($u->role, ['R_SUPER', 'R_MANAGER'], true),
-            '终审通过' => $state === '待老板终审' && $u->role === 'R_SUPER',
-            '驳回' => ($state === '待店长初审' && in_array($u->role, ['R_SUPER', 'R_MANAGER'], true))
-                || ($state === '待老板终审' && $u->role === 'R_SUPER'),
-            '关联成交' => $state === '已通过' && $u->role === 'R_SUPER',
+            '初审通过' => $state === '待店长初审' && userHasAnyRole($u, ['R_SUPER', 'R_MANAGER']),
+            '终审通过' => $state === '待老板终审' && userHasRole($u, 'R_SUPER'),
+            '驳回' => ($state === '待店长初审' && userHasAnyRole($u, ['R_SUPER', 'R_MANAGER']))
+                || ($state === '待老板终审' && userHasRole($u, 'R_SUPER')),
+            '关联成交' => $state === '已通过' && userHasRole($u, 'R_SUPER'),
             default => false,
         };
         abort_unless($ok, 422, '当前状态不允许该操作');

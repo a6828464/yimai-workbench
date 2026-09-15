@@ -40,7 +40,7 @@ final class AiController extends Controller
             'request_id' => (string) Str::uuid(),
             'user_id' => $r->user()->id,
             'operator_name' => $r->user()->name,
-            'operator_role' => $r->user()->role,
+            'operator_role' => primaryRole(userRoles($r->user())),
             'feature_type' => $d['featureType'] ?? 'chat',
             'source' => 'llm',
             'provider' => (string) ($saved['providerLabel'] ?? ''),
@@ -153,7 +153,7 @@ final class AiController extends Controller
         ]);
         $row = ModelGenerationRecord::create([
             'request_id' => (string) Str::uuid(), 'user_id' => $r->user()->id,
-            'operator_name' => $r->user()->name, 'operator_role' => $r->user()->role,
+            'operator_name' => $r->user()->name, 'operator_role' => primaryRole(userRoles($r->user())),
             'feature_type' => $d['featureType'], 'source' => 'fallback', 'provider' => '本地模板',
             'model' => 'template', 'status' => 'success', 'output_preview' => mb_substr((string) ($d['outputPreview'] ?? ''), 0, 1000),
             'error_message' => isset($d['errorMessage']) ? mb_substr($d['errorMessage'], 0, 500) : null,

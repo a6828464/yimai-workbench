@@ -45,9 +45,9 @@ final class KyController extends Controller
     /** GET /ky/pending-contracts */
     public function pendingContracts(Request $r)
     {
-        abort_unless(in_array($r->user()->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可查看合同');
+        abort_unless(userHasAnyRole($r->user(), ['R_SUPER', 'R_MANAGER']), 403, '仅店长及以上可查看合同');
         $stores = ['绿地店' => '1', '东部店' => '4250'];
-        if ($r->user()->role === 'R_MANAGER') {
+        if (userHasRole($r->user(), 'R_MANAGER')) {
             $stores = [$r->user()->venue => $stores[$r->user()->venue]];
         }
         $result = [];
@@ -125,9 +125,9 @@ final class KyController extends Controller
     /** GET /ky/overview */
     public function overview(Request $r)
     {
-        abort_unless(in_array($r->user()->role, ['R_SUPER', 'R_MANAGER'], true), 403, '仅店长及以上可查看经营概览');
+        abort_unless(userHasAnyRole($r->user(), ['R_SUPER', 'R_MANAGER']), 403, '仅店长及以上可查看经营概览');
         $stores = ['绿地店' => '1', '东部店' => '4250'];
-        if ($r->user()->role === 'R_MANAGER') {
+        if (userHasRole($r->user(), 'R_MANAGER')) {
             $stores = [$r->user()->venue => $stores[$r->user()->venue]];
         }
         $result = [];
@@ -177,7 +177,7 @@ final class KyController extends Controller
     /** GET /ky/config */
     public function configShow(Request $r)
     {
-        abort_unless($r->user()->role === 'R_SUPER', 403);
+        abort_unless(userHasRole($r->user(), 'R_SUPER'), 403);
         $ky = (AppSetting::oldest('id')->first()?->ky) ?? [];
 
         return ok([
@@ -189,7 +189,7 @@ final class KyController extends Controller
     /** PUT /ky/config */
     public function configUpdate(Request $r)
     {
-        abort_unless($r->user()->role === 'R_SUPER', 403);
+        abort_unless(userHasRole($r->user(), 'R_SUPER'), 403);
         $d = $r->validate(['phone' => 'required|string|max:20', 'password' => 'nullable|string|max:64']);
         $s = setting();
         $ky = (array) (($s->ky) ?? []);

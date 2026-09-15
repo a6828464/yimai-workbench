@@ -7,6 +7,7 @@ use App\Http\Controllers\ApprovalController;
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BackupController;
+use App\Http\Controllers\BodyTestReportController;
 use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\KyController;
 use App\Http\Controllers\LeadController;
@@ -106,6 +107,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/training-plans', [TrainingPlanController::class, 'index']);
     Route::put('/training-plans/bulk', [TrainingPlanController::class, 'bulkSave']);
 
+    // ---------- 体测报告（门店智能魔镜报告解析与归档） ----------
+    Route::post('/body-test-reports/parse', [BodyTestReportController::class, 'parse'])->middleware('throttle:30,1');
+    Route::get('/body-test-reports', [BodyTestReportController::class, 'index']);
+    Route::post('/body-test-reports', [BodyTestReportController::class, 'store']);
+    Route::get('/body-test-reports/{id}', [BodyTestReportController::class, 'show']);
+
     // ---------- 课后分析 ＋ 训练方向（P0：体验课价值交付凭证 + 成交归因起点） ----------
     Route::get('/post-class-reviews/catalog', [PostClassReviewController::class, 'catalog']);
     Route::get('/post-class-reviews/candidates', [PostClassReviewController::class, 'candidates']);
@@ -117,6 +124,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/post-class-reviews/{id}', [PostClassReviewController::class, 'update']);
     Route::delete('/post-class-reviews/{id}', [PostClassReviewController::class, 'destroy']);
     Route::post('/post-class-reviews/{id}/confirm', [PostClassReviewController::class, 'confirm']);
+    Route::post('/post-class-reviews/{id}/to-plan', [PostClassReviewController::class, 'toPlan']);
     Route::post('/post-class-reviews/{id}/share', [PostClassReviewController::class, 'share']);
 
     // Legacy browser import (retained only for old clients)

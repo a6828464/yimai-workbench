@@ -19,11 +19,15 @@ final class AnalyticsController extends Controller
      */
     private static function cacheKey(string $endpoint, User $u, string $venue, string $start, string $end): string
     {
-        $scope = match ($u->role) {
-            'R_SUPER' => 'all',
-            'R_MEDIA' => implode(',', (array) $u->venues),
-            default => (string) $u->venue,
-        };
+        // 缓存键必须完整体现可见范围，否则会串数据：
+        //  - 角色：同一门店下「店长」与「店长 + 授课老师」的范围不同；
+        //  - 授权门店列表：两个新媒体账号角色相同，但授权门店不同时范围不同
+        //    （曾漏掉 venues 导致一个账号拿到了另一个账号的看板数据）。
+        $scope = userHasRole($u, 'R_SUPER')
+            ? 'all'
+            : implode(',', userRoles($u))
+                .'|'.(string) $u->venue
+                .'|'.implode(',', (array) $u->venues);
 
         return 'analytics:v'.businessCacheVersion('analytics').":{$endpoint}:".md5("{$scope}|{$venue}|{$start}|{$end}");
     }
@@ -45,7 +49,7 @@ final class AnalyticsController extends Controller
     private function computeSummary($u): array
     {
         $custQ = Customer::query();
-        if ($u->role !== 'R_SUPER') {
+        if (! userHasRole($u, 'R_SUPER')) {
             $custQ->where('venue', $u->venue);
         }
         $customers = $custQ->get();
@@ -181,7 +185,8 @@ final class AnalyticsController extends Controller
             $u, $venue
         );
         $kyByDate = [];
-        foreach ($bookingQ->get() as $booking) {
+        $bookings = $bookingQ->get();
+        foreach ($bookings as $booking) {
             $date = $booking->start_at?->toDateString();
             if (! $date) {
                 continue;
@@ -230,9 +235,74 @@ final class AnalyticsController extends Controller
             $byDate[$date->toDateString()] = $byDate[$date->toDateString()] ?? [];
         }
 
+        // ---- 到店人数与成交率（区间整体口径，按人去重） ----
+        // 业务口径：同一人来一次、两次、三次都只算一个人；成交率 = 到店体验的人里成交的人数 ÷ 到店人数。
+        // 到店证据来自两处，按人合并去重：
+        //   1) 预约系统：ky_bookings 已签到的体验课 —— 按上课日期归期
+        //   2) 留资管理：状态为已体验/已成交 —— 优先核销时间，缺失时回退留资日期（历史数据兼容）
+        // 之前只按留资日期分桶且只按留资侧统计，上月留资、本月到店的人会被整段漏掉，
+        // 线上到店因此明显偏少。
+        $identityOf = function ($phone, string $fallback = ''): string {
+            $digits = preg_replace('/\D+/', '', (string) $phone) ?? '';
+
+            return $digits !== '' ? 'p:'.$digits : ($fallback !== '' ? 'n:'.$fallback : '');
+        };
+
+        // 线上身份集合：不限区间（上月留资、本月到店也要能认出线上来源）
+        $onlineIdentities = [];
+        foreach ((clone $leadQ)->get(['phone', 'name', 'source', 'order_platform']) as $l) {
+            $identity = $identityOf($l->phone, (string) $l->name);
+            if ($identity !== '' && isOnlineLead($l)) {
+                $onlineIdentities[$identity] = true;
+            }
+        }
+
+        $visitIdentities = [];
+        $onlineVisitIdentities = [];
+        $markVisit = function (string $identity) use (&$visitIdentities, &$onlineVisitIdentities, $onlineIdentities): void {
+            if ($identity === '') {
+                return;
+            }
+            $visitIdentities[$identity] = true;
+            if (isset($onlineIdentities[$identity])) {
+                $onlineVisitIdentities[$identity] = true;
+            }
+        };
+
+        // 来源 1：预约系统已签到的体验课，按上课日期落在区间
+        foreach ($bookings as $booking) {
+            if ($booking->status !== 'signed' || ! $booking->is_trial) {
+                continue;
+            }
+            $markVisit($identityOf($booking->phone, (string) ($booking->member_id ?: $booking->member_name)));
+        }
+        // 来源 2：留资管理里已到店的客资
+        $visitedLeads = (clone $leadQ)->whereIn('status', ['已体验', '已成交'])
+            ->where(function ($q) use ($start, $end) {
+                $q->whereBetween('redeemed_at', [$start.' 00:00:00', $end.' 23:59:59'])
+                    ->orWhere(fn ($q2) => $q2->whereNull('redeemed_at')->whereBetween('lead_date', [$start, $end]));
+            })->get(['phone', 'name']);
+        foreach ($visitedLeads as $l) {
+            $markVisit($identityOf($l->phone, (string) $l->name));
+        }
+
+        // 成交：只统计「到店体验过的人」里的成交，分子分母同源，比率不会超过 100%
+        $dealIdentities = [];
+        $onlineDealIdentities = [];
+        foreach ($sales as $sale) {
+            $identity = $identityOf($sale->phone ?? '', (string) ($sale->name ?? ''));
+            if ($identity === '' || ! isset($visitIdentities[$identity])) {
+                continue;
+            }
+            $dealIdentities[$identity] = true;
+            if (isset($onlineIdentities[$identity])) {
+                $onlineDealIdentities[$identity] = true;
+            }
+        }
+
         // 客户到店分布（最近30天有到店记录）
         $custQ = Customer::query();
-        if ($u->role !== 'R_SUPER') {
+        if (! userHasRole($u, 'R_SUPER')) {
             $custQ->where('venue', $u->venue);
         } elseif ($venue !== '') {
             $custQ->where('venue', $venue);
@@ -243,6 +313,9 @@ final class AnalyticsController extends Controller
         $memberTotal = (clone $custQ)->where(function ($q) {
             $q->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%');
         })->count();
+
+        $visitCount = count($visitIdentities);
+        $dealCount = count($dealIdentities);
 
         $sumKey = fn ($k) => collect($byDate)->flatMap(fn ($vs) => collect($vs)->pluck($k))->sum();
         $totalLeads = $sumKey('leads');
@@ -257,8 +330,8 @@ final class AnalyticsController extends Controller
         // 线上新客口径汇总：留资、到店、成交三项同源（都取新媒体登记来源），
         // 成交率的分母是「线上到店」而非「线上留资」。
         $onlineLeadCount = (int) $sumKey('online_leads');
-        $onlineVisitCount = (int) $sumKey('online_experienced');
-        $onlineDealCount = (int) $sumKey('online_deals');
+        $onlineVisitCount = count($onlineVisitIdentities);
+        $onlineDealCount = count($onlineDealIdentities);
 
         // 预约/上课班次按私教 / 小班 / 团课拆分
         $privateBooked = 0;
@@ -304,9 +377,11 @@ final class AnalyticsController extends Controller
                 'memberTotal' => $memberTotal,
                 'leadCount' => $totalLeads,
                 'bookingCount' => $totalBooked,
-                'visitCount' => $totalExperienced,
-                'trialCount' => $totalExperienced,
-                'dealCount' => $totalDeals,
+                // 到店 = 区间内到店体验过的人数（同一人来多次只算一个人）
+                'visitCount' => $visitCount,
+                'trialCount' => $visitCount,
+                // 成交 = 上述到店人数里的成交人数，分子分母同源
+                'dealCount' => $dealCount,
                 'cardSalesCount' => $totalCardSales,
                 'classCount' => $totalClasses,
                 'privateBookingCount' => $privateBooked,
@@ -320,8 +395,8 @@ final class AnalyticsController extends Controller
                 // 留资登记成交（按成交日 deal_at 落在窗口、含全部来源）：改一笔留资成交即联动，区别于上方按售卡实收的 dealAmount
                 'registeredDealCount' => $sales->count(),
                 'registeredDealAmount' => round((float) $sales->sum('deal_amount'), 2),
-                'dealRate' => $totalExperienced > 0 ? round($totalDeals / $totalExperienced * 100, 1) : 0,
-                'leadToVisitRate' => $totalLeads > 0 ? min(100, round($totalExperienced / $totalLeads * 100, 1)) : 0,
+                'dealRate' => $visitCount > 0 ? round($dealCount / $visitCount * 100, 1) : 0,
+                'leadToVisitRate' => $totalLeads > 0 ? min(100, round($visitCount / $totalLeads * 100, 1)) : 0,
                 // 线上新客口径（新媒体登记来源：美团/大众点评/抖音/小红书/视频号/线上/团购）：
                 // 留资、到店、成交三项都只算线上，成交率 = 线上成交 ÷ 线上到店（不是除以留资人数）。
                 'onlineLeadCount' => $onlineLeadCount,
@@ -332,6 +407,7 @@ final class AnalyticsController extends Controller
             ],
             'visit30' => $visit30,
             'activeCustomers' => $activeCustomers,
+            // 出勤口径：三个连续且等长的 30 天滚动窗口（再前30天 / 前30天 / 近30天）
             'attendanceSummary' => [
                 'm1' => (clone $custQ)->where('attend_m1', '>', 0)->count(),
                 'm2' => (clone $custQ)->where('attend_m2', '>', 0)->count(),

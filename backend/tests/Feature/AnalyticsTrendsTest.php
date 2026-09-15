@@ -22,15 +22,19 @@ class AnalyticsTrendsTest extends TestCase
     {
         Sanctum::actingAs(User::factory()->create(['username' => 'analytics-test', 'role' => 'R_SUPER']));
 
+        // 「CRM体验客」的手机号与下方 green-signed 的随心瑜预约一致：
+        // 同一个人同时出现在留资与预约两处，到店人数只能算一个（按人去重口径）
         Lead::create([
             'lead_date' => '2026-08-29',
             'name' => 'CRM体验客',
+            'phone' => '13800000002',
             'venue' => '绿地店',
             'status' => '已体验',
         ]);
         Lead::create([
             'lead_date' => '2026-08-29',
             'name' => '线上成交客',
+            'phone' => '13800000009',
             'venue' => '绿地店',
             'source' => '美团',
             'order_platform' => '美团',
@@ -67,7 +71,6 @@ class AnalyticsTrendsTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.summary.bookingCount', 4)
             ->assertJsonPath('data.summary.trialCount', 2)
-            ->assertJsonPath('data.summary.visitCount', 2)
             ->assertJsonPath('data.summary.classCount', 3)
             ->assertJsonPath('data.summary.privateBookingCount', 1)
             ->assertJsonPath('data.summary.smallBookingCount', 1)
@@ -78,7 +81,10 @@ class AnalyticsTrendsTest extends TestCase
             ->assertJsonPath('data.summary.cardSalesCount', 1)
             ->assertJsonPath('data.summary.dealAmount', 3000)
             ->assertJsonPath('data.summary.onlineLeadCount', 1)
-            ->assertJsonPath('data.summary.onlineDealRate', 100);
+            ->assertJsonPath('data.summary.onlineDealRate', 100)
+            // 到店人数按人去重：CRM 留资与随心瑜预约里同一个人只算一次
+            ->assertJsonPath('data.summary.visitCount', 2)
+            ->assertJsonPath('data.summary.dealCount', 1);
 
         $this->getJson('/api/analytics/trends?start=2026-08-29&end=2026-08-29&venue='.urlencode('东部店'))
             ->assertOk()

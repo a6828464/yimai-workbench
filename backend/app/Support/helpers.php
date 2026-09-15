@@ -29,7 +29,7 @@ function ok($data)
 
 function requireSuper(Request $request): void
 {
-    abort_unless($request->user()?->role === 'R_SUPER', 403, '仅超管可执行此操作');
+    abort_unless(userHasRole($request->user(), 'R_SUPER'), 403, '仅超管可执行此操作');
 }
 
 /** 配置单例访问器：带锁获取唯一 AppSetting 行，规避并发 firstOrCreate 造出重复行后读到陈旧副本 */
@@ -52,7 +52,8 @@ function profilePayload(User $user): array
         'phone' => $user->phone,
         'avatar' => $user->avatar,
         'email' => $user->email,
-        'role' => $user->role,
+        'role' => primaryRole(userRoles($user)),
+        'roles' => userRoles($user),
         'venues' => $user->venues ?? [],
         'profile' => (array) ($user->profile ?? []),
     ];
@@ -252,27 +253,28 @@ function businessNotifications(User $user): array
 {
     $items = [];
     $taskQ = Task::query()->whereNotIn('status', ['已完成']);
-    if ($user->role === 'R_MANAGER') {
+    // 多角色按「最大范围」取任务范围：店长看本店，老师侧看本人，新媒体看本人
+    if (userHasRole($user, 'R_MANAGER')) {
         $taskQ->where('venue', $user->venue);
-    } elseif (isTeacherSide($user->role)) {
+    } elseif (userIsTeacherSide($user)) {
         $taskQ->where('venue', $user->venue)->where('owner', $user->name);
-    } elseif ($user->role === 'R_MEDIA') {
+    } elseif (userHasRole($user, 'R_MEDIA')) {
         $taskQ->where('owner', $user->name);
     }
     $taskCount = $taskQ->count();
     if ($taskCount > 0) {
-        $items[] = ['key' => 'tasks-'.$taskCount, 'category' => 'todo', 'level' => 'warning', 'title' => "有 {$taskCount} 项任务待处理", 'detail' => $user->role === 'R_SUPER' ? '双店任务' : ($user->venue ?: '本人任务'), 'path' => '/yimai/tasks'];
+        $items[] = ['key' => 'tasks-'.$taskCount, 'category' => 'todo', 'level' => 'warning', 'title' => "有 {$taskCount} 项任务待处理", 'detail' => userHasRole($user, 'R_SUPER') ? '双店任务' : ($user->venue ?: '本人任务'), 'path' => '/yimai/tasks'];
     }
-    if (in_array($user->role, ['R_SUPER', 'R_MANAGER'], true) || isTeacherSide($user->role)) {
+    if (userHasRole($user, 'R_SUPER') || userHasRole($user, 'R_MANAGER') || userIsTeacherSide($user)) {
         $customerQ = scopeCustomersForUser(Customer::query(), $user)->whereIn('id', filteredIds('待续课'));
         $renewals = $customerQ->count();
         if ($renewals > 0) {
             $items[] = ['key' => 'renewals-'.$renewals, 'category' => 'todo', 'level' => 'high', 'title' => "有 {$renewals} 位会员进入待续课", 'detail' => '请完成评估并明确下一步动作', 'path' => '/yimai/members'];
         }
     }
-    if (in_array($user->role, ['R_SUPER', 'R_MANAGER'], true)) {
+    if (userHasRole($user, 'R_SUPER') || userHasRole($user, 'R_MANAGER')) {
         $approvalQ = Approval::where('status', 'like', '待%');
-        if ($user->role === 'R_MANAGER') {
+        if (! userHasRole($user, 'R_SUPER') && userHasRole($user, 'R_MANAGER')) {
             $approvalQ->where('venue', $user->venue);
         }
         $approvals = $approvalQ->count();
@@ -280,13 +282,13 @@ function businessNotifications(User $user): array
             $items[] = ['key' => 'approvals-'.$approvals, 'category' => 'notice', 'level' => 'warning', 'title' => "有 {$approvals} 项价格审批待处理", 'detail' => '审批中心', 'path' => '/yimai/approvals'];
         }
     }
-    if ($user->role === 'R_SUPER') {
+    if (userHasRole($user, 'R_SUPER')) {
         $lastSync = SyncJob::where('status', '成功')->latest('finished_at')->first();
         if ($lastSync) {
             $items[] = ['key' => 'sync-'.$lastSync->id, 'category' => 'notice', 'level' => 'info', 'title' => '最近一次 KeepYoga 同步已完成', 'detail' => (string) $lastSync->finished_at, 'path' => '/yimai/sync'];
         }
     }
-    if ($user->role === 'R_MEDIA') {
+    if (userHasRole($user, 'R_MEDIA') && ! userHasAnyRole($user, ['R_SUPER', 'R_MANAGER']) && ! userIsTeacherSide($user)) {
         $newLeads = Lead::where('created_by', $user->name)->where('status', '新留资')->count();
         if ($newLeads > 0) {
             $items[] = ['key' => 'media-leads-'.$newLeads, 'category' => 'message', 'level' => 'info', 'title' => "你录入的 {$newLeads} 条新客资待承接", 'detail' => '新媒体客资', 'path' => '/yimai/leads'];
@@ -297,12 +299,17 @@ function businessNotifications(User $user): array
 }
 
 /**
- * 角色口径（2026-09 拆分）：
+ * 角色口径（2026-09 拆分 + 多角色叠加）：
  *  - R_SERVICE  服务老师 ＝ 会籍顾问。看得见的是「挂在自己名下的会员和客资」。
  *  - R_TEACHER  授课老师 ＝ 私教主教练。看得见「自己上过私教课的学员」＋「挂在自己名下的会籍会员」。
  *               小班、团课不计入「我的学员」（用户明确口径）。
  *  - R_MANAGER  店长看本店全部；R_SUPER 看双店；R_MEDIA 只看 P5 留资与自己录入的客资。
+ *
+ * 一个账号可以拥有多个角色，可见范围取并集；店长/超管这类更大范围会自然吸收小范围
+ * （业务确认：服务老师 + 授课老师 = 会员并集；再叠加店长 = 本店全部）。
  */
+
+/** 角色展示名 */
 function roleLabel(?string $role): string
 {
     return match ($role) {
@@ -315,10 +322,63 @@ function roleLabel(?string $role): string
     };
 }
 
+/** 按权限从大到小排序，用于选「主角色」与多角色展示 */
+const ROLE_PRECEDENCE = ['R_SUPER', 'R_MANAGER', 'R_TEACHER', 'R_SERVICE', 'R_MEDIA'];
+
+/**
+ * 账号的全部角色。
+ *
+ * 以 roles 数组为准；老数据或尚未回填时回退到单值 role，两者都空则返回空数组。
+ * 这样迁移到一半、或某个写入路径漏写 roles 时，权限不会突然放大或丢失。
+ */
+function userRoles(?User $user): array
+{
+    if (! $user) {
+        return [];
+    }
+    $roles = is_array($user->roles) ? $user->roles : [];
+    $roles = array_values(array_filter(array_map('strval', $roles)));
+    if ($roles === [] && (string) $user->role !== '') {
+        $roles = [(string) $user->role];
+    }
+
+    return $roles;
+}
+
+/** 是否拥有某角色 */
+function userHasRole(?User $user, string $role): bool
+{
+    return in_array($role, userRoles($user), true);
+}
+
+/** 是否拥有其中任一角色 */
+function userHasAnyRole(?User $user, array $roles): bool
+{
+    return array_intersect($roles, userRoles($user)) !== [];
+}
+
+/** 主角色：按权限从大到小取第一个命中的（用于展示与 role 单值列回写） */
+function primaryRole(array $roles): string
+{
+    foreach (ROLE_PRECEDENCE as $r) {
+        if (in_array($r, $roles, true)) {
+            return $r;
+        }
+    }
+
+    return '';
+}
+
 /** 是否为「老师侧」角色（服务老师 / 授课老师）——涉及会员与客资的按人隔离 */
 function isTeacherSide(?string $role): bool
 {
     return in_array($role, ['R_SERVICE', 'R_TEACHER'], true);
+}
+
+/** 该账号是否属于老师侧（多角色任一命中） */
+function userIsTeacherSide(?User $user): bool
+{
+    return userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER']);
 }
 
 /**
@@ -337,7 +397,7 @@ function privateStudentKeys(User $user): array
     }
 
     $keys = ['external_ids' => [], 'phones' => []];
-    if ($user->role !== 'R_TEACHER' || ! $user->name) {
+    if (! userHasRole($user, 'R_TEACHER') || ! $user->name) {
         return $user->privateStudentKeysCache = $keys;
     }
 
@@ -368,65 +428,110 @@ function privateStudentKeys(User $user): array
     ];
 }
 
+/**
+ * 会员可见范围（多角色取并集）。
+ *
+ *  超管  → 不加条件（双店）
+ *  店长  → 本店全部
+ *  服务老师 → 本店 + 挂在自己名下的会员
+ *  授课老师 → 本店 + （自己名下的会员 ∪ 私教课学员）
+ *  新媒体 → P5 留资
+ *
+ * 多角色时把各自的「按人条件」并起来；店长/超管这类更大范围直接吸收其余角色。
+ */
 function scopeCustomersForUser($query, User $user)
 {
-    if ($user->role === 'R_MANAGER') {
-        $query->where('venue', $user->venue);
-    } elseif ($user->role === 'R_SERVICE') {
-        // 服务老师（会籍顾问）：只看挂在本人名下的会员
-        $query->where('venue', $user->venue)
-            ->where(fn ($q) => $q->where('consultant', $user->name)->orWhere('owner', $user->name));
-    } elseif ($user->role === 'R_TEACHER') {
-        // 授课老师（私教主教练）：本人私教课的学员 ∪ 挂在本人名下的会籍会员
+    $roles = userRoles($user);
+
+    if (in_array('R_SUPER', $roles, true)) {
+        return $query;
+    }
+    if (in_array('R_MANAGER', $roles, true)) {
+        return $query->where('venue', $user->venue);
+    }
+
+    $personScopes = [];
+    if (userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER'])) {
+        $personScopes[] = fn ($q) => $q->where('consultant', $user->name)->orWhere('owner', $user->name);
+    }
+    if (in_array('R_TEACHER', $roles, true)) {
         $keys = privateStudentKeys($user);
-        $query->where('venue', $user->venue)
-            ->where(function ($q) use ($user, $keys) {
-                $q->where('consultant', $user->name)->orWhere('owner', $user->name);
+        if ($keys['external_ids'] !== [] || $keys['phones'] !== []) {
+            $personScopes[] = function ($q) use ($keys) {
                 if ($keys['external_ids'] !== []) {
                     $q->orWhereIn('external_id', $keys['external_ids']);
                 }
                 if ($keys['phones'] !== []) {
                     $q->orWhereIn('phone', $keys['phones']);
                 }
+            };
+        }
+    }
+
+    if ($personScopes !== []) {
+        return $query->where('venue', $user->venue)->where(function ($q) use ($personScopes) {
+            $q->where(function ($inner) use ($personScopes) {
+                foreach ($personScopes as $scope) {
+                    $inner->orWhere($scope);
+                }
             });
-    } elseif ($user->role === 'R_MEDIA') {
-        $query->where('layer', 'P5');
+        });
+    }
+    if (in_array('R_MEDIA', $roles, true)) {
+        return $query->where('layer', 'P5');
     }
 
     return $query;
 }
 
+/** 客资可见范围（多角色取并集），口径与会员一致 */
 function scopeLeadsForUser($query, User $user)
 {
-    if ($user->role === 'R_MANAGER') {
-        $query->where('venue', $user->venue);
-    } elseif ($user->role === 'R_SERVICE') {
-        // 服务老师是客资承接主体：本人名下的 + 待承接池（沿用原「新客资待承接」作业方式）
-        $query->where('venue', $user->venue)
-            ->where(fn ($q) => $q->where('service_teacher', $user->name)->orWhere('service_teacher', ''));
-    } elseif ($user->role === 'R_TEACHER') {
-        // 授课老师：本人作为会籍顾问的 ＋ 本人上过体验课的 ＋ 本人私教学员对应的客资
-        $keys = privateStudentKeys($user);
-        $query->where('venue', $user->venue)
-            ->where(function ($q) use ($user, $keys) {
-                $q->where('service_teacher', $user->name)->orWhere('trial_teacher', $user->name);
-                if ($keys['phones'] !== []) {
-                    $q->orWhereIn('phone', $keys['phones']);
-                }
-            });
+    $roles = userRoles($user);
+
+    if (in_array('R_SUPER', $roles, true)) {
+        return $query;
+    }
+    if (in_array('R_MANAGER', $roles, true)) {
+        return $query->where('venue', $user->venue);
     }
 
+    $scopes = [];
+    if (in_array('R_SERVICE', $roles, true)) {
+        // 服务老师是客资承接主体：本人名下的 + 待承接池
+        $scopes[] = fn ($q) => $q->where('service_teacher', $user->name)->orWhere('service_teacher', '');
+    }
+    if (in_array('R_TEACHER', $roles, true)) {
+        $keys = privateStudentKeys($user);
+        $scopes[] = function ($q) use ($user, $keys) {
+            $q->where('service_teacher', $user->name)->orWhere('trial_teacher', $user->name);
+            if ($keys['phones'] !== []) {
+                $q->orWhereIn('phone', $keys['phones']);
+            }
+        };
+    }
+    if ($scopes !== []) {
+        return $query->where('venue', $user->venue)->where(function ($q) use ($scopes) {
+            $q->where(function ($inner) use ($scopes) {
+                foreach ($scopes as $scope) {
+                    $inner->orWhere($scope);
+                }
+            });
+        });
+    }
+    // 注意：新媒体在这里不加条件 —— 原实现即如此，由调用方按场景叠加自己的过滤
+    // （如 P5 / created_by / whereRaw('1 = 0')）。此处若擅自收窄会改变既有口径。
     return $query;
 }
 
 /** 经营看板 venue 下推：超管看双店，新媒体按 venues 授权，店长/服务老师/授课老师锁定本店。 */
 function applyVenueScope($query, User $user, string $venue)
 {
-    if ($user->role === 'R_SUPER') {
+    if (userHasRole($user, 'R_SUPER')) {
         if ($venue !== '') {
             $query->where('venue', $venue);
         }
-    } elseif ($user->role === 'R_MEDIA') {
+    } elseif (userHasRole($user, 'R_MEDIA') && ! in_array('R_MANAGER', userRoles($user), true)) {
         $allowed = array_values(array_intersect((array) $user->venues, ['绿地店', '东部店']));
         if ($venue !== '') {
             abort_unless(in_array($venue, $allowed, true), 403, '无权查看该门店');
@@ -443,17 +548,25 @@ function applyVenueScope($query, User $user, string $venue)
 
 function canAccessCustomer(User $user, Customer $customer): bool
 {
-    return match ($user->role) {
-        'R_SUPER' => true,
-        'R_MANAGER' => $customer->venue === $user->venue,
-        'R_SERVICE' => $customer->venue === $user->venue
-            && in_array($user->name, [$customer->owner, $customer->consultant], true),
-        'R_TEACHER' => $customer->venue === $user->venue && (
-            in_array($user->name, [$customer->owner, $customer->consultant], true)
-            || privateTeaches($user, $customer)
-        ),
-        default => false,
-    };
+    if (userHasRole($user, 'R_SUPER')) {
+        return true;
+    }
+    if ($customer->venue !== $user->venue) {
+        return false;
+    }
+    if (userHasRole($user, 'R_MANAGER')) {
+        return true;
+    }
+    // 老师侧：名下会员 ∪ 私教课学员（多角色即两个条件的并集）
+    if (userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER'])
+        && in_array($user->name, [$customer->owner, $customer->consultant], true)) {
+        return true;
+    }
+    if (userHasRole($user, 'R_TEACHER') && privateTeaches($user, $customer)) {
+        return true;
+    }
+
+    return false;
 }
 
 /** 该授课老师是否给这位会员上过私教课（只认私教） */
@@ -630,7 +743,7 @@ function audit(Request $r, string $action, string $module, int|string $targetId,
     AuditLog::create([
         'operator_id' => $r->user()->id,
         'operator_name' => $r->user()->name,
-        'operator_role' => $roleMap[$r->user()->role] ?? $r->user()->role,
+        'operator_role' => implode('+', array_map(fn ($x) => $roleMap[$x] ?? $x, userRoles($r->user()))),
         'action' => $action, 'module' => $module,
         'target_id' => (string) $targetId, 'target_label' => $targetLabel,
         'venue' => $venue, 'detail' => $detail,
@@ -741,6 +854,8 @@ function computeMemberListIds(array $rules): array
                 $hasAsset = $c->main_card !== null && ! in_array($c->main_card, ['', '—', '待同步卡项'], true);
                 $expireDays = $c->expire_date ? now()->startOfDay()->diffInDays($c->expire_date, false) : null;
                 $revive = (bool) $c->in_revive || ($dd !== null && $dd > $reviveDays && $hasAsset);
+                // m1/m2/m3 是三个连续且等长的 30 天滚动窗口（再前30天 / 前30天 / 近30天）：
+                // 三档等长才使下面的「逐档下降」比较有意义。
                 $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= $predropMin && $dd <= $predropMax));
                 $declining = ! $revive && ! $preLoss && ($strict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3));
 
@@ -752,6 +867,8 @@ function computeMemberListIds(array $rules): array
                 $daysLeft = $stats['daysLeft'] ?? null;
                 $daysTotal = (int) ($stats['daysTotal'] ?? 0);
                 $renewalHit = false;
+                // 待续课要求「最近一个月有出勤」：m3 = 近 30 天（含今天），
+                // 而非自然月的「上月」——否则本月恢复训练、上月停练的会员会被漏掉
                 if ($countResidue !== null && $m3 > 0) {
                     $renewalHit = $countResidue <= $threshold
                         || ($countPercent > 0 && $countBound > 0 && $countResidue / $countBound * 100 <= $countPercent);

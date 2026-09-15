@@ -2,10 +2,12 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\BodyTestReport;
 use App\Models\Customer;
 use App\Models\KyBooking;
 use App\Models\Lead;
 use App\Models\PostClassReview;
+use App\Models\TrainingPlan;
 use App\Models\User;
 use App\Services\PostClassPlanEngine;
 use Illuminate\Http\Request;
@@ -26,25 +28,25 @@ final class PostClassReviewController extends Controller
     /** 可写角色：授课老师本人、店长、超管（服务老师只读，用于顾问衔接） */
     private function assertCanWrite(User $u): void
     {
-        abort_unless(in_array($u->role, ['R_SUPER', 'R_MANAGER', 'R_TEACHER'], true), 403, '仅授课老师、店长可填写课后分析');
+        abort_unless(userHasAnyRole($u, ['R_SUPER', 'R_MANAGER', 'R_TEACHER']), 403, '仅授课老师、店长可填写课后分析');
     }
 
     private function isVisible(User $u, PostClassReview $row): bool
     {
-        if ($u->role === 'R_SUPER') {
+        if (userHasRole($u, 'R_SUPER')) {
             return true;
         }
         if ($row->venue !== $u->venue) {
             return false;
         }
-        if ($u->role === 'R_MANAGER') {
+        if (userHasRole($u, 'R_MANAGER')) {
             return true;
         }
-        if ($u->role === 'R_TEACHER') {
+        if (userHasRole($u, 'R_TEACHER')) {
             return (int) $row->teacher_user_id === (int) $u->id
                 || (string) $row->teacher_name === (string) $u->name;
         }
-        if ($u->role === 'R_SERVICE') {
+        if (userHasRole($u, 'R_SERVICE')) {
             return $this->serviceOwns($u, $row);
         }
 
@@ -103,48 +105,121 @@ final class PostClassReviewController extends Controller
     }
 
     /**
-     * GET /post-class-reviews/candidates：可填写的课。
+     * GET /post-class-reviews/candidates：本页可见的人群。
      *
-     * 授课老师取本人最近的真实排课；未产生课后分析的排在最前。
-     * 体验课与私教课都能填（私教课是训练档案的后续记录）。
+     * 三类来源合并展示（用户口径）：
+     *  1) class  —— 上过课的：本人排课里还没填课后分析的体验课/私教课
+     *  2) lead   —— 留资管理里分配给他的：service_teacher 或 trial_teacher 是本人
+     *  3) member —— 约课系统里会籍顾问归属他的：customers.consultant 是本人
+     *
+     * 会员/客资的关联同时按手机号与「姓名+门店」匹配：随心瑜预约行不保证带手机号，
+     * 只按手机号匹配会让「客资状态」整列都是空的。
      */
     public function candidates(Request $r)
     {
         $u = $r->user();
         $days = min(60, max(1, (int) $r->query('days', 7)));
         $venue = (string) $r->query('venue', '');
+        $isService = userHasRole($u, 'R_SERVICE');
 
-        $q = KyBooking::query()
+        $venueFilter = function ($q) use ($u, $venue) {
+            if (userHasRole($u, 'R_SUPER')) {
+                if ($venue !== '') {
+                    $q->where('venue', $venue);
+                }
+            } else {
+                $q->where('venue', $u->venue);
+            }
+
+            return $q;
+        };
+
+        // ---------- 1) 上过课的 ----------
+        $bookingQ = KyBooking::query()
             ->whereBetween('start_at', [now()->subDays($days)->startOfDay(), now()->endOfDay()])
             ->whereNotIn('status', ['cancelled', 'no_show']);
-
-        if ($u->role === 'R_SUPER') {
-            if ($venue !== '') {
-                $q->where('venue', $venue);
-            }
-        } else {
-            $q->where('venue', $u->venue);
+        $venueFilter($bookingQ);
+        if (userHasRole($u, 'R_TEACHER')) {
+            $bookingQ->where('teacher_name', $u->name);
+        } elseif ($isService) {
+            // 服务老师不授课：看自己名下会员上过的课
+            $myPhones = Customer::query()->where('venue', $u->venue)
+                ->where(fn ($w) => $w->where('consultant', $u->name)->orWhere('owner', $u->name))
+                ->where('phone', '!=', '')->pluck('phone')->all();
+            $bookingQ->whereIn('phone', $myPhones !== [] ? $myPhones : ['__none__']);
         }
-        if ($u->role === 'R_TEACHER') {
-            $q->where('teacher_name', $u->name);
-        }
-
-        $rows = $q->orderByDesc('start_at')->limit(200)->get();
+        $rows = $bookingQ->orderByDesc('start_at')->limit(200)->get();
         $doneIds = PostClassReview::whereIn('booking_id', $rows->pluck('id')->all() ?: [-1])
             ->pluck('booking_id')->all();
 
-        $phoneOf = fn ($b) => preg_replace('/\D+/', '', (string) $b->phone) ?? '';
-        $phones = $rows->map($phoneOf)->filter()->unique()->values()->all();
-        $customerByPhone = $phones === [] ? collect() : Customer::whereIn('phone', $phones)->get()->keyBy('phone');
-        $leadByPhone = $phones === [] ? collect() : Lead::whereIn('phone', $phones)->orderByDesc('id')->get()->keyBy('phone');
+        // 手机号 / 姓名+门店 双索引匹配会员与客资
+        $normalize = fn ($v) => preg_replace('/\D+/', '', (string) $v) ?? '';
+        $phones = $rows->map(fn ($b) => $normalize($b->phone))->filter()->unique()->values()->all();
+        $names = $rows->map(fn ($b) => (string) $b->member_name)->filter()->unique()->values()->all();
 
-        $records = $rows->map(function ($b) use ($doneIds, $customerByPhone, $leadByPhone, $phoneOf) {
-            $phone = $phoneOf($b);
-            $c = $customerByPhone->get($phone);
-            $l = $leadByPhone->get($phone);
+        $customerIdx = [];
+        $customerQ = Customer::query()->where(function ($w) use ($phones, $names) {
+            if ($phones !== []) {
+                $w->whereIn('phone', $phones);
+            }
+            if ($names !== []) {
+                $w->orWhereIn('name', $names);
+            }
+        });
+        foreach ($customerQ->get(['id', 'name', 'phone', 'venue']) as $c) {
+            if ($normalize($c->phone) !== '') {
+                $customerIdx['p:'.$normalize($c->phone)] = $c;
+            }
+            $customerIdx['n:'.$c->name.'|'.$c->venue] = $c;
+        }
+
+        $leadIdx = [];
+        $leadQ = Lead::query()->where(function ($w) use ($phones, $names) {
+            if ($phones !== []) {
+                $w->whereIn('phone', $phones);
+            }
+            if ($names !== []) {
+                $w->orWhereIn('name', $names);
+            }
+        })->orderBy('id');
+        foreach ($leadQ->get(['id', 'name', 'phone', 'venue', 'status']) as $l) {
+            $p = $normalize($l->phone);
+            if ($p !== '') {
+                $leadIdx['p:'.$p] = $l;   // 取最新一条（orderBy id 升序，后写覆盖）
+            }
+            $leadIdx['n:'.$l->name.'|'.$l->venue] = $l;
+        }
+        $lookup = function (string $phone, string $name, string $venue) use ($customerIdx, $leadIdx): array {
+            $keys = [];
+            if ($phone !== '') {
+                $keys[] = 'p:'.$phone;
+            }
+            if ($name !== '') {
+                $keys[] = 'n:'.$name.'|'.$venue;
+            }
+            $c = null;
+            $l = null;
+            foreach ($keys as $k) {
+                $c ??= $customerIdx[$k] ?? null;
+                $l ??= $leadIdx[$k] ?? null;
+            }
+
+            return [$c, $l];
+        };
+
+        $records = $rows->map(function ($b) use ($doneIds, $lookup, $normalize) {
+            $name = (string) $b->member_name;
             $kind = $b->courseKind();
+            [$c, $l] = $lookup($normalize($b->phone), $name, (string) $b->venue);
+            // 随心瑜预约行不保证带手机号：回填匹配到的会员/客资手机号，
+            // 否则列表里既联系不上人，也没法用来建课后分析
+            $phone = $normalize($b->phone);
+            if ($phone === '') {
+                $phone = $normalize($c->phone ?? '') ?: $normalize($l->phone ?? '');
+            }
 
             return [
+                'source' => 'class',
                 'bookingId' => $b->id,
                 'classAt' => $b->start_at?->format('Y-m-d H:i'),
                 'date' => $b->start_at?->toDateString(),
@@ -152,12 +227,12 @@ final class PostClassReviewController extends Controller
                 'venue' => (string) $b->venue,
                 'courseName' => (string) $b->course_name,
                 'teacherName' => (string) $b->teacher_name,
-                'studentName' => (string) $b->member_name,
+                'studentName' => $name,
                 'phoneTail' => $phone !== '' ? substr($phone, -4) : '',
                 'phone' => $phone,
                 'kind' => KyBooking::KIND_LABELS[$kind] ?? '团课',
                 'isTrial' => (bool) $b->is_trial,
-                'scene' => $b->is_trial ? 'trial' : ($kind === 'private' ? 'private' : 'other'),
+                'scene' => $b->is_trial ? 'trial' : 'private',
                 'status' => (string) $b->status,
                 'customerId' => $c?->id,
                 'leadId' => $l?->id,
@@ -166,8 +241,54 @@ final class PostClassReviewController extends Controller
             ];
         })->filter(fn ($x) => in_array($x['scene'], ['trial', 'private'], true))->values()->all();
 
+        // ---------- 2) 留资分配给他的（服务老师与授课老师都看自己的） ----------
+        $leads = [];
+        $myLeadQ = Lead::query()->where(function ($w) use ($u) {
+            $w->where('service_teacher', $u->name)->orWhere('trial_teacher', $u->name);
+        });
+        $venueFilter($myLeadQ);
+        foreach ($myLeadQ->orderByDesc('id')->limit(200)->get() as $l) {
+            $p = $normalize($l->phone);
+            $leads[] = [
+                'source' => 'lead',
+                'leadId' => $l->id,
+                'customerId' => null,
+                'studentName' => (string) $l->name,
+                'phone' => $p,
+                'phoneTail' => $p !== '' ? substr($p, -4) : '',
+                'venue' => (string) $l->venue,
+                'leadStatus' => (string) $l->status,
+                'demand' => (string) $l->demand,
+                'leadSource' => (string) $l->source,
+                'leadDate' => (string) $l->lead_date,
+                'hasReview' => PostClassReview::where('lead_id', $l->id)->exists(),
+            ];
+        }
+
+        // ---------- 3) 会籍顾问归属他的会员 ----------
+        $members = [];
+        $myCustomerQ = Customer::query()
+            ->where(fn ($w) => $w->where('consultant', $u->name)->orWhere('owner', $u->name));
+        $venueFilter($myCustomerQ);
+        foreach ($myCustomerQ->orderByDesc('id')->limit(200)->get() as $c) {
+            $members[] = [
+                'source' => 'member',
+                'customerId' => $c->id,
+                'leadId' => null,
+                'studentName' => (string) $c->name,
+                'phone' => $normalize($c->phone),
+                'phoneTail' => $normalize($c->phone) !== '' ? substr($normalize($c->phone), -4) : '',
+                'venue' => (string) $c->venue,
+                'mainCard' => (string) $c->main_card,
+                'remainTimes' => $c->remain_times,
+                'hasReview' => PostClassReview::where('customer_id', $c->id)->exists(),
+            ];
+        }
+
         return ok([
             'records' => $records,
+            'leads' => $leads,
+            'members' => $members,
             'pendingCount' => collect($records)->where('hasReview', false)->count(),
         ]);
     }
@@ -178,17 +299,17 @@ final class PostClassReviewController extends Controller
         $u = $r->user();
         $q = PostClassReview::query();
 
-        if ($u->role === 'R_SUPER') {
+        if (userHasRole($u, 'R_SUPER')) {
             if ($v = trim((string) $r->query('venue', ''))) {
                 $q->where('venue', $v);
             }
         } else {
             $q->where('venue', $u->venue);
         }
-        if ($u->role === 'R_TEACHER') {
+        if (userHasRole($u, 'R_TEACHER')) {
             $q->where(fn ($w) => $w->where('teacher_user_id', $u->id)->orWhere('teacher_name', $u->name));
         }
-        if ($u->role === 'R_SERVICE') {
+        if (userHasRole($u, 'R_SERVICE')) {
             // 服务老师：自己名下会员/客资的课后分析（顾问衔接用）
             $customerIds = Customer::query()->where('venue', $u->venue)
                 ->where(fn ($w) => $w->where('consultant', $u->name)->orWhere('owner', $u->name))
@@ -289,6 +410,7 @@ final class PostClassReviewController extends Controller
         $payload = $this->validatedPayload($r);
 
         $row = PostClassReview::create($this->attributesFrom($payload, $u, null));
+        $this->linkBodyTest($payload, $row);
         $this->auditCreate($r, $row);
 
         return ok(['id' => $row->id]);
@@ -304,6 +426,7 @@ final class PostClassReviewController extends Controller
 
         $payload = $this->validatedPayload($r);
         $row->update($this->attributesFrom($payload, $u, $row));
+        $this->linkBodyTest($payload, $row);
 
         return ok(['id' => $row->id]);
     }
@@ -334,6 +457,104 @@ final class PostClassReviewController extends Controller
         invalidateBusinessCaches('analytics');
 
         return ok(['id' => $row->id, 'shareCode' => $share['code']]);
+    }
+
+    /**
+     * POST /post-class-reviews/{id}/to-plan：把课后分析流转成一份训练计划草稿。
+     *
+     * 门店现状是「老师当场给方向 → 会员办卡后进入长期训练」，
+     * 这一步把已经产出并确认的三阶段方向直接带进训练计划，
+     * 老师不用在训练计划里再录一遍会员情况和方向。
+     *
+     * 计划以「待老师确认」状态落库，老师到训练计划页继续排课次。
+     */
+    public function toPlan(Request $r, int $id)
+    {
+        $u = $r->user();
+        $row = PostClassReview::findOrFail($id);
+        abort_unless($this->isVisible($u, $row), 403, '无权操作该课后分析');
+        $this->assertCanWrite($u);
+        abort_if($row->red_flag, 422, '命中红线的记录不生成训练计划，请先完成专业评估');
+
+        $payload = $row->payload ?? [];
+        $plan = $payload['plan'] ?? null;
+        abort_if(! is_array($plan), 422, '该课后分析还没有生成训练方向');
+
+        $bodyTest = $payload['bodyTest'] ?? null;
+        $profile = is_array($bodyTest) ? ($bodyTest['profile'] ?? []) : [];
+
+        // 关注要点：优先用体测发现的偏离项，其次用本次观察项
+        $focus = [];
+        foreach ((array) ($bodyTest['abnormal'] ?? []) as $it) {
+            $focus[] = ($it['name'] ?? '').' '.($it['bandLabel'] ?? '');
+        }
+        if ($focus === []) {
+            foreach ((array) ($plan['basis'] ?? []) as $b) {
+                $focus[] = (string) ($b['label'] ?? '');
+            }
+        }
+
+        $phases = [];
+        foreach ((array) ($plan['phases'] ?? []) as $ph) {
+            $items = (array) ($ph['focus'] ?? []);
+            if ($items === [] && ! empty($ph['goal'])) {
+                $items = [(string) $ph['goal']];
+            }
+            $phases[] = [
+                'name' => (string) ($ph['name'] ?? ''),
+                'duration' => trim((string) ($ph['duration'] ?? '').'（'.(string) ($ph['durationTimes'] ?? '').'）', '（）'),
+                'items' => $items,
+            ];
+        }
+
+        $cautions = array_values(array_filter(array_merge(
+            (array) ($plan['cautions'] ?? []),
+            (array) ($plan['homeWork'] ?? []) ? ['回家作业：'.implode('；', (array) $plan['homeWork'])] : []
+        )));
+
+        $perWeek = (int) ($plan['frequency']['max'] ?? 2) ?: 2;
+        // 注意：payload 不带 id —— TrainingPlanController::index 用
+        // array_merge(['id' => $p->id], payload)，payload 里的 id 会覆盖真实主键
+        $planPayload = [
+            'memberName' => (string) $row->student_name,
+            'age' => isset($profile['age']) ? (string) $profile['age'] : '',
+            'gender' => ($profile['sex'] ?? '') === '男' ? '男' : '女',
+            'height' => isset($profile['height']) ? (string) $profile['height'] : '',
+            'weight' => isset($profile['weight']) ? (string) $profile['weight'] : '',
+            'bodyFat' => isset($profile['bodyFatRate']) ? (string) $profile['bodyFatRate'] : '',
+            'focus' => implode('、', array_slice(array_unique($focus), 0, 5)),
+            'coreGoal' => (string) $row->student_type.'：'.(string) ($phases[0]['items'][0] ?? ''),
+            'freq' => (string) ($plan['frequency']['text'] ?? ''),
+            'stageWeeks' => (string) ($perWeek * 8),
+            'stageGoal' => (string) ($phases[0]['items'][0] ?? ''),
+            'risks' => $row->red_flag ? '命中红线，须先完成专业评估' : '',
+            'status' => '待老师确认',
+            'content' => [
+                'summary' => (string) $row->student_type.'方向：'.(string) ($plan['frequency']['text'] ?? ''),
+                'phases' => $phases,
+                'cautions' => $cautions !== [] ? $cautions : ['讲观察不讲诊断，讲方向不承诺疗效，不承诺围度或体重数字。'],
+            ],
+            'source' => 'fallback',
+            'createdBy' => (string) $row->teacher_name,
+            'createdAt' => now()->format('Y-m-d H:i'),
+            'confirmedAt' => '',
+            'images' => [],
+            'share' => ['enabled' => false, 'code' => '', 'views' => 0],
+        ];
+
+        $created = TrainingPlan::create([
+            'member_name' => (string) $row->student_name,
+            'payload' => $planPayload,
+            'status' => '待老师确认',
+            'source' => 'fallback',
+            'created_by' => (string) ($row->teacher_name ?: $u->name),
+            'source_review_id' => $row->id,
+            'source_body_test_id' => $payload['bodyTest']['id'] ?? null,
+        ]);
+        audit($r, '新增', '训练计划', $created->id, $row->student_name, $row->venue,
+            '由课后分析（#'.$row->id.'）流转生成训练计划');
+
+        return ok(['planId' => $created->id]);
     }
 
     /** POST /post-class-reviews/{id}/share：开/停对客分享 */
@@ -373,7 +594,7 @@ final class PostClassReviewController extends Controller
     public function pendingCount(Request $r)
     {
         $u = $r->user();
-        if (! in_array($u->role, ['R_SUPER', 'R_MANAGER', 'R_TEACHER'], true)) {
+        if (! userHasAnyRole($u, ['R_SUPER', 'R_MANAGER', 'R_TEACHER'])) {
             return ok(['count' => 0]);
         }
         $days = min(30, max(1, (int) $r->query('days', 3)));
@@ -384,9 +605,9 @@ final class PostClassReviewController extends Controller
             ->where(function ($w) {
                 $w->where('is_trial', true)->orWhere('course_kind', 'private');
             });
-        if ($u->role === 'R_SUPER') {
+        if (userHasRole($u, 'R_SUPER')) {
             // 双店
-        } elseif ($u->role === 'R_TEACHER') {
+        } elseif (userHasRole($u, 'R_TEACHER')) {
             $q->where('teacher_name', $u->name)->where('venue', $u->venue);
         } else {
             $q->where('venue', $u->venue);
@@ -418,6 +639,7 @@ final class PostClassReviewController extends Controller
             'leadId' => 'nullable|integer',
             'customerId' => 'nullable|integer',
             'bookingId' => 'nullable|integer',
+            'bodyTestReportId' => 'nullable|integer',
         ]);
 
         $observations = [];
@@ -431,6 +653,27 @@ final class PostClassReviewController extends Controller
         $redFlags = array_values(array_unique(array_filter(
             array_map('strval', (array) $r->input('redFlags', []))
         )));
+
+        // 体测报告：把体态与体成分映射出的观察项并进来，老师不用再逐项勾；
+        // 报告里的红线提示也并进来，由规则引擎统一做硬拦截。
+        $bodyTestReportId = $r->input('bodyTestReportId') ?: null;
+        $bodyTest = null;
+        if ($bodyTestReportId) {
+            $bodyTest = BodyTestReport::find((int) $bodyTestReportId);
+            if ($bodyTest) {
+                $existing = array_column($observations, 'key');
+                foreach ((array) $bodyTest->observations as $key) {
+                    if (! in_array($key, $existing, true)) {
+                        $observations[] = ['key' => (string) $key, 'level' => '中'];
+                        $existing[] = $key;
+                    }
+                }
+                foreach ((array) $bodyTest->red_flags as $flag) {
+                    $redFlags[] = (string) $flag;
+                }
+                $redFlags = array_values(array_unique($redFlags));
+            }
+        }
 
         $generated = PostClassPlanEngine::generate([
             'student_type' => (string) $r->input('studentType', ''),
@@ -486,6 +729,18 @@ final class PostClassReviewController extends Controller
             'objective' => $generated['objective'] ?? null,
             'script' => array_merge($generated['script'] ?? [], (array) $r->input('script', [])),
             'handoff' => array_merge($generated['handoff'] ?? [], (array) $r->input('handoff', [])),
+            'bodyTestReportId' => $bodyTest?->id,
+            'bodyTest' => $bodyTest ? [
+                'id' => $bodyTest->id,
+                'testedAt' => $bodyTest->tested_at?->format('Y-m-d'),
+                'score' => $bodyTest->score,
+                'profile' => $bodyTest->profile,
+                'abnormal' => $bodyTest->abnormal,
+                'posture' => $bodyTest->posture,
+                'directions' => $bodyTest->directions,
+                'health' => $bodyTest->health,
+                'sourceUrl' => $bodyTest->source_url,
+            ] : null,
             'leadId' => $r->input('leadId') ?: null,
             'customerId' => $r->input('customerId') ?: null,
             'bookingId' => $r->input('bookingId') ?: null,
@@ -524,7 +779,7 @@ final class PostClassReviewController extends Controller
         // 授课老师始终以本人登记；店长/超管代填时保留原值或留空
         $teacherName = $existing?->teacher_name ?: '';
         $teacherUserId = $existing?->teacher_user_id;
-        if ($u->role === 'R_TEACHER') {
+        if (userHasRole($u, 'R_TEACHER')) {
             $teacherName = (string) $u->name;
             $teacherUserId = $u->id;
         } else {
@@ -549,6 +804,26 @@ final class PostClassReviewController extends Controller
             'source' => 'rules',
             'payload' => $p,
         ];
+    }
+
+    /** 把体测报告挂到本次分析对应的会员/客资上，方便后续在会员档案里纵向对比 */
+    private function linkBodyTest(array $payload, PostClassReview $row): void
+    {
+        $id = $payload['bodyTestReportId'] ?? null;
+        if (! $id) {
+            return;
+        }
+        $report = BodyTestReport::find($id);
+        if (! $report) {
+            return;
+        }
+        $report->fill([
+            'customer_id' => $report->customer_id ?: $row->customer_id,
+            'lead_id' => $report->lead_id ?: $row->lead_id,
+            'member_name' => $report->member_name !== '' ? $report->member_name : $row->student_name,
+            'phone' => $report->phone !== '' ? $report->phone : $row->student_phone,
+            'venue' => $report->venue !== '' ? $report->venue : $row->venue,
+        ])->save();
     }
 
     private function auditCreate(Request $r, PostClassReview $row): void

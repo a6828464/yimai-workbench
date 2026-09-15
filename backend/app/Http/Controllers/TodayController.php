@@ -90,16 +90,16 @@ final class TodayController extends Controller
         $leads = $leadQ->get();
 
         $taskQ = Task::query();
-        if ($u->role === 'R_MANAGER') {
+        if (userHasRole($u, 'R_MANAGER')) {
             $taskQ->where('venue', $u->venue);
         }
-        if ($u->role === 'R_SERVICE') {
+        if (userHasRole($u, 'R_SERVICE')) {
             $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
         }
-        if ($u->role === 'R_TEACHER') {
+        if (userHasRole($u, 'R_TEACHER')) {
             $taskQ->where('owner', $u->name);
         }
-        if ($u->role === 'R_MEDIA') {
+        if (userHasRole($u, 'R_MEDIA')) {
             $taskQ->where('owner', $u->name);
         }
         $overdueTasks = $taskQ->where('status', '已逾期')->count();
@@ -116,7 +116,7 @@ final class TodayController extends Controller
             'pendingFollowup' => $scopedCustomers->where('next_action_time', '!=', '')->where('next_action_time', '<=', $tomorrow.' 23:59:59')->count(),
             'expiringMembers' => $expiringMembers,
             'riskCount' => $overdueTasks + $scopedCustomers->where('owner', '未分配')->count() + $leads->where('status', '新留资')->count(),
-            'pendingApprovals' => $u->role === 'R_MEDIA' ? 0 : Approval::where('status', 'like', '待%')->when($u->role === 'R_MANAGER', fn ($q) => $q->where('venue', $u->venue))->count(),
+            'pendingApprovals' => userHasRole($u, 'R_MEDIA') ? 0 : Approval::where('status', 'like', '待%')->when(userHasRole($u, 'R_MANAGER'), fn ($q) => $q->where('venue', $u->venue))->count(),
             'todayBookings' => [
                 '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['todayBookings']['绿地店'] ?? 0) : 0,
                 '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['todayBookings']['东部店'] ?? 0) : 0,
@@ -130,7 +130,7 @@ final class TodayController extends Controller
                 '东部店' => (! $u->venue || $u->venue === '东部店') ? (array) ($snap['todayKinds']['东部店'] ?? ['私教' => 0, '小班' => 0, '团课' => 0]) : ['私教' => 0, '小班' => 0, '团课' => 0],
             ] : null,
             'scopeLabel' => $u->venue ? "本店 · {$u->venue}" : '双店',
-            'snapshotTime' => in_array($u->role, ['R_SUPER', 'R_MANAGER'], true)
+            'snapshotTime' => userHasAnyRole($u, ['R_SUPER', 'R_MANAGER'])
                 ? (is_array($snap['fetchedAt'] ?? null) ? implode(' / ', array_values(array_filter((array) $snap['fetchedAt']))) : (string) ($snap['fetchedAt'] ?? ''))
                 : '',
             // 区分「今天真没预约」与「该店从未同步/快照缺失」，前端据此给出可读提示而非误显示 0
@@ -148,11 +148,12 @@ final class TodayController extends Controller
     public function teacherOverview(Request $r)
     {
         $u = $r->user();
-        abort_unless(isTeacherSide($u->role), 403, '仅老师侧角色可访问');
+        abort_unless(userIsTeacherSide($u), 403, '仅老师侧角色可访问');
 
+        $roles = userRoles($u);
         $start = Carbon::parse((string) $r->query('startDate', now()->startOfMonth()->toDateString()))->startOfDay();
         $end = Carbon::parse((string) $r->query('endDate', now()->toDateString()))->endOfDay();
-        $isCoach = $u->role === 'R_TEACHER';
+        $isCoach = userHasRole($u, 'R_TEACHER');
 
         // 可见会员：统一走 scope（服务老师＝本人名下；授课老师＝本人私教学员 ∪ 本人会籍会员）
         $customers = scopeCustomersForUser(Customer::query(), $u)
@@ -215,11 +216,21 @@ final class TodayController extends Controller
             }, fn ($q) => $q->where('service_teacher', $u->name))
             ->get(['id', 'status', 'deal_at', 'deal_amount', 'lead_date', 'service_teacher']);
 
-        $visitCount = $leadRows->whereIn('status', ['已体验', '已成交'])->count();
-        $dealRows = $leadRows->filter(fn ($l) => $l->status === '已成交'
-            && $l->deal_at && $l->deal_at->between($start, $end));
-        $dealCount = $dealRows->count();
-        $dealAmount = (float) $dealRows->sum(fn ($l) => (float) $l->deal_amount);
+        // 到店/成交与全店口径保持一致：按人去重（同一人来多次算一个人），
+        // 成交只统计「到店体验过的人」里的成交，分子分母同源。
+        $identity = fn ($l) => preg_replace('/\D+/', '', (string) $l->phone) ?: 'n:'.$l->name;
+        $visitIdentities = $leadRows->whereIn('status', ['已体验', '已成交'])
+            ->map($identity)->filter()->unique()->values();
+        $visitCount = $visitIdentities->count();
+        $dealIdentities = $leadRows->filter(fn ($l) => $l->status === '已成交'
+                && $l->deal_at && $l->deal_at->between($start, $end))
+            ->map($identity)->filter()->unique();
+        $dealIdentities = $dealIdentities->intersect($visitIdentities);
+        $dealCount = $dealIdentities->count();
+        $dealAmount = (float) $leadRows->filter(fn ($l) => $l->status === '已成交'
+                && $l->deal_at && $l->deal_at->between($start, $end)
+                && in_array($identity($l), $dealIdentities->all(), true))
+            ->sum(fn ($l) => (float) $l->deal_amount);
         $leadCount = $leadRows->filter(fn ($l) => $l->lead_date
             && Carbon::parse($l->lead_date)->between($start, $end))->count();
 
@@ -252,8 +263,12 @@ final class TodayController extends Controller
         }
 
         return ok([
-            'role' => $u->role,
-            'roleLabel' => roleLabel($u->role),
+            'role' => primaryRole($roles),
+            'roles' => $roles,
+            'roleLabel' => implode(' + ', array_map('roleLabel', array_values(array_filter(
+                ROLE_PRECEDENCE,
+                fn ($x) => in_array($x, $roles, true)
+            )))),
             'scopeLabel' => $u->venue ? "本店 · {$u->venue}" : '未设置门店',
             'startDate' => $start->toDateString(),
             'endDate' => $end->toDateString(),
@@ -281,7 +296,7 @@ final class TodayController extends Controller
     public function followups(Request $r)
     {
         $u = $r->user();
-        if ($u->role === 'R_MEDIA') {
+        if (userHasRole($u, 'R_MEDIA')) {
             return ok([]);
         }
         $q = scopeCustomersForUser(Customer::query(), $u)->whereIn('layer', ['P0', 'P1', 'P5']);
@@ -307,16 +322,16 @@ final class TodayController extends Controller
         }
 
         $taskQ = Task::query()->where('status', '已逾期');
-        if ($u->role === 'R_MANAGER') {
+        if (userHasRole($u, 'R_MANAGER')) {
             $taskQ->where('venue', $u->venue);
         }
-        if ($u->role === 'R_SERVICE') {
+        if (userHasRole($u, 'R_SERVICE')) {
             $taskQ->where('venue', $u->venue)->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
         }
-        if ($u->role === 'R_TEACHER') {
+        if (userHasRole($u, 'R_TEACHER')) {
             $taskQ->where('venue', $u->venue)->where('owner', $u->name);
         }
-        if ($u->role === 'R_MEDIA') {
+        if (userHasRole($u, 'R_MEDIA')) {
             $taskQ->whereRaw('1 = 0');
         }
         foreach ($taskQ->limit(4)->get() as $t) {
@@ -324,7 +339,7 @@ final class TodayController extends Controller
         }
 
         $expiring = scopeCustomersForUser(Customer::query(), $u)
-            ->when($u->role === 'R_MEDIA', fn ($q) => $q->whereRaw('1 = 0'))
+            ->when(userHasRole($u, 'R_MEDIA'), fn ($q) => $q->whereRaw('1 = 0'))
             ->whereIn('id', filteredIds('待续课'))->orderBy('expire_date')->limit(2)->get();
         foreach ($expiring as $c) {
             $alerts[] = ['id' => 200 + $c->id, 'level' => '中', 'text' => "{$c->name} 卡项临近到期（剩余{$c->remain_times}节）", 'action' => '确认续费窗口沟通结果'];
@@ -333,13 +348,41 @@ final class TodayController extends Controller
         return ok($alerts);
     }
 
+    /**
+     * 把排课查询收敛到「与当前用户相关」的课。
+     *
+     * 待办页此前只按门店过滤，老师端看到的是整店的课，夹带大量与自己无关的信息。
+     * 口径与可见范围保持一致：
+     *  - 授课老师：自己上的课（teacher_name）
+     *  - 服务老师：自己名下会员的课（按手机号匹配会员归属）
+     *  - 店长/超管/新媒体：不额外收敛，维持门店/全局视图
+     */
+    private static function scopeBookingsToUser($query, $u): void
+    {
+        if (userHasRole($u, 'R_TEACHER')) {
+            $query->where('teacher_name', (string) $u->name);
+
+            return;
+        }
+        if (! userHasRole($u, 'R_SERVICE')) {
+            return;
+        }
+        $phones = Customer::query()
+            ->where('venue', $u->venue)
+            ->where(fn ($w) => $w->where('consultant', $u->name)->orWhere('owner', $u->name))
+            ->where('phone', '!=', '')
+            ->pluck('phone')
+            ->all();
+        $query->whereIn('phone', $phones !== [] ? $phones : ['__none__']);
+    }
+
     /** GET /today/todo */
     public function todo(Request $r)
     {
         $u = $r->user();
         $today = now()->startOfDay();
-        $isMedia = $u->role === 'R_MEDIA';
-        $isSuper = $u->role === 'R_SUPER';
+        $isMedia = userHasRole($u, 'R_MEDIA');
+        $isSuper = userHasRole($u, 'R_SUPER');
 
         // 今日已处理的待办（全店共享：任何人标记，全员消隐，留痕可溯）
         $doneActions = TodoAction::query()->whereDate('action_date', $today->toDateString())->get()->keyBy('todo_key');
@@ -411,6 +454,7 @@ final class TodayController extends Controller
             if (! $isSuper) {
                 $bookingQ->where('venue', $u->venue);
             }
+            self::scopeBookingsToUser($bookingQ, $u);
             foreach ($bookingQ->orderBy('start_at')->get() as $b) {
                 $phone = preg_replace('/\D+/', '', (string) $b->phone) ?? '';
                 $customer = $matchCustomer($phone, (string) $b->member_id, (string) $b->member_name, (string) $b->venue);
@@ -552,6 +596,7 @@ final class TodayController extends Controller
             if (! $isSuper) {
                 $trialQ->where('venue', $u->venue);
             }
+            self::scopeBookingsToUser($trialQ, $u);
             foreach ($trialQ->orderBy('start_at')->get() as $b) {
                 $digits = preg_replace('/\D+/', '', (string) $b->phone) ?? '';
                 $trials[] = [
@@ -625,14 +670,12 @@ final class TodayController extends Controller
 
         // ---- 待填写课后分析：今天已签到的体验课与私教课（服务老师不排训练，不参与） ----
         $reviews = [];
-        if (! $isMedia && $u->role !== 'R_SERVICE') {
+        if (! $isMedia && ! userHasRole($u, 'R_SERVICE')) {
             $reviewQ = KyBooking::query()
                 ->whereBetween('start_at', [$today->copy(), $today->copy()->endOfDay()])
                 ->where('status', 'signed')
                 ->where(fn ($w) => $w->where('is_trial', true)->orWhere('course_kind', 'private'));
-            if ($u->role === 'R_TEACHER') {
-                $reviewQ->where('teacher_name', $u->name);
-            }
+            self::scopeBookingsToUser($reviewQ, $u);
             if (! $isSuper) {
                 $reviewQ->where('venue', $u->venue);
             }
@@ -672,10 +715,10 @@ final class TodayController extends Controller
             if (! $isSuper) {
                 $taskQ->where('venue', $u->venue);
             }
-            if ($u->role === 'R_SERVICE') {
+            if (userHasRole($u, 'R_SERVICE')) {
                 $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
             }
-            if ($u->role === 'R_TEACHER') {
+            if (userHasRole($u, 'R_TEACHER')) {
                 $taskQ->where('owner', $u->name);
             }
         }
@@ -736,7 +779,7 @@ final class TodayController extends Controller
             if ($d['type'] === 'newLeads' && ! empty($d['leadId'])) {
                 $lead = Lead::find($d['leadId']);
                 if ($lead) {
-                    $canHandle = in_array($u->role, ['R_SUPER', 'R_MANAGER'], true)
+                    $canHandle = userHasAnyRole($u, ['R_SUPER', 'R_MANAGER'])
                         || (string) $lead->service_teacher === (string) $u->name
                         || (string) $lead->service_teacher === '';
                     abort_unless($canHandle, 403, '无权处理该客资');
@@ -785,7 +828,7 @@ final class TodayController extends Controller
                     }
                 }
                 if ($lead) {
-                    $canHandle = in_array($u->role, ['R_SUPER', 'R_MANAGER'], true)
+                    $canHandle = userHasAnyRole($u, ['R_SUPER', 'R_MANAGER'])
                         || (string) $lead->service_teacher === (string) $u->name
                         || (string) $lead->service_teacher === '';
                     if ($enforceLeadPermission) {
@@ -838,7 +881,7 @@ final class TodayController extends Controller
                     'remark' => (string) ($d['remark'] ?? ''),
                     'user_id' => $u->id,
                     'user_name' => $u->name,
-                    'user_role' => $u->role,
+                    'user_role' => primaryRole(userRoles($u)),
                     'venue' => (string) ($u->venue ?? ''),
                 ]
             );

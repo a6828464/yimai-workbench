@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\AppSetting;
 use App\Models\AuditLog;
 use App\Models\Customer;
+use App\Services\KyMemberSyncService;
 use App\Models\KyBooking;
 use App\Models\Lead;
 use App\Models\RenewalEvaluation;
@@ -21,7 +22,7 @@ class CustomerController extends Controller
     {
         $u = $r->user();
         $q = scopeCustomersForUser(Customer::query(), $u);
-        if ($u->role === 'R_MEDIA') {
+        if (userHasRole($u, 'R_MEDIA')) {
             $q->where('layer', 'P5');
         }
         $q->where(fn ($w) => $w->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%'));
@@ -36,7 +37,7 @@ class CustomerController extends Controller
     {
         $u = $r->user();
         $lists = memberListIds();
-        if ($u->role !== 'R_SUPER') {
+        if (! userHasRole($u, 'R_SUPER')) {
             $scopedSet = array_flip(scopeCustomersForUser(Customer::query(), $u)->pluck('id')->all());
             foreach ($lists as $key => $ids) {
                 $lists[$key] = count(array_filter($ids, fn ($id) => isset($scopedSet[$id])));
@@ -51,7 +52,7 @@ class CustomerController extends Controller
     {
         $u = $r->user();
         $q = scopeCustomersForUser(Customer::query(), $u);
-        if ($u->role === 'R_MEDIA') {
+        if (userHasRole($u, 'R_MEDIA')) {
             $q->where('layer', 'P5');
         }
         if ($n = trim((string) $r->query('name', ''))) {
@@ -118,7 +119,27 @@ class CustomerController extends Controller
         $total = (clone $q)->count();
         $rows = $q->orderByDesc('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
 
-        return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
+        // 出勤三列的口径标签：M1/M2/M3 是三个连续且等长的 30 天滚动窗口
+        // （再前30天 / 前30天 / 近30天，近30天含今天）。
+        // 之前按自然月统计且不含本月，会员本月天天来仍显示 0，容易被当成数据不准；
+        // 现在既包含当期，标签也一并返回，前端不需要自己算。
+        $windows = KyMemberSyncService::attendanceWindows();
+
+        return ok([
+            'records' => $rows,
+            'total' => $total,
+            'current' => $current,
+            'size' => $size,
+            'attendanceMonths' => [
+                'm1' => '再前30天',
+                'm2' => '前30天',
+                'm3' => '近30天',
+                // 各窗口的实际日期范围，前端 tooltip 里展示，避免口径存疑
+                'm1Range' => $windows[0][0]->format('n/j').'–'.$windows[0][1]->format('n/j'),
+                'm2Range' => $windows[1][0]->format('n/j').'–'.$windows[1][1]->format('n/j'),
+                'm3Range' => $windows[2][0]->format('n/j').'–'.$windows[2][1]->format('n/j'),
+            ],
+        ]);
     }
 
     /** PATCH /customers/{id} */
@@ -303,7 +324,7 @@ class CustomerController extends Controller
             ->whereNotNull('enrolled_at')
             ->whereBetween('enrolled_at', [$start, $end.' 23:59:59']);
         // 店长锁定本店、服务老师/授课老师由 scope 限定本人；超管/新媒体可按需选门店
-        if ($u->role !== 'R_MANAGER' && ! isTeacherSide($u->role) && $venue !== '') {
+        if (! userHasRole($u, 'R_MANAGER') && ! isTeacherSide($u->role) && $venue !== '') {
             $q->where('venue', $venue);
         }
         if ($n = trim((string) $r->query('name', ''))) {

@@ -44,12 +44,12 @@ class EnsureUserIsEnabled
     {
         if ($request->is('api/leads') && $request->isMethod('post')) {
             Validator::make($request->all(), $this->leadRules(true))->validate();
-            if ($user->role === 'R_MANAGER') {
+            if (userHasRole($user, 'R_MANAGER')) {
                 $request->merge(['venue' => $user->venue]);
-            } elseif ($user->role === 'R_SERVICE') {
+            } elseif (userHasRole($user, 'R_SERVICE')) {
                 $this->assertTeacherFields($request, true, $user);
                 $request->merge(['venue' => $user->venue, 'status' => '新留资']);
-            } elseif ($user->role === 'R_TEACHER') {
+            } elseif (userHasRole($user, 'R_TEACHER')) {
                 $this->assertTeacherFields($request, true, $user);
                 $request->merge(['venue' => $user->venue, 'status' => '新留资']);
             }
@@ -68,9 +68,9 @@ class EnsureUserIsEnabled
         abort_unless($this->canAccessLead($user, $lead), 403, '无权访问该客资');
         if ($request->isMethod('patch')) {
             Validator::make($request->all(), $this->leadRules(false))->validate();
-            if ($user->role === 'R_MANAGER') {
+            if (userHasRole($user, 'R_MANAGER')) {
                 $request->merge(['venue' => $user->venue]);
-            } elseif ($user->role === 'R_SERVICE' || $user->role === 'R_TEACHER') {
+            } elseif (userHasRole($user, 'R_SERVICE') || userHasRole($user, 'R_TEACHER')) {
                 $this->assertTeacherFields($request, false, $user);
             }
         }
@@ -83,19 +83,19 @@ class EnsureUserIsEnabled
 
             return $lead && $this->canAccessLead($user, $lead);
         }
-        if ($user->role === 'R_SUPER') {
+        if (userHasRole($user, 'R_SUPER')) {
             return true;
         }
-        if ($user->role === 'R_MEDIA') {
+        if (userHasRole($user, 'R_MEDIA')) {
             return ($match['kind'] ?? '') === '留资';
         }
 
         $query = Customer::where('phone', trim((string) $request->query('phone')))
             ->where('name', $match['name'] ?? '')
             ->where('venue', $match['venue'] ?? '');
-        if ($user->role === 'R_MANAGER') {
+        if (userHasRole($user, 'R_MANAGER')) {
             $query->where('venue', $user->venue);
-        } elseif (isTeacherSide($user->role)) {
+        } elseif (userIsTeacherSide($user)) {
             scopeCustomersForUser($query, $user);
         }
 
@@ -104,25 +104,35 @@ class EnsureUserIsEnabled
 
     private function canAccessLead(User $user, Lead $lead): bool
     {
-        if ($lead->venue !== $user->venue && ! in_array($user->role, ['R_SUPER', 'R_MEDIA'], true)) {
+        if ($lead->venue !== $user->venue && ! userHasAnyRole($user, ['R_SUPER', 'R_MEDIA'])) {
             return false;
         }
 
-        return match ($user->role) {
-            'R_SUPER', 'R_MEDIA' => true,
-            'R_MANAGER' => $lead->venue === $user->venue,
-            // 服务老师（会籍顾问）：本人名下的客资 + 待承接池
-            'R_SERVICE' => in_array($lead->service_teacher, ['', $user->name], true),
-            // 授课老师：本人作为会籍顾问的 + 本人上过体验课的 + 本人私教学员对应的 + 本人录入的
-            'R_TEACHER' => in_array($user->name, [(string) $lead->service_teacher, (string) $lead->trial_teacher], true)
-                || (string) $lead->created_by === (string) $user->name
-                || (function () use ($user, $lead) {
-                    $phone = (string) $lead->phone;
+        // 多角色取并集：任一角色能给到的可见性即成立
+        if (userHasAnyRole($user, ['R_SUPER', 'R_MEDIA'])) {
+            return true;
+        }
+        if (userHasRole($user, 'R_MANAGER') && $lead->venue === $user->venue) {
+            return true;
+        }
+        // 服务老师（会籍顾问）：本人名下的客资 + 待承接池
+        if (userHasRole($user, 'R_SERVICE') && in_array($lead->service_teacher, ['', $user->name], true)) {
+            return true;
+        }
+        // 授课老师：本人作为会籍顾问的 + 本人上过体验课的 + 本人私教学员对应的 + 本人录入的
+        if (userHasRole($user, 'R_TEACHER')) {
+            if (in_array($user->name, [(string) $lead->service_teacher, (string) $lead->trial_teacher], true)) {
+                return true;
+            }
+            if ((string) $lead->created_by === (string) $user->name) {
+                return true;
+            }
+            $phone = (string) $lead->phone;
 
-                    return $phone !== '' && in_array($phone, privateStudentKeys($user)['phones'], true);
-                })(),
-            default => false,
-        };
+            return $phone !== '' && in_array($phone, privateStudentKeys($user)['phones'], true);
+        }
+
+        return false;
     }
 
     /**

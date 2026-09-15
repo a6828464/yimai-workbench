@@ -12,7 +12,11 @@ final class TrainingPlanController extends Controller
     public function index(Request $r)
     {
         return ok(TrainingPlan::where('created_by', $r->user()->name)->orderBy('id')->get()
-            ->map(fn ($p) => array_merge(['id' => $p->id], $p->payload ?? [])));
+            ->map(fn ($p) => array_merge(['id' => $p->id], $p->payload ?? [], [
+                // 上游来源：这份计划是哪次课后分析 / 哪份体测得出的
+                'sourceReviewId' => $p->source_review_id,
+                'sourceBodyTestId' => $p->source_body_test_id,
+            ])));
     }
 
     /** PUT /training-plans/bulk */

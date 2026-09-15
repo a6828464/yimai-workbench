@@ -136,7 +136,10 @@ export interface AccountRow {
   key: string
   userName: string
   roleLabel: string
+  /** 主角色（向后兼容） */
   roleCode: string
+  /** 全部角色：账号支持多角色叠加，可见范围取并集 */
+  roles: string[]
   venues: string[]
   email: string
   status: '启用' | '停用'
@@ -152,6 +155,7 @@ export async function listAccounts(): Promise<AccountRow[]> {
     userName: a.userName,
     roleLabel: a.roleLabel,
     roleCode: a.roles[0] ?? '',
+    roles: [...a.roles],
     venues: a.venues ?? [],
     email: a.email,
     status: '启用'
@@ -162,7 +166,8 @@ export async function listAccounts(): Promise<AccountRow[]> {
 export async function createAccount(data: {
   userName: string
   name?: string
-  roleCode: string
+  /** 可多选：权限叠加，可见范围取并集 */
+  roles: string[]
   venues: string[]
   email?: string
   password: string
@@ -175,7 +180,7 @@ export async function createAccount(data: {
 export async function updateAccount(
   key: string,
   action: 'update' | 'disable' | 'enable' | 'resetPassword' | 'delete',
-  data?: { roleCode?: string; venues?: string[]; password?: string }
+  data?: { roles?: string[]; roleCode?: string; venues?: string[]; password?: string }
 ): Promise<{ ok: boolean }> {
   if (!USE_BACKEND) throw new Error('演示模式不支持账号变更')
   return apiPatch<{ ok: boolean }>(`/accounts/${encodeURIComponent(key)}`, {

@@ -18,7 +18,8 @@ final class ProfileController extends Controller
             'phone' => $u->phone,
             'avatar' => $u->avatar,
             'email' => $u->email,
-            'role' => $u->role,
+            'role' => primaryRole(userRoles($u)),
+            'roles' => userRoles($u),
             'venues' => $u->venues ?? [],
             'profile' => (array) ($u->profile ?? []),
         ]);

@@ -22,7 +22,7 @@ final class ShareController extends Controller
         // 归属校验：已有同 token 分享非本人创建时，仅超管可覆盖，防止劫持他人对外 H5
         $existing = PublishedShare::where('type', $d['type'])->where('token', $d['token'])->first();
         abort_if(
-            $existing && $existing->created_by !== $r->user()->name && $r->user()->role !== 'R_SUPER',
+            $existing && $existing->created_by !== $r->user()->name && ! userHasRole($r->user(), 'R_SUPER'),
             403, '无权覆盖他人创建的分享'
         );
         PublishedShare::updateOrCreate(

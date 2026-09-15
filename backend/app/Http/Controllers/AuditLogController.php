@@ -12,7 +12,7 @@ final class AuditLogController extends Controller
     public function index(Request $r)
     {
         $u = $r->user();
-        abort_unless($u->role === 'R_SUPER', 403, '仅老板可查看操作留痕');
+        abort_unless(userHasRole($u, 'R_SUPER'), 403, '仅老板可查看操作留痕');
         $r->validate(['start' => 'nullable|date_format:Y-m-d', 'end' => 'nullable|date_format:Y-m-d|after_or_equal:start']);
         $q = AuditLog::query()->orderByDesc('id');
         if ($o = $r->query('operator')) {
