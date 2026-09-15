@@ -70,14 +70,21 @@ final class PublicShareController extends Controller
             }
         });
 
-        return ok([
+        // 分享页期望的是与前端 TrainingPlan 同形状的对象（它要读 status / share 判断有效性，
+        // 还要读 content.phases、coreGoal、stageWeeks 等）。payload 里存的就是这份完整对象，
+        // 因此以 payload 为基底，再用数据库的权威字段覆盖：
+        //  - 之前只返回 profile/goal/content 几个独立列，既缺 status/share 导致页面永远判为无效，
+        //    又因为改造后这些列不再写入而为 null，页面即使打开也是空白。
+        $payload = is_array($plan->payload) ? $plan->payload : [];
+
+        return ok(array_merge($payload, [
+            'id' => $plan->id,
             'memberName' => $plan->member_name,
-            'profile' => $plan->profile,
-            'goal' => $plan->goal,
-            'content' => $plan->content,
-            'images' => $plan->images,
-            'confirmedAt' => optional($plan->confirmed_at)->toDateString(),
-        ]);
+            'status' => $plan->status,
+            'share' => $plan->share,
+            'createdBy' => $plan->created_by,
+            'confirmedAt' => optional($plan->confirmed_at)->toDateTimeString(),
+        ]));
     }
 
     /** GET /public/sales/{token} */

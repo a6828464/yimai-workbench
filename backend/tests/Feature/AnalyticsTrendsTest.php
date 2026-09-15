@@ -124,6 +124,44 @@ class AnalyticsTrendsTest extends TestCase
         $this->assertSame('unknown', contractPartyState([], 'customer'));
     }
 
+    /**
+     * 到店判定：核销时间与留资日期只要有一个落在区间就算。
+     *
+     * 之前写成「核销时间在区间，或者（核销时间为空且留资日期在区间）」，
+     * 于是上月买券、本月到店的线上客人会被排除——这是线上到店人数偏少的原因之一。
+     */
+    public function test_visit_counts_lead_when_either_redeem_or_lead_date_in_range(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'visit-scope', 'role' => 'R_SUPER']));
+
+        // 上月买券（核销时间在区间外）、本月留资：应计入本月到店
+        Lead::create([
+            'lead_date' => '2026-09-10', 'name' => '上月买券本月到店', 'phone' => '13900009001',
+            'source' => '美团', 'order_platform' => '美团', 'venue' => '绿地店',
+            'status' => '已体验', 'redeemed_at' => '2026-08-05 10:00:00',
+        ]);
+        // 上月留资、本月核销到店：也应计入
+        Lead::create([
+            'lead_date' => '2026-08-20', 'name' => '上月留资本月到店', 'phone' => '13900009002',
+            'source' => '抖音', 'order_platform' => '抖音', 'venue' => '绿地店',
+            'status' => '已体验', 'redeemed_at' => '2026-09-12 10:00:00',
+        ]);
+        // 都落在区间外：不计入
+        Lead::create([
+            'lead_date' => '2026-07-01', 'name' => '早就到过店', 'phone' => '13900009003',
+            'source' => '美团', 'order_platform' => '美团', 'venue' => '绿地店',
+            'status' => '已体验', 'redeemed_at' => '2026-07-02 10:00:00',
+        ]);
+
+        $summary = $this->getJson('/api/analytics/trends?start=2026-09-01&end=2026-09-30&venue='.urlencode('绿地店'))
+            ->assertOk()->json('data.summary');
+
+        $this->assertSame(2, $summary['onlineVisitCount']);
+        $this->assertSame(2, $summary['visitCount']);
+        // 来源构成可核对
+        $this->assertSame(2, $summary['visitBreakdown']['fromLeadStatus']);
+    }
+
     public function test_trends_deal_and_redeem_date_window_is_sql_pushed(): void
     {
         Sanctum::actingAs(User::factory()->create(['username' => 'trends-window', 'role' => 'R_SUPER']));

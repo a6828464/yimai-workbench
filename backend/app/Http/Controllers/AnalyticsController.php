@@ -280,10 +280,15 @@ final class AnalyticsController extends Controller
             $markVisit($identityOf($booking->phone, (string) ($booking->member_id ?: $booking->member_name)), 'booking');
         }
         // 来源 2：留资管理里已到店的客资
+        //
+        // 核销时间与留资日期只要有一个落在区间就算（两个条件是「或」）。
+        // 之前写成了「核销时间在区间，或者（核销时间为空且留资日期在区间）」，
+        // 于是上月买券、本月才到店的人（redeemed_at 在区间外）会被排除——
+        // 而这类恰是线上到店的常见情形，是人数偏少的一个原因。
         $visitedLeads = (clone $leadQ)->whereIn('status', ['已体验', '已成交'])
             ->where(function ($q) use ($start, $end) {
                 $q->whereBetween('redeemed_at', [$start.' 00:00:00', $end.' 23:59:59'])
-                    ->orWhere(fn ($q2) => $q2->whereNull('redeemed_at')->whereBetween('lead_date', [$start, $end]));
+                    ->orWhereBetween('lead_date', [$start, $end]);
             })->get(['phone', 'name']);
         foreach ($visitedLeads as $l) {
             $markVisit($identityOf($l->phone, (string) $l->name), 'leadStatus');

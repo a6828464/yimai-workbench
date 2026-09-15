@@ -101,6 +101,74 @@ class TrainingPlanTest extends TestCase
         $this->assertDatabaseHas('training_plans', ['id' => $serverPlan->id]);
     }
 
+    /** 训练计划可见范围：超管全部、店长本店、老师只看自己创建的 */
+    public function test_visible_scope_by_role(): void
+    {
+        TrainingPlan::create([
+            'member_name' => '绿地老师的计划', 'venue' => '绿地店',
+            'payload' => ['memberName' => '绿地老师的计划'], 'status' => '待老师确认',
+            'created_by' => '绿地老师',
+        ]);
+        TrainingPlan::create([
+            'member_name' => '东部老师的计划', 'venue' => '东部店',
+            'payload' => ['memberName' => '东部老师的计划'], 'status' => '待老师确认',
+            'created_by' => '东部老师',
+        ]);
+
+        // 超管：两店的都能看到（原实现按 created_by 过滤，超管一条都看不到）
+        Sanctum::actingAs(User::factory()->create([
+            'name' => '老板', 'username' => 'boss', 'role' => 'R_SUPER', 'roles' => ['R_SUPER'],
+            'venue' => null, 'venues' => ['绿地店', '东部店'], 'status' => '启用',
+        ]));
+        $this->assertCount(2, $this->getJson('/api/training-plans')->assertOk()->json('data'));
+
+        // 店长：只看本店
+        Sanctum::actingAs(User::factory()->create([
+            'name' => '绿地店长', 'username' => 'mgr', 'role' => 'R_MANAGER', 'roles' => ['R_MANAGER'],
+            'venue' => '绿地店', 'venues' => ['绿地店'], 'status' => '启用',
+        ]));
+        $mgr = $this->getJson('/api/training-plans')->assertOk()->json('data');
+        $this->assertCount(1, $mgr);
+        $this->assertSame('绿地老师的计划', $mgr[0]['memberName']);
+
+        // 老师：只看自己创建的
+        Sanctum::actingAs(User::factory()->create([
+            'name' => '绿地老师', 'username' => 't1', 'role' => 'R_TEACHER', 'roles' => ['R_TEACHER'],
+            'venue' => '绿地店', 'venues' => ['绿地店'], 'status' => '启用',
+        ]));
+        $mine = $this->getJson('/api/training-plans')->assertOk()->json('data');
+        $this->assertCount(1, $mine);
+        $this->assertSame('绿地老师的计划', $mine[0]['memberName']);
+    }
+
+    /** 店长改了老师建的计划，归属不能被夺走 */
+    public function test_manager_edit_keeps_original_owner(): void
+    {
+        $row = TrainingPlan::create([
+            'member_name' => '老师的计划', 'venue' => '绿地店',
+            'payload' => ['id' => 0, 'memberName' => '老师的计划', 'status' => '待老师确认'],
+            'status' => '待老师确认', 'created_by' => '绿地老师',
+        ]);
+
+        Sanctum::actingAs(User::factory()->create([
+            'name' => '绿地店长', 'username' => 'mgr2', 'role' => 'R_MANAGER', 'roles' => ['R_MANAGER'],
+            'venue' => '绿地店', 'venues' => ['绿地店'], 'status' => '启用',
+        ]));
+
+        $this->putJson('/api/training-plans/bulk', [
+            'plans' => [[
+                'id' => $row->id, 'memberName' => '老师的计划', 'status' => '已确认',
+                'content' => ['summary' => 's', 'phases' => [], 'cautions' => []],
+            ]],
+            'deletedIds' => [],
+        ])->assertOk();
+
+        $fresh = $row->fresh();
+        $this->assertSame('已确认', $fresh->status);
+        $this->assertSame('绿地老师', $fresh->created_by);   // 归属未被店长覆盖
+        $this->assertSame('绿地店', $fresh->venue);
+    }
+
     /** 客户端 id 被别的账号占用时，服务端另分配主键并回传映射 */
     public function test_client_id_collision_is_reassigned(): void
     {
