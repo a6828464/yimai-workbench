@@ -51,12 +51,12 @@ export const SETTING_DEFAULT_CONFIG = {
   showRefreshButton: true,
   /** 是否显示面包屑 */
   showCrumbs: true,
-  /** 是否显示工作台标签 */
-  showWorkTab: true,
-  /** 是否显示语言切换 */
-  showLanguage: true,
-  /** 是否显示进度条 */
-  showNprogress: false,
+  /** 是否显示工作台标签（一麦不使用多标签页，默认关闭） */
+  showWorkTab: false,
+  /** 是否显示语言切换（系统只有中文，已全局移除） */
+  showLanguage: false,
+  /** 是否显示顶部进度条（默认开启，跳转时有反馈） */
+  showNprogress: true,
   /** 是否显示设置引导 */
   showSettingGuide: true,
   /** 是否显示节日文本 */

@@ -77,7 +77,9 @@
         <ElTableColumn prop="name" label="会员" min-width="110" fixed="left">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
-            <div class="text-xs text-gray-400">{{ row.phoneTail }}</div>
+            <div class="text-xs tabular-nums text-gray-400">
+              {{ row.phone || (row.phoneTail ? '尾号' + row.phoneTail : '—') }}
+            </div>
           </template>
         </ElTableColumn>
         <ElTableColumn v-if="canPickVenue" prop="venue" label="门店" width="90">

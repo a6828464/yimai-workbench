@@ -47,8 +47,9 @@ export const headerBarConfig: HeaderBarFeatureConfig = {
     description: '聊天功能，提供实时沟通'
   },
   language: {
-    enabled: true,
-    description: '多语言切换功能'
+    // 系统只有中文，语言切换已全局移除（设置面板里对应项会按此开关自动隐藏）
+    enabled: false,
+    description: '多语言切换功能（已停用）'
   },
   settings: {
     enabled: true,

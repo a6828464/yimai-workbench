@@ -163,7 +163,7 @@
       </div>
     </div>
 
-    <!-- 标签页 -->
+    <!-- 标签页（是否显示由 setting 的 showWorkTab 控制，一麦默认关闭） -->
     <ArtWorkTab />
 
     <!-- 通知 -->

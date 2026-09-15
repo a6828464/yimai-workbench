@@ -1,11 +1,7 @@
 <!-- 登录、注册、忘记密码左侧背景 -->
 <template>
   <div class="login-left-view">
-    <div class="logo">
-      <ArtLogo class="icon" size="46" />
-      <h1 class="title">{{ AppConfig.systemInfo.name }}</h1>
-    </div>
-
+    <!-- 左上角的 logo 与系统名已移除：与登录框上方的标题重复，保留后者即可 -->
     <div class="left-img">
       <ThemeSvg :src="loginIcon" size="100%" />
     </div>
@@ -71,7 +67,6 @@
 </template>
 
 <script setup lang="ts">
-  import AppConfig from '@/config'
   import loginIcon from '@imgs/svg/login_icon.svg'
   import { themeAnimation } from '@/utils/ui/animation'
 

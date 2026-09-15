@@ -96,8 +96,8 @@
         <template v-if="detail.customer">
           <ElDescriptions :column="2" border size="small" class="mb-4">
             <ElDescriptionsItem label="姓名">{{ detail.customer.name }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="手机号"
-              >{{ maskPhone(detail.customer.phone) }}
+            <ElDescriptionsItem label="手机号">
+              <span class="tabular-nums">{{ detail.customer.phone || '—' }}</span>
             </ElDescriptionsItem>
             <ElDescriptionsItem label="门店">{{ detail.customer.venue }}</ElDescriptionsItem>
             <ElDescriptionsItem label="来源">{{ detail.customer.source }}</ElDescriptionsItem>
@@ -217,11 +217,6 @@
     return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
   }
 
-  /** 内部工作台展示完整手机号 */
-  function maskPhone(p: string | undefined | null): string {
-    const v = String(p ?? '').trim()
-    return v || '—'
-  }
 
   const {
     columns,
@@ -254,7 +249,7 @@
               h(
                 'p',
                 { class: 'text-xs text-gray-400' },
-                `${row.phone ? maskPhone(row.phone) : `尾号${row.phoneTail || '—'}`} · ${row.source}`
+                `${row.phone || (row.phoneTail ? '尾号' + row.phoneTail : '—')} · ${row.source}`
               )
             ])
         },

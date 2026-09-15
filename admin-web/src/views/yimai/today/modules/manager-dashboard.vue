@@ -226,7 +226,9 @@
                     c.layer
                   }}</ElTag>
                   <span class="font-500">{{ c.name }}</span>
-                  <span class="text-xs text-gray-400">尾号{{ c.phoneTail }}</span>
+                  <span class="text-xs tabular-nums text-gray-400">{{
+                    c.phone || (c.phoneTail ? '尾号' + c.phoneTail : '—')
+                  }}</span>
                 </div>
                 <div class="mt-1 truncate text-xs text-gray-500">
                   下一步：{{ c.nextAction }}（{{ c.nextActionTime }}）

@@ -1,5 +1,7 @@
 <template>
-  <div v-if="width > 1000">
+  <!-- 原来这里是 v-if="width > 1000"：窄窗口下整块（含标题）都不渲染，
+       在设置面板里表现为「这一项点不了」。改为始终渲染，卡片按 flex 换行。 -->
+  <div>
     <SectionTitle :title="$t('setting.menuType.title')" />
     <div class="setting-box-wrap">
       <div
@@ -23,7 +25,6 @@
   import { useSettingsConfig } from '../composables/useSettingsConfig'
   import { useSettingsState } from '../composables/useSettingsState'
 
-  const { width } = useWindowSize()
   const settingStore = useSettingStore()
   const { menuType } = storeToRefs(settingStore)
   const { configOptions } = useSettingsConfig()

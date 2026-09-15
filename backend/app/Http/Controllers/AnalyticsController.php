@@ -259,11 +259,14 @@ final class AnalyticsController extends Controller
 
         $visitIdentities = [];
         $onlineVisitIdentities = [];
-        $markVisit = function (string $identity) use (&$visitIdentities, &$onlineVisitIdentities, $onlineIdentities): void {
+        // 按来源分别记录命中的身份，便于在接口里给出可核对的构成
+        $visitSources = ['booking' => [], 'leadStatus' => [], 'trialCard' => []];
+        $markVisit = function (string $identity, string $source) use (&$visitIdentities, &$onlineVisitIdentities, &$visitSources, $onlineIdentities): void {
             if ($identity === '') {
                 return;
             }
             $visitIdentities[$identity] = true;
+            $visitSources[$source][$identity] = true;
             if (isset($onlineIdentities[$identity])) {
                 $onlineVisitIdentities[$identity] = true;
             }
@@ -274,7 +277,7 @@ final class AnalyticsController extends Controller
             if ($booking->status !== 'signed' || ! $booking->is_trial) {
                 continue;
             }
-            $markVisit($identityOf($booking->phone, (string) ($booking->member_id ?: $booking->member_name)));
+            $markVisit($identityOf($booking->phone, (string) ($booking->member_id ?: $booking->member_name)), 'booking');
         }
         // 来源 2：留资管理里已到店的客资
         $visitedLeads = (clone $leadQ)->whereIn('status', ['已体验', '已成交'])
@@ -283,7 +286,26 @@ final class AnalyticsController extends Controller
                     ->orWhere(fn ($q2) => $q2->whereNull('redeemed_at')->whereBetween('lead_date', [$start, $end]));
             })->get(['phone', 'name']);
         foreach ($visitedLeads as $l) {
-            $markVisit($identityOf($l->phone, (string) $l->name));
+            $markVisit($identityOf($l->phone, (string) $l->name), 'leadStatus');
+        }
+
+        // 来源 3：留资里的体验课卡片已勾「已上课」，按卡片时间落在区间。
+        // 老师常常只勾了卡片、没把整条留资的状态推进到「已体验」，
+        // 只认 status 会把这类到店整批漏掉——这正是线上到店人数偏少的常见原因。
+        $cardLeads = (clone $leadQ)->whereNotNull('trial_cards')
+            ->get(['phone', 'name', 'trial_cards']);
+        foreach ($cardLeads as $l) {
+            foreach ((array) $l->trial_cards as $card) {
+                if (! is_array($card) || ! empty($card['cancelled']) || empty($card['attended'])) {
+                    continue;
+                }
+                $day = substr((string) ($card['time'] ?? ''), 0, 10);
+                if ($day === '' || $day < $start || $day > $end) {
+                    continue;
+                }
+                $markVisit($identityOf($l->phone, (string) $l->name), 'trialCard');
+                break;
+            }
         }
 
         // 成交：只统计「到店体验过的人」里的成交，分子分母同源，比率不会超过 100%
@@ -333,6 +355,16 @@ final class AnalyticsController extends Controller
         $onlineVisitCount = count($onlineVisitIdentities);
         $onlineDealCount = count($onlineDealIdentities);
 
+        // 到店人数的来源构成（仅供核对口径，不参与计算）：
+        // 同一个人的身份可能同时命中多个来源，这里是各来源的去重人数，不是相加关系
+        $visitBreakdown = [
+            'fromBooking' => count($visitSources['booking']),
+            'fromLeadStatus' => count($visitSources['leadStatus']),
+            'fromTrialCard' => count($visitSources['trialCard']),
+            'total' => $visitCount,
+            'onlineTotal' => $onlineVisitCount,
+        ];
+
         // 预约/上课班次按私教 / 小班 / 团课拆分
         $privateBooked = 0;
         $smallBooked = 0;
@@ -379,6 +411,7 @@ final class AnalyticsController extends Controller
                 'bookingCount' => $totalBooked,
                 // 到店 = 区间内到店体验过的人数（同一人来多次只算一个人）
                 'visitCount' => $visitCount,
+                'visitBreakdown' => $visitBreakdown,
                 'trialCount' => $visitCount,
                 // 成交 = 上述到店人数里的成交人数，分子分母同源
                 'dealCount' => $dealCount,

@@ -143,9 +143,9 @@
             size="default"
           >
             <ElTableColumn prop="studentName" label="客户" width="110" />
-            <ElTableColumn label="手机尾号" width="95">
+            <ElTableColumn label="手机号" width="120">
               <template #default="{ row }">
-                <span class="tabular-nums">{{ row.phoneTail || '—' }}</span>
+                <span class="tabular-nums">{{ row.phone || '—' }}</span>
               </template>
             </ElTableColumn>
             <ElTableColumn prop="venue" label="门店" width="90" />
@@ -181,9 +181,9 @@
           <!-- ③ 约课系统里会籍顾问归属他的会员 -->
           <ElTable v-else :data="myMembers" v-loading="loading" size="default">
             <ElTableColumn prop="studentName" label="会员" width="120" />
-            <ElTableColumn label="手机尾号" width="95">
+            <ElTableColumn label="手机号" width="120">
               <template #default="{ row }">
-                <span class="tabular-nums">{{ row.phoneTail || '—' }}</span>
+                <span class="tabular-nums">{{ row.phone || '—' }}</span>
               </template>
             </ElTableColumn>
             <ElTableColumn prop="venue" label="门店" width="90" />

@@ -37,31 +37,6 @@
               />
             </ElFormItem>
 
-            <!-- 拖拽验证 -->
-            <div class="relative pb-5 mt-6">
-              <div
-                class="relative z-[2] overflow-hidden select-none rounded-lg border border-transparent tad-300"
-                :class="{ '!border-[#FF4E4F]': !isPassing && isClickPass }"
-              >
-                <ArtDragVerify
-                  ref="dragVerify"
-                  v-model:value="isPassing"
-                  text="按住滑块拖动验证"
-                  textColor="var(--art-gray-700)"
-                  successText="验证成功"
-                  progressBarBg="var(--main-color)"
-                  :background="isDark ? '#26272F' : '#F1F1F4'"
-                  handlerBg="var(--default-box-color)"
-                />
-              </div>
-              <p
-                class="absolute top-0 z-[1] px-px mt-2 text-xs text-[#f56c6c] tad-300"
-                :class="{ 'translate-y-10': !isPassing && isClickPass }"
-              >
-                请拖动滑块完成验证
-              </p>
-            </div>
-
             <div style="margin-top: 24px">
               <ElButton
                 class="w-full custom-height"
@@ -90,22 +65,15 @@
   import { HttpError } from '@/utils/http/error'
   import { fetchGetUserInfo, fetchLogin } from '@/api/auth'
   import { ElMessage, ElNotification, type FormInstance, type FormRules } from 'element-plus'
-  import { useSettingStore } from '@/store/modules/setting'
 
   defineOptions({ name: 'Login' })
 
-  const settingStore = useSettingStore()
-  const { isDark } = storeToRefs(settingStore)
-
-  const dragVerify = ref()
-  const isPassing = ref(false)
-  const isClickPass = ref(false)
+  // 滑动验证已移除：原先必须拖动滑块才放行，对内部系统没有价值且挡住登录
 
   const userStore = useUserStore()
   const router = useRouter()
   const route = useRoute()
 
-  const systemName = AppConfig.systemInfo.name
   const formRef = ref<FormInstance>()
 
   const formData = reactive({
@@ -139,11 +107,6 @@
       const valid = await formRef.value.validate()
       if (!valid) return
 
-      if (!isPassing.value) {
-        isClickPass.value = true
-        return
-      }
-
       loading.value = true
 
       const { username, password } = formData
@@ -175,13 +138,7 @@
       }
     } finally {
       loading.value = false
-      resetDragVerify()
     }
-  }
-
-  // 重置拖拽验证
-  const resetDragVerify = () => {
-    dragVerify.value.reset()
   }
 
   // 登录成功提示
