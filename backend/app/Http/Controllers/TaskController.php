@@ -16,9 +16,14 @@ final class TaskController extends Controller
         if ($u->role === 'R_MANAGER') {
             $q->where('venue', $u->venue);
         }
-        if ($u->role === 'R_TEACHER') {
+        if ($u->role === 'R_SERVICE') {
+            // 服务老师（会籍顾问）：本人名下 + 待认领池
             $q->where('venue', $u->venue)
                 ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+        }
+        if ($u->role === 'R_TEACHER') {
+            // 授课老师：只处理派给本人的任务
+            $q->where('venue', $u->venue)->where('owner', $u->name);
         }
         if ($u->role === 'R_MEDIA') {
             $q->where('owner', $u->name);
@@ -41,7 +46,7 @@ final class TaskController extends Controller
     /** POST /tasks */
     public function store(Request $r)
     {
-        abort_unless(in_array($r->user()->role, ['R_SUPER', 'R_MANAGER', 'R_TEACHER'], true), 403, '无权创建任务');
+        abort_unless(in_array($r->user()->role, ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER'], true), 403, '无权创建任务');
         $d = $r->validate([
             'title' => 'required|string|max:50',
             'customerName' => 'required|string|max:20',
@@ -52,7 +57,7 @@ final class TaskController extends Controller
             'standard' => 'nullable|string|max:200',
         ]);
         abort_if($r->user()->role !== 'R_SUPER' && $d['venue'] !== $r->user()->venue, 403, '无权创建其它门店任务');
-        if ($r->user()->role === 'R_TEACHER') {
+        if ($r->user()->role === 'R_SERVICE' || $r->user()->role === 'R_TEACHER') {
             $d['owner'] = $r->user()->name;
         }
         $task = Task::create([
@@ -79,8 +84,9 @@ final class TaskController extends Controller
         $task = DB::transaction(function () use ($r, $id, $u) {
             $task = Task::whereKey($id)->lockForUpdate()->firstOrFail();
             abort_if($u->role === 'R_MANAGER' && $task->venue !== $u->venue, 403, '无权操作其它门店任务');
-            if ($u->role === 'R_TEACHER') {
-                abort_if($task->venue !== $u->venue || ! in_array($task->owner, [$u->name, '未分配'], true), 403, '只能操作本人任务');
+            if ($u->role === 'R_SERVICE' || $u->role === 'R_TEACHER') {
+                $claimable = $u->role === 'R_SERVICE' ? [$u->name, '未分配'] : [$u->name];
+                abort_if($task->venue !== $u->venue || ! in_array($task->owner, $claimable, true), 403, '只能操作本人任务');
                 $requested = (string) $r->input('status', $task->status);
                 $allowedTransitions = [
                     '待接收' => ['进行中'],

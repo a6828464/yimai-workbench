@@ -7,9 +7,11 @@ use App\Models\AppSetting;
 use App\Models\Customer;
 use App\Models\KyBooking;
 use App\Models\Lead;
+use App\Models\PostClassReview;
 use App\Models\Task;
 use App\Models\TodoAction;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 final class TodayController extends Controller
@@ -91,8 +93,11 @@ final class TodayController extends Controller
         if ($u->role === 'R_MANAGER') {
             $taskQ->where('venue', $u->venue);
         }
-        if ($u->role === 'R_TEACHER') {
+        if ($u->role === 'R_SERVICE') {
             $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+        }
+        if ($u->role === 'R_TEACHER') {
+            $taskQ->where('owner', $u->name);
         }
         if ($u->role === 'R_MEDIA') {
             $taskQ->where('owner', $u->name);
@@ -133,6 +138,145 @@ final class TodayController extends Controller
         ]);
     }
 
+    /**
+     * GET /today/teacher-overview：老师侧工作台概览。
+     *
+     * 替换前端原来的估算口径（课时 = 当日预约 × 0.6），改为读真实排课事实：
+     *  - 授课老师（私教主教练）：按 ky_bookings.teacher_name 取本人排课，并给出私教/小班/团课构成
+     *  - 服务老师（会籍顾问）：本人在籍会员的客资漏斗
+     */
+    public function teacherOverview(Request $r)
+    {
+        $u = $r->user();
+        abort_unless(isTeacherSide($u->role), 403, '仅老师侧角色可访问');
+
+        $start = Carbon::parse((string) $r->query('startDate', now()->startOfMonth()->toDateString()))->startOfDay();
+        $end = Carbon::parse((string) $r->query('endDate', now()->toDateString()))->endOfDay();
+        $isCoach = $u->role === 'R_TEACHER';
+
+        // 可见会员：统一走 scope（服务老师＝本人名下；授课老师＝本人私教学员 ∪ 本人会籍会员）
+        $customers = scopeCustomersForUser(Customer::query(), $u)
+            ->get(['id', 'name', 'consultant', 'owner', 'external_id', 'phone']);
+        $serviceMemberCount = $customers->filter(
+            fn ($c) => in_array($u->name, [(string) $c->consultant, (string) $c->owner], true)
+        )->count();
+
+        $teachStudentCount = 0;
+        if ($isCoach) {
+            $keys = privateStudentKeys($u);
+            $teachStudentCount = $customers->filter(
+                fn ($c) => in_array((string) $c->external_id, $keys['external_ids'], true)
+                    || in_array((string) $c->phone, $keys['phones'], true)
+            )->count();
+        }
+
+        // 真实排课：授课老师取本人课表；服务老师看本店课表（用于关联自己的会员）
+        $bookingQ = fn () => KyBooking::query()
+            ->where('venue', $u->venue)
+            ->when($isCoach, fn ($q) => $q->where('teacher_name', $u->name));
+
+        $bookings = $bookingQ()->whereBetween('start_at', [$start, $end])
+            ->get(['start_at', 'status', 'course_kind', 'member_id', 'phone']);
+        $signed = $bookings->where('status', 'signed');
+        $classCount = $signed->count();
+        $kindCount = [
+            '私教' => $signed->where('course_kind', 'private')->count(),
+            '小班' => $signed->where('course_kind', 'small')->count(),
+            '团课' => $signed->where('course_kind', 'group')->count(),
+        ];
+
+        // 服务人次 = 该期间实际服务到的不同学员数
+        $identityOf = fn ($b) => (string) $b->phone !== '' ? 'p:'.$b->phone : ((string) $b->member_id !== '' ? 'm:'.$b->member_id : '');
+        $servedCount = $signed->map($identityOf)->filter()->unique()->count();
+
+        $byDate = [];
+        foreach ($signed as $b) {
+            $d = $b->start_at?->toDateString();
+            if (! $d) {
+                continue;
+            }
+            $byDate[$d]['classes'] = ($byDate[$d]['classes'] ?? 0) + 1;
+            $id = $identityOf($b);
+            if ($id !== '') {
+                $byDate[$d]['members'][$id] = true;
+            }
+        }
+
+        // 个人客资漏斗（口径与全店一致：成交 ÷ 到店）
+        $leadRows = Lead::query()->where('venue', $u->venue)
+            ->when($isCoach, function ($q) use ($u) {
+                $keys = privateStudentKeys($u);
+                $q->where(function ($w) use ($u, $keys) {
+                    $w->where('service_teacher', $u->name)->orWhere('trial_teacher', $u->name);
+                    if ($keys['phones'] !== []) {
+                        $w->orWhereIn('phone', $keys['phones']);
+                    }
+                });
+            }, fn ($q) => $q->where('service_teacher', $u->name))
+            ->get(['id', 'status', 'deal_at', 'deal_amount', 'lead_date', 'service_teacher']);
+
+        $visitCount = $leadRows->whereIn('status', ['已体验', '已成交'])->count();
+        $dealRows = $leadRows->filter(fn ($l) => $l->status === '已成交'
+            && $l->deal_at && $l->deal_at->between($start, $end));
+        $dealCount = $dealRows->count();
+        $dealAmount = (float) $dealRows->sum(fn ($l) => (float) $l->deal_amount);
+        $leadCount = $leadRows->filter(fn ($l) => $l->lead_date
+            && Carbon::parse($l->lead_date)->between($start, $end))->count();
+
+        // 今日课程
+        $todayClasses = $bookingQ()
+            ->whereNotIn('status', ['cancelled', 'no_show'])
+            ->whereBetween('start_at', [now()->startOfDay(), now()->endOfDay()])
+            ->orderBy('start_at')
+            ->get()
+            ->map(fn ($b) => [
+                'id' => $b->id,
+                'time' => $b->start_at?->format('H:i') ?? '',
+                'memberName' => (string) $b->member_name,
+                'course' => (string) $b->course_name,
+                'kind' => KyBooking::KIND_LABELS[$b->courseKind()] ?? '团课',
+                'isTrial' => (bool) $b->is_trial,
+                'status' => (string) $b->status,
+                'teacher' => (string) $b->teacher_name,
+            ])->all();
+
+        $series = [];
+        for ($d = $start->copy(); $d->lte($end); $d = $d->addDay()) {
+            $key = $d->toDateString();
+            $series[] = [
+                'date' => $key,
+                'label' => $d->format('m-d'),
+                'classes' => $byDate[$key]['classes'] ?? 0,
+                'served' => count($byDate[$key]['members'] ?? []),
+            ];
+        }
+
+        return ok([
+            'role' => $u->role,
+            'roleLabel' => roleLabel($u->role),
+            'scopeLabel' => $u->venue ? "本店 · {$u->venue}" : '未设置门店',
+            'startDate' => $start->toDateString(),
+            'endDate' => $end->toDateString(),
+            'memberCount' => $customers->count(),
+            'serviceMemberCount' => $serviceMemberCount,
+            'teachStudentCount' => $teachStudentCount,
+            'leadCount' => $leadCount,
+            'resourceCount' => $leadRows->count(),
+            'newResourceCount' => $leadRows->where('status', '新留资')->count(),
+            'myLeadCount' => $leadRows->where('service_teacher', $u->name)->count(),
+            'visitCount' => $visitCount,
+            'dealCount' => $dealCount,
+            'dealAmount' => $dealAmount,
+            'dealRate' => $visitCount > 0 ? round($dealCount / $visitCount * 100, 1) : 0,
+            'classCount' => $classCount,
+            'servedCount' => $servedCount,
+            'kindCount' => $kindCount,
+            'todayClassCount' => count($todayClasses),
+            'todayClasses' => $todayClasses,
+            'series' => $series,
+        ]);
+    }
+
     /** GET /today/followups */
     public function followups(Request $r)
     {
@@ -166,8 +310,11 @@ final class TodayController extends Controller
         if ($u->role === 'R_MANAGER') {
             $taskQ->where('venue', $u->venue);
         }
-        if ($u->role === 'R_TEACHER') {
+        if ($u->role === 'R_SERVICE') {
             $taskQ->where('venue', $u->venue)->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+        }
+        if ($u->role === 'R_TEACHER') {
+            $taskQ->where('venue', $u->venue)->where('owner', $u->name);
         }
         if ($u->role === 'R_MEDIA') {
             $taskQ->whereRaw('1 = 0');
@@ -476,6 +623,44 @@ final class TodayController extends Controller
             ->values()->all();
         usort($trials, fn ($a, $b) => strcmp((string) $a['time'], (string) $b['time']));
 
+        // ---- 待填写课后分析：今天已签到的体验课与私教课（服务老师不排训练，不参与） ----
+        $reviews = [];
+        if (! $isMedia && $u->role !== 'R_SERVICE') {
+            $reviewQ = KyBooking::query()
+                ->whereBetween('start_at', [$today->copy(), $today->copy()->endOfDay()])
+                ->where('status', 'signed')
+                ->where(fn ($w) => $w->where('is_trial', true)->orWhere('course_kind', 'private'));
+            if ($u->role === 'R_TEACHER') {
+                $reviewQ->where('teacher_name', $u->name);
+            }
+            if (! $isSuper) {
+                $reviewQ->where('venue', $u->venue);
+            }
+            // 同一时段的课不少，加 id 兜底让列表顺序稳定
+            $rows = $reviewQ->orderBy('start_at')->orderBy('id')->get();
+            $reviewed = PostClassReview::whereIn('booking_id', $rows->pluck('id')->all() ?: [-1])
+                ->pluck('booking_id')->all();
+            foreach ($rows as $b) {
+                if (in_array($b->id, $reviewed, true)) {
+                    continue;
+                }
+                $digits = preg_replace('/\D+/', '', (string) $b->phone) ?? '';
+                $reviews[] = [
+                    'key' => 'review:ky-'.$b->id,
+                    'bookingId' => $b->id,
+                    'time' => $b->start_at?->format('H:i'),
+                    'name' => (string) $b->member_name,
+                    'phone' => $digits,
+                    'phoneTail' => $digits !== '' ? substr($digits, -4) : '',
+                    'venue' => (string) $b->venue,
+                    'course' => (string) $b->course_name,
+                    'teacher' => (string) $b->teacher_name,
+                    'kind' => KyBooking::KIND_LABELS[$b->courseKind()] ?? '团课',
+                    'isTrial' => (bool) $b->is_trial,
+                ] + $doneInfo('review:ky-'.$b->id);
+            }
+        }
+
         // ---- 今日任务：今天到期或逾期 ----
         $taskQ = Task::query()
             ->whereNotIn('status', ['已完成'])
@@ -487,8 +672,11 @@ final class TodayController extends Controller
             if (! $isSuper) {
                 $taskQ->where('venue', $u->venue);
             }
-            if ($u->role === 'R_TEACHER') {
+            if ($u->role === 'R_SERVICE') {
                 $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+            }
+            if ($u->role === 'R_TEACHER') {
+                $taskQ->where('owner', $u->name);
             }
         }
         $tasks = collect($taskQ->orderBy('deadline')->get())->map(fn ($t) => camel($t))
@@ -504,6 +692,7 @@ final class TodayController extends Controller
             'churnRisks' => $churnRisks,
             'birthdays' => $birthdays,
             'trials' => $trials,
+            'reviews' => $reviews,
             'newLeads' => $newLeads,
             'tasks' => $tasks,
             'counts' => [
@@ -512,6 +701,7 @@ final class TodayController extends Controller
                 'churnRisks' => count($churnRisks),
                 'birthdays' => count($birthdays),
                 'trials' => count($trials),
+                'reviews' => count($reviews),
                 'newLeads' => count($newLeads),
                 'tasks' => count($tasks),
             ],
@@ -524,7 +714,7 @@ final class TodayController extends Controller
     {
         $u = $r->user();
         $d = $r->validate([
-            'type' => 'required|in:bookings,renewals,churnRisks,birthdays,trials,newLeads',
+            'type' => 'required|in:bookings,renewals,churnRisks,birthdays,trials,reviews,newLeads',
             'key' => 'required|string|max:80',
             'action' => 'required|string|max:30',
             'remark' => 'nullable|string|max:200',
@@ -536,7 +726,8 @@ final class TodayController extends Controller
         $today = now()->toDateString();
         $typeLabels = [
             'bookings' => '今日预约', 'renewals' => '待续费', 'churnRisks' => '流失风险',
-            'birthdays' => '生日关怀', 'trials' => '体验课', 'newLeads' => '新客首响',
+            'birthdays' => '生日关怀', 'trials' => '体验课', 'reviews' => '课后分析',
+            'newLeads' => '新客首响',
         ];
 
         DB::transaction(function () use ($r, $u, $d, $today, $typeLabels) {

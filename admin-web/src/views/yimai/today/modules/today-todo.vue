@@ -262,6 +262,32 @@
             </div>
           </template>
 
+          <!-- 待填写课后分析 -->
+          <template v-else-if="tab.key === 'reviews'">
+            <div
+              v-for="r in shownBy('reviews', pendingItems(reviews))"
+              :key="r.key"
+              class="todo-item flex items-center gap-3 py-2.5"
+            >
+              <span class="w-11 shrink-0 text-sm font-600 tabular-nums text-primary">{{
+                r.time || '--:--'
+              }}</span>
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <span class="font-500">{{ r.name }}</span>
+                  <span class="text-xs tabular-nums text-gray-500">{{ r.phone || '' }}</span>
+                  <ElTag v-if="r.isTrial" size="small" type="warning" effect="dark">体验课</ElTag>
+                  <ElTag v-else size="small" type="danger" effect="plain">私教</ElTag>
+                </div>
+                <div class="mt-0.5 truncate text-xs text-gray-500">
+                  {{ r.course || '课程待补充' }} · {{ r.teacher || '老师待定' }} · {{ r.venue }}
+                </div>
+              </div>
+              <div class="shrink-0 text-xs text-gray-400">已签到，待出训练方向</div>
+              <TodoActions :actions="actionMenus.reviews" @pick="(a) => onMark('reviews', r, a)" />
+            </div>
+          </template>
+
           <!-- 新客首响 -->
           <template v-else-if="tab.key === 'newLeads'">
             <div
@@ -460,6 +486,7 @@
     type TodayTodoChurnItem,
     type TodayTodoBirthdayItem,
     type TodayTodoTrialItem,
+    type TodayTodoReviewItem,
     type TodayTodoLeadItem,
     type TodayTodoTaskItem,
     type MemberRules
@@ -486,6 +513,7 @@
     | 'churnRisks'
     | 'birthdays'
     | 'trials'
+    | 'reviews'
     | 'newLeads'
     | 'tasks'
 
@@ -503,7 +531,9 @@
   }
 
   const userStore = useUserStore()
+  const router = useRouter()
   const isMedia = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_MEDIA'))
+  const isService = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_SERVICE'))
 
   const loading = ref(true)
   const todo = ref<TodayTodo | null>(null)
@@ -535,18 +565,23 @@
     { key: 'churnRisks', label: '流失风险' },
     { key: 'birthdays', label: '生日关怀' },
     { key: 'trials', label: '体验课' },
+    { key: 'reviews', label: '课后分析' },
     { key: 'newLeads', label: '新客首响' },
     { key: 'tasks', label: '今日任务' }
   ]
-  const visibleTabs = computed(() =>
-    isMedia.value ? allTabs.filter((t) => ['newLeads', 'trials'].includes(t.key)) : allTabs
-  )
+  // 新媒体只看客资相关；服务老师（会籍顾问）不排训练，看不到「课后分析」
+  const visibleTabs = computed(() => {
+    if (isMedia.value) return allTabs.filter((t) => ['newLeads', 'trials'].includes(t.key))
+    if (isService.value) return allTabs.filter((t) => t.key !== 'reviews')
+    return allTabs
+  })
 
   const bookings = computed<TodayTodoBookingItem[]>(() => todo.value?.bookings.items ?? [])
   const renewals = computed<TodayTodoRenewalItem[]>(() => todo.value?.renewals ?? [])
   const churnRisks = computed<TodayTodoChurnItem[]>(() => todo.value?.churnRisks ?? [])
   const birthdays = computed<TodayTodoBirthdayItem[]>(() => todo.value?.birthdays ?? [])
   const trials = computed<TodayTodoTrialItem[]>(() => todo.value?.trials ?? [])
+  const reviews = computed<TodayTodoReviewItem[]>(() => todo.value?.reviews ?? [])
   const newLeads = computed<TodayTodoLeadItem[]>(() => todo.value?.newLeads ?? [])
   const tasks = computed<TodayTodoTaskItem[]>(() => todo.value?.tasks ?? [])
 
@@ -556,6 +591,7 @@
     churnRisks: churnRisks.value as unknown as TodoRow[],
     birthdays: birthdays.value as unknown as TodoRow[],
     trials: trials.value as unknown as TodoRow[],
+    reviews: reviews.value as unknown as TodoRow[],
     newLeads: newLeads.value as unknown as TodoRow[],
     tasks: tasks.value as unknown as TodoRow[]
   }))
@@ -572,6 +608,7 @@
       churnRisks: c?.churnRisks ?? 0,
       birthdays: c?.birthdays ?? 0,
       trials: c?.trials ?? 0,
+      reviews: c?.reviews ?? 0,
       newLeads: c?.newLeads ?? 0,
       tasks: c?.tasks ?? 0
     }
@@ -607,6 +644,7 @@
     churnRisks: '暂无流失风险会员',
     birthdays: '近期没有会员生日',
     trials: '今天暂无体验课',
+    reviews: '今天没有待填写的课后分析',
     newLeads: '暂无待首响新客资',
     tasks: '今天没有到期任务'
   }
@@ -614,7 +652,10 @@
   /** 每组可执行的动作：action=文案；flow=额外业务流转（打开对应表单/更新留资状态） */
   const actionMenus: Record<
     string,
-    { action: string; flow?: 'plan' | 'decline' | 'revive' | 'leadContact' | 'leadLost' }[]
+    {
+      action: string
+      flow?: 'plan' | 'decline' | 'revive' | 'leadContact' | 'leadLost' | 'postClass'
+    }[]
   > = {
     bookings: [{ action: '已接待' }, { action: '已沟通' }],
     renewals: [
@@ -629,6 +670,7 @@
     ],
     birthdays: [{ action: '已送祝福' }, { action: '已邀约到店' }],
     trials: [{ action: '已接待' }, { action: '爽约' }],
+    reviews: [{ action: '去填写', flow: 'postClass' }, { action: '无需填写' }],
     newLeads: [
       { action: '已首响', flow: 'leadContact' },
       { action: '无效客资', flow: 'leadLost' }
@@ -686,6 +728,12 @@
       declineDlg.row = row
       declineDlg.form = { reason: '训练意愿降低', solution: '' }
       declineDlg.visible = true
+
+      return
+    }
+    // 去填写课后分析：实际工作在「课后分析」页完成，这里只做跳转不标记完成
+    if (menu?.flow === 'postClass') {
+      router.push({ path: '/yimai/post-class', query: { pending: '1' } })
 
       return
     }

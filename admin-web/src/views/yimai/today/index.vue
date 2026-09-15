@@ -20,7 +20,8 @@
   const dashboardComponent = computed(() => {
     if (roles.value.includes('R_SUPER')) return BossDashboard
     if (roles.value.includes('R_MANAGER')) return ManagerDashboard
-    if (roles.value.includes('R_TEACHER')) return TeacherDashboard
+    if (roles.value.includes('R_SERVICE') || roles.value.includes('R_TEACHER'))
+      return TeacherDashboard
     if (roles.value.includes('R_MEDIA')) return MediaDashboard
     return null
   })

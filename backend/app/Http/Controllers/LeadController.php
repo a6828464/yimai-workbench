@@ -16,16 +16,10 @@ class LeadController extends Controller
     {
         $u = $r->user();
         $q = Lead::query()->where('venue', 'like', '%');
-        if ($u->role === 'R_MANAGER') {
-            $q->where('venue', $u->venue);
-        }
-        if ($u->role === 'R_TEACHER') {
-            if ($u->venue) {
-                $q->where('venue', $u->venue);
-            }
-            $q->where(function ($w) use ($u) {
-                $w->where('service_teacher', $u->name)->orWhere('service_teacher', '');
-            });
+        if (in_array($u->role, ['R_MANAGER', 'R_SERVICE', 'R_TEACHER'], true)) {
+            // 按人隔离统一走 scopeLeadsForUser：
+            // 服务老师＝本人名下＋待承接池；授课老师＝本人客资＋本人上过体验课的＋本人私教学员的
+            scopeLeadsForUser($q, $u);
         }
         if ($n = $r->query('name')) {
             $q->where('name', 'like', "%{$n}%");
@@ -145,15 +139,23 @@ class LeadController extends Controller
         if ($u->role === 'R_MANAGER' && $lead->venue !== $u->venue) {
             abort(403, '无权限：仅可删除本店留资');
         }
-        if ($u->role === 'R_TEACHER') {
+        if (isTeacherSide($u->role)) {
             if ($u->venue && $lead->venue !== $u->venue) {
                 abort(403, '无权限：仅可删除本店留资');
             }
-            if ($lead->service_teacher !== '' && $lead->service_teacher !== $u->name && $lead->created_by !== $u->name) {
-                abort(403, '无权限：仅可删除自己名下或未分配的留资');
+            if ($u->role === 'R_SERVICE') {
+                if ($lead->service_teacher !== '' && $lead->service_teacher !== $u->name && $lead->created_by !== $u->name) {
+                    abort(403, '无权限：仅可删除自己名下或未分配的留资');
+                }
+            } else {
+                $mine = in_array($u->name, [(string) $lead->service_teacher, (string) $lead->trial_teacher], true)
+                    || $lead->created_by === $u->name;
+                if (! $mine) {
+                    abort(403, '无权限：授课老师仅可删除自己相关的留资');
+                }
             }
         }
-        if (! in_array($u->role, ['R_SUPER', 'R_MANAGER', 'R_TEACHER', 'R_MEDIA'], true)) {
+        if (! in_array($u->role, ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER', 'R_MEDIA'], true)) {
             abort(403, '无权限执行此操作');
         }
         audit($r, '删除', '前端客资', $id, "{$lead->name}（{$lead->source}）", $lead->venue, '删除留资记录');

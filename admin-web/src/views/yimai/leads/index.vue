@@ -561,7 +561,10 @@
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
   const isManager = computed(() => roles.value.includes('R_MANAGER'))
-  const isTeacher = computed(() => roles.value.includes('R_TEACHER'))
+  // 老师侧角色（服务老师 / 授课老师）：锁定门店、客资按人隔离
+  const isTeacher = computed(
+    () => roles.value.includes('R_SERVICE') || roles.value.includes('R_TEACHER')
+  )
   const showVenueFilter = computed(() => !isManager.value && !isTeacher.value)
   const scopeHint = computed(() => {
     if (isManager.value) return `数据范围：本店（${userStore.getUserInfo.venue}）`

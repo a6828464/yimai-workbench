@@ -1,7 +1,9 @@
 import { AppRouteRecord } from '@/types/router'
 
-const ALL = ['R_SUPER', 'R_MANAGER', 'R_TEACHER', 'R_MEDIA']
-const OPS = ['R_SUPER', 'R_MANAGER', 'R_TEACHER']
+const ALL = ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER', 'R_MEDIA']
+const OPS = ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER']
+// 老师侧：服务老师（会籍顾问）与授课老师（私教主教练）
+const TEACHING = ['R_SUPER', 'R_MANAGER', 'R_TEACHER']
 const MGMT = ['R_SUPER', 'R_MANAGER']
 const SUPER = ['R_SUPER']
 
@@ -114,10 +116,16 @@ export const yimaiRoutes: AppRouteRecord[] = [
         meta: { title: '价格审批', icon: 'ri:shield-check-line', roles: MGMT, keepAlive: false }
       },
       {
+        path: '/yimai/post-class',
+        name: 'YimaiPostClass',
+        component: '/yimai/post-class',
+        meta: { title: '课后分析', icon: 'ri-stethoscope-line', roles: OPS, keepAlive: false }
+      },
+      {
         path: '/yimai/training',
         name: 'YimaiTraining',
         component: '/yimai/training',
-        meta: { title: '训练计划', icon: 'ri-heart-pulse-line', roles: OPS, keepAlive: false }
+        meta: { title: '训练计划', icon: 'ri-heart-pulse-line', roles: TEACHING, keepAlive: false }
       }
     ]
   },

@@ -44,6 +44,13 @@ export const staticRoutes: AppRouteRecordRaw[] = [
     meta: { title: '我的训练计划', isHideTab: true }
   },
   {
+    // 体验课课后分析对外页（免登录 · 学员扫码带走）
+    path: '/s/post-class/:code',
+    name: 'PostClassShare',
+    component: () => import('@views/post-class-share/index.vue'),
+    meta: { title: '我的训练方向', isHideTab: true }
+  },
+  {
     path: '/403',
     name: 'Exception403',
     component: () => import('@views/exception/403/index.vue'),

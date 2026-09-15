@@ -184,7 +184,8 @@
   const ROLE_LABELS: Record<string, string> = {
     R_SUPER: '超管',
     R_MANAGER: '店长',
-    R_TEACHER: '老师',
+    R_SERVICE: '服务老师',
+    R_TEACHER: '授课老师',
     R_MEDIA: '新媒体'
   }
   const roleLabel = computed(() => ROLE_LABELS[form.value.role] ?? form.value.role ?? '—')

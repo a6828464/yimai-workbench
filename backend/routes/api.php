@@ -12,6 +12,7 @@ use App\Http\Controllers\KyController;
 use App\Http\Controllers\LeadController;
 use App\Http\Controllers\MarketingController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\PostClassReviewController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PublicShareController;
 use App\Http\Controllers\ShareController;
@@ -105,6 +106,19 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/training-plans', [TrainingPlanController::class, 'index']);
     Route::put('/training-plans/bulk', [TrainingPlanController::class, 'bulkSave']);
 
+    // ---------- 课后分析 ＋ 训练方向（P0：体验课价值交付凭证 + 成交归因起点） ----------
+    Route::get('/post-class-reviews/catalog', [PostClassReviewController::class, 'catalog']);
+    Route::get('/post-class-reviews/candidates', [PostClassReviewController::class, 'candidates']);
+    Route::get('/post-class-reviews/pending-count', [PostClassReviewController::class, 'pendingCount']);
+    Route::post('/post-class-reviews/preview', [PostClassReviewController::class, 'preview']);
+    Route::get('/post-class-reviews', [PostClassReviewController::class, 'index']);
+    Route::post('/post-class-reviews', [PostClassReviewController::class, 'store']);
+    Route::get('/post-class-reviews/{id}', [PostClassReviewController::class, 'show']);
+    Route::put('/post-class-reviews/{id}', [PostClassReviewController::class, 'update']);
+    Route::delete('/post-class-reviews/{id}', [PostClassReviewController::class, 'destroy']);
+    Route::post('/post-class-reviews/{id}/confirm', [PostClassReviewController::class, 'confirm']);
+    Route::post('/post-class-reviews/{id}/share', [PostClassReviewController::class, 'share']);
+
     // Legacy browser import (retained only for old clients)
     Route::post('/customers/import', [KyController::class, 'legacyImport']);
 
@@ -129,6 +143,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/today/snapshot', [TodayController::class, 'snapshotShow']);
     Route::put('/today/snapshot', [TodayController::class, 'snapshotUpdate']);
     Route::get('/today/summary', [TodayController::class, 'summary']);
+    Route::get('/today/teacher-overview', [TodayController::class, 'teacherOverview']);
     Route::get('/today/followups', [TodayController::class, 'followups']);
     Route::get('/today/alerts', [TodayController::class, 'alerts']);
     Route::get('/today/todo', [TodayController::class, 'todo']);
@@ -160,5 +175,6 @@ Route::middleware('auth:sanctum')->group(function () {
 // ---------- 公开接口（免登录，H5 分享页用） ----------
 Route::prefix('public')->middleware('throttle:60,1')->group(function () {
     Route::get('/training/{code}', [PublicShareController::class, 'training']);
+    Route::get('/post-class/{code}', [PublicShareController::class, 'postClass']);
     Route::get('/sales/{token}', [PublicShareController::class, 'sales']);
 });

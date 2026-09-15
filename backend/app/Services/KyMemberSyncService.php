@@ -551,12 +551,23 @@ class KyMemberSyncService
         ]));
         $recordId = self::pick($row, ['id', 'reservation_id']);
         $identity = $recordId !== '' ? $recordId : sha1(implode('|', [$memberId, $memberName, $startAt, $courseName]));
+        // 课型：2=私教，3=小班（精品课），1=团课（精品团课）。
+        // 缺失时按接口来源兜底：团课接口的行算团课，私教接口的行算私教
+        // （小班行带 course_type=3，所以私教接口上无 course_type 的行按私教处理，
+        // 避免授课老师的「我的学员」静默为空）。口径与 2026_09_15_000001 迁移一致。
+        $courseKind = match ((string) ($row['course_type'] ?? '')) {
+            '2' => 'private',
+            '3' => 'small',
+            '1' => 'group',
+            default => $type === '团课' ? 'group' : 'private',
+        };
         $now = now();
 
         return [
             'source_key' => "{$venueId}:{$type}:{$identity}",
             'venue' => $venue,
             'booking_type' => $type,
+            'course_kind' => $courseKind,
             'member_id' => $memberId,
             'member_name' => $memberName,
             'phone' => substr($phone, 0, 20),
@@ -577,11 +588,11 @@ class KyMemberSyncService
         foreach (array_chunk($facts, 500) as $chunk) {
             $changed = self::changedFacts('ky_bookings', $chunk, [
                 'member_id', 'member_name', 'phone', 'start_at', 'course_name', 'teacher_name',
-                'status_raw', 'status', 'is_trial', 'raw',
+                'status_raw', 'status', 'is_trial', 'course_kind', 'raw',
             ]);
             KyBooking::upsert($changed, ['source_key'], [
                 'member_id', 'member_name', 'phone', 'start_at', 'course_name', 'teacher_name',
-                'status_raw', 'status', 'is_trial', 'raw', 'updated_at',
+                'status_raw', 'status', 'is_trial', 'course_kind', 'raw', 'updated_at',
             ]);
         }
     }

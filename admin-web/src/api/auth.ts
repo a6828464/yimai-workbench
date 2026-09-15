@@ -13,11 +13,72 @@ interface LocalAccount extends Api.Auth.UserInfo {
 const DEMO_PASSWORD = import.meta.env.VITE_DEMO_PASSWORD ?? ''
 
 export const LOCAL_ACCOUNTS: LocalAccount[] = [
-  { key: 'owner', userId: 1001, userName: '演示超管', roles: ['R_SUPER'], buttons: [], email: 'owner@example.invalid', venue: null, venues: ['绿地店', '东部店'], roleLabel: '超管' },
-  { key: 'manager-green', userId: 1002, userName: '绿地店长', roles: ['R_MANAGER'], buttons: [], email: 'manager-green@example.invalid', venue: '绿地店', venues: ['绿地店'], roleLabel: '店长' },
-  { key: 'manager-east', userId: 1003, userName: '东部店长', roles: ['R_MANAGER'], buttons: [], email: 'manager-east@example.invalid', venue: '东部店', venues: ['东部店'], roleLabel: '店长' },
-  { key: 'teacher', userId: 1004, userName: '演示老师', roles: ['R_TEACHER'], buttons: [], email: 'teacher@example.invalid', venue: '绿地店', venues: ['绿地店'], roleLabel: '老师' },
-  { key: 'media', userId: 1005, userName: '演示新媒体', roles: ['R_MEDIA'], buttons: [], email: 'media@example.invalid', venue: null, venues: ['绿地店', '东部店'], roleLabel: '新媒体' }
+  {
+    key: 'owner',
+    userId: 1001,
+    userName: '演示超管',
+    roles: ['R_SUPER'],
+    buttons: [],
+    email: 'owner@example.invalid',
+    venue: null,
+    venues: ['绿地店', '东部店'],
+    roleLabel: '超管'
+  },
+  {
+    key: 'manager-green',
+    userId: 1002,
+    userName: '绿地店长',
+    roles: ['R_MANAGER'],
+    buttons: [],
+    email: 'manager-green@example.invalid',
+    venue: '绿地店',
+    venues: ['绿地店'],
+    roleLabel: '店长'
+  },
+  {
+    key: 'manager-east',
+    userId: 1003,
+    userName: '东部店长',
+    roles: ['R_MANAGER'],
+    buttons: [],
+    email: 'manager-east@example.invalid',
+    venue: '东部店',
+    venues: ['东部店'],
+    roleLabel: '店长'
+  },
+  {
+    key: 'service',
+    userId: 1004,
+    userName: '演示服务老师',
+    roles: ['R_SERVICE'],
+    buttons: [],
+    email: 'service@example.invalid',
+    venue: '绿地店',
+    venues: ['绿地店'],
+    roleLabel: '服务老师'
+  },
+  {
+    key: 'teacher',
+    userId: 1005,
+    userName: '演示授课老师',
+    roles: ['R_TEACHER'],
+    buttons: [],
+    email: 'teacher@example.invalid',
+    venue: '绿地店',
+    venues: ['绿地店'],
+    roleLabel: '授课老师'
+  },
+  {
+    key: 'media',
+    userId: 1006,
+    userName: '演示新媒体',
+    roles: ['R_MEDIA'],
+    buttons: [],
+    email: 'media@example.invalid',
+    venue: null,
+    venues: ['绿地店', '东部店'],
+    roleLabel: '新媒体'
+  }
 ]
 
 function findAccount(predicate: (a: LocalAccount) => boolean): LocalAccount | null {
@@ -36,7 +97,8 @@ export async function fetchLogin(params: Api.Auth.LoginParams): Promise<Api.Auth
       return { token: data.token, refreshToken: data.token }
     } catch (e: unknown) {
       const msg =
-        (e as { response?: { data?: { message?: string } } }).response?.data?.message ?? '账号或密码错误'
+        (e as { response?: { data?: { message?: string } } }).response?.data?.message ??
+        '账号或密码错误'
       throw new HttpError(msg, 400)
     }
   }

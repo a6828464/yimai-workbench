@@ -16,12 +16,7 @@
             </div>
           </div>
 
-          <ElForm
-            ref="formRef"
-            :model="formData"
-            :rules="rules"
-            @keyup.enter="handleSubmit"
-          >
+          <ElForm ref="formRef" :model="formData" :rules="rules" @keyup.enter="handleSubmit">
             <ElFormItem prop="username">
               <ElInput
                 class="custom-height"
@@ -127,7 +122,11 @@
 
   /** 登录后按角色与门店权限决定落地页 */
   function resolveLanding(roles: string[], venues: string[], venue: string | null): string {
-    if (roles.includes('R_TEACHER') && venues.length > 1 && !venue) {
+    if (
+      (roles.includes('R_SERVICE') || roles.includes('R_TEACHER')) &&
+      venues.length > 1 &&
+      !venue
+    ) {
       return '/yimai/store-select'
     }
     return '/yimai/today'
@@ -164,7 +163,9 @@
       showLoginSuccessNotice(info.userName)
 
       const redirect = route.query.redirect as string
-      router.push(redirect || resolveLanding(info.roles ?? [], info.venues ?? [], info.venue ?? null))
+      router.push(
+        redirect || resolveLanding(info.roles ?? [], info.venues ?? [], info.venue ?? null)
+      )
     } catch (error) {
       if (error instanceof HttpError) {
         ElMessage.error(error.message)

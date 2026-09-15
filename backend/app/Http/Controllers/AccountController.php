@@ -11,7 +11,7 @@ final class AccountController extends Controller
     public function index(Request $r)
     {
         abort_unless($r->user()->role === 'R_SUPER', 403);
-        $roleMap = ['R_SUPER' => '超管', 'R_MANAGER' => '店长', 'R_TEACHER' => '老师', 'R_MEDIA' => '新媒体'];
+        $roleMap = ['R_SUPER' => '超管', 'R_MANAGER' => '店长', 'R_SERVICE' => '服务老师', 'R_TEACHER' => '授课老师', 'R_MEDIA' => '新媒体'];
         $selfName = $r->user()->name;
 
         return ok(User::orderBy('id')->get()->map(function ($u) use ($roleMap, $selfName) {
@@ -35,7 +35,7 @@ final class AccountController extends Controller
         $d = $r->validate([
             'userName' => 'required|string|max:20',
             'name' => 'nullable|string|max:20',
-            'roleCode' => 'required|string|in:R_SUPER,R_MANAGER,R_TEACHER,R_MEDIA',
+            'roleCode' => 'required|string|in:R_SUPER,R_MANAGER,R_SERVICE,R_TEACHER,R_MEDIA',
             'venues' => 'required|array|min:1',
             'venues.*' => 'string|in:绿地店,东部店',
             'email' => 'nullable|email|max:60',
@@ -45,7 +45,8 @@ final class AccountController extends Controller
 
         $name = trim((string) ($d['name'] ?? '')) !== '' ? trim((string) $d['name']) : $d['userName'];
         $venues = $d['venues'];
-        $venue = $d['roleCode'] === 'R_MANAGER' ? $venues[0] : ($d['roleCode'] === 'R_TEACHER' ? $venues[0] : null);
+        // 店长/服务老师/授课老师都锁定到单一门店；超管/新媒体为双店
+        $venue = in_array($d['roleCode'], ['R_MANAGER', 'R_SERVICE', 'R_TEACHER'], true) ? $venues[0] : null;
         $user = User::create([
             'name' => $name,
             'username' => $d['userName'],
@@ -56,7 +57,7 @@ final class AccountController extends Controller
             'venues' => $venues,
             'status' => '启用',
         ]);
-        $roleMap = ['R_SUPER' => '超管', 'R_MANAGER' => '店长', 'R_TEACHER' => '老师', 'R_MEDIA' => '新媒体'];
+        $roleMap = ['R_SUPER' => '超管', 'R_MANAGER' => '店长', 'R_SERVICE' => '服务老师', 'R_TEACHER' => '授课老师', 'R_MEDIA' => '新媒体'];
         $roleLabel = $roleMap[$d['roleCode']] ?? $d['roleCode'];
         audit($r, '新增', '人员管理', $user->id, $user->name, is_string($venue) ? $venue : '双店', "开通账号：{$user->name} ({$roleLabel}) / 门店[".implode('、', $venues).']');
 
@@ -77,7 +78,7 @@ final class AccountController extends Controller
         abort_unless(in_array($action, $allowed, true), 422, '未知操作');
 
         $d = $r->validate([
-            'roleCode' => 'nullable|string|in:R_SUPER,R_MANAGER,R_TEACHER,R_MEDIA',
+            'roleCode' => 'nullable|string|in:R_SUPER,R_MANAGER,R_SERVICE,R_TEACHER,R_MEDIA',
             'venues' => 'nullable|array|min:1',
             'venues.*' => 'string|in:绿地店,东部店',
             'password' => 'nullable|string|min:8|max:64',
@@ -107,8 +108,8 @@ final class AccountController extends Controller
             $patch = [];
             if (! empty($d['roleCode']) && $d['roleCode'] !== $user->role) {
                 $patch['role'] = $d['roleCode'];
-                // 店长/老师必须有门店范围；超管/新媒体为双店
-                $patch['venue'] = in_array($d['roleCode'], ['R_MANAGER', 'R_TEACHER'], true) ? (($d['venues'] ?? $user->venues)[0] ?? null) : null;
+                // 店长/服务老师/授课老师必须有门店范围；超管/新媒体为双店
+                $patch['venue'] = in_array($d['roleCode'], ['R_MANAGER', 'R_SERVICE', 'R_TEACHER'], true) ? (($d['venues'] ?? $user->venues)[0] ?? null) : null;
                 $detail = '角色调整';
             }
             if (! empty($d['venues'])) {

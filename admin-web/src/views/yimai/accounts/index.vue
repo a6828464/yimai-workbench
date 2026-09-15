@@ -182,7 +182,8 @@
 
   const ROLE_OPTIONS: Record<string, string> = {
     R_MANAGER: '店长',
-    R_TEACHER: '老师',
+    R_SERVICE: '服务老师',
+    R_TEACHER: '授课老师',
     R_MEDIA: '新媒体',
     R_SUPER: '超管'
   }
@@ -212,10 +213,11 @@
   })
   const editForm = reactive({ roleCode: 'R_TEACHER', venues: ['绿地店'] as string[] })
 
-  function roleType(code: string): 'warning' | 'success' | 'primary' | 'info' {
+  function roleType(code: string): 'warning' | 'success' | 'primary' | 'info' | 'danger' {
     if (code === 'R_SUPER') return 'warning'
     if (code === 'R_MANAGER') return 'primary'
-    if (code === 'R_TEACHER') return 'success'
+    if (code === 'R_SERVICE') return 'success'
+    if (code === 'R_TEACHER') return 'danger'
     return 'info'
   }
 

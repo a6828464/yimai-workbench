@@ -1,6 +1,6 @@
 import { AppRouteRecord } from '@/types/router'
 
-const ALL = ['R_SUPER', 'R_MANAGER', 'R_TEACHER', 'R_MEDIA']
+const ALL = ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER', 'R_MEDIA']
 
 /** 项目说明页（免权限直达，不显示在菜单） */
 export const aboutRoutes: AppRouteRecord = {

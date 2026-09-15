@@ -363,7 +363,10 @@ function actor() {
   const u = useUserStore().getUserInfo as UserInfo & { venue?: string | null; venues?: string[] }
   const roles = u.roles ?? []
   const isManager = roles.includes('R_MANAGER')
-  const isTeacher = roles.includes('R_TEACHER')
+  // 服务老师（会籍顾问）与授课老师（私教主教练）：门店锁定一致，可见范围不同
+  const isService = roles.includes('R_SERVICE')
+  const isCoach = roles.includes('R_TEACHER')
+  const isTeacher = isService || isCoach
   return {
     role: roles[0] ?? '',
     userName: u.userName ?? '',
@@ -372,6 +375,8 @@ function actor() {
     isBoss: roles.includes('R_SUPER'),
     isSuper: roles.includes('R_SUPER'),
     isManager,
+    isService,
+    isCoach,
     isTeacher,
     isMedia: roles.includes('R_MEDIA')
   }
@@ -425,7 +430,9 @@ export function queryLeads(
   const store = useYimaiStore()
   const a = actor()
   let list = store.state.leads.filter((l) => inScope(l.venue, a.scopeVenue))
-  if (a.isTeacher) list = list.filter((l) => l.serviceTeacher === a.userName || !l.serviceTeacher)
+  if (a.isService) list = list.filter((l) => l.serviceTeacher === a.userName || !l.serviceTeacher)
+  if (a.isCoach)
+    list = list.filter((l) => l.serviceTeacher === a.userName || l.trialTeacher === a.userName)
   if (params.name) list = list.filter((l) => l.name.includes(String(params.name)))
   if (params.venue) list = list.filter((l) => l.venue === params.venue)
   if (params.status) list = list.filter((l) => l.status === params.status)
@@ -1742,7 +1749,7 @@ export async function getChannelBreakdown(
   )
 }
 
-// ==================== 老师工作台概览 ====================
+// ==================== 各平台核销 / 成交金额 ====================
 
 export interface PlatformAmountItem {
   platform: string
@@ -1800,64 +1807,321 @@ export async function getPlatformAmounts(
 }
 
 // ==================== 老师工作台概览 ====================
+//
+// 口径说明（v3.1.55 修正）：
+//  - 课时/服务人次改为读真实排课事实（ky_bookings 按 teacher_name 聚合），
+//    不再用「当日预约 × 0.6」这类估算值；
+//  - 「我的学员」只统计私教（course_kind=private），小班与团课不计入；
+//  - 服务老师（会籍顾问）与授课老师（私教主教练）返回不同卡片口径。
+
+export interface TeacherTodayClass {
+  id: number
+  time: string
+  memberName: string
+  course: string
+  kind: string
+  isTrial: boolean
+  status: string
+  teacher: string
+}
+
+export interface TeacherSeriesPoint {
+  date: string
+  label: string
+  classes: number
+  served: number
+}
 
 export interface TeacherOverview {
+  role: string
+  roleLabel: string
+  scopeLabel: string
+  startDate: string
+  endDate: string
+  /** 可见会员总数（服务老师＝本人名下；授课老师＝本人私教学员 ∪ 本人会籍会员） */
   memberCount: number
+  /** 挂在自己名下（会籍顾问/负责人）的会员数 */
+  serviceMemberCount: number
+  /** 自己上过私教课的学员数（不含小班、团课） */
+  teachStudentCount: number
+  leadCount: number
   resourceCount: number
   newResourceCount: number
+  myLeadCount: number
+  visitCount: number
+  dealCount: number
+  dealAmount: number
+  dealRate: number
   classCount: number
   servedCount: number
+  kindCount: Record<string, number>
+  todayClassCount: number
+  todayClasses: TeacherTodayClass[]
+  series: TeacherSeriesPoint[]
 }
 
 export async function getTeacherOverview(
   startDate: string,
   endDate: string
 ): Promise<TeacherOverview> {
-  const a = actor()
-
-  if (USE_BACKEND) {
-    // 成员/客资计数由服务端按角色口径计算；课时部分沿用看板演示序列（阶段2接入真实排课）
-    const [members, leads] = await Promise.all([
-      queryCustomers({ type: 'member', size: 9999 }),
-      queryLeads({ size: 9999 })
-    ])
-    const myMembers = members.records.filter((c) => c.owner === a.userName && c.layer !== 'P5')
-    const myLeads = leads.records.filter(
-      (l) => (l as unknown as { serviceTeacher?: string }).serviceTeacher === a.userName
-    )
-    const poolLeads = leads.records.filter(
-      (l) => !(l as unknown as { serviceTeacher?: string }).serviceTeacher && l.status === '新留资'
-    )
-    const { daily } = await getDashboardSeries(startDate, endDate, '双店')
-    return {
-      memberCount: myMembers.length,
-      resourceCount: myLeads.length + poolLeads.length,
-      newResourceCount: poolLeads.length,
-      classCount: Math.round(daily.reduce((s, p) => s + p.bookings, 0) * 0.6),
-      servedCount: Math.round(daily.reduce((s, p) => s + p.trials + p.bookings * 0.35, 0))
-    }
+  if (!USE_BACKEND) {
+    // 演示模式没有真实排课事实可算，交给页面提示而不是编造数字
+    throw new Error('老师工作台需要连接后端服务')
   }
+  return apiGet<TeacherOverview>('/today/teacher-overview', { startDate, endDate })
+}
 
-  const myMembers = allCustomers().filter(
-    (c) => c.owner === a.userName && c.layer !== 'P5' && inScope(c.venue, a.scopeVenue)
-  )
-  ensureSeeded()
-  const myLeads = useYimaiStore().state.leads.filter(
-    (l) => l.serviceTeacher === a.userName && inScope(l.venue, a.scopeVenue)
-  )
-  const poolLeads = useYimaiStore().state.leads.filter(
-    (l) => !l.serviceTeacher && l.status === '新留资' && inScope(l.venue, a.scopeVenue)
-  )
-  const { daily } = await getDashboardSeries(startDate, endDate, '双店')
-  const classCount = Math.round(daily.reduce((s, p) => s + p.bookings, 0) * 0.6)
-  const servedCount = Math.round(daily.reduce((s, p) => s + p.trials + p.bookings * 0.35, 0))
-  return {
-    memberCount: myMembers.length,
-    resourceCount: myLeads.length + poolLeads.length,
-    newResourceCount: poolLeads.length,
-    classCount,
-    servedCount
+// ==================== 课后分析 ＋ 训练方向（P0） ====================
+//
+// 规则库（观察项 / 学员类型 / 红线 / 话术口径）以后端 PostClassPlanEngine 为唯一来源，
+// 前端只渲染不再抄一份文案，避免两边漂移。
+
+export interface PostClassObservationItem {
+  key: string
+  label: string
+  fast: boolean
+  phase: number
+}
+
+export interface PostClassCatalogGroup {
+  group: string
+  label: string
+  items: PostClassObservationItem[]
+}
+
+export interface PostClassCatalogType {
+  key: string
+  label: string
+  alias: string
+  frequencyText: string
+  courses: string[]
+  boundary: string
+}
+
+export interface PostClassCatalog {
+  groups: PostClassCatalogGroup[]
+  types: PostClassCatalogType[]
+  redFlags: { key: string; label: string; hint: string }[]
+  cardDirections: string[]
+  students: string[]
+  levels: string[]
+  scenes: Record<string, string>
+  speechRules: string[]
+  disclaimer: string
+}
+
+export interface PostClassPhase {
+  key: string
+  name: string
+  duration: string
+  durationTimes: string
+  goal: string
+  focus: string[]
+  courses: string[]
+  observationKeys: string[]
+}
+
+export interface PostClassPlanResult {
+  red_flag: boolean
+  student_type: string
+  inferred?: boolean
+  plan: {
+    phases: PostClassPhase[]
+    frequency: { text: string; min: number; max: number; stableMin: number; stableMax: number }
+    courses: string[]
+    homeWork: string[]
+    cautions: string[]
+    basis: { key: string; label: string; level: string; direction: string }[]
+  } | null
+  objective: {
+    observed: string[]
+    plan: { name: string; duration: string; goal: string; focus: string[] }[]
+    frequency: string
+    homework: string[]
+    nextStep: string
+    disclaimer: string
+  } | null
+  script: { whatPracticed: string; progress: string; nextClass: string; reminder: string }
+  handoff: {
+    cardDirection: string
+    weeklyTimes: string
+    focus: string
+    needConsultant: boolean
+    blocked: boolean
   }
+  cautions: string[]
+  notes?: string[]
+}
+
+export interface PostClassCandidate {
+  bookingId: number
+  classAt: string
+  date: string
+  time: string
+  venue: string
+  courseName: string
+  teacherName: string
+  studentName: string
+  phone: string
+  phoneTail: string
+  kind: string
+  isTrial: boolean
+  scene: string
+  status: string
+  customerId?: number | null
+  leadId?: number | null
+  leadStatus: string
+  hasReview: boolean
+}
+
+export interface PostClassReviewPayload {
+  scene: string
+  studentType: string
+  studentName: string
+  studentPhone: string
+  classAt: string
+  courseName: string
+  venue: string
+  goalText: string
+  observations: { key: string; level: string }[]
+  redFlags: string[]
+  feedback: { bodyFeel: string; like: string; concern: string }
+  issues: { text: string; basis: string }[]
+  leadId?: number | null
+  customerId?: number | null
+  bookingId?: number | null
+  /** 老师微调过的阶段文案（按 key 覆盖生成结果） */
+  phases?: { key: string; goal: string }[]
+  script?: Record<string, string>
+  handoff?: Record<string, unknown>
+}
+
+export interface PostClassReviewRow {
+  id: number
+  venue: string
+  scene: string
+  sceneLabel: string
+  studentName: string
+  studentType: string
+  teacherName: string
+  classAt: string
+  courseName: string
+  redFlag: boolean
+  status: string
+  share?: { code?: string; enabled?: boolean; views?: number } | null
+  createdAt: string
+  leadId?: number | null
+  leadStatus: string
+  dealAmount: number
+  dealAt?: string | null
+}
+
+/**
+ * 课后分析依赖后端的规则库与排课事实，演示模式（VITE_USE_BACKEND=false）没有对应数据。
+ * 这里抛出可读错误，而不是在前端复制一份规则文案（规则库以后端 PostClassPlanEngine 为唯一来源）。
+ */
+function requirePostClassBackend(): void {
+  if (!USE_BACKEND) {
+    throw new Error('课后分析需要连接后端服务')
+  }
+}
+
+export async function getPostClassCatalog(): Promise<PostClassCatalog> {
+  requirePostClassBackend()
+  return apiGet<PostClassCatalog>('/post-class-reviews/catalog')
+}
+
+export async function previewPostClassPlan(
+  input: Record<string, unknown>
+): Promise<PostClassPlanResult> {
+  requirePostClassBackend()
+  return apiPost<PostClassPlanResult>('/post-class-reviews/preview', input)
+}
+
+export async function queryPostClassCandidates(
+  days = 7
+): Promise<{ records: PostClassCandidate[]; pendingCount: number }> {
+  requirePostClassBackend()
+  return apiGet('/post-class-reviews/candidates', { days })
+}
+
+export async function getPostClassPendingCount(days = 3): Promise<{ count: number }> {
+  requirePostClassBackend()
+  return apiGet('/post-class-reviews/pending-count', { days })
+}
+
+export async function queryPostClassReviews(params: {
+  current?: number
+  size?: number
+  status?: string
+  studentType?: string
+  redFlag?: string
+  dateFrom?: string
+  dateTo?: string
+  venue?: string
+}): Promise<{
+  records: PostClassReviewRow[]
+  total: number
+  current: number
+  size: number
+  summary: { total: number; confirmed: number; redFlag: number }
+}> {
+  requirePostClassBackend()
+  return apiGet('/post-class-reviews', params)
+}
+
+export async function getPostClassReview(id: number): Promise<Record<string, unknown>> {
+  requirePostClassBackend()
+  return apiGet(`/post-class-reviews/${id}`)
+}
+
+export async function createPostClassReview(body: PostClassReviewPayload): Promise<{ id: number }> {
+  requirePostClassBackend()
+  return apiPost('/post-class-reviews', body as unknown as Record<string, unknown>)
+}
+
+export async function updatePostClassReview(
+  id: number,
+  body: PostClassReviewPayload
+): Promise<{ id: number }> {
+  requirePostClassBackend()
+  return apiPut(`/post-class-reviews/${id}`, body as unknown as Record<string, unknown>)
+}
+
+export async function confirmPostClassReview(id: number): Promise<{ shareCode: string }> {
+  requirePostClassBackend()
+  return apiPost(`/post-class-reviews/${id}/confirm`)
+}
+
+export async function setPostClassShare(
+  id: number,
+  enabled: boolean
+): Promise<{ shareCode: string; enabled: boolean }> {
+  requirePostClassBackend()
+  return apiPost(`/post-class-reviews/${id}/share`, { enabled })
+}
+
+export async function deletePostClassReview(id: number): Promise<{ id: number }> {
+  requirePostClassBackend()
+  return apiDelete(`/post-class-reviews/${id}`)
+}
+
+/** 对客 H5（免登录） */
+export async function getPublicPostClass(code: string): Promise<{
+  studentName: string
+  studentType: string
+  teacherName: string
+  venue: string
+  classAt: string
+  courseName: string
+  sceneLabel: string
+  objective: PostClassPlanResult['objective']
+  plan: PostClassPlanResult['plan']
+  script: PostClassPlanResult['script'] | null
+  confirmedAt: string
+}> {
+  requirePostClassBackend()
+  return apiGet(`/public/post-class/${code}`)
 }
 
 // ==================== 营销工具 ====================
@@ -2103,6 +2367,21 @@ export interface TodayTodoTrialItem extends TodayTodoDoneInfo {
   session: number | null
 }
 
+/** 今日已签到、待填写课后分析的体验课 / 私教课 */
+export interface TodayTodoReviewItem extends TodayTodoDoneInfo {
+  key: string
+  bookingId: number
+  time: string
+  name: string
+  phone: string
+  phoneTail: string
+  venue: '绿地店' | '东部店'
+  course: string
+  teacher: string
+  kind: '私教' | '小班' | '团课'
+  isTrial: boolean
+}
+
 export interface TodayTodoLeadItem extends TodayTodoDoneInfo {
   id: number
   /** 待办稳定键：lead:{id} */
@@ -2135,6 +2414,7 @@ export interface TodayTodo {
   churnRisks: TodayTodoChurnItem[]
   birthdays: TodayTodoBirthdayItem[]
   trials: TodayTodoTrialItem[]
+  reviews: TodayTodoReviewItem[]
   newLeads: TodayTodoLeadItem[]
   tasks: TodayTodoTaskItem[]
   counts: {
@@ -2143,6 +2423,7 @@ export interface TodayTodo {
     churnRisks: number
     birthdays: number
     trials: number
+    reviews: number
     newLeads: number
     tasks: number
   }
@@ -2323,6 +2604,8 @@ export function getTodayTodo(): Promise<TodayTodo> {
     churnRisks,
     birthdays,
     trials,
+    // 演示模式没有真实排课事实，课后分析分组固定为空
+    reviews: [] as TodayTodoReviewItem[],
     newLeads,
     tasks,
     counts: {
@@ -2331,6 +2614,7 @@ export function getTodayTodo(): Promise<TodayTodo> {
       churnRisks: churnRisks.length,
       birthdays: birthdays.length,
       trials: trials.length,
+      reviews: 0,
       newLeads: newLeads.length,
       tasks: tasks.length
     },
@@ -2339,7 +2623,7 @@ export function getTodayTodo(): Promise<TodayTodo> {
 }
 
 export interface MarkTodoPayload {
-  type: 'bookings' | 'renewals' | 'churnRisks' | 'birthdays' | 'trials' | 'newLeads'
+  type: 'bookings' | 'renewals' | 'churnRisks' | 'birthdays' | 'trials' | 'reviews' | 'newLeads'
   /** 待办稳定键（后端 /today/todo 各条目携带） */
   key: string
   /** 动作文案：已接待/已沟通待跟进/已首响/已送祝福 等 */

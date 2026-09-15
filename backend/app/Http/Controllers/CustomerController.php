@@ -302,8 +302,8 @@ class CustomerController extends Controller
         $q = scopeCustomersForUser(Customer::query(), $u)
             ->whereNotNull('enrolled_at')
             ->whereBetween('enrolled_at', [$start, $end.' 23:59:59']);
-        // 店长锁定本店、老师由 scope 限定本人；超管/新媒体可按需选门店
-        if ($u->role !== 'R_MANAGER' && $u->role !== 'R_TEACHER' && $venue !== '') {
+        // 店长锁定本店、服务老师/授课老师由 scope 限定本人；超管/新媒体可按需选门店
+        if ($u->role !== 'R_MANAGER' && ! isTeacherSide($u->role) && $venue !== '') {
             $q->where('venue', $venue);
         }
         if ($n = trim((string) $r->query('name', ''))) {

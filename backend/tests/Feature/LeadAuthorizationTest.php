@@ -48,21 +48,43 @@ class LeadAuthorizationTest extends TestCase
         $this->assertDatabaseHas('leads', ['id' => $id, 'venue' => '绿地店', 'remark' => '更新']);
     }
 
-    public function test_teacher_only_accesses_own_venue_assigned_or_unassigned_leads(): void
+    public function test_service_teacher_accesses_own_venue_assigned_or_unassigned_leads(): void
     {
-        $teacher = $this->user('teacher-green', '绿地老师', 'R_TEACHER', '绿地店');
-        $own = $this->lead('本人客资', '13800000002', '绿地店', '绿地老师');
+        // 服务老师（会籍顾问）是客资承接主体：本人名下 + 待承接池
+        $service = $this->user('service-green', '绿地顾问', 'R_SERVICE', '绿地店');
+        $own = $this->lead('本人客资', '13800000002', '绿地店', '绿地顾问');
         $unassigned = $this->lead('待认领客资', '13800000002', '绿地店');
-        $colleague = $this->lead('同事客资', '13800000002', '绿地店', '其他老师');
+        $colleague = $this->lead('同事客资', '13800000002', '绿地店', '其他顾问');
         $otherVenue = $this->lead('跨店客资', '13800000002', '东部店');
-        Sanctum::actingAs($teacher);
+        Sanctum::actingAs($service);
 
         $this->getJson('/api/leads/check?phone=13800000002')
             ->assertOk()
             ->assertJsonCount(2, 'data.matches');
         $this->patchJson("/api/leads/{$own->id}", ['remark' => '本人跟进'])->assertOk();
-        $this->patchJson("/api/leads/{$unassigned->id}", ['serviceTeacher' => '绿地老师'])->assertOk();
+        $this->patchJson("/api/leads/{$unassigned->id}", ['serviceTeacher' => '绿地顾问'])->assertOk();
         $this->patchJson("/api/leads/{$colleague->id}", ['remark' => '越权'])->assertForbidden();
+        $this->getJson("/api/leads/{$otherVenue->id}/history")->assertForbidden();
+    }
+
+    public function test_coach_sees_own_and_taught_leads_but_not_the_unassigned_pool(): void
+    {
+        // 授课老师（私教主教练）不承接公海：只看本人作为会籍顾问的、本人上过体验课的、本人私教学员的客资
+        $coach = $this->user('coach-green', '绿地教练', 'R_TEACHER', '绿地店');
+        $own = $this->lead('本人客资', '13800000004', '绿地店', '绿地教练');
+        $taught = $this->lead('本人体验课客资', '13800000004', '绿地店', '其他顾问');
+        $taught->update(['trial_teacher' => '绿地教练']);
+        $unassigned = $this->lead('待认领客资', '13800000004', '绿地店');
+        $otherVenue = $this->lead('跨店客资', '13800000004', '东部店', '绿地教练');
+        Sanctum::actingAs($coach);
+
+        // 待认领客资不在授课老师的可见范围内
+        $this->getJson('/api/leads/check?phone=13800000004')
+            ->assertOk()
+            ->assertJsonCount(2, 'data.matches');
+        $this->patchJson("/api/leads/{$own->id}", ['remark' => '本人跟进'])->assertOk();
+        $this->patchJson("/api/leads/{$taught->id}", ['trialTopic' => '肩颈体验'])->assertOk();
+        $this->patchJson("/api/leads/{$unassigned->id}", ['serviceTeacher' => '绿地教练'])->assertForbidden();
         $this->getJson("/api/leads/{$otherVenue->id}/history")->assertForbidden();
     }
 
@@ -199,14 +221,25 @@ class LeadAuthorizationTest extends TestCase
             'owner' => '未分配', 'status' => '已逾期',
         ]);
 
-        Sanctum::actingAs($this->user('today-teacher', '绿地老师', 'R_TEACHER', '绿地店'));
+        Sanctum::actingAs($this->user('today-service', '绿地老师', 'R_SERVICE', '绿地店'));
         $followups = $this->getJson('/api/today/followups')->assertOk()->json('data');
         $this->assertSame(['老师会员'], collect($followups)->pluck('name')->all());
-        $teacherAlerts = collect($this->getJson('/api/today/alerts')->assertOk()->json('data'))->pluck('text')->join(' ');
-        $this->assertStringContainsString('老师客资', $teacherAlerts);
-        $this->assertStringContainsString('待分配客资', $teacherAlerts);
-        $this->assertStringNotContainsString('同事客资', $teacherAlerts);
-        $this->assertStringNotContainsString('跨店', $teacherAlerts);
+        $serviceAlerts = collect($this->getJson('/api/today/alerts')->assertOk()->json('data'))->pluck('text')->join(' ');
+        $this->assertStringContainsString('老师客资', $serviceAlerts);
+        // 服务老师承接待分配池
+        $this->assertStringContainsString('待分配客资', $serviceAlerts);
+        $this->assertStringNotContainsString('同事客资', $serviceAlerts);
+        $this->assertStringNotContainsString('跨店', $serviceAlerts);
+
+        // 授课老师看本人作为会籍顾问的会员与客资，但不承接待分配池
+        Sanctum::actingAs($this->user('today-coach', '绿地老师', 'R_TEACHER', '绿地店'));
+        $coachFollowups = $this->getJson('/api/today/followups')->assertOk()->json('data');
+        $this->assertSame(['老师会员'], collect($coachFollowups)->pluck('name')->all());
+        $coachAlerts = collect($this->getJson('/api/today/alerts')->assertOk()->json('data'))->pluck('text')->join(' ');
+        $this->assertStringContainsString('老师客资', $coachAlerts);
+        $this->assertStringNotContainsString('待分配客资', $coachAlerts);
+        $this->assertStringNotContainsString('同事客资', $coachAlerts);
+        $this->assertStringNotContainsString('跨店', $coachAlerts);
 
         Sanctum::actingAs($this->user('today-manager', '绿地店长', 'R_MANAGER', '绿地店'));
         $managerAlerts = collect($this->getJson('/api/today/alerts')->assertOk()->json('data'))->pluck('text')->join(' ');

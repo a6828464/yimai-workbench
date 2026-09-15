@@ -46,6 +46,9 @@ class EnsureUserIsEnabled
             Validator::make($request->all(), $this->leadRules(true))->validate();
             if ($user->role === 'R_MANAGER') {
                 $request->merge(['venue' => $user->venue]);
+            } elseif ($user->role === 'R_SERVICE') {
+                $this->assertTeacherFields($request, true, $user);
+                $request->merge(['venue' => $user->venue, 'status' => '新留资']);
             } elseif ($user->role === 'R_TEACHER') {
                 $this->assertTeacherFields($request, true, $user);
                 $request->merge(['venue' => $user->venue, 'status' => '新留资']);
@@ -67,7 +70,7 @@ class EnsureUserIsEnabled
             Validator::make($request->all(), $this->leadRules(false))->validate();
             if ($user->role === 'R_MANAGER') {
                 $request->merge(['venue' => $user->venue]);
-            } elseif ($user->role === 'R_TEACHER') {
+            } elseif ($user->role === 'R_SERVICE' || $user->role === 'R_TEACHER') {
                 $this->assertTeacherFields($request, false, $user);
             }
         }
@@ -92,9 +95,8 @@ class EnsureUserIsEnabled
             ->where('venue', $match['venue'] ?? '');
         if ($user->role === 'R_MANAGER') {
             $query->where('venue', $user->venue);
-        } elseif ($user->role === 'R_TEACHER') {
-            $query->where('venue', $user->venue)
-                ->where(fn ($q) => $q->where('owner', $user->name)->orWhere('consultant', $user->name));
+        } elseif (isTeacherSide($user->role)) {
+            scopeCustomersForUser($query, $user);
         }
 
         return $query->exists();
@@ -102,20 +104,40 @@ class EnsureUserIsEnabled
 
     private function canAccessLead(User $user, Lead $lead): bool
     {
+        if ($lead->venue !== $user->venue && ! in_array($user->role, ['R_SUPER', 'R_MEDIA'], true)) {
+            return false;
+        }
+
         return match ($user->role) {
             'R_SUPER', 'R_MEDIA' => true,
             'R_MANAGER' => $lead->venue === $user->venue,
-            'R_TEACHER' => $lead->venue === $user->venue
-                && in_array($lead->service_teacher, ['', $user->name], true),
+            // 服务老师（会籍顾问）：本人名下的客资 + 待承接池
+            'R_SERVICE' => in_array($lead->service_teacher, ['', $user->name], true),
+            // 授课老师：本人作为会籍顾问的 + 本人上过体验课的 + 本人私教学员对应的 + 本人录入的
+            'R_TEACHER' => in_array($user->name, [(string) $lead->service_teacher, (string) $lead->trial_teacher], true)
+                || (string) $lead->created_by === (string) $user->name
+                || (function () use ($user, $lead) {
+                    $phone = (string) $lead->phone;
+
+                    return $phone !== '' && in_array($phone, privateStudentKeys($user)['phones'], true);
+                })(),
             default => false,
         };
     }
 
+    /**
+     * 服务老师与授课老师的可写字段一致。
+     *
+     * 两个角色拆分的是「可见范围」，不是编辑字段：授课老师也可以兼会籍顾问
+     * （可见范围里的「归属于自己的会籍顾问的会员」），所以 serviceTeacher 需要放开给自己。
+     * 保留的两条业务控制不变：不能指派给别人、不能自己标记成交。
+     */
+    private const TEACHER_FIELDS_CREATE = ['leadDate', 'name', 'phone', 'wechat', 'demand', 'source', 'orderPlatform', 'venue', 'serviceTeacher', 'status', 'remark'];
+    private const TEACHER_FIELDS_UPDATE = ['demand', 'status', 'remark', 'serviceTeacher', 'trialTime', 'trialTopic', 'trialTeacher', 'trialCards'];
+
     private function assertTeacherFields(Request $request, bool $creating, User $user): void
     {
-        $allowed = $creating
-            ? ['leadDate', 'name', 'phone', 'wechat', 'demand', 'source', 'orderPlatform', 'venue', 'serviceTeacher', 'status', 'remark']
-            : ['demand', 'status', 'remark', 'serviceTeacher', 'trialTime', 'trialTopic', 'trialTeacher', 'trialCards'];
+        $allowed = $creating ? self::TEACHER_FIELDS_CREATE : self::TEACHER_FIELDS_UPDATE;
         abort_if(array_diff(array_keys($request->all()), $allowed) !== [], 403, '老师无权修改该客资字段');
         if ($request->exists('serviceTeacher')) {
             abort_unless($request->input('serviceTeacher') === $user->name, 403, '老师只能将客资指派给自己');
