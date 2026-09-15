@@ -1,0 +1,51 @@
+// 响应式断点（SCSS 侧唯一来源）
+//
+// ⚠️ 这里的值与 src/config/breakpoints.ts 必须保持一致：
+//    $bp-mobile   = BREAKPOINTS.MOBILE
+//    $bp-handheld = BREAKPOINTS.HANDHELD
+//    $bp-compact  = BREAKPOINTS.COMPACT
+//
+// 该文件由 vite.config.ts 的 scss.additionalData 全局注入，
+// 因此所有 .scss / <style lang="scss"> 都可以直接用下面的变量和 mixin。
+
+$bp-mobile: 640px;
+$bp-handheld: 768px;
+$bp-compact: 1180px;
+
+/// 触控区最小尺寸，与 src/config/breakpoints.ts 的 TOUCH_TARGET_MIN 保持一致
+$touch-target-min: 44px;
+
+/// 小于等于指定断点时生效
+/// @example @include respond-below($bp-handheld) { ... }
+@mixin respond-below($bp) {
+  @media only screen and (width <= #{$bp}) {
+    @content;
+  }
+}
+
+/// 大于指定断点时生效
+/// @example @include respond-above($bp-handheld) { ... }
+@mixin respond-above($bp) {
+  @media only screen and (width > #{$bp}) {
+    @content;
+  }
+}
+
+// 语义化快捷 mixin
+@mixin mobile-only {
+  @include respond-below($bp-mobile) {
+    @content;
+  }
+}
+
+@mixin handheld-only {
+  @include respond-below($bp-handheld) {
+    @content;
+  }
+}
+
+@mixin desktop-only {
+  @include respond-above($bp-handheld) {
+    @content;
+  }
+}

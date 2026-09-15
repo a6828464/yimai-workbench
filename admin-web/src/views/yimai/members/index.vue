@@ -93,7 +93,7 @@
         >
       </ArtTableHeader>
 
-      <ElTable v-loading="loading" :data="list" border stripe max-height="520">
+      <ElTable v-if="!isHandheld" v-loading="loading" :data="list" border stripe max-height="520">
         <ElTableColumn label="会员" min-width="130" fixed="left">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
@@ -350,6 +350,23 @@
           </template>
         </ElTableColumn>
       </ElTable>
+
+      <!-- 手持设备：卡片列表。宽表格在手机上只剩左右固定列，中间数据列会被挤成零宽 -->
+      <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="item in cardRows"
+          :key="item.id"
+          :title="item.title"
+          :subtitle="item.subtitle"
+          :tags="item.tags"
+          :metrics="item.metrics"
+          :note="item.note?.text"
+          :note-label="item.note?.label"
+          :note-danger="item.note?.danger"
+          :actions="item.actions"
+        />
+        <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无数据</div>
+      </div>
 
       <div class="mt-4 flex justify-end">
         <ElPagination
@@ -696,10 +713,19 @@
     CustomerCardItem
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
   import { toLocalDateString } from '@/utils'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiMembers' })
+
+  // 手持设备上用卡片列表代替宽表格（见下方 cardMetrics / cardNote / cardTags）
+  const { isHandheld } = useDevice()
 
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
@@ -894,6 +920,170 @@
   function evaluationTag(score: number): 'success' | 'warning' | 'danger' {
     return score >= 70 ? 'success' : score >= 40 ? 'warning' : 'danger'
   }
+
+  // ---------- 移动端卡片 ----------
+  //
+  // 卡片不是「把表格横过来」：每个 tab 只保留该清单最该看的信息（指标 ≤3 个 + 一条补充说明），
+  // 其余明细留在桌面端。表格在手机上只剩左右固定列，中间数据列会被挤成零宽，所以窄屏必须换形态。
+
+  /** 顶部标签：门店 + 顾问（空则标红「待分配」）+ 清单归属 */
+  function cardTags(row: YimaiCustomer): MobileCardTag[] {
+    const tags: MobileCardTag[] = [{ text: row.venue, effect: 'plain' }]
+
+    if (row.consultant) {
+      tags.push({ text: row.consultant, effect: 'plain' })
+    } else {
+      tags.push({ text: '待分配', type: 'danger', effect: 'plain' })
+    }
+
+    for (const l of memberLists(row)) {
+      tags.push({ text: l, type: listType(l), effect: 'dark' })
+    }
+
+    return tags
+  }
+
+  /** 关键指标：按 tab 取 1–3 个 */
+  function cardMetrics(row: YimaiCustomer): MobileCardMetric[] {
+    const metrics: MobileCardMetric[] = []
+
+    if (activeTab.value !== 'vip') {
+      metrics.push({
+        label: '出勤（近30天）',
+        value: row.attendM3 ?? 0,
+        unit: '次',
+        danger: declining(row)
+      })
+    }
+
+    if (activeTab.value === 'all' || activeTab.value === 'renewal') {
+      const remain = row.remainTimes
+      metrics.push({
+        label: '剩余课时',
+        value: remain ?? '—',
+        unit: remain == null ? '' : '节',
+        danger: remain != null && remain < rules.value.renewalThreshold
+      })
+    }
+
+    if (activeTab.value === 'renewal') {
+      metrics.push({
+        label: '续费评估',
+        value:
+          row.evalScore != null
+            ? `${row.evalScore} · ${renewalLevelLabel(renewalLevel(row.evalScore))}`
+            : '待评估',
+        danger: row.evalScore != null && row.evalScore < 40
+      })
+    }
+
+    if (activeTab.value === 'all' || activeTab.value === 'vip') {
+      metrics.push({
+        label: '累计购买',
+        value: row.cardPaidAmount != null ? `¥${formatMoney(row.cardPaidAmount)}` : '—'
+      })
+    }
+
+    return metrics
+  }
+
+  /** 每个 tab 专属的补充说明，等价于表格里该 tab 才出现的那一列 */
+  function cardNote(row: YimaiCustomer): { text: string; label: string; danger: boolean } | null {
+    if (activeTab.value === 'renewal') {
+      const p = row.renewalPlan
+      if (!p?.time) return { text: '待教练月度预报', label: '续课计划', danger: true }
+      return {
+        text: `${p.intent} · ${p.time} · ${p.amount}（诉求：${p.issue || '—'}）`,
+        label: '续课计划',
+        danger: false
+      }
+    }
+
+    if (activeTab.value === 'decline') {
+      if (!row.decline?.reason) return { text: '待管理层确认原因', label: '下降原因', danger: true }
+      return {
+        text: `${row.decline.reason}${row.decline.solution ? ` · ${row.decline.solution}` : ''}`,
+        label: '下降原因',
+        danger: false
+      }
+    }
+
+    if (activeTab.value === 'predrop') {
+      const days = daysAgo(row.lastVisit)
+      return {
+        text: `${row.stopReason || '停课原因待回访确认'} · 最近到店：${
+          days === 9999 ? '无记录' : `${days}天前`
+        }${row.expectedReturn ? ` · 预期复活 ${row.expectedReturn}` : ''}`,
+        label: '停训情况',
+        danger: false
+      }
+    }
+
+    if (activeTab.value === 'revive') {
+      return {
+        text: `预期复活：${row.expectedReturn || '未确认'} · 最近沟通：${
+          row.lastTouch ? `${row.lastTouch}（${daysAgo2(row.lastTouch)}天前）` : '从未'
+        }${row.needsHelp ? ' · 需协助' : ''}`,
+        label: '复活跟进',
+        danger: touchOverdue(row)
+      }
+    }
+
+    // 总览 / 待续课 / VIP：展示下一步动作
+    if (row.nextAction) {
+      return {
+        text: `${row.owner || row.consultant || '待分配'} · ${row.nextActionTime || '待定时间'}`,
+        label: row.nextAction,
+        danger: actionOverdue(row)
+      }
+    }
+
+    return activeTab.value !== 'all'
+      ? { text: '待明确下一步动作', label: '下一步', danger: true }
+      : null
+  }
+
+  /**
+   * 卡片操作
+   *
+   * 组件只平铺前 2 个、其余收进「更多」，所以把与当前清单最相关的动作排在前面，
+   * 保证它在手机上直接可见，不用展开菜单。
+   */
+  function cardActions(row: YimaiCustomer): MobileCardAction[] {
+    const lists = memberLists(row)
+    const actions: MobileCardAction[] = []
+
+    if (lists.includes('待续课')) {
+      actions.push({ text: '续课计划', type: 'warning', onClick: () => openRenewal(row) })
+    }
+    if (lists.includes('出勤降低')) {
+      actions.push({ text: '下降处置', type: 'info', onClick: () => openDecline(row) })
+    }
+    if (lists.includes('预流失') && !row.inRevive) {
+      actions.push({ text: '转待复活', type: 'success', onClick: () => toRevive(row) })
+    }
+    if (lists.includes('待复活')) {
+      actions.push({ text: '记录沟通', type: 'primary', onClick: () => openTouch(row) })
+    }
+
+    actions.push({ text: '续费评估', type: 'primary', onClick: () => openEval(row) })
+    actions.push({ text: '生日', onClick: () => openBirthday(row) })
+
+    return actions
+  }
+
+  /** 预计算一次，避免模板里对每行重复调用四个函数 */
+  const cardRows = computed(() =>
+    list.value.map((row) => ({
+      id: row.id,
+      title: row.name,
+      subtitle: `${row.phone || `尾号${row.phoneTail}`}${row.source ? ` · ${row.source}` : ''}`,
+      tags: cardTags(row),
+      metrics: cardMetrics(row),
+      note: cardNote(row),
+      actions: cardActions(row)
+    }))
+  )
 
   // ---------- 续课计划 ----------
   const renewalDlg = reactive({

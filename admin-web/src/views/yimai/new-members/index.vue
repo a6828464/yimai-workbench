@@ -73,7 +73,7 @@
 
     <!-- 列表 -->
     <ElCard shadow="never">
-      <ElTable v-loading="loading" :data="pagedList" border stripe>
+      <ElTable v-if="!isHandheld" v-loading="loading" :data="pagedList" border stripe>
         <ElTableColumn prop="name" label="会员" min-width="110" fixed="left">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
@@ -119,6 +119,33 @@
           </template>
         </ElTableColumn>
       </ElTable>
+
+      <!-- 手持设备：卡片列表 -->
+      <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="item in cardRows"
+          :key="item.id"
+          :title="item.title"
+          :subtitle="item.subtitle"
+          :tags="item.tags"
+          :metrics="item.metrics"
+        >
+          <div class="nm-card__body">
+            <div class="text-xs text-gray-400">入会 {{ item.enrolledAt }}</div>
+            <div class="space-y-1 mt-2">
+              <KindRow label="私教" :cat="item.row.categories.private" />
+              <KindRow label="小班" :cat="item.row.categories.small" />
+              <KindRow label="团课" :cat="item.row.categories.group" />
+            </div>
+            <div v-if="item.themes.length" class="nm-card__themes">
+              <ElTag v-for="t in item.themes" :key="t" size="small" class="mr-1 mb-1">{{
+                t
+              }}</ElTag>
+            </div>
+          </div>
+        </MobileCard>
+        <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无数据</div>
+      </div>
       <div class="mt-4 flex justify-end">
         <ElPagination
           v-model:current-page="page.current"
@@ -138,8 +165,13 @@
   import type { NewMemberCultivation, CultivationCategory } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { toLocalDateString } from '@/utils'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type { MobileCardMetric, MobileCardTag } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiNewMembers' })
+
+  // 手持设备上用卡片列表代替宽表格（「上课养成」列宽 240px，手机上必被压扁）
+  const { isHandheld } = useDevice()
 
   const HEALTH_META: Record<
     NewMemberCultivation['health'],
@@ -189,6 +221,42 @@
   )
   const isManager = computed(() => roles.value.includes('R_MANAGER'))
   const canPickVenue = computed(() => !isTeacher.value && !isManager.value)
+
+  // ---------- 移动端卡片 ----------
+  //
+  // 桌面的「上课养成」列宽 240px，在手机上会被压扁到不可读。
+  // 卡片里改用默认插槽放同一个 KindRow 进度条，信息量不减、可解释性也保留。
+  const cardRows = computed(() =>
+    pagedList.value.map((row) => {
+      const tags: MobileCardTag[] = []
+      if (canPickVenue.value) tags.push({ text: row.venue, effect: 'plain' })
+      tags.push({
+        text: HEALTH_META[row.health].text,
+        type: HEALTH_META[row.health].type
+      })
+      if (row.consultant) tags.push({ text: row.consultant, effect: 'plain' })
+
+      const metrics: MobileCardMetric[] = [
+        {
+          label: '入会',
+          value: row.enrolledDays ?? '—',
+          unit: row.enrolledDays == null ? '' : '天'
+        },
+        { label: '已签到', value: row.totalSigned, unit: '节' }
+      ]
+
+      return {
+        id: row.id,
+        row,
+        title: row.name,
+        subtitle: row.phone || (row.phoneTail ? `尾号${row.phoneTail}` : '—'),
+        enrolledAt: row.enrolledAt,
+        themes: row.themes,
+        tags,
+        metrics
+      }
+    })
+  )
 
   const Stat = defineComponent({
     props: {
@@ -272,7 +340,7 @@
       lastSummary.value = res.summary
       syncTime.value = res.syncTime
       error.value = ''
-    } catch (e) {
+    } catch {
       error.value = '新客培养数据加载失败，请稍后重试'
     } finally {
       loading.value = false
@@ -289,3 +357,20 @@
 
   onMounted(reload)
 </script>
+
+<style scoped lang="scss">
+  // 卡片里的养成进度区，与「预约主题」用一条虚线分隔
+  .nm-card {
+    &__body {
+      padding-top: 10px;
+      margin-top: 10px;
+      border-top: 1px dashed var(--art-card-border);
+    }
+
+    &__themes {
+      padding-top: 8px;
+      margin-top: 8px;
+      border-top: 1px dashed var(--art-card-border);
+    }
+  }
+</style>

@@ -76,14 +76,50 @@
         </template>
       </ArtTableHeader>
 
-      <ArtTable
-        :loading="loading"
-        :data="data"
-        :columns="columns"
-        :pagination="pagination"
-        @pagination:size-change="handleSizeChange"
-        @pagination:current-change="handleCurrentChange"
-      />
+      <!-- 宽表格带左右固定列，手机上固定列会吃掉整个可见宽度，所以窄屏整体换卡片列表 -->
+      <template v-if="!isHandheld">
+        <ArtTable
+          :loading="loading"
+          :data="data"
+          :columns="columns"
+          :pagination="pagination"
+          @pagination:size-change="handleSizeChange"
+          @pagination:current-change="handleCurrentChange"
+        />
+      </template>
+
+      <div v-else v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="item in cardRows"
+          :key="item.id"
+          :title="item.title"
+          :subtitle="item.subtitle"
+          :tags="item.tags"
+          :metrics="item.metrics"
+          :note="item.note.text"
+          :note-label="item.note.label"
+          :actions="item.actions"
+        >
+          <div class="customer-card__extra">
+            <div class="customer-card__line">
+              <span class="customer-card__label">主卡</span>
+              <span :class="{ 'is-danger': item.mainCard.danger }">{{ item.mainCard.text }}</span>
+            </div>
+          </div>
+        </MobileCard>
+        <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无数据</div>
+      </div>
+
+      <!-- 卡片列表不自带分页，这里复用表格同一套分页状态，否则手机上只能看第一页 -->
+      <div v-if="isHandheld" class="mt-4 flex justify-end">
+        <ElPagination
+          :current-page="pagination.current"
+          :page-size="pagination.size"
+          :total="pagination.total"
+          layout="total, prev, pager, next"
+          @current-change="handleCurrentChange"
+        />
+      </div>
     </ElCard>
 
     <!-- 客户360详情 -->
@@ -168,8 +204,17 @@
   import type { YimaiCustomer, YimaiAuditLog, YimaiLead } from '@/api/yimai'
   import { ElMessage, ElTag } from 'element-plus'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiCustomers' })
+
+  // 手持设备上用卡片列表代替宽表格（见下方 cardTags / cardMetrics / cardNote）
+  const { isHandheld } = useDevice()
 
   const LIST_KEYS = ['待续课', '出勤降低', 'VIP', '预流失', '待复活']
 
@@ -216,7 +261,6 @@
     if (!date) return null
     return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
   }
-
 
   const {
     columns,
@@ -395,4 +439,108 @@
     logs: YimaiAuditLog[]
     leads: YimaiLead[]
   }>({ visible: false, loading: false, customer: null, logs: [], leads: [] })
+
+  // ---------- 移动端卡片 ----------
+  //
+  // 表格 9 列（含左右固定列），手机上固定列就占满了可见宽度，窄屏一律换成卡片。
+  // 卡片只保留经营动作必需的信息：门店/顾问/分层/状态（标签）、剩余课时与最近到店（指标）、
+  // 主卡与下一步动作（补充信息），明细仍走客户360抽屉。
+
+  /** 顶部标签：门店 + 顾问（空则标红「待分配」）+ 分层 + 状态，口径与表格列一致 */
+  function cardTags(row: YimaiCustomer): MobileCardTag[] {
+    return [
+      { text: row.venue, effect: 'plain' },
+      row.consultant
+        ? { text: row.consultant, effect: 'plain' }
+        : { text: '待分配', type: 'danger', effect: 'plain' },
+      {
+        text: `${row.layer} ${LAYER_LABELS[row.layer]}`,
+        type: LAYER_TAG_TYPE[row.layer],
+        effect: 'dark'
+      },
+      { text: row.status, type: row.status === '跟进中' ? 'primary' : 'info', effect: 'plain' }
+    ]
+  }
+
+  /** 关键指标：剩余课时 + 最近到店（超过 30 天未到店标红，与表格同口径） */
+  function cardMetrics(row: YimaiCustomer): MobileCardMetric[] {
+    const visitDays = daysAgo(row.lastVisit)
+    return [
+      {
+        label: '剩余课时',
+        value: row.remainTimes === null ? '未购卡' : row.remainTimes,
+        unit: row.remainTimes === null ? '' : '次'
+      },
+      {
+        label: '最近到店',
+        value: visitDays === null ? '未到店' : `${visitDays}天前`,
+        danger: visitDays !== null && visitDays > 30
+      }
+    ]
+  }
+
+  /** 主卡说明：主卡 / 剩余 / 到期，60 天内到期标红（沿用表格「主卡 / 剩余」列判定） */
+  function cardMainCard(row: YimaiCustomer): { text: string; danger: boolean } {
+    const remainText = row.remainTimes === null ? '未购卡' : `剩余 ${row.remainTimes} 次`
+    const expireText = row.expireDate ? ` · ${row.expireDate} 到期` : ''
+    const nearExpire =
+      !!row.expireDate && new Date(row.expireDate).getTime() - Date.now() < 60 * 86400000
+    return { text: `${row.mainCard} · ${remainText}${expireText}`, danger: nearExpire }
+  }
+
+  /** 补充说明：下一步动作 —— 经营池每天最需要盯的就是这一条 */
+  function cardNote(row: YimaiCustomer): { text: string; label: string } {
+    return {
+      label: '下次动作',
+      text: `${row.nextAction} · ${row.nextActionTime} · 负责人 ${row.owner}`
+    }
+  }
+
+  /** 卡片操作：桌面端也只有「详情」一个入口，保持一致 */
+  function cardActions(row: YimaiCustomer): MobileCardAction[] {
+    return [{ text: '查看详情', type: 'primary', onClick: () => showDetail(row) }]
+  }
+
+  /** 预计算一次，避免模板里对每行重复调用四个函数 */
+  const cardRows = computed(() =>
+    data.value.map((row) => ({
+      id: row.id,
+      title: row.name,
+      subtitle: `${row.phone || (row.phoneTail ? `尾号${row.phoneTail}` : '—')} · ${row.source}`,
+      tags: cardTags(row),
+      metrics: cardMetrics(row),
+      mainCard: cardMainCard(row),
+      note: cardNote(row),
+      actions: cardActions(row)
+    }))
+  )
 </script>
+
+<style scoped lang="scss">
+  // 移动端卡片里的补充信息（主卡 / 剩余 / 到期）
+  .customer-card {
+    &__extra {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--art-card-border);
+    }
+
+    &__line {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--art-gray-700);
+
+      .is-danger {
+        font-weight: 500;
+        color: var(--el-color-danger);
+      }
+    }
+
+    &__label {
+      display: inline-block;
+      min-width: 3.5em;
+      margin-right: 4px;
+      color: var(--art-gray-500);
+    }
+  }
+</style>

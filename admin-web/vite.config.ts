@@ -168,6 +168,7 @@ export default ({ mode }: { mode: string }) => {
           additionalData: `
             @use "@styles/core/el-light.scss" as *; 
             @use "@styles/core/mixin.scss" as *;
+            @use "@styles/core/breakpoint.scss" as *;
           `
         }
       },

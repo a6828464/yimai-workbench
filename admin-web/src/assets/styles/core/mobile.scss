@@ -1,0 +1,69 @@
+// 移动端通用样式
+//
+// 这里只放「跨页面共用」的移动端样式。单页专有的移动端样式请写在页面的 <style scoped> 里。
+
+@use '@styles/core/breakpoint.scss' as *;
+
+// ---------------------------------------------------------------------------
+// 卡片列表
+// ---------------------------------------------------------------------------
+//
+// 手持设备上，宽表格一律降级为卡片列表（见 MobileCard 组件）。
+// 不要用横向滚动代替 —— 业务表格普遍带左右固定列，固定列不参与横向滚动，
+// 固定列一多就会把中间的数据列挤成零宽，手机上横滑也看不到数据。
+// 判定阈值与理由见 src/config/breakpoints.ts。
+.m-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+
+  // 空态占位
+  &__empty {
+    padding: 40px 0;
+    text-align: center;
+    color: var(--art-gray-500);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 触控兜底
+// ---------------------------------------------------------------------------
+//
+// 触屏上没有 hover，所有依赖 :hover 才能操作的元素在手机上是失效的。
+// 如果某个交互元素只想在触屏上放大点击热区又不改布局，套这个类。
+.touch-target {
+  @include handheld-only {
+    min-width: $touch-target-min;
+    min-height: $touch-target-min;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 课后分析向导（review-wizard）
+// ---------------------------------------------------------------------------
+//
+// 原本每一步各自滚动（max-h-62vh）。实测手机上可见滚动区只有 523px，
+// 而第一步的内容高 1819px（要滚 3.5 屏），键盘弹起时还会和内滚动抢空间。
+// 这里改成：弹窗占满高度 + 由 body 统一滚动，底部按钮固定在视口内。
+.review-wizard {
+  @include mobile-only {
+    display: flex;
+    flex-direction: column;
+    max-height: 92vh;
+    margin-top: 2vh !important;
+
+    .el-dialog__body {
+      flex: 1;
+      // flex 子项默认 min-height:auto，不归零的话内容撑高后不会出现滚动条
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .el-dialog__footer {
+      flex: none;
+      padding-top: 10px;
+      border-top: 1px solid var(--art-card-border);
+    }
+  }
+}

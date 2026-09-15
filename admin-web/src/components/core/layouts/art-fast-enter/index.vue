@@ -5,7 +5,7 @@
     :width="700"
     :offset="0"
     :show-arrow="false"
-    trigger="hover"
+    :trigger="popoverTrigger"
     placement="bottom-start"
     popper-class="fast-enter-popover"
     :popper-style="{
@@ -63,12 +63,17 @@
 
 <script setup lang="ts">
   import { useFastEnter } from '@/hooks/core/useFastEnter'
+  import { useDevice } from '@/hooks/core/useDevice'
   import type { FastEnterApplication, FastEnterQuickLink } from '@/types/config'
 
   defineOptions({ name: 'ArtFastEnter' })
 
   const router = useRouter()
   const popoverRef = ref()
+
+  // 触屏没有 hover，必须用 click 触发；桌面保留 hover 的快速预览体验
+  const { isHandheld } = useDevice()
+  const popoverTrigger = computed(() => (isHandheld.value ? 'click' : 'hover'))
 
   // 使用快速入口配置
   const { enabledApplications, enabledQuickLinks } = useFastEnter()

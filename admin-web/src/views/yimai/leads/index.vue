@@ -61,7 +61,7 @@
         </template>
       </ArtTableHeader>
 
-      <ElTable v-loading="loading" :data="filteredList" border stripe>
+      <ElTable v-if="!isHandheld" v-loading="loading" :data="filteredList" border stripe>
         <ElTableColumn prop="leadDate" label="留资日期" width="100" sortable />
         <ElTableColumn label="姓名 / 联系方式" min-width="150">
           <template #default="{ row }">
@@ -202,6 +202,39 @@
           </template>
         </ElTableColumn>
       </ElTable>
+
+      <!-- 手持设备：卡片列表。16 列表格在手机上只能看到 3 列 -->
+      <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="item in cardRows"
+          :key="item.id"
+          :title="item.title"
+          :subtitle="item.subtitle"
+          :tags="item.tags"
+          :metrics="item.metrics"
+          :note="item.note?.text"
+          :note-label="item.note?.label"
+          :note-danger="item.note?.danger"
+          :actions="item.actions"
+        >
+          <div
+            v-if="item.demand || item.trial || item.remark || item.meta"
+            class="lead-card__extra"
+          >
+            <div v-if="item.demand" class="lead-card__line">
+              <span class="lead-card__label">需求：</span>{{ item.demand }}
+            </div>
+            <div v-if="item.trial" class="lead-card__line">
+              <span class="lead-card__label">体验课：</span>{{ item.trial }}
+            </div>
+            <div v-if="item.remark" class="lead-card__line">
+              <span class="lead-card__label">备注：</span>{{ item.remark }}
+            </div>
+            <div v-if="item.meta" class="lead-card__meta">{{ item.meta }}</div>
+          </div>
+        </MobileCard>
+        <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无数据</div>
+      </div>
 
       <div class="mt-4 flex justify-end">
         <ElPagination
@@ -528,10 +561,19 @@
   } from '@/api/yimai'
   import type { YimaiLead } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
   import { toLocalDateString } from '@/utils'
   import { ElMessage, ElMessageBox } from 'element-plus'
 
   defineOptions({ name: 'YimaiLeads' })
+
+  // 手持设备上用卡片列表代替宽表格（16 列在手机上只剩 3 列可见）
+  const { isHandheld } = useDevice()
 
   const STATUS_LIST = [
     '新留资',
@@ -898,6 +940,111 @@
     return map[status] ?? 'info'
   }
 
+  // ---------- 移动端卡片 ----------
+  //
+  // 表格 16 列，手机可见区只有 310px（内容宽 1840px），横滑也看不到完整信息，
+  // 所以窄屏换卡片。这里保留决策必需的字段，明细留在桌面端。
+
+  /** 顶部标签：状态优先，其次来源 / 门店 / 会籍顾问 */
+  function leadCardTags(row: YimaiLead): MobileCardTag[] {
+    const tags: MobileCardTag[] = [
+      { text: row.status, type: statusType(row.status), effect: 'dark' }
+    ]
+    if (row.source) tags.push({ text: row.source, effect: 'plain' })
+    if (row.venue) tags.push({ text: row.venue, effect: 'plain' })
+    tags.push(
+      row.serviceTeacher
+        ? { text: row.serviceTeacher, effect: 'plain' }
+        : { text: '待分配', type: 'danger', effect: 'plain' }
+    )
+    return tags
+  }
+
+  /** 指标：只放金额，没有就不占位 */
+  function leadCardMetrics(row: YimaiLead): MobileCardMetric[] {
+    const metrics: MobileCardMetric[] = []
+    if (row.redeemAmount !== null && row.redeemAmount !== undefined) {
+      metrics.push({ label: '核销金额', value: `¥${row.redeemAmount}` })
+    }
+    if (row.dealAmount !== null && row.dealAmount !== undefined) {
+      metrics.push({ label: '成交金额', value: `¥${row.dealAmount.toLocaleString()}` })
+    }
+    return metrics
+  }
+
+  /**
+   * 补充说明 = 跟进时限
+   *
+   * 留资页在手机上最该被提醒的就是「这个客户什么时候该跟」，
+   * 所以做成卡片上最醒目的一块，过期时标红。
+   */
+  function leadCardNote(row: YimaiLead): { text: string; label: string; danger: boolean } | null {
+    const base = firstTrialTime(row)
+    if (!base) return null
+    const overdue = [7, 15, 30].some((d) => deadlineClass(row, d) === 'overdue')
+    return {
+      label: '跟进时限',
+      text: `首跟 ${plusDays(base, 7)} · 二跟 ${plusDays(base, 15)} · 三跟 ${plusDays(base, 30)}`,
+      danger: overdue
+    }
+  }
+
+  /** 体验课一句话摘要，替代表格里按节多行展开的「体验课 / 券码」列 */
+  function leadCardTrial(row: YimaiLead): string {
+    const cards = row.trialCards ?? []
+    if (cards.length) {
+      return cards
+        .map((t) => {
+          const flags = [
+            t.noShow ? '已爽约' : t.attended ? '已上课' : '',
+            t.cancelled ? '已取消' : ''
+          ]
+            .filter(Boolean)
+            .join('、')
+          const remain =
+            t.total !== null && t.total !== undefined
+              ? ` ${t.remaining ?? t.total}/${t.total}次`
+              : ''
+          return `第${t.session}节${flags ? `（${flags}）` : ''}${remain}`
+        })
+        .join('；')
+    }
+    if (row.couponName || row.voucherCode) {
+      return [row.couponName, row.voucherCode].filter(Boolean).join(' ')
+    }
+    return ''
+  }
+
+  function leadCardActions(row: YimaiLead): MobileCardAction[] {
+    const manage = canManageLead(row)
+    return [
+      { text: '编辑', type: 'primary', onClick: () => openEdit(row), show: manage },
+      { text: '变更记录', onClick: () => openHistory(row) },
+      { text: '删除', type: 'danger', onClick: () => removeLead(row), show: manage }
+    ]
+  }
+
+  /** 预计算一次，避免模板里对每行重复调用多个函数 */
+  const cardRows = computed(() =>
+    list.value.map((row) => ({
+      id: row.id,
+      title: row.name,
+      subtitle: `${row.phone || (row.phoneTail ? `尾号${row.phoneTail}` : '—')}${
+        row.wechat ? ` · 微信：${row.wechat}` : ''
+      }`,
+      tags: leadCardTags(row),
+      metrics: leadCardMetrics(row),
+      note: leadCardNote(row),
+      trial: leadCardTrial(row),
+      demand: row.demand || '',
+      remark: row.remark || '',
+      meta: [row.orderPlatform, row.createdBy ? `录入：${row.createdBy}` : '']
+        .filter(Boolean)
+        .join(' · '),
+      actions: leadCardActions(row)
+    }))
+  )
+
   onMounted(() => {
     load()
     loadConsultants()
@@ -920,6 +1067,39 @@
     .done {
       text-decoration: line-through;
       opacity: 0.5;
+    }
+  }
+
+  // 移动端卡片里的补充信息（需求 / 体验课 / 备注）
+  .lead-card {
+    &__extra {
+      padding-top: 10px;
+      margin-top: 10px;
+      border-top: 1px dashed var(--art-card-border);
+    }
+
+    &__line {
+      margin-top: 4px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--art-gray-700);
+
+      &:first-child {
+        margin-top: 0;
+      }
+    }
+
+    &__label {
+      display: inline-block;
+      min-width: 3.5em;
+      margin-right: 4px;
+      color: var(--art-gray-500);
+    }
+
+    &__meta {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--art-gray-500);
     }
   }
 </style>

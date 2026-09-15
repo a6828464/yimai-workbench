@@ -31,14 +31,43 @@
         </template>
       </ArtTableHeader>
 
-      <ArtTable
-        :loading="loading"
-        :data="data"
-        :columns="columns"
-        :pagination="pagination"
-        @pagination:size-change="handleSizeChange"
-        @pagination:current-change="handleCurrentChange"
-      />
+      <!-- 宽表格带左固定列 + 右固定操作列，手机上固定列会吃掉整个可见宽度，窄屏整体换卡片列表 -->
+      <template v-if="!isHandheld">
+        <ArtTable
+          :loading="loading"
+          :data="data"
+          :columns="columns"
+          :pagination="pagination"
+          @pagination:size-change="handleSizeChange"
+          @pagination:current-change="handleCurrentChange"
+        />
+      </template>
+
+      <div v-else v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="item in cardRows"
+          :key="item.id"
+          :title="item.title"
+          :subtitle="item.subtitle"
+          :tags="item.tags"
+          :metrics="item.metrics"
+          :note="item.note.text"
+          :note-label="item.note.label"
+          :actions="item.actions"
+        />
+        <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无数据</div>
+      </div>
+
+      <!-- 卡片列表不自带分页，这里复用表格同一套分页状态，否则手机上只能看第一页 -->
+      <div v-if="isHandheld" class="mt-4 flex justify-end">
+        <ElPagination
+          :current-page="pagination.current"
+          :page-size="pagination.size"
+          :total="pagination.total"
+          layout="total, prev, pager, next"
+          @current-change="handleCurrentChange"
+        />
+      </div>
     </ElCard>
 
     <!-- 新建任务 -->
@@ -169,9 +198,18 @@
   import { queryTasks, createTask, updateTask } from '@/api/yimai'
   import type { YimaiTask } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
   import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiTasks' })
+
+  // 手持设备上用卡片列表代替宽表格（见下方 cardTags / cardMetrics / cardNote）
+  const { isHandheld } = useDevice()
 
   const STATUSES = ['待接收', '进行中', '待验收', '已完成', '已退回', '已逾期'] as const
 
@@ -425,4 +463,51 @@
       ElMessage.error('分配失败，请稍后重试')
     }
   }
+
+  // ---------- 移动端卡片 ----------
+  //
+  // 表格 7 列（含左右固定列），手机上固定列就占满可见宽度，窄屏一律换成卡片。
+  // 卡片保留「这个任务归谁、急不急、卡在哪一步」三类信息，流转按钮仍走任务详情弹窗
+  // （弹窗已由全局 ≤640 规则限宽，不用改）。
+
+  /** 顶部标签：状态 + 优先级 + 负责人（未分配标红，店长需要立刻认领） */
+  function cardTags(row: YimaiTask): MobileCardTag[] {
+    const priorityType =
+      row.priority === '高' ? 'danger' : row.priority === '中' ? 'warning' : 'info'
+    return [
+      { text: row.status, type: STATUS_TAG[row.status], effect: 'dark' },
+      { text: `优先级 ${row.priority}`, type: priorityType, effect: 'plain' },
+      row.owner === '未分配'
+        ? { text: '未分配', type: 'danger', effect: 'plain' }
+        : { text: row.owner, effect: 'plain' }
+    ]
+  }
+
+  /** 关键指标：截止时间——任务卡片上最先要看的就是还剩多少时间 */
+  function cardMetrics(row: YimaiTask): MobileCardMetric[] {
+    return [{ label: '截止时间', value: row.deadline || '—' }]
+  }
+
+  /** 补充说明：验收标准（完成口径），任务能否被验收全靠它 */
+  function cardNote(row: YimaiTask): { text: string; label: string } {
+    return { label: '验收标准', text: row.standard || '—' }
+  }
+
+  /** 卡片操作：认领/提报/验收等流转都在详情弹窗里，与桌面端操作列一致 */
+  function cardActions(row: YimaiTask): MobileCardAction[] {
+    return [{ text: '任务详情', type: 'primary', onClick: () => openDetail(row) }]
+  }
+
+  /** 预计算一次，避免模板里对每行重复调用四个函数 */
+  const cardRows = computed(() =>
+    data.value.map((row) => ({
+      id: row.id,
+      title: row.title,
+      subtitle: `${row.customerName} · ${row.venue}`,
+      tags: cardTags(row),
+      metrics: cardMetrics(row),
+      note: cardNote(row),
+      actions: cardActions(row)
+    }))
+  )
 </script>

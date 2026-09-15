@@ -80,7 +80,7 @@
               <span class="text-xs text-gray-400">来自随心瑜排课事实</span>
             </div>
           </template>
-          <ElTable :data="todayClasses" size="default" v-loading="loading">
+          <ElTable v-if="!isHandheld" :data="todayClasses" size="default" v-loading="loading">
             <ElTableColumn prop="time" label="时间" width="90" />
             <ElTableColumn prop="memberName" label="学员" width="120" />
             <ElTableColumn prop="course" label="课程" min-width="150" show-overflow-tooltip />
@@ -106,10 +106,26 @@
             </ElTableColumn>
           </ElTable>
           <ElEmpty
-            v-if="!loading && !todayClasses.length"
+            v-if="!isHandheld && !loading && !todayClasses.length"
             description="今天没有排课"
             :image-size="70"
           />
+
+          <!-- 手持设备：卡片列表。6 列合计约 640px，390px 屏上横滑也看不到完整一行 -->
+          <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+            <MobileCard
+              v-for="item in todayClassCardRows"
+              :key="item.id"
+              :title="item.title"
+              :subtitle="item.subtitle"
+              :tags="item.tags"
+              :metrics="item.metrics"
+              :actions="item.actions"
+            />
+            <div v-if="!loading && !todayClassCardRows.length" class="m-card-list__empty">
+              暂无数据
+            </div>
+          </div>
         </ElCard>
       </ElCol>
     </ElRow>
@@ -129,7 +145,7 @@
               >
             </div>
           </template>
-          <ElTable :data="myLeads" size="default" v-loading="loading">
+          <ElTable v-if="!isHandheld" :data="myLeads" size="default" v-loading="loading">
             <ElTableColumn prop="name" label="客户" width="110" />
             <ElTableColumn prop="venue" label="门店" width="90" />
             <ElTableColumn prop="demand" label="需求" min-width="120" show-overflow-tooltip />
@@ -153,10 +169,23 @@
             <ElTableColumn prop="remark" label="备注" min-width="160" show-overflow-tooltip />
           </ElTable>
           <ElEmpty
-            v-if="!loading && !myLeads.length"
+            v-if="!isHandheld && !loading && !myLeads.length"
             description="暂无待跟进客资"
             :image-size="70"
           />
+
+          <!-- 手持设备：卡片列表。6 列合计约 685px，窄屏只剩左右两列可见 -->
+          <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+            <MobileCard
+              v-for="item in leadCardRows"
+              :key="item.id"
+              :title="item.title"
+              :subtitle="item.subtitle"
+              :tags="item.tags"
+              :note="item.note"
+            />
+            <div v-if="!loading && !leadCardRows.length" class="m-card-list__empty">暂无数据</div>
+          </div>
         </ElCard>
       </ElCol>
     </ElRow>
@@ -169,6 +198,12 @@
   import { getPostClassPendingCount, getTeacherOverview, queryLeads } from '@/api/yimai'
   import type { YimaiLead, TeacherOverview, TeacherTodayClass } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
   import {
     User,
     Calendar,
@@ -183,6 +218,10 @@
   import DateRangeControl from './date-range-control.vue'
 
   defineOptions({ name: 'TeacherDashboard' })
+
+  // 手持设备上用卡片列表代替两张宽表格（卡片字段见下方「移动端卡片」）
+  const { isHandheld } = useDevice()
+  const router = useRouter()
 
   const userStore = useUserStore()
   const userName = computed(() => userStore.getUserInfo.userName ?? '')
@@ -382,6 +421,73 @@
   })
 
   const kpis = computed(() => kpiList.value)
+
+  // ---------- 移动端卡片 ----------
+  //
+  // 两张表各 6 列（640px / 685px），390px 屏上横滑也只能看到两三列，
+  // 所以窄屏换卡片：每张只留老师当场要看的字段，明细留在桌面端表格。
+
+  /** 今日课程标签：课型 + 性质 + 签到状态（对应表格里的三列） */
+  function courseCardTags(row: TeacherTodayClass): MobileCardTag[] {
+    return [
+      { text: row.kind, type: row.kind === '私教' ? 'danger' : 'info', effect: 'plain' },
+      row.isTrial
+        ? { text: '体验课', type: 'warning', effect: 'dark' }
+        : { text: '常规', effect: 'plain' },
+      {
+        text: row.status === 'signed' ? '已签到' : '已预约',
+        type: row.status === 'signed' ? 'success' : 'primary'
+      }
+    ]
+  }
+
+  /** 今日课程指标：只要「几点上课」，学员与课程名已经在标题区 */
+  function courseCardMetrics(row: TeacherTodayClass): MobileCardMetric[] {
+    return [{ label: '时间', value: row.time }]
+  }
+
+  /**
+   * 今日课程操作：课后分析入口
+   *
+   * 桌面端每行没有按钮，只能走顶部入口；老师下课后人还在教室，从课表直接点进去更顺手。
+   * 只在卡片上补，桌面端表格保持不变。
+   */
+  function courseCardActions(): MobileCardAction[] {
+    return [{ text: '填写分析', type: 'primary', onClick: () => router.push('/yimai/post-class') }]
+  }
+
+  /** 预计算一次，避免模板里对每行重复调用多个函数 */
+  const todayClassCardRows = computed(() =>
+    todayClasses.value.map((row) => ({
+      id: row.id,
+      title: row.memberName,
+      subtitle: row.course,
+      tags: courseCardTags(row),
+      metrics: courseCardMetrics(row),
+      actions: courseCardActions()
+    }))
+  )
+
+  /** 客资标签：门店 + 来源 + 状态（状态沿用桌面端的 success / danger / primary 三档） */
+  function leadCardTags(row: YimaiLead): MobileCardTag[] {
+    const tags: MobileCardTag[] = [{ text: row.venue, effect: 'plain' }]
+    if (row.source) tags.push({ text: row.source, effect: 'plain' })
+    tags.push({
+      text: row.status,
+      type: row.status === '已成交' ? 'success' : row.status === '新留资' ? 'danger' : 'primary'
+    })
+    return tags
+  }
+
+  const leadCardRows = computed(() =>
+    myLeads.value.map((row) => ({
+      id: row.id,
+      title: row.name,
+      subtitle: row.demand,
+      tags: leadCardTags(row),
+      note: row.remark || ''
+    }))
+  )
 
   function onRangeChange(v: [string, string]) {
     range.value = v

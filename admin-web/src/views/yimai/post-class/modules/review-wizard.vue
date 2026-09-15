@@ -8,20 +8,26 @@
     class="review-wizard"
     @closed="onClosed"
   >
-    <ElSteps :active="step" simple class="mb-4">
+    <!-- 手机上三步的标题+说明会挤成两行，改成一行进度计数 -->
+    <ElSteps v-if="!isMobile" :active="step" simple class="mb-4">
       <ElStep title="课后观察" :description="stepHint(0)" />
       <ElStep title="训练方向" :description="stepHint(1)" />
       <ElStep title="当场交付" :description="stepHint(2)" />
     </ElSteps>
+    <div v-else class="wizard-progress">
+      <span class="wizard-progress__idx">第 {{ step + 1 }}/3 步</span>
+      <span class="wizard-progress__name">{{ STEP_NAMES[step] }}</span>
+      <span class="wizard-progress__hint">{{ stepHint(step) }}</span>
+    </div>
 
     <!-- ① 课后观察 -->
-    <div v-show="step === 0" class="max-h-[62vh] overflow-y-auto pr-1">
+    <div v-show="step === 0" class="wizard-step-body max-h-[62vh] overflow-y-auto pr-1">
       <ElAlert type="info" :closable="false" class="mb-3">
         当场填完约 3–4 分钟：先勾"快筛"（看一眼就能判断的），有把握的再展开详细项。
         讲观察不讲诊断，讲方向不承诺疗效。
       </ElAlert>
 
-      <ElForm label-width="88px" label-position="left">
+      <ElForm :label-width="isMobile ? undefined : '88px'" :label-position="formLabelPosition">
         <ElRow :gutter="12">
           <ElCol :xs="24" :sm="12">
             <ElFormItem label="学员姓名">
@@ -231,11 +237,11 @@
               :key="it.key"
               class="obs-chip"
               :class="{ active: !!levelOf(it.key) }"
-              @click="toggleObservation(it.key)"
+              @click="onChipClick(it)"
             >
               <span class="text-[13px]">{{ it.label }}</span>
               <ElRadioGroup
-                v-if="levelOf(it.key)"
+                v-if="levelOf(it.key) && !isMobile"
                 :model-value="levelOf(it.key)"
                 size="small"
                 class="ml-1"
@@ -260,11 +266,11 @@
                   :key="it.key"
                   class="obs-chip"
                   :class="{ active: !!levelOf(it.key) }"
-                  @click="toggleObservation(it.key)"
+                  @click="onChipClick(it)"
                 >
                   <span class="text-[13px]">{{ it.label }}</span>
                   <ElRadioGroup
-                    v-if="levelOf(it.key)"
+                    v-if="levelOf(it.key) && !isMobile"
                     :model-value="levelOf(it.key)"
                     size="small"
                     class="ml-1"
@@ -289,7 +295,7 @@
         <template #header
           ><span class="font-500 text-[13px]">学员主观反馈（下课当场问）</span></template
         >
-        <ElForm label-width="88px" label-position="left">
+        <ElForm :label-width="isMobile ? undefined : '88px'" :label-position="formLabelPosition">
           <ElFormItem label="身体感觉">
             <ElInput
               v-model="form.feedback.bodyFeel"
@@ -310,7 +316,7 @@
     </div>
 
     <!-- ② 训练方向（生成 + 微调） -->
-    <div v-show="step === 1" class="max-h-[62vh] overflow-y-auto pr-1">
+    <div v-show="step === 1" class="wizard-step-body max-h-[62vh] overflow-y-auto pr-1">
       <ElAlert v-if="result?.red_flag" type="error" :closable="false" class="mb-3" show-icon>
         <template #title>命中红线，本次不生成对客训练方案</template>
         <div class="mt-1 text-[13px] leading-6">
@@ -409,7 +415,7 @@
           <template #header
             ><span class="font-500 text-[13px]">顾问衔接（只填方向，不写价格）</span></template
           >
-          <ElForm label-width="110px" label-position="left">
+          <ElForm :label-width="isMobile ? undefined : '110px'" :label-position="formLabelPosition">
             <ElFormItem label="建议卡项方向">
               <ElSelect v-model="handoff.cardDirection" class="!w-full" clearable>
                 <ElOption
@@ -437,7 +443,7 @@
     </div>
 
     <!-- ③ 当场交付 -->
-    <div v-show="step === 2" class="max-h-[62vh] overflow-y-auto pr-1">
+    <div v-show="step === 2" class="wizard-step-body max-h-[62vh] overflow-y-auto pr-1">
       <template v-if="savedId">
         <ElResult
           v-if="result?.red_flag"
@@ -516,10 +522,49 @@
       </div>
     </template>
   </ElDialog>
+
+  <!-- 手机端：观察项等级选择（轻/中/重） -->
+  <ElDrawer
+    v-model="levelSheet.visible"
+    direction="btt"
+    size="auto"
+    :with-header="false"
+    class="wizard-level-sheet"
+  >
+    <div class="level-sheet">
+      <div class="level-sheet__title">{{ levelSheet.label }}</div>
+      <button
+        v-for="(lv, k) in catalog?.levels ?? {}"
+        :key="k"
+        type="button"
+        class="level-sheet__item"
+        :class="{ 'is-active': levelOf(levelSheet.key) === k }"
+        @click="pickLevel(String(k))"
+      >
+        {{ lv }}
+      </button>
+      <button
+        v-if="levelOf(levelSheet.key)"
+        type="button"
+        class="level-sheet__item level-sheet__item--danger"
+        @click="clearLevel()"
+      >
+        取消选择该项
+      </button>
+      <button
+        type="button"
+        class="level-sheet__item level-sheet__item--plain"
+        @click="levelSheet.visible = false"
+      >
+        关闭
+      </button>
+    </div>
+  </ElDrawer>
 </template>
 
 <script setup lang="ts">
   import { ElMessage, ElMessageBox } from 'element-plus'
+  import { useDevice } from '@/hooks/core/useDevice'
   import {
     confirmPostClassReview,
     createPostClassReview,
@@ -548,6 +593,21 @@
     get: () => props.modelValue,
     set: (v: boolean) => emit('update:modelValue', v)
   })
+
+  // ---------- 移动端适配 ----------
+  //
+  // 老师是下了课当场站在场边用手机填的，所以手机端的所有呈现都按「单手 + 站着」来定：
+  // 标签置顶、去掉嵌套滚动、等级选择改成 44px 的底部面板。
+
+  const { isMobile } = useDevice()
+
+  /** 手机上表单标签置顶：88px 的左侧标签会占掉可用宽度的近四分之一 */
+  const formLabelPosition = computed(() => (isMobile.value ? 'top' : 'left'))
+
+  const STEP_NAMES = ['课后观察', '训练方向', '当场交付']
+
+  /** 手机端的等级选择面板 */
+  const levelSheet = reactive({ visible: false, key: '', label: '' })
 
   const catalog = ref<PostClassCatalog | null>(null)
   const step = ref(0)
@@ -700,6 +760,34 @@
     } else {
       form.observations.push({ key, level: '中' })
     }
+  }
+
+  /**
+   * 点击观察项标签
+   *
+   * 桌面端：标签内直接展开 轻/中/重，点一下即选好。
+   * 手机端：展开后的三个按钮只有 24px 高（低于 44px 触控标准），所以改为弹底部面板；
+   * 「取消选择」也一并放进面板 —— 否则选中之后没有地方可以取消。
+   */
+  function onChipClick(it: { key: string; label: string }) {
+    if (!isMobile.value) {
+      toggleObservation(it.key)
+      return
+    }
+    if (!levelOf(it.key)) toggleObservation(it.key)
+    levelSheet.key = it.key
+    levelSheet.label = it.label
+    levelSheet.visible = true
+  }
+
+  function pickLevel(level: string) {
+    setLevel(levelSheet.key, level)
+    levelSheet.visible = false
+  }
+
+  function clearLevel() {
+    toggleObservation(levelSheet.key)
+    levelSheet.visible = false
   }
 
   function setLevel(key: string, level: string) {
@@ -862,6 +950,91 @@
 </script>
 
 <style scoped lang="scss">
+  // 手机端进度条：替代三步 ElSteps（三步的标题+说明在窄屏会挤成两行）
+  .wizard-progress {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    align-items: baseline;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+
+    &__idx {
+      padding: 2px 8px;
+      font-size: 12px;
+      color: var(--el-color-primary);
+      background: var(--el-color-primary-light-9);
+      border-radius: 10px;
+    }
+
+    &__name {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    &__hint {
+      font-size: 12px;
+      color: var(--el-text-color-secondary);
+    }
+  }
+
+  @include mobile-only {
+    // 去掉步骤内的嵌套滚动：手机上它只有 523px 高（内容 1819px），
+    // 且键盘弹出时会和它抢空间。改为让弹窗 body 整体滚动。
+    .wizard-step-body {
+      max-height: none;
+      overflow: visible;
+    }
+
+    // 标签内的等级按钮在手机上已换成底部面板，标签只需要能点中
+    .obs-chip {
+      min-height: $touch-target-min;
+      padding: 0 14px;
+    }
+  }
+
+  // 底部等级选择面板
+  .level-sheet {
+    padding: 4px 0 calc(4px + env(safe-area-inset-bottom, 0px));
+
+    &__title {
+      padding: 0 4px 10px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--art-gray-900);
+    }
+
+    &__item {
+      display: block;
+      width: 100%;
+      min-height: $touch-target-min;
+      margin-bottom: 8px;
+      font-size: 16px;
+      color: var(--art-gray-800);
+      background: var(--el-fill-color-light);
+      border: 1px solid transparent;
+      border-radius: 10px;
+
+      &.is-active {
+        font-weight: 600;
+        color: var(--el-color-primary);
+        background: var(--el-color-primary-light-9);
+        border-color: var(--el-color-primary);
+      }
+
+      &--danger {
+        color: var(--el-color-danger);
+      }
+
+      &--plain {
+        color: var(--art-gray-600);
+        background: transparent;
+        border-color: var(--el-border-color);
+      }
+    }
+  }
+
   .obs-chip {
     display: inline-flex;
     align-items: center;

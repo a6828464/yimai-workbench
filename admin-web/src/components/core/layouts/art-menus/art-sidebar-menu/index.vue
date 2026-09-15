@@ -140,11 +140,13 @@
   import { handleMenuJump } from '@/utils/navigation'
   import SidebarSubmenu from './widget/SidebarSubmenu.vue'
   import { useCommon } from '@/hooks/core/useCommon'
+  import { BREAKPOINTS } from '@/config/breakpoints'
   import { useWindowSize, useTimeoutFn } from '@vueuse/core'
 
   defineOptions({ name: 'ArtSidebarMenu' })
 
-  const MOBILE_BREAKPOINT = 800
+  // 手持设备上限：低于此值侧栏改为抽屉。与 style.scss 的 .layout-sidebar 媒体查询必须一致
+  const MOBILE_BREAKPOINT = BREAKPOINTS.HANDHELD
   const ANIMATION_DELAY = 350
   const MENU_CLOSE_WIDTH = MenuWidth.CLOSE
 

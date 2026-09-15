@@ -6,7 +6,7 @@
     :width="240"
     :hide-after="0"
     :offset="10"
-    trigger="hover"
+    :trigger="popoverTrigger"
     :show-arrow="false"
     popper-class="user-menu-popover"
     popper-style="padding: 5px 16px;"
@@ -64,10 +64,15 @@
   import { useRouter } from 'vue-router'
   import { ElMessageBox } from 'element-plus'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
   import { mittBus } from '@/utils/sys'
   import defaultAvatar from '@imgs/user/avatar.webp'
 
   defineOptions({ name: 'ArtUserMenu' })
+
+  // 触屏没有 hover，必须用 click 触发；桌面保留 hover 的快速预览体验
+  const { isHandheld } = useDevice()
+  const popoverTrigger = computed(() => (isHandheld.value ? 'click' : 'hover'))
 
   const router = useRouter()
   const { t } = useI18n()

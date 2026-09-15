@@ -16,7 +16,7 @@
         </div>
       </template>
 
-      <ElTable :data="plans" border stripe v-loading="loading">
+      <ElTable v-if="!isHandheld" :data="plans" border stripe v-loading="loading">
         <ElTableColumn label="会员 / 目标" min-width="180">
           <template #default="{ row }">
             <div class="font-500">{{ row.memberName }}</div>
@@ -76,6 +76,24 @@
           </template>
         </ElTableColumn>
       </ElTable>
+
+      <!-- 手持设备：卡片列表 -->
+      <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="item in cardRows"
+          :key="item.id"
+          :title="item.title"
+          :subtitle="item.subtitle"
+          :tags="item.tags"
+          :metrics="item.metrics"
+          :note="`风险提示：${item.risks}`"
+          :note-danger="item.risksDanger"
+          :actions="item.actions"
+        >
+          <div class="tp-card__meta">{{ item.meta }}</div>
+        </MobileCard>
+        <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无数据</div>
+      </div>
     </ElCard>
 
     <!-- 录入/编辑弹窗 -->
@@ -325,9 +343,18 @@
   import { loadTrainingPlansCloud, syncTrainingPlansCloud } from '@/api/yimai'
   import { USE_BACKEND } from '@/api/backend'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiTraining' })
+
+  // 手持设备上用卡片列表代替宽表格（操作列固定 200px，手机上会吃掉大半屏）
+  const { isHandheld } = useDevice()
 
   const route = useRoute()
   const trainingStore = useTrainingStore()
@@ -579,6 +606,52 @@
     return 'success'
   }
 
+  // ---------- 移动端卡片 ----------
+  //
+  // 桌面表格的操作列固定 200px（手机可见区仅 310px），所以窄屏换卡片。
+  // 动作顺序照抄操作列，保证「查看 + 当前状态该做的那件事」落在直接可见的两个按钮里。
+  function planCardActions(row: TrainingPlan): MobileCardAction[] {
+    const actions: MobileCardAction[] = [
+      { text: '查看', type: 'primary', onClick: () => openDetail(row) }
+    ]
+    if (row.status === '待生成') {
+      actions.push({ text: '继续录入', type: 'warning', onClick: () => openEdit(row) })
+    } else if (row.status === '待老师确认') {
+      actions.push({ text: '确认计划', type: 'success', onClick: () => confirm(row) })
+    } else if (row.status === '已确认') {
+      actions.push({ text: '分享/图片', type: 'primary', onClick: () => openDetail(row) })
+    }
+    actions.push({ text: '删除', type: 'danger', onClick: () => removePlan(row) })
+    return actions
+  }
+
+  const cardRows = computed(() =>
+    plans.value.map((row) => {
+      const tags: MobileCardTag[] = [
+        { text: row.status, type: statusType(row.status), effect: 'dark' }
+      ]
+      if (row.status !== '待生成') {
+        tags.push({ text: row.source === 'llm' ? 'AI' : '模板', effect: 'plain' })
+      }
+      tags.push({ text: `${row.stageWeeks}周`, effect: 'plain' })
+
+      const metrics: MobileCardMetric[] = [{ label: '频率', value: row.freq || '—' }]
+
+      return {
+        id: row.id,
+        title: row.memberName,
+        subtitle: row.coreGoal,
+        tags,
+        metrics,
+        // 高风险提示标红，与表格同一判据
+        risks: row.risks || '无',
+        risksDanger: detectHighRisk(row.risks),
+        meta: `${row.createdBy}${row.createdAt ? ` · ${row.createdAt}` : ''}`,
+        actions: planCardActions(row)
+      }
+    })
+  )
+
   // ---------- 图片上传（压缩为dataURL） ----------
   function compressImage(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -645,8 +718,8 @@
   .form-section {
     padding: 12px 14px 2px;
     margin-bottom: 12px;
-    border-radius: 10px;
     background: var(--el-fill-color-lighter);
+    border-radius: 10px;
   }
 
   .section-title {
@@ -662,5 +735,12 @@
     overflow-y: auto;
     background: var(--el-fill-color-light);
     border-radius: 8px;
+  }
+
+  // 移动端卡片底部的「创建人 · 时间」
+  .tp-card__meta {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--art-gray-500);
   }
 </style>

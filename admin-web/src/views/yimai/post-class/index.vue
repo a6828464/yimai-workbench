@@ -70,9 +70,9 @@
             <span class="text-xs text-gray-400">{{ sourceHint }}</span>
           </div>
 
-          <!-- ① 上过课：待填写课后分析 -->
+          <!-- ① 上过课：待填写课后分析（手持设备换成下方卡片列表） -->
           <ElTable
-            v-if="sourceTab === 'class'"
+            v-if="!isHandheld && sourceTab === 'class'"
             :data="filteredCandidates"
             v-loading="loading"
             size="default"
@@ -137,7 +137,7 @@
 
           <!-- ② 留资管理里分配给他的 -->
           <ElTable
-            v-else-if="sourceTab === 'lead'"
+            v-else-if="!isHandheld && sourceTab === 'lead'"
             :data="myLeads"
             v-loading="loading"
             size="default"
@@ -179,7 +179,7 @@
           </ElTable>
 
           <!-- ③ 约课系统里会籍顾问归属他的会员 -->
-          <ElTable v-else :data="myMembers" v-loading="loading" size="default">
+          <ElTable v-else-if="!isHandheld" :data="myMembers" v-loading="loading" size="default">
             <ElTableColumn prop="studentName" label="会员" width="120" />
             <ElTableColumn label="手机号" width="120">
               <template #default="{ row }">
@@ -206,8 +206,32 @@
               </template>
             </ElTableColumn>
           </ElTable>
+
+          <!-- 手持设备：三类来源共用一张卡片列表（905px 宽的表格在手机上只剩 278px 可见，
+               横滑也只能看到左右固定列），空态文案沿用 sourceEmptyText -->
+          <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+            <MobileCard
+              v-for="item in pendingCardRows"
+              :key="item.id"
+              :title="item.title"
+              :subtitle="item.subtitle"
+              :tags="item.tags"
+              :metrics="item.metrics"
+              :note="item.note?.text"
+              :note-label="item.note?.label"
+              :note-danger="item.note?.danger"
+              :actions="item.actions"
+            >
+              <div v-if="item.hint" class="pc-card__hint">{{ item.hint }}</div>
+            </MobileCard>
+            <div v-if="!loading && currentSourceEmpty" class="m-card-list__empty">
+              {{ sourceEmptyText }}
+            </div>
+          </div>
+
+          <!-- 卡片列表自带空态，ElEmpty 只在桌面端出现，避免两处重复提示 -->
           <ElEmpty
-            v-if="!loading && currentSourceEmpty"
+            v-if="!isHandheld && !loading && currentSourceEmpty"
             :description="sourceEmptyText"
             :image-size="70"
           />
@@ -249,7 +273,7 @@
             <ElCheckbox v-model="filter.onlyRedFlag" label="只看红线" @change="loadReviews" />
           </div>
 
-          <ElTable :data="reviews" v-loading="loading" size="default">
+          <ElTable v-if="!isHandheld" :data="reviews" v-loading="loading" size="default">
             <ElTableColumn prop="classAt" label="上课时间" width="150" />
             <ElTableColumn prop="studentName" label="学员" width="100" />
             <ElTableColumn prop="studentType" label="类型" width="90" />
@@ -306,8 +330,27 @@
               </template>
             </ElTableColumn>
           </ElTable>
+
+          <!-- 手持设备：卡片列表。主操作「查看」排在最前，保证它落在直接可见的两个按钮里 -->
+          <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+            <MobileCard
+              v-for="item in reviewCardRows"
+              :key="item.id"
+              :title="item.title"
+              :subtitle="item.subtitle"
+              :tags="item.tags"
+              :metrics="item.metrics"
+              :note="item.note?.text"
+              :note-label="item.note?.label"
+              :note-danger="item.note?.danger"
+              :actions="item.actions"
+            />
+            <div v-if="!loading && !reviewCardRows.length" class="m-card-list__empty">暂无数据</div>
+          </div>
+
+          <!-- 卡片列表自带空态，ElEmpty 只在桌面端出现，避免两处重复提示 -->
           <ElEmpty
-            v-if="!loading && !reviews.length"
+            v-if="!isHandheld && !loading && !reviews.length"
             description="还没有课后分析记录"
             :image-size="70"
           />
@@ -418,8 +461,17 @@
   } from '@/api/yimai'
   import type { PostClassCatalog, PostClassCandidate, PostClassReviewRow } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiPostClass' })
+
+  // 手持设备上用卡片列表代替宽表格，明细见下方 pendingCardRows / reviewCardRows
+  const { isHandheld } = useDevice()
 
   // 服务老师（会籍顾问）对本页只读：看自己名下会员的课后分析与顾问衔接，填写由授课老师完成
   const userStore = useUserStore()
@@ -590,6 +642,195 @@
     }
   }
 
+  // ---------- 手持设备卡片 ----------
+  //
+  // 卡片不是「把表格横过来」：每个列表只留「谁、什么时候、该点哪个按钮」，
+  // 权限判断、状态色、操作函数全部沿用表格里的口径，卡片只是另一种呈现。
+  // 判定阈值见 src/config/breakpoints.ts。
+
+  /** 四个列表（三类待填写 + 已填写）共用同一套卡片字段 */
+  interface PostClassCardRow {
+    id: string
+    title: string
+    subtitle: string
+    tags: MobileCardTag[]
+    metrics: MobileCardMetric[]
+    note: { text: string; label: string; danger: boolean } | null
+    /** 只读角色（服务老师）看不到操作按钮时的一句话说明，等价于表格里的「待老师填写」 */
+    hint: string
+    actions: MobileCardAction[]
+  }
+
+  /** 候选记录没有统一主键（三类来源各有各的业务 id），按可用字段拼一个稳定的列表 key */
+  function candidateKey(row: PostClassCandidate, index: number): string {
+    if (row.bookingId) return `booking-${row.bookingId}`
+    if (row.leadId) return `lead-${row.leadId}`
+    if (row.customerId) return `customer-${row.customerId}`
+    return `row-${index}`
+  }
+
+  const writeAction = (row: PostClassCandidate): MobileCardAction => ({
+    text: '填写分析',
+    type: 'primary',
+    show: canWrite.value,
+    onClick: () => openWizard(row)
+  })
+
+  const writeHint = computed(() => (canWrite.value ? '' : '待老师填写'))
+
+  /** 待填写 · 上过课：老师按「哪天上了什么课」找人，所以时间与课程放副标题 */
+  function candidateCard(row: PostClassCandidate, index: number): PostClassCardRow {
+    const tags: MobileCardTag[] = []
+    if (row.isTrial) {
+      tags.push({ text: '体验课', type: 'warning', effect: 'dark' })
+    } else if (row.kind) {
+      tags.push({ text: row.kind, type: row.kind === '私教' ? 'danger' : 'info', effect: 'plain' })
+    }
+    if (row.personType === 'member') {
+      tags.push({ text: '老会员', type: 'success', effect: 'plain' })
+    } else if (row.personType === 'lead') {
+      tags.push({ text: '新建客资', type: 'warning', effect: 'plain' })
+    } else {
+      tags.push({ text: '未建档', type: 'info', effect: 'plain' })
+    }
+    if (row.teacherName) tags.push({ text: row.teacherName, effect: 'plain' })
+
+    const metrics: MobileCardMetric[] = []
+    if (row.memberRemain !== null && row.memberRemain !== undefined) {
+      metrics.push({ label: '剩余课时', value: row.memberRemain, unit: '节' })
+    }
+
+    // 表格「来源」标签后跟的那句灰色小字：老会员给主卡名，客资给留资状态
+    let note: PostClassCardRow['note'] = null
+    if (row.memberCard) note = { label: '会员卡', text: row.memberCard, danger: false }
+    else if (row.leadStatus) note = { label: '留资状态', text: row.leadStatus, danger: false }
+
+    return {
+      id: candidateKey(row, index),
+      title: row.studentName,
+      subtitle: [[row.date, row.time].filter(Boolean).join(' '), row.courseName || '—']
+        .filter(Boolean)
+        .join(' · '),
+      tags,
+      metrics,
+      note,
+      hint: writeHint.value,
+      actions: [writeAction(row)]
+    }
+  }
+
+  /** 待填写 · 我的留资：还没有课次，重点是身份、状态与需求 */
+  function leadCandidateCard(row: PostClassCandidate, index: number): PostClassCardRow {
+    const tags: MobileCardTag[] = [
+      {
+        text: row.leadStatus ?? '',
+        type:
+          row.leadStatus === '已成交'
+            ? 'success'
+            : row.leadStatus === '新留资'
+              ? 'danger'
+              : 'primary',
+        effect: 'dark'
+      }
+    ]
+    if (row.leadSource) tags.push({ text: row.leadSource, effect: 'plain' })
+    if (row.venue) tags.push({ text: row.venue, effect: 'plain' })
+
+    return {
+      id: candidateKey(row, index),
+      title: row.studentName,
+      subtitle: `手机号 ${row.phone || '—'}${row.leadDate ? ` · 留资 ${row.leadDate}` : ''}`,
+      tags,
+      metrics: [],
+      note: row.demand ? { label: '需求', text: row.demand, danger: false } : null,
+      hint: writeHint.value,
+      actions: [writeAction(row)]
+    }
+  }
+
+  /** 待填写 · 我的会员：主卡与剩余节数是老师当场要看的两个信息 */
+  function memberCandidateCard(row: PostClassCandidate, index: number): PostClassCardRow {
+    const tags: MobileCardTag[] = []
+    if (row.venue) tags.push({ text: row.venue, effect: 'plain' })
+    tags.push(
+      row.hasReview
+        ? { text: '已填写', type: 'success', effect: 'plain' }
+        : { text: '未填写', type: 'info', effect: 'plain' }
+    )
+
+    const remain = row.remainTimes ?? null
+
+    return {
+      id: candidateKey(row, index),
+      title: row.studentName,
+      subtitle: `手机号 ${row.phone || '—'}`,
+      tags,
+      metrics: [{ label: '剩余节数', value: remain ?? '—', unit: remain === null ? '' : '节' }],
+      note: row.mainCard ? { label: '主卡', text: row.mainCard, danger: false } : null,
+      hint: writeHint.value,
+      actions: [writeAction(row)]
+    }
+  }
+
+  /** 已填写：复盘时最关心「有没有红线、成交归因、对客页有没有人看」 */
+  function reviewCard(row: PostClassReviewRow): PostClassCardRow {
+    const tags: MobileCardTag[] = [
+      row.redFlag
+        ? { text: '红线 · 不建议排课', type: 'danger', effect: 'dark' }
+        : { text: row.status, type: row.status === '已确认' ? 'success' : 'info', effect: 'plain' }
+    ]
+    if (row.studentType) tags.push({ text: row.studentType, effect: 'plain' })
+    if (row.teacherName) tags.push({ text: row.teacherName, effect: 'plain' })
+
+    const shareEnabled = Boolean(row.share?.enabled)
+
+    return {
+      id: `review-${row.id}`,
+      title: row.studentName,
+      subtitle: row.classAt || '—',
+      tags,
+      metrics: [
+        {
+          label: '成交归因',
+          value: row.leadStatus === '已成交' ? `¥${row.dealAmount}` : row.leadStatus || '—'
+        },
+        {
+          label: '对客页',
+          value: shareEnabled ? (row.share?.views ?? 0) : '未开启',
+          unit: shareEnabled ? '次' : ''
+        }
+      ],
+      note: null,
+      hint: '',
+      // 「查看」是唯一的通用操作，排最前才不会被收进「更多」
+      actions: [
+        { text: '查看', type: 'primary', onClick: () => viewDetail(row) },
+        {
+          text: '对客页',
+          type: 'success',
+          show: !row.redFlag && shareEnabled,
+          onClick: () => openSharePage(row)
+        },
+        {
+          text: '转计划',
+          type: 'warning',
+          show: canWrite.value && !row.redFlag && row.status === '已确认',
+          onClick: () => toTrainingPlan(row)
+        },
+        { text: '删除', type: 'danger', onClick: () => removeReview(row) }
+      ]
+    }
+  }
+
+  /** 预计算一次，避免模板里对每行重复调用多个函数 */
+  const pendingCardRows = computed<PostClassCardRow[]>(() => {
+    if (sourceTab.value === 'class') return filteredCandidates.value.map(candidateCard)
+    if (sourceTab.value === 'lead') return myLeads.value.map(leadCandidateCard)
+    return myMembers.value.map(memberCandidateCard)
+  })
+
+  const reviewCardRows = computed<PostClassCardRow[]>(() => reviews.value.map(reviewCard))
+
   watch(tab, (v) => {
     if (v === 'pending') loadCandidates()
     else loadReviews()
@@ -637,5 +878,12 @@
     &.muted {
       color: var(--el-text-color-secondary);
     }
+  }
+
+  // 移动端卡片里「只读角色没有操作按钮」的说明行
+  .pc-card__hint {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--art-gray-500);
   }
 </style>

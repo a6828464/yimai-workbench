@@ -7,6 +7,9 @@
 // Element Plus 样式优化
 @use './core/el-ui.scss';
 
+// 移动端通用样式（卡片列表、触控兜底）
+@use './core/mobile.scss';
+
 // Element Plus 暗黑主题
 @use './core/el-dark.scss';
 

@@ -57,7 +57,28 @@
     </div>
 
     <!-- 完整模式（客户经营 → 今日待办）：分组列表 + 逐项操作 -->
-    <ElTabs v-else v-model="activeTab">
+    <!-- 手持设备：8 个分组用横向滚动的 chip。ElTabs 在窄屏会退化成左右滚动箭头，只剩 2~3 个可见 -->
+    <div v-if="variant !== 'summary' && isHandheld" class="todo-tabbar">
+      <button
+        v-for="tab in visibleTabs"
+        :key="tab.key"
+        type="button"
+        class="todo-tabbar__item"
+        :class="{ 'is-active': activeTab === tab.key }"
+        @click="activeTab = tab.key"
+      >
+        {{ tab.label }}
+        <span v-if="pendingCounts[tab.key]" class="todo-tabbar__badge">{{
+          pendingCounts[tab.key]
+        }}</span>
+      </button>
+    </div>
+
+    <ElTabs
+      v-if="variant !== 'summary'"
+      v-model="activeTab"
+      :class="{ 'todo-tabs--mobile': isHandheld }"
+    >
       <ElTabPane v-for="tab in visibleTabs" :key="tab.key" :name="tab.key">
         <template #label>
           <ElBadge
@@ -492,6 +513,7 @@
     type MemberRules
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
   import { ElMessage } from 'element-plus'
   import TodoActions from './todo-actions.vue'
 
@@ -538,6 +560,9 @@
   const loading = ref(true)
   const todo = ref<TodayTodo | null>(null)
   const activeTab = ref<TabKey>('bookings')
+
+  // 手持设备上分组切换改用横向滚动 chip（ElTabs 在窄屏只剩 2~3 个可见）
+  const { isHandheld } = useDevice()
   const visibleCount = 8
   const expanded = reactive<Record<string, boolean>>({})
   const showDone = reactive<Record<string, boolean>>({})
@@ -876,6 +901,83 @@
 
     &:last-of-type {
       border-bottom: 0;
+    }
+  }
+
+  // 手持设备上的分组切换条：横向滚动，避免 8 个分组溢出
+  .todo-tabbar {
+    display: flex;
+    gap: 8px;
+    padding-bottom: 10px;
+    margin-bottom: 4px;
+    overflow-x: auto;
+    // 横向滚动时不要让页面跟着左右晃
+    overscroll-behavior-x: contain;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
+
+    &__item {
+      display: inline-flex;
+      flex: none;
+      gap: 4px;
+      align-items: center;
+      min-height: $touch-target-min;
+      padding: 0 14px;
+      font-size: 14px;
+      color: var(--el-text-color-regular);
+      white-space: nowrap;
+      cursor: pointer;
+      background: var(--el-fill-color-light);
+      border: 1px solid transparent;
+      border-radius: 22px;
+
+      &.is-active {
+        font-weight: 600;
+        color: var(--el-color-primary);
+        background: var(--el-color-primary-light-9);
+        border-color: var(--el-color-primary);
+      }
+    }
+
+    &__badge {
+      min-width: 18px;
+      padding: 0 5px;
+      font-size: 11px;
+      line-height: 18px;
+      color: #fff;
+      text-align: center;
+      background: var(--el-color-danger);
+      border-radius: 9px;
+    }
+  }
+
+  // 手机端把 ElTabs 的头藏掉（改成上面的 chip 条），只保留内容区
+  .todo-tabs--mobile {
+    :deep(.el-tabs__header) {
+      display: none;
+    }
+  }
+
+  @include mobile-only {
+    // 名称块占满整行，状态标签与「处理」按钮换到第二行右对齐，
+    // 避免名字被右侧控件挤到只剩几十像素
+    .todo-item {
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      align-items: flex-start;
+
+      > .min-w-0 {
+        flex: 1 1 100%;
+      }
+
+      > :deep(.el-tag),
+      > :deep(.el-dropdown) {
+        margin-left: auto;
+      }
     }
   }
 </style>

@@ -1,3 +1,6 @@
+// 断点变量与 mixin（partial 不会继承 vite additionalData 的注入，必须显式 @use）
+@use '@styles/core/breakpoint.scss' as *;
+
 .layout-sidebar {
   display: flex;
   height: 100vh;
@@ -186,7 +189,7 @@
   }
 }
 
-@media only screen and (width <= 800px) {
+@include respond-below($bp-handheld) {
   .layout-sidebar {
     width: 0;
 
@@ -230,7 +233,7 @@
   }
 }
 
-@media only screen and (width <= 640px) {
+@include mobile-only {
   .layout-sidebar {
     border-right: 0 !important;
   }
