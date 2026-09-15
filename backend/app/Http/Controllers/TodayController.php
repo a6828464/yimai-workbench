@@ -214,23 +214,38 @@ final class TodayController extends Controller
                     }
                 });
             }, fn ($q) => $q->where('service_teacher', $u->name))
-            ->get(['id', 'status', 'deal_at', 'deal_amount', 'lead_date', 'service_teacher']);
+            // phone / name 必须一起取：身份键要靠它们，漏取会让所有人塌成同一个 key
+            ->get(['id', 'phone', 'name', 'status', 'deal_at', 'deal_amount', 'lead_date', 'service_teacher']);
 
         // 到店/成交与全店口径保持一致：按人去重（同一人来多次算一个人），
         // 成交只统计「到店体验过的人」里的成交，分子分母同源。
-        $identity = fn ($l) => preg_replace('/\D+/', '', (string) $l->phone) ?: 'n:'.$l->name;
-        $visitIdentities = $leadRows->whereIn('status', ['已体验', '已成交'])
-            ->map($identity)->filter()->unique()->values();
-        $visitCount = $visitIdentities->count();
-        $dealIdentities = $leadRows->filter(fn ($l) => $l->status === '已成交'
-                && $l->deal_at && $l->deal_at->between($start, $end))
-            ->map($identity)->filter()->unique();
-        $dealIdentities = $dealIdentities->intersect($visitIdentities);
-        $dealCount = $dealIdentities->count();
-        $dealAmount = (float) $leadRows->filter(fn ($l) => $l->status === '已成交'
-                && $l->deal_at && $l->deal_at->between($start, $end)
-                && in_array($identity($l), $dealIdentities->all(), true))
-            ->sum(fn ($l) => (float) $l->deal_amount);
+        //
+        // 这里刻意用纯数组而不是集合：$leadRows 是 Eloquent 集合，
+        // 其 intersect()/unique() 走 Eloquent 版 getDictionary()，会对字符串元素调 getKey() 直接报错。
+        $identity = fn ($l) => preg_replace('/\D+/', '', (string) $l->phone) ?: 'n:'.(string) $l->name;
+        $visitSet = [];
+        foreach ($leadRows as $l) {
+            if (in_array($l->status, ['已体验', '已成交'], true)) {
+                $visitSet[$identity($l)] = true;
+            }
+        }
+        $visitCount = count($visitSet);
+
+        $dealSet = [];
+        $dealAmount = 0.0;
+        foreach ($leadRows as $l) {
+            if ($l->status !== '已成交' || ! $l->deal_at || ! $l->deal_at->between($start, $end)) {
+                continue;
+            }
+            $key = $identity($l);
+            // 分子分母同源：只有到店体验过的人才计入成交
+            if (! isset($visitSet[$key])) {
+                continue;
+            }
+            $dealSet[$key] = true;
+            $dealAmount += (float) $l->deal_amount;
+        }
+        $dealCount = count($dealSet);
         $leadCount = $leadRows->filter(fn ($l) => $l->lead_date
             && Carbon::parse($l->lead_date)->between($start, $end))->count();
 

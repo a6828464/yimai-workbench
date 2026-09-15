@@ -609,9 +609,11 @@
       .filter((g) => g.items.length > 0)
   )
 
+  // 应用用 hash 路由：分享路径必须写在 # 后面，否则会被当成未匹配路径跳到登录页
+  // （训练计划的分享链接也是同样写法：`${origin}${pathname}#/s/plan/${code}`）
   const shareUrl = computed(() =>
-    savedId.value && result.value && !result.value.red_flag
-      ? `${location.origin}/s/post-class/${shareCode.value}`
+    savedId.value && result.value && !result.value.red_flag && shareCode.value
+      ? `${window.location.origin}${window.location.pathname}#/s/post-class/${shareCode.value}`
       : ''
   )
   const shareCode = ref('')

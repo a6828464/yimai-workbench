@@ -530,6 +530,52 @@ class PostClassReviewTest extends TestCase
         $this->assertSame('Miyako', $found['memberName']);
     }
 
+    /**
+     * 前端整表提交不能把服务端生成（课后分析流转）的计划连带删掉。
+     *
+     * 旧实现是「删光本人全部 + 重建」，只要前端手里是一份较早的列表
+     * （训练计划页在另一个标签页开着、或本会话早先加载过），一次提交就会清掉刚生成的计划，
+     * 表现为「点了转训练计划，到训练计划里却找不到」。
+     */
+    public function test_bulk_save_keeps_server_created_plans(): void
+    {
+        $coach = $this->makeUser('R_TEACHER', '王教练', 'coach-wang');
+        Sanctum::actingAs($coach);
+
+        // ① 前端手里先有一份旧列表（此时还没有服务端生成的那份）
+        $this->putJson('/api/training-plans/bulk', ['plans' => [[
+            'id' => 1, 'memberName' => '旧计划', 'status' => '待老师确认',
+            'coreGoal' => '改善骨盆前倾', 'content' => ['summary' => 's', 'phases' => [], 'cautions' => []],
+        ]]])->assertOk();
+
+        // ② 服务端由课后分析生成一份新计划
+        $id = $this->postJson('/api/post-class-reviews', [
+            'scene' => 'trial', 'studentName' => '流转学员', 'studentType' => '体态调整',
+            'observations' => [['key' => 'round_shoulder', 'level' => '中']], 'venue' => '绿地店',
+        ])->assertOk()->json('data.id');
+        $this->postJson("/api/post-class-reviews/{$id}/confirm")->assertOk();
+        $planId = $this->postJson("/api/post-class-reviews/{$id}/to-plan")->assertOk()->json('data.planId');
+
+        // ③ 前端拿着「只有旧计划」的列表再提交一次（模拟另一个标签页/早先加载的状态）
+        $this->putJson('/api/training-plans/bulk', ['plans' => [[
+            'id' => 1, 'memberName' => '旧计划', 'status' => '待老师确认',
+            'coreGoal' => '改善骨盆前倾', 'content' => ['summary' => 's', 'phases' => [], 'cautions' => []],
+        ]]])->assertOk();
+
+        $this->assertDatabaseHas('training_plans', ['id' => $planId]);
+        $plan = TrainingPlan::find($planId);
+        $this->assertSame($id, $plan->source_review_id);   // 上游来源未被覆盖丢失
+
+        // 删除改为显式：空列表不再等于「全部删除」
+        $this->putJson('/api/training-plans/bulk', ['plans' => []])->assertOk();
+        $this->assertDatabaseHas('training_plans', ['id' => 1]);
+
+        // 显式指定 deletedIds 时才删
+        $this->putJson('/api/training-plans/bulk', ['plans' => [], 'deletedIds' => [1]])->assertOk();
+        $this->assertDatabaseMissing('training_plans', ['id' => 1]);
+        $this->assertDatabaseHas('training_plans', ['id' => $planId]);
+    }
+
     /** 红线记录不允许流转成训练计划 */
     public function test_red_flag_review_cannot_become_a_plan(): void
     {
@@ -584,6 +630,54 @@ class PostClassReviewTest extends TestCase
         // 客资状态：预约行没有手机号，靠「姓名 + 门店」也能匹配上留资，不再是空值
         $this->assertSame('已体验', $data['records'][0]['leadStatus']);
         $this->assertSame('13900002001', $data['records'][0]['phone']);
+    }
+
+    /**
+     * 来源渠道要能区分「老会员」与「新建客资」。
+     *
+     * 老会员在会员系统已建档、本来就没有留资记录；旧实现只看留资，
+     * 于是所有老会员都显示成「未建客资」，看起来像数据缺失。
+     */
+    public function test_candidates_distinguish_member_and_lead_channels(): void
+    {
+        // ① 老会员：会员系统有档案 + 上过私教课，没有任何留资
+        KyBooking::create([
+            'source_key' => '77:私教:3001', 'venue' => '绿地店', 'booking_type' => '私教',
+            'course_kind' => 'private', 'member_id' => '3001', 'member_name' => '老会员甲',
+            'phone' => '13900003001', 'start_at' => now()->subDay(), 'teacher_name' => '王教练',
+            'status' => 'signed', 'is_trial' => false,
+        ]);
+        Customer::create([
+            'name' => '老会员甲', 'phone' => '13900003001', 'venue' => '绿地店',
+            'external_id' => 'ky:77:3001', 'layer' => 'P2', 'consultant' => '李顾问',
+            'main_card' => '私教年卡', 'remain_times' => 7,
+        ]);
+
+        // ② 新建客资：只有留资，也上过课，但会员系统里没有档案
+        KyBooking::create([
+            'source_key' => '77:私教:3002', 'venue' => '绿地店', 'booking_type' => '私教',
+            'course_kind' => 'private', 'member_id' => '3002', 'member_name' => '新客乙',
+            'phone' => '13900003002', 'start_at' => now()->subDay(), 'teacher_name' => '王教练',
+            'status' => 'signed', 'is_trial' => true,
+        ]);
+        Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '新客乙', 'phone' => '13900003002',
+            'source' => '美团', 'venue' => '绿地店', 'service_teacher' => '王教练', 'status' => '已体验',
+        ]);
+
+        Sanctum::actingAs($this->makeUser('R_TEACHER', '王教练', 'coach-wang'));
+        $rows = collect(
+            $this->getJson('/api/post-class-reviews/candidates?days=7')->assertOk()->json('data.records')
+        )->keyBy('studentName');
+
+        // 老会员：来源=会员系统，带主卡与剩余节数；没有留资也不算「未建档」
+        $this->assertSame('member', $rows['老会员甲']['personType']);
+        $this->assertSame('私教年卡', $rows['老会员甲']['memberCard']);
+        $this->assertSame(7, $rows['老会员甲']['memberRemain']);
+
+        // 新建客资：来源=留资管理
+        $this->assertSame('lead', $rows['新客乙']['personType']);
+        $this->assertNull($rows['新客乙']['memberCard'] ?: null);
     }
 
     public function test_today_todo_exposes_pending_reviews_for_coach_only(): void

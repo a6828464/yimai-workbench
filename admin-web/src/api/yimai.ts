@@ -2061,6 +2061,15 @@ export interface PostClassPlanResult {
 export interface PostClassCandidate {
   /** class=上过课 / lead=分配给他的留资 / member=会籍归属他的会员 */
   source: 'class' | 'lead' | 'member'
+  /**
+   * 来源渠道：
+   *  member=老会员（会员系统已建档）／lead=新建客资（只有留资）／none=未建档。
+   *  老会员本来就没有留资记录，不能因为查不到留资就当成「数据缺失」。
+   */
+  personType?: 'member' | 'lead' | 'none'
+  /** 老会员的主卡与剩余节数 */
+  memberCard?: string
+  memberRemain?: number | null
   bookingId?: number
   classAt?: string
   date?: string
@@ -2330,9 +2339,24 @@ export async function loadTrainingPlansCloud(): Promise<Record<string, unknown>[
   return apiGet<Record<string, unknown>[]>('/training-plans')
 }
 
-export async function syncTrainingPlansCloud(plans: unknown[]): Promise<void> {
-  if (!USE_BACKEND) return
-  await apiPut('/training-plans/bulk', { plans })
+/**
+ * 提交本人在训练计划上的改动（逐条 upsert + 显式删除）。
+ *
+ * - 只传发生变化的行，不再整表提交：服务端也会创建计划（课后分析流转），
+ *   整表提交会把服务端刚写入的那份覆盖掉；
+ * - 删除必须显式列出，不能靠「不在提交列表里」推断；
+ * - 返回 clientId → serverId 映射：新建计划的本地 id 与服务端主键可能不同
+ *   （id 是全局主键，跨账号会撞车），调用方据此校正本地 id。
+ */
+export async function syncTrainingPlansCloud(
+  plans: unknown[],
+  deletedIds: number[] = []
+): Promise<{ saved: number; ids: { clientId: number; serverId: number }[] }> {
+  if (!USE_BACKEND) return { saved: 0, ids: [] }
+  return apiPut<{ saved: number; ids: { clientId: number; serverId: number }[] }>(
+    '/training-plans/bulk',
+    { plans, deletedIds }
+  )
 }
 
 /** 发布对外分享快照（H5 跨设备访问） */

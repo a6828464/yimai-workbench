@@ -73,6 +73,63 @@
           </template>
         </ElTableColumn>
         <ElTableColumn prop="demand" label="需求/痛点" min-width="110" show-overflow-tooltip />
+        <ElTableColumn label="会籍顾问" width="95">
+          <template #default="{ row }">
+            <span v-if="row.serviceTeacher">{{ row.serviceTeacher }}</span>
+            <ElTag v-else size="small" type="danger">待分配</ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="上课老师" width="95">
+          <template #default="{ row }">
+            <span v-if="row.trialTeacher">{{ row.trialTeacher }}</span>
+            <span v-else class="text-gray-300">—</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="核销金额" width="90" align="right">
+          <template #default="{ row }">
+            <span
+              v-if="row.redeemAmount !== null && row.redeemAmount !== undefined"
+              class="font-500 text-orange-600"
+              >¥{{ row.redeemAmount }}</span
+            >
+            <span v-else class="text-gray-300">—</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="成交金额" width="100" align="right">
+          <template #default="{ row }">
+            <span
+              v-if="row.dealAmount !== null && row.dealAmount !== undefined"
+              class="font-600 text-green-700"
+              >¥{{ row.dealAmount.toLocaleString() }}</span
+            >
+            <span v-else class="text-gray-300">—</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn prop="status" label="状态" width="90">
+          <template #default="{ row }">
+            <ElTag size="small" :type="statusType(row.status)">{{ row.status }}</ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="备注" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.remark">{{ row.remark }}</span>
+            <span v-else class="text-gray-300">—</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="跟进时限" width="170">
+          <template #default="{ row }">
+            <div v-if="firstTrialTime(row)" class="followup-cell">
+              <span :class="deadlineClass(row, 7)">首跟{{ plusDays(firstTrialTime(row), 7) }}</span>
+              <span :class="deadlineClass(row, 15)"
+                >二跟{{ plusDays(firstTrialTime(row), 15) }}</span
+              >
+              <span :class="deadlineClass(row, 30)"
+                >三跟{{ plusDays(firstTrialTime(row), 30) }}</span
+              >
+            </div>
+            <div v-else class="followup-cell text-gray-300">—</div>
+          </template>
+        </ElTableColumn>
         <ElTableColumn prop="source" label="来源" width="100" />
         <ElTableColumn label="下单平台" width="95">
           <template #default="{ row }">
@@ -118,57 +175,6 @@
         <ElTableColumn prop="venue" label="门店" width="85">
           <template #default="{ row }">
             <ElTag size="small" effect="plain">{{ row.venue }}</ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="会籍顾问" width="95">
-          <template #default="{ row }">
-            <span v-if="row.serviceTeacher">{{ row.serviceTeacher }}</span>
-            <ElTag v-else size="small" type="danger">待分配</ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="上课老师" width="95">
-          <template #default="{ row }">
-            <span v-if="row.trialTeacher">{{ row.trialTeacher }}</span>
-            <span v-else class="text-gray-300">—</span>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="核销金额" width="90" align="right">
-          <template #default="{ row }">
-            <span
-              v-if="row.redeemAmount !== null && row.redeemAmount !== undefined"
-              class="font-500 text-orange-600"
-              >¥{{ row.redeemAmount }}</span
-            >
-            <span v-else class="text-gray-300">—</span>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="成交金额" width="100" align="right">
-          <template #default="{ row }">
-            <span
-              v-if="row.dealAmount !== null && row.dealAmount !== undefined"
-              class="font-600 text-green-700"
-              >¥{{ row.dealAmount.toLocaleString() }}</span
-            >
-            <span v-else class="text-gray-300">—</span>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn prop="status" label="状态" width="90">
-          <template #default="{ row }">
-            <ElTag size="small" :type="statusType(row.status)">{{ row.status }}</ElTag>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn label="跟进时限" width="170">
-          <template #default="{ row }">
-            <div v-if="firstTrialTime(row)" class="followup-cell">
-              <span :class="deadlineClass(row, 7)">首跟{{ plusDays(firstTrialTime(row), 7) }}</span>
-              <span :class="deadlineClass(row, 15)"
-                >二跟{{ plusDays(firstTrialTime(row), 15) }}</span
-              >
-              <span :class="deadlineClass(row, 30)"
-                >三跟{{ plusDays(firstTrialTime(row), 30) }}</span
-              >
-            </div>
-            <div v-else class="followup-cell text-gray-300">—</div>
           </template>
         </ElTableColumn>
         <ElTableColumn prop="createdBy" label="录入人" width="80" />

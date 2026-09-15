@@ -116,6 +116,12 @@ function emptyState(): TrainingState {
 export const useTrainingStore = defineStore('trainingStore', () => {
   const state = ref<TrainingState>(emptyState())
   const loadedUserId = ref('')
+  /** 待删除的计划 id（本地 id）：提交时显式带给后端，避免用「不在提交列表里」推断删除 */
+  const pendingDeletes = ref<number[]>([])
+  /** 服务端已知状态：serverId → 内容指纹。用于只提交发生变化的行 */
+  const baseline = ref<Record<string, string>>({})
+  /** 本地 id → 服务端 id：新建计划服务端可能另分配主键（id 是全局主键，跨账号会撞） */
+  const serverIdMap = ref<Record<string, number>>({})
 
   function storageKey(userId: string): string {
     return `${STORAGE_PREFIX}${encodeURIComponent(userId)}`
@@ -124,6 +130,9 @@ export const useTrainingStore = defineStore('trainingStore', () => {
   function reset() {
     loadedUserId.value = ''
     state.value = emptyState()
+    pendingDeletes.value = []
+    baseline.value = {}
+    serverIdMap.value = {}
   }
 
   function loadForUser(userId: string | number) {
@@ -153,6 +162,51 @@ export const useTrainingStore = defineStore('trainingStore', () => {
   function replacePlans(plans: TrainingPlan[]) {
     state.value.plans = plans
     state.value.nextId = Math.max(99, ...plans.map((p) => Number(p.id ?? 0))) + 1
+    serverIdMap.value = {}
+    baseline.value = Object.fromEntries(plans.map((p) => [String(p.id), fingerprint(p)]))
+  }
+
+  /** 内容指纹：不含 id（新建计划的本地 id 与服务端主键可能不同） */
+  function fingerprint(plan: TrainingPlan): string {
+    const rest: Record<string, unknown> = { ...(plan as unknown as Record<string, unknown>) }
+    delete rest.id
+    return JSON.stringify(rest)
+  }
+
+  function serverIdOf(localId: number): number {
+    return serverIdMap.value[localId] ?? localId
+  }
+
+  /**
+   * 只挑出发生变化的行：新增（基线里没有）或内容变了。
+   *
+   * 关键点：不再提交整表。以前整表提交 + 服务端整表替换，任何一份较早的客户端列表
+   * 都能把服务端刚写入的计划（如课后分析流转生成的那份）覆盖掉。
+   */
+  function pendingChanges(): { plans: TrainingPlan[]; deletedIds: number[] } {
+    const changed = state.value.plans.filter((p) => {
+      const sid = String(serverIdOf(p.id))
+      return baseline.value[sid] === undefined || baseline.value[sid] !== fingerprint(p)
+    })
+    // 删除同样按显式列表；没同步过的新增行直接本地丢掉即可，不必往返服务端
+    const deletedIds = pendingDeletes.value
+      .map((id) => serverIdOf(id))
+      .filter((sid) => baseline.value[String(sid)] !== undefined)
+
+    return { plans: changed, deletedIds }
+  }
+
+  /** 提交成功：记录新基线，并在服务端另分配主键时校正本地映射 */
+  function applySyncResult(ids: { clientId: number; serverId: number }[] = []): void {
+    ids.forEach(({ clientId, serverId }) => {
+      if (clientId > 0 && serverId > 0 && clientId !== serverId) {
+        serverIdMap.value[clientId] = serverId
+      }
+    })
+    baseline.value = Object.fromEntries(
+      state.value.plans.map((p) => [String(serverIdOf(p.id)), fingerprint(p)])
+    )
+    pendingDeletes.value = []
   }
 
   watch(
@@ -285,12 +339,22 @@ export const useTrainingStore = defineStore('trainingStore', () => {
   function removePlan(id: number) {
     const p = state.value.plans.find((x) => x.id === id)
     state.value.plans = state.value.plans.filter((x) => x.id !== id)
+    // 记录待删除 id：后端按显式列表删除，避免用「不在提交列表里」推断而误删服务端生成计划
+    if (id > 0 && !pendingDeletes.value.includes(id)) pendingDeletes.value.push(id)
     if (p) audit('修改', `训练计划 #${id} ${p.memberName}`, '删除计划草稿')
+  }
+
+  function clearPendingDeletes(): void {
+    pendingDeletes.value = []
   }
 
   return {
     state,
     loadedUserId,
+    pendingDeletes,
+    clearPendingDeletes,
+    pendingChanges,
+    applySyncResult,
     reset,
     loadForUser,
     replacePlans,

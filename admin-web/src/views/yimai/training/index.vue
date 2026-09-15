@@ -370,7 +370,11 @@
         if (trainingStore.loadedUserId !== userId) return
         syncing = true
         try {
-          await syncTrainingPlansCloud(JSON.parse(JSON.stringify(plans.value)))
+          const { plans: changed, deletedIds } = trainingStore.pendingChanges()
+          // 没有任何改动就不打扰服务端（另一个标签页的改动也不会被牵连）
+          if (!changed.length && !deletedIds.length) return
+          const res = await syncTrainingPlansCloud(JSON.parse(JSON.stringify(changed)), deletedIds)
+          trainingStore.applySyncResult(res.ids ?? [])
         } catch {
           /* 静默重试交给下一次变更 */
         } finally {

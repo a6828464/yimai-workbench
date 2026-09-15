@@ -166,7 +166,7 @@ final class PostClassReviewController extends Controller
                 $w->orWhereIn('name', $names);
             }
         });
-        foreach ($customerQ->get(['id', 'name', 'phone', 'venue']) as $c) {
+        foreach ($customerQ->get(['id', 'name', 'phone', 'venue', 'external_id', 'layer', 'main_card', 'remain_times']) as $c) {
             if ($normalize($c->phone) !== '') {
                 $customerIdx['p:'.$normalize($c->phone)] = $c;
             }
@@ -218,8 +218,16 @@ final class PostClassReviewController extends Controller
                 $phone = $normalize($c->phone ?? '') ?: $normalize($l->phone ?? '');
             }
 
+            // 来源渠道：老会员（会员系统已建档）／新建客资（只有留资）／未建档。
+            // 老会员本来就没有留资记录，不能因为查不到留资就显示成「未建客资」——
+            // 那是两个渠道，不是数据缺失。
+            $isMember = $c && ((string) $c->external_id !== '' || (string) $c->layer !== 'P5');
+
             return [
                 'source' => 'class',
+                'personType' => $isMember ? 'member' : ($l ? 'lead' : 'none'),
+                'memberCard' => $isMember ? (string) ($c->main_card ?? '') : '',
+                'memberRemain' => $isMember ? $c->remain_times : null,
                 'bookingId' => $b->id,
                 'classAt' => $b->start_at?->format('Y-m-d H:i'),
                 'date' => $b->start_at?->toDateString(),
@@ -251,6 +259,7 @@ final class PostClassReviewController extends Controller
             $p = $normalize($l->phone);
             $leads[] = [
                 'source' => 'lead',
+                'personType' => 'lead',
                 'leadId' => $l->id,
                 'customerId' => null,
                 'studentName' => (string) $l->name,
@@ -273,6 +282,9 @@ final class PostClassReviewController extends Controller
         foreach ($myCustomerQ->orderByDesc('id')->limit(200)->get() as $c) {
             $members[] = [
                 'source' => 'member',
+                'personType' => 'member',
+                'memberCard' => (string) $c->main_card,
+                'memberRemain' => $c->remain_times,
                 'customerId' => $c->id,
                 'leadId' => null,
                 'studentName' => (string) $c->name,

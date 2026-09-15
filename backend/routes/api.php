@@ -103,9 +103,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/accounts', [AccountController::class, 'store']);
     Route::patch('/accounts/{key}', [AccountController::class, 'update']);
 
-    // ---------- 训练计划（按人持久化，整表同步） ----------
+    // ---------- 训练计划（按人持久化，逐条读写） ----------
+    // 注意：/training-plans/bulk 必须注册在 /training-plans/{id} 之前，否则会被当作 id 捕获
     Route::get('/training-plans', [TrainingPlanController::class, 'index']);
+    Route::post('/training-plans', [TrainingPlanController::class, 'store']);
     Route::put('/training-plans/bulk', [TrainingPlanController::class, 'bulkSave']);
+    Route::put('/training-plans/{id}', [TrainingPlanController::class, 'update'])->whereNumber('id');
+    Route::delete('/training-plans/{id}', [TrainingPlanController::class, 'destroy'])->whereNumber('id');
 
     // ---------- 体测报告（门店智能魔镜报告解析与归档） ----------
     Route::post('/body-test-reports/parse', [BodyTestReportController::class, 'parse'])->middleware('throttle:30,1');

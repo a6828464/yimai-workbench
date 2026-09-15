@@ -56,6 +56,16 @@
                 <ElRadioButton :value="7">近 7 天</ElRadioButton>
                 <ElRadioButton :value="30">近 30 天</ElRadioButton>
               </ElRadioGroup>
+              <span class="text-xs text-gray-500">来源</span>
+              <ElRadioGroup v-model="personFilter" size="small">
+                <ElRadioButton value="all">全部</ElRadioButton>
+                <ElRadioButton value="member">
+                  老会员<span class="ml-1 text-xs">({{ memberCount }})</span>
+                </ElRadioButton>
+                <ElRadioButton value="lead">
+                  新建客资<span class="ml-1 text-xs">({{ leadCount }})</span>
+                </ElRadioButton>
+              </ElRadioGroup>
             </template>
             <span class="text-xs text-gray-400">{{ sourceHint }}</span>
           </div>
@@ -63,7 +73,7 @@
           <!-- ① 上过课：待填写课后分析 -->
           <ElTable
             v-if="sourceTab === 'class'"
-            :data="candidates"
+            :data="filteredCandidates"
             v-loading="loading"
             size="default"
           >
@@ -85,12 +95,34 @@
               </template>
             </ElTableColumn>
             <ElTableColumn prop="teacherName" label="老师" width="90" />
-            <ElTableColumn label="客资状态" width="110">
+            <ElTableColumn label="来源" min-width="150">
               <template #default="{ row }">
-                <ElTag v-if="row.leadStatus" size="small" effect="plain">{{
-                  row.leadStatus
-                }}</ElTag>
-                <span v-else class="text-xs text-gray-400">未建客资</span>
+                <ElTag
+                  v-if="row.personType === 'member'"
+                  size="small"
+                  type="success"
+                  effect="plain"
+                >
+                  老会员
+                </ElTag>
+                <ElTag
+                  v-else-if="row.personType === 'lead'"
+                  size="small"
+                  type="warning"
+                  effect="plain"
+                >
+                  新建客资
+                </ElTag>
+                <ElTag v-else size="small" type="info" effect="plain">未建档</ElTag>
+                <span v-if="row.personType === 'member'" class="ml-1 text-xs text-gray-500">
+                  {{ row.memberCard || '—' }}
+                  <span v-if="row.memberRemain !== null && row.memberRemain !== undefined">
+                    · 剩 {{ row.memberRemain }} 节
+                  </span>
+                </span>
+                <span v-else-if="row.leadStatus" class="ml-1 text-xs text-gray-500">
+                  {{ row.leadStatus }}
+                </span>
               </template>
             </ElTableColumn>
             <ElTableColumn label="操作" width="110" fixed="right">
@@ -410,8 +442,20 @@
     if (sourceTab.value === 'lead') return '留资管理里会籍顾问或体验课老师是本人的客资'
     return '约课系统里会籍顾问归属于本人的会员'
   })
+  /** 来源筛选：老会员来自会员系统，新建客资来自留资管理，两条渠道分开看 */
+  const personFilter = ref<'all' | 'member' | 'lead'>('all')
+  const memberCount = computed(
+    () => candidates.value.filter((x) => x.personType === 'member').length
+  )
+  const leadCount = computed(() => candidates.value.filter((x) => x.personType === 'lead').length)
+  const filteredCandidates = computed(() =>
+    personFilter.value === 'all'
+      ? candidates.value
+      : candidates.value.filter((x) => x.personType === personFilter.value)
+  )
+
   const currentSourceEmpty = computed(() => {
-    if (sourceTab.value === 'class') return candidates.value.length === 0
+    if (sourceTab.value === 'class') return filteredCandidates.value.length === 0
     if (sourceTab.value === 'lead') return myLeads.value.length === 0
     return myMembers.value.length === 0
   })
@@ -501,7 +545,10 @@
   function openSharePage(row: PostClassReviewRow) {
     const code = row.share?.code
     if (!code) return ElMessage.warning('该记录还没有分享码')
-    window.open(`${location.origin}/s/post-class/${code}`, '_blank')
+    window.open(
+      `${window.location.origin}${window.location.pathname}#/s/post-class/${code}`,
+      '_blank'
+    )
   }
 
   /** 把课后分析（含体测解读）流转成训练计划草稿，老师到训练计划页继续排课次 */
