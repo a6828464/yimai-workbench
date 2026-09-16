@@ -129,8 +129,10 @@ def delete_asset(rid, aid, label):
         return False
 
 
-def upload(rid, filename, label=None):
+def upload(rid, filename, label=None, as_name=None):
+    """把 filename 传到 release 上。as_name 用于重命名（Gitee 的附件名取自 multipart filename）。"""
     label = label or filename
+    name = as_name or filename
     path = os.path.join(PKG_DIR, filename)
     if not os.path.exists(path):
         warn(f"本地找不到 {path}，跳过 {label}")
@@ -141,7 +143,7 @@ def upload(rid, filename, label=None):
         return True
     for attempt in range(1, 6):
         try:
-            multipart(f"/repos/{REPO}/releases/{rid}/attach_files", filename, path)
+            multipart(f"/repos/{REPO}/releases/{rid}/attach_files", name, path)
             log(f"  ✓ {label}（{size / 1024 / 1024:.1f}MB）")
             return True
         except urllib.error.HTTPError as e:
@@ -270,17 +272,23 @@ def main():
             arid = None
         want_size = os.path.getsize(want) if os.path.exists(want) else -1
         current = {a.get("name"): (a.get("size") or 0, a["id"]) for a in list_assets(arid)} if arid else {}
+        # 历史/误传的版本化命名附件不该留在 auto-latest 上（固定名才是回退地址要的）
+        for nm, (_sz, aid) in list(current.items()):
+            if re.fullmatch(r"yimai-workbench(-installer)?-v\d+\.\d+\.\d+\.zip", nm):
+                delete_asset(arid, aid, f"auto-latest/{nm}（应改为固定名）")
+                current.pop(nm, None)
         if current.get(LATEST, (0, ""))[0] == want_size and want_size > 0:
             log(f"  auto-latest 已是 v{version} 的包（{want_size / 1024 / 1024:.1f}MB），跳过")
         else:
             for name in (LATEST, LATEST_INSTALLER):
                 if name in current:
                     delete_asset(arid, current[name][1], f"auto-latest/{name}（旧包，将被覆盖）")
-            upload(arid, f"yimai-workbench-v{version}.zip", f"{LATEST}（v{version}）")
+            upload(arid, f"yimai-workbench-v{version}.zip", f"{LATEST}（v{version}）", as_name=LATEST)
             upload(
                 arid,
                 f"yimai-workbench-installer-v{version}.zip",
                 f"{LATEST_INSTALLER}（v{version}）",
+                as_name=LATEST_INSTALLER,
             )
 
     # ---------------------------------------------------------------- 汇总
