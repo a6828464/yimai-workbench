@@ -207,6 +207,7 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--quota", action="store_true", help="额外统计 Gitee 附件总体积（较慢）")
     args = parser.parse_args()
     DRY = args.dry_run
     TOKEN = os.environ.get("GITEE_TOKEN", "")
@@ -237,11 +238,17 @@ def main():
     scan = versioned[: KEEP_INSTALLERS + 10]
     log(f"\n── 1/4 回收旧附件（安装包只留最近 {KEEP_INSTALLERS} 个版本，扫描 {len(scan)} 个 release）")
     freed = removed = 0
-    scanned_bytes = 0
+    # 关键：release 列表里**已经带了附件名**，判断"这个 release 有没有东西要删"根本不需要
+    # 逐条查附件。而 runner 访问 Gitee 每次 API 要十几秒，30 个 release 挨个查能拖十分钟。
+    # 所以先用名字筛出真正要动的 release，只有那些才去取附件 id。
+    scanned = 0
     for r in scan:
         rtag, rid = r.get("tag_name"), r.get("id")
+        names = [a.get("name", "") for a in (r.get("assets") or [])]
+        scanned += 1
+        if LATEST not in names and not (rtag not in keep and any("installer" in n for n in names)):
+            continue
         for a in list_assets(rid):
-            scanned_bytes += a.get("size") or 0
             name = a.get("name", "")
             if name == LATEST:
                 why = "冗余的 latest 副本（auto-latest 那份才是回退用的）"
@@ -252,7 +259,7 @@ def main():
             if delete_asset(rid, a["id"], f"{rtag}/{name}（{why}）"):
                 freed += a.get("size") or 0
                 removed += 1
-    log(f"   删除 {removed} 个附件，释放约 {freed / 1024 / 1024:.0f} MB")
+    log(f"   检查 {scanned} 个 release，删除 {removed} 个附件，释放约 {freed / 1024 / 1024:.0f} MB")
 
     # ------------------------------------------------------------ 版本化发布
     log(f"\n── 2/4 发布 {tag}")
@@ -274,39 +281,47 @@ def main():
         if not os.path.exists(want):
             warn(f"本地缺少 {want}，跳过 auto-latest 刷新（保持现状）")
             arid = None
-        want_size = os.path.getsize(want) if os.path.exists(want) else -1
-        current = {a.get("name"): (a.get("size") or 0, a["id"]) for a in list_assets(arid)} if arid else {}
-        # 历史/误传的版本化命名附件不该留在 auto-latest 上（固定名才是回退地址要的）
-        for nm, (_sz, aid) in list(current.items()):
-            if re.fullmatch(r"yimai-workbench(-installer)?-v\d+\.\d+\.\d+\.zip", nm):
-                delete_asset(arid, aid, f"auto-latest/{nm}（应改为固定名）")
-                current.pop(nm, None)
 
-        if current.get(LATEST, (0, ""))[0] == want_size and want_size > 0:
-            log(f"  auto-latest 已是 v{version} 的包（{want_size / 1024 / 1024:.1f}MB），跳过")
-        else:
-            # 顺序很关键：**先传新的，再删旧的**。
-            # 反过来会有一个「旧包已删、新包未传完」的窗口，而服务器 update.sh 的回退地址
-            # 就指向这个固定名 —— 那一小段时间回退会 404。先传则最坏只是短暂存在两个同名
-            # 附件（都是合法包），删掉旧的那个之后自然收敛到一个。
+        if arid:
+            # 只传升级包（2.9MB）。安装包 11MB、经 GitHub runner 传到 Gitee 常常要十几分钟，
+            # 而**没人从这个位置取安装包**：服务器 update.sh 的回退地址只下载
+            # yimai-workbench-latest.zip；全新安装走版本化 release 里的安装包。
+            #
+            # 每次发布都传（不做"内容一样就跳过"的启发式判断）——判断靠尺寸，两个版本
+            # 恰好同尺寸时会误判成"已是最新"，回退源就悄悄停在旧版本上，代价比省一次
+            # 2.9MB 上传大得多。确定性优先。
             upload(arid, f"yimai-workbench-v{version}.zip", f"{LATEST}（v{version}）", as_name=LATEST)
-            upload(
-                arid,
-                f"yimai-workbench-installer-v{version}.zip",
-                f"{LATEST_INSTALLER}（v{version}）",
-                as_name=LATEST_INSTALLER,
-            )
-            for nm, (_sz, aid) in current.items():
-                if nm in (LATEST, LATEST_INSTALLER):
-                    delete_asset(arid, aid, f"auto-latest/{nm}（旧包，已被新版取代）")
+
+            # 收尾：确保每个固定名**只留一份**（保留 id 最大的，即刚传的）。
+            #
+            # 为什么必须做：Gitee 在同名附件存在时，下载地址会解析到其中一份 —— 实测
+            # 它挑的是旧那份。于是"先传新的再删旧的"如果删除这步没执行（CI 中途结束、
+            # 请求失败），就会出现新旧同名共存，而回退地址安静地继续发旧版本。
+            # 这里按名字分组、只留最新一份，既收尾也自愈历史遗留。
+            after = {}
+            for a in sorted(list_assets(arid), key=lambda x: x.get("id") or 0):
+                after.setdefault(a.get("name", ""), []).append(a)
+            # latest 只留最新一份；installer-latest 是历史遗留（现在不再传），整份清掉
+            for a in after.get(LATEST, [])[:-1]:
+                delete_asset(arid, a.get("id"), f"auto-latest/{LATEST}（同名旧附件，只保留最新一份）")
+            for a in after.get(LATEST_INSTALLER, []):
+                delete_asset(arid, a.get("id"), f"auto-latest/{LATEST_INSTALLER}（不再维护，清掉省配额）")
 
     # ---------------------------------------------------------------- 汇总
     #
-    # 只报扫描窗口内的占用，不再逐条遍历全部 release —— 那要再打 62 次 API，
-    # 而 runner 访问 Gitee 每次十几秒，光这一步就能多花十分钟。
-    # 窗口内是占用的绝大部分（安装包都在窗口里），够判断离配额还有多远。
-    log("\n── 4/4 配额占用（最近 %d 个版本内）" % len(scan))
-    log(f"   约 {scanned_bytes / 1024 / 1024:.0f} MB / 1024 MB 配额")
+    # 附件清单在列表里就有，数出来是免费的；精确体积要逐条查附件（runner 上很贵，62 次
+    # 调用约十分钟），所以只在显式传 --quota 时才算。平时靠上传失败时 Gitee 返回的
+    # 配额报错（HTTP 400 "超出仓库附件配额"）来告警，够用。
+    total_assets = sum(
+        len([n for n in (a.get("name", "") for a in (r.get("assets") or [])) if n.startswith("yimai-")])
+        for r in releases
+    )
+    log("\n── 4/4 Gitee 附件概览")
+    log(f"   我方发行包附件共 {total_assets} 个")
+    if args.quota:
+        log("   --quota：逐条统计体积（较慢）...")
+        total = sum(a.get("size") or 0 for r in list_releases() for a in list_assets(r["id"]))
+        log(f"   合计约 {total / 1024 / 1024:.0f} MB / 1024 MB 配额")
     return 0
 
 
