@@ -237,9 +237,11 @@ def main():
     scan = versioned[: KEEP_INSTALLERS + 10]
     log(f"\n── 1/4 回收旧附件（安装包只留最近 {KEEP_INSTALLERS} 个版本，扫描 {len(scan)} 个 release）")
     freed = removed = 0
+    scanned_bytes = 0
     for r in scan:
         rtag, rid = r.get("tag_name"), r.get("id")
         for a in list_assets(rid):
+            scanned_bytes += a.get("size") or 0
             name = a.get("name", "")
             if name == LATEST:
                 why = "冗余的 latest 副本（auto-latest 那份才是回退用的）"
@@ -299,9 +301,12 @@ def main():
                     delete_asset(arid, aid, f"auto-latest/{nm}（旧包，已被新版取代）")
 
     # ---------------------------------------------------------------- 汇总
-    log("\n── 4/4 配额占用")
-    total = sum(a.get("size") or 0 for r in list_releases() for a in list_assets(r["id"]))
-    log(f"   当前 Gitee 附件合计约 {total / 1024 / 1024:.0f} MB / 1024 MB 配额")
+    #
+    # 只报扫描窗口内的占用，不再逐条遍历全部 release —— 那要再打 62 次 API，
+    # 而 runner 访问 Gitee 每次十几秒，光这一步就能多花十分钟。
+    # 窗口内是占用的绝大部分（安装包都在窗口里），够判断离配额还有多远。
+    log("\n── 4/4 配额占用（最近 %d 个版本内）" % len(scan))
+    log(f"   约 {scanned_bytes / 1024 / 1024:.0f} MB / 1024 MB 配额")
     return 0
 
 
