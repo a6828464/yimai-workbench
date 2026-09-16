@@ -85,14 +85,6 @@
             <span v-else class="text-gray-300">—</span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="体验结果" width="90">
-          <template #default="{ row }">
-            <ElTag v-if="trialOutcome(row)" size="small" :type="trialOutcome(row)!.type">{{
-              trialOutcome(row)!.text
-            }}</ElTag>
-            <span v-else class="text-gray-300">—</span>
-          </template>
-        </ElTableColumn>
         <ElTableColumn label="核销金额" width="90" align="right">
           <template #default="{ row }">
             <span
@@ -963,22 +955,6 @@
       .filter(Boolean)
     if (fromCards.length) return [...new Set(fromCards)]
     return row.trialTeacher ? [row.trialTeacher] : []
-  }
-
-  /**
-   * 体验结果：这节课到底上了没有。
-   *
-   * 优先看逐节卡片上的结果标记 —— 那是「今日待办 → 体验课」标记"已接待/爽约"时回写的，
-   * 最贴近事实；卡片没有标记时再回落到留资状态（已体验/已成交 → 已体验，爽约 → 已爽约）。
-   */
-  function trialOutcome(row: YimaiLead): { text: string; type: 'success' | 'danger' } | null {
-    const cards = row.trialCards ?? []
-    if (cards.some((c) => c.attended)) return { text: '已体验', type: 'success' }
-    if (cards.some((c) => c.noShow)) return { text: '已爽约', type: 'danger' }
-    if (row.status === '已体验' || row.status === '已成交')
-      return { text: '已体验', type: 'success' }
-    if (row.status === '爽约') return { text: '已爽约', type: 'danger' }
-    return null
   }
 
   // ---------- 移动端卡片 ----------
