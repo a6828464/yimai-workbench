@@ -231,9 +231,13 @@ def main():
     keep = {r["tag_name"] for r in versioned[:KEEP_INSTALLERS]} | {tag}
 
     # ---------------------------------------------------------------- 回收
-    log(f"\n── 1/4 回收旧附件（安装包只留最近 {KEEP_INSTALLERS} 个版本）")
+    # 只扫「保留窗口 + 余量」内的版本，不逐条查全部历史 release：
+    # GitHub runner 访问 Gitee 每次 API 约十几秒，62 个 release 能拖到 20 分钟。
+    # 窗口外的版本在上一次运行里已经清过，没有可回收的东西。
+    scan = versioned[: KEEP_INSTALLERS + 10]
+    log(f"\n── 1/4 回收旧附件（安装包只留最近 {KEEP_INSTALLERS} 个版本，扫描 {len(scan)} 个 release）")
     freed = removed = 0
-    for r in versioned:
+    for r in scan:
         rtag, rid = r.get("tag_name"), r.get("id")
         for a in list_assets(rid):
             name = a.get("name", "")
@@ -266,8 +270,6 @@ def main():
         # 导致回退地址 404。只有确认需要更新时才走「先删后传」。
         want = os.path.join(PKG_DIR, f"yimai-workbench-v{version}.zip")
         if not os.path.exists(want):
-            # 本地没有包时绝不能往下走：下面的逻辑是「先删旧再传新」，
-            # 删完传不上回退地址就 404 了。宁可不动，也不要留下坏的回退源。
             warn(f"本地缺少 {want}，跳过 auto-latest 刷新（保持现状）")
             arid = None
         want_size = os.path.getsize(want) if os.path.exists(want) else -1
@@ -277,12 +279,14 @@ def main():
             if re.fullmatch(r"yimai-workbench(-installer)?-v\d+\.\d+\.\d+\.zip", nm):
                 delete_asset(arid, aid, f"auto-latest/{nm}（应改为固定名）")
                 current.pop(nm, None)
+
         if current.get(LATEST, (0, ""))[0] == want_size and want_size > 0:
             log(f"  auto-latest 已是 v{version} 的包（{want_size / 1024 / 1024:.1f}MB），跳过")
         else:
-            for name in (LATEST, LATEST_INSTALLER):
-                if name in current:
-                    delete_asset(arid, current[name][1], f"auto-latest/{name}（旧包，将被覆盖）")
+            # 顺序很关键：**先传新的，再删旧的**。
+            # 反过来会有一个「旧包已删、新包未传完」的窗口，而服务器 update.sh 的回退地址
+            # 就指向这个固定名 —— 那一小段时间回退会 404。先传则最坏只是短暂存在两个同名
+            # 附件（都是合法包），删掉旧的那个之后自然收敛到一个。
             upload(arid, f"yimai-workbench-v{version}.zip", f"{LATEST}（v{version}）", as_name=LATEST)
             upload(
                 arid,
@@ -290,6 +294,9 @@ def main():
                 f"{LATEST_INSTALLER}（v{version}）",
                 as_name=LATEST_INSTALLER,
             )
+            for nm, (_sz, aid) in current.items():
+                if nm in (LATEST, LATEST_INSTALLER):
+                    delete_asset(arid, aid, f"auto-latest/{nm}（旧包，已被新版取代）")
 
     # ---------------------------------------------------------------- 汇总
     log("\n── 4/4 配额占用")
