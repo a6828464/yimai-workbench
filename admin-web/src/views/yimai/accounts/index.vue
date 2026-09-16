@@ -5,6 +5,7 @@
         <div class="flex-cb">
           <span class="font-500">账号与角色</span>
           <div class="flex-c gap-2">
+            <ElButton size="small" @click="openMapping">归属映射</ElButton>
             <ElButton type="primary" size="small" @click="openCreate">开通新账号</ElButton>
           </div>
         </div>
@@ -141,6 +142,77 @@
       </template>
     </ElDialog>
 
+    <!--
+      归属映射
+
+      业务表的归属列（service_teacher / owner / consultant / teacher_name / created_by）
+      存的是姓名字符串，不是外键。所以「谁能看到这条数据」取决于姓名能不能对上账号：
+      账号改过名、随心瑜登记的是另一个姓名、历史数据写过昵称 —— 都会让数据"悬空"。
+      这里把对不上的姓名映射到账号，映射完归属立刻恢复。
+    -->
+    <ElDialog v-model="mapDlg.visible" title="人员归属映射" width="620px" destroy-on-close>
+      <ElAlert v-if="mapDlg.unmapped.length" type="warning" :closable="false" class="mb-3">
+        有 {{ mapDlg.unmapped.length }} 个姓名出现在业务数据里、但对不上任何账号。
+        这些数据的归属是悬空的（本人看不到），把它们映射到账号即可恢复。
+      </ElAlert>
+      <ElAlert v-else type="success" :closable="false" class="mb-3">
+        当前所有归属姓名都能对上账号。
+      </ElAlert>
+
+      <ElTable v-if="mapDlg.unmapped.length" :data="mapDlg.unmapped" border size="small">
+        <ElTableColumn prop="name" label="未映射的姓名" width="150" />
+        <ElTableColumn label="出现在" min-width="200">
+          <template #default="{ row }">
+            <ElTag v-for="(c, k) in row.counts" :key="k" size="small" class="mr-1 mb-1">
+              {{ k }} × {{ c }}
+            </ElTag>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="映射到账号" width="176">
+          <template #default="{ row }">
+            <ElSelect
+              v-model="mapDlg.picks[row.name]"
+              placeholder="选择账号"
+              size="small"
+              class="!w-full"
+            >
+              <ElOption
+                v-for="a in mapDlg.accounts"
+                :key="a.key"
+                :label="`${a.name}（${a.key}）`"
+                :value="a.key"
+              />
+            </ElSelect>
+          </template>
+        </ElTableColumn>
+      </ElTable>
+
+      <div class="mt-4">
+        <div class="mb-2 text-sm font-500">各账号的别名</div>
+        <div class="text-xs text-gray-400 mb-2">
+          一个名字只能属于一个账号；填写后点保存生效。规范姓名不用填，系统始终认它。
+        </div>
+        <div v-for="a in mapDlg.accounts" :key="a.key" class="mb-2 flex items-center gap-2">
+          <span class="w-36 shrink-0 text-sm">{{ a.name }}（{{ a.key }}）</span>
+          <ElSelect
+            v-model="mapDlg.aliases[a.key]"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            size="small"
+            class="!w-full"
+            placeholder="该账号在业务数据里出现过的其它姓名"
+          />
+        </div>
+      </div>
+
+      <template #footer>
+        <ElButton @click="mapDlg.visible = false">取消</ElButton>
+        <ElButton type="primary" :loading="mapDlg.saving" @click="saveMapping">保存</ElButton>
+      </template>
+    </ElDialog>
+
     <!-- 编辑账号（角色 / 门店范围） -->
     <ElDialog
       v-model="editDlg.visible"
@@ -178,7 +250,13 @@
 </template>
 
 <script setup lang="ts">
-  import { createAccount, listAccounts, updateAccount } from '@/api/auth'
+  import {
+    createAccount,
+    getStaffMapping,
+    listAccounts,
+    saveStaffAliases,
+    updateAccount
+  } from '@/api/auth'
   import type { AccountRow } from '@/api/auth'
   import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 
@@ -195,6 +273,57 @@
   const loading = ref(false)
   const saving = ref(false)
   const accounts = ref<AccountRow[]>([])
+
+  // ---------- 归属映射 ----------
+  const mapDlg = reactive({
+    visible: false,
+    saving: false,
+    accounts: [] as { key: string; name: string; aliases: string[] }[],
+    unmapped: [] as { name: string; counts: Record<string, number> }[],
+    aliases: {} as Record<string, string[]>,
+    // 「未映射的姓名 → 要映射到哪个账号」，保存时并入该账号的别名
+    picks: {} as Record<string, string>
+  })
+
+  function openMapping() {
+    mapDlg.visible = true
+    void loadMapping()
+  }
+
+  async function loadMapping() {
+    try {
+      const d = await getStaffMapping()
+      mapDlg.accounts = d.accounts
+      mapDlg.unmapped = d.unmapped
+      mapDlg.aliases = Object.fromEntries(d.accounts.map((a) => [a.key, [...a.aliases]]))
+      mapDlg.picks = {}
+    } catch (e) {
+      ElMessage.error(e instanceof Error ? e.message : '归属映射加载失败')
+    }
+  }
+
+  async function saveMapping() {
+    mapDlg.saving = true
+    try {
+      // 先把「未映射 → 账号」的选择并进该账号的别名，再整体保存
+      for (const u of mapDlg.unmapped) {
+        const key = mapDlg.picks[u.name]
+        if (!key) continue
+        const list = mapDlg.aliases[key] ?? []
+        if (!list.includes(u.name)) mapDlg.aliases[key] = [...list, u.name]
+      }
+      for (const a of mapDlg.accounts) {
+        await saveStaffAliases(a.key, mapDlg.aliases[a.key] ?? [])
+      }
+      ElMessage.success('已保存，归属立即生效')
+      await loadMapping()
+      await load()
+    } catch (e) {
+      ElMessage.error(e instanceof Error ? e.message : '保存失败')
+    } finally {
+      mapDlg.saving = false
+    }
+  }
 
   /** 需要锁定单一门店的角色（与后端 VENUE_BOUND 一致） */
   const VENUE_BOUND = ['R_MANAGER', 'R_SERVICE', 'R_TEACHER']

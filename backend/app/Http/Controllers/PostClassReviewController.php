@@ -44,7 +44,7 @@ final class PostClassReviewController extends Controller
         }
         if (userHasRole($u, 'R_TEACHER')) {
             return (int) $row->teacher_user_id === (int) $u->id
-                || (string) $row->teacher_name === (string) $u->name;
+                || in_array((string) $row->teacher_name, staffNames($u), true);
         }
         if (userHasRole($u, 'R_SERVICE')) {
             return $this->serviceOwns($u, $row);
@@ -64,7 +64,7 @@ final class PostClassReviewController extends Controller
         }
         if ($row->lead_id) {
             $l = Lead::find($row->lead_id);
-            if ($l && (string) $l->service_teacher === (string) $u->name) {
+            if ($l && in_array((string) $l->service_teacher, staffNames($u), true)) {
                 return true;
             }
         }
@@ -72,14 +72,14 @@ final class PostClassReviewController extends Controller
         $phone = (string) $row->student_phone;
         if ($phone !== '') {
             $owned = Customer::where('phone', $phone)->where('venue', $row->venue)
-                ->where(fn ($w) => $w->where('consultant', $u->name)->orWhere('owner', $u->name))
+                ->where(fn ($w) => $w->whereIn('consultant', staffNames($u))->orWhereIn('owner', staffNames($u)))
                 ->exists();
             if ($owned) {
                 return true;
             }
 
             return Lead::where('phone', $phone)->where('venue', $row->venue)
-                ->where('service_teacher', $u->name)->exists();
+                ->whereIn('service_teacher', staffNames($u))->exists();
         }
 
         return false;
@@ -140,11 +140,11 @@ final class PostClassReviewController extends Controller
             ->whereNotIn('status', ['cancelled', 'no_show']);
         $venueFilter($bookingQ);
         if (userHasRole($u, 'R_TEACHER')) {
-            $bookingQ->where('teacher_name', $u->name);
+            $bookingQ->whereIn('teacher_name', staffNames($u));
         } elseif ($isService) {
             // 服务老师不授课：看自己名下会员上过的课
             $myPhones = Customer::query()->where('venue', $u->venue)
-                ->where(fn ($w) => $w->where('consultant', $u->name)->orWhere('owner', $u->name))
+                ->where(fn ($w) => $w->whereIn('consultant', staffNames($u))->orWhereIn('owner', staffNames($u)))
                 ->where('phone', '!=', '')->pluck('phone')->all();
             $bookingQ->whereIn('phone', $myPhones !== [] ? $myPhones : ['__none__']);
         }
@@ -252,7 +252,7 @@ final class PostClassReviewController extends Controller
         // ---------- 2) 留资分配给他的（服务老师与授课老师都看自己的） ----------
         $leads = [];
         $myLeadQ = Lead::query()->where(function ($w) use ($u) {
-            $w->where('service_teacher', $u->name)->orWhere('trial_teacher', $u->name);
+            $w->whereIn('service_teacher', staffNames($u))->orWhereIn('trial_teacher', staffNames($u));
         });
         $venueFilter($myLeadQ);
         foreach ($myLeadQ->orderByDesc('id')->limit(200)->get() as $l) {
@@ -277,7 +277,7 @@ final class PostClassReviewController extends Controller
         // ---------- 3) 会籍顾问归属他的会员 ----------
         $members = [];
         $myCustomerQ = Customer::query()
-            ->where(fn ($w) => $w->where('consultant', $u->name)->orWhere('owner', $u->name));
+            ->where(fn ($w) => $w->whereIn('consultant', staffNames($u))->orWhereIn('owner', staffNames($u)));
         $venueFilter($myCustomerQ);
         foreach ($myCustomerQ->orderByDesc('id')->limit(200)->get() as $c) {
             $members[] = [
@@ -319,14 +319,14 @@ final class PostClassReviewController extends Controller
             $q->where('venue', $u->venue);
         }
         if (userHasRole($u, 'R_TEACHER')) {
-            $q->where(fn ($w) => $w->where('teacher_user_id', $u->id)->orWhere('teacher_name', $u->name));
+            $q->where(fn ($w) => $w->where('teacher_user_id', $u->id)->orWhereIn('teacher_name', staffNames($u)));
         }
         if (userHasRole($u, 'R_SERVICE')) {
             // 服务老师：自己名下会员/客资的课后分析（顾问衔接用）
             $customerIds = Customer::query()->where('venue', $u->venue)
-                ->where(fn ($w) => $w->where('consultant', $u->name)->orWhere('owner', $u->name))
+                ->where(fn ($w) => $w->whereIn('consultant', staffNames($u))->orWhereIn('owner', staffNames($u)))
                 ->pluck('id')->all();
-            $leadIds = Lead::query()->where('venue', $u->venue)->where('service_teacher', $u->name)
+            $leadIds = Lead::query()->where('venue', $u->venue)->whereIn('service_teacher', staffNames($u))
                 ->pluck('id')->all();
             $q->where(function ($w) use ($customerIds, $leadIds) {
                 $w->whereIn('customer_id', $customerIds ?: [-1])
@@ -620,7 +620,7 @@ final class PostClassReviewController extends Controller
         if (userHasRole($u, 'R_SUPER')) {
             // 双店
         } elseif (userHasRole($u, 'R_TEACHER')) {
-            $q->where('teacher_name', $u->name)->where('venue', $u->venue);
+            $q->whereIn('teacher_name', staffNames($u))->where('venue', $u->venue);
         } else {
             $q->where('venue', $u->venue);
         }

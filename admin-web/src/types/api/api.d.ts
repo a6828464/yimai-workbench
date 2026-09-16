@@ -79,7 +79,14 @@ declare namespace Api {
       buttons: string[]
       roles: string[]
       userId: number
+      /** 展示名（优先昵称），只用于界面呈现 */
       userName: string
+      /**
+       * 归属用的规范名，与后端归属列（service_teacher / owner / consultant /
+       * teacher_name / created_by）同源。凡是「写入或比较归属」都必须用它 ——
+       * 用 userName 会把昵称写进归属列，后端按规范名过滤，这条数据就对本人消失了。
+       */
+      staffName: string
       email: string
       phone?: string
       avatar?: string

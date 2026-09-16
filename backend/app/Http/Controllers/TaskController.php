@@ -19,14 +19,14 @@ final class TaskController extends Controller
         if (userHasRole($u, 'R_SERVICE')) {
             // 服务老师（会籍顾问）：本人名下 + 待认领池
             $q->where('venue', $u->venue)
-                ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+                ->where(fn ($w) => $w->whereIn('owner', staffNames($u))->orWhere('owner', '未分配'));
         }
         if (userHasRole($u, 'R_TEACHER')) {
             // 授课老师：只处理派给本人的任务
-            $q->where('venue', $u->venue)->where('owner', $u->name);
+            $q->where('venue', $u->venue)->whereIn('owner', staffNames($u));
         }
         if (userHasRole($u, 'R_MEDIA')) {
-            $q->where('owner', $u->name);
+            $q->whereIn('owner', staffNames($u));
         }
         if ($status = $r->query('status')) {
             $q->where('status', $status);

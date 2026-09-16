@@ -94,13 +94,13 @@ final class TodayController extends Controller
             $taskQ->where('venue', $u->venue);
         }
         if (userHasRole($u, 'R_SERVICE')) {
-            $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+            $taskQ->where(fn ($w) => $w->whereIn('owner', staffNames($u))->orWhere('owner', '未分配'));
         }
         if (userHasRole($u, 'R_TEACHER')) {
-            $taskQ->where('owner', $u->name);
+            $taskQ->whereIn('owner', staffNames($u));
         }
         if (userHasRole($u, 'R_MEDIA')) {
-            $taskQ->where('owner', $u->name);
+            $taskQ->whereIn('owner', staffNames($u));
         }
         $overdueTasks = $taskQ->where('status', '已逾期')->count();
 
@@ -174,7 +174,7 @@ final class TodayController extends Controller
         // 真实排课：授课老师取本人课表；服务老师看本店课表（用于关联自己的会员）
         $bookingQ = fn () => KyBooking::query()
             ->where('venue', $u->venue)
-            ->when($isCoach, fn ($q) => $q->where('teacher_name', $u->name));
+            ->when($isCoach, fn ($q) => $q->whereIn('teacher_name', staffNames($u)));
 
         $bookings = $bookingQ()->whereBetween('start_at', [$start, $end])
             ->get(['start_at', 'status', 'course_kind', 'member_id', 'phone']);
@@ -208,12 +208,12 @@ final class TodayController extends Controller
             ->when($isCoach, function ($q) use ($u) {
                 $keys = privateStudentKeys($u);
                 $q->where(function ($w) use ($u, $keys) {
-                    $w->where('service_teacher', $u->name)->orWhere('trial_teacher', $u->name);
+                    $w->whereIn('service_teacher', staffNames($u))->orWhereIn('trial_teacher', staffNames($u));
                     if ($keys['phones'] !== []) {
                         $w->orWhereIn('phone', $keys['phones']);
                     }
                 });
-            }, fn ($q) => $q->where('service_teacher', $u->name))
+            }, fn ($q) => $q->whereIn('service_teacher', staffNames($u)))
             // phone / name 必须一起取：身份键要靠它们，漏取会让所有人塌成同一个 key
             ->get(['id', 'phone', 'name', 'status', 'deal_at', 'deal_amount', 'lead_date', 'service_teacher']);
 
@@ -293,7 +293,7 @@ final class TodayController extends Controller
             'leadCount' => $leadCount,
             'resourceCount' => $leadRows->count(),
             'newResourceCount' => $leadRows->where('status', '新留资')->count(),
-            'myLeadCount' => $leadRows->where('service_teacher', $u->name)->count(),
+            'myLeadCount' => $leadRows->whereIn('service_teacher', staffNames($u))->count(),
             'visitCount' => $visitCount,
             'dealCount' => $dealCount,
             'dealAmount' => $dealAmount,
@@ -341,10 +341,10 @@ final class TodayController extends Controller
             $taskQ->where('venue', $u->venue);
         }
         if (userHasRole($u, 'R_SERVICE')) {
-            $taskQ->where('venue', $u->venue)->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+            $taskQ->where('venue', $u->venue)->where(fn ($w) => $w->whereIn('owner', staffNames($u))->orWhere('owner', '未分配'));
         }
         if (userHasRole($u, 'R_TEACHER')) {
-            $taskQ->where('venue', $u->venue)->where('owner', $u->name);
+            $taskQ->where('venue', $u->venue)->whereIn('owner', staffNames($u));
         }
         if (userHasRole($u, 'R_MEDIA')) {
             $taskQ->whereRaw('1 = 0');
@@ -384,7 +384,7 @@ final class TodayController extends Controller
         }
         $phones = Customer::query()
             ->where('venue', $u->venue)
-            ->where(fn ($w) => $w->where('consultant', $u->name)->orWhere('owner', $u->name))
+            ->where(fn ($w) => $w->whereIn('consultant', staffNames($u))->orWhereIn('owner', staffNames($u)))
             ->where('phone', '!=', '')
             ->pluck('phone')
             ->all();
@@ -725,16 +725,16 @@ final class TodayController extends Controller
             ->where('deadline', '!=', '')
             ->where('deadline', '<=', $today->format('Y-m-d 23:59'));
         if ($isMedia) {
-            $taskQ->where('owner', $u->name);
+            $taskQ->whereIn('owner', staffNames($u));
         } else {
             if (! $isSuper) {
                 $taskQ->where('venue', $u->venue);
             }
             if (userHasRole($u, 'R_SERVICE')) {
-                $taskQ->where(fn ($w) => $w->where('owner', $u->name)->orWhere('owner', '未分配'));
+                $taskQ->where(fn ($w) => $w->whereIn('owner', staffNames($u))->orWhere('owner', '未分配'));
             }
             if (userHasRole($u, 'R_TEACHER')) {
-                $taskQ->where('owner', $u->name);
+                $taskQ->whereIn('owner', staffNames($u));
             }
         }
         $tasks = collect($taskQ->orderBy('deadline')->get())->map(fn ($t) => camel($t))
@@ -795,7 +795,7 @@ final class TodayController extends Controller
                 $lead = Lead::find($d['leadId']);
                 if ($lead) {
                     $canHandle = userHasAnyRole($u, ['R_SUPER', 'R_MANAGER'])
-                        || (string) $lead->service_teacher === (string) $u->name
+                        || in_array((string) $lead->service_teacher, staffNames($u), true)
                         || (string) $lead->service_teacher === '';
                     abort_unless($canHandle, 403, '无权处理该客资');
                     $next = match ($d['action']) {
@@ -844,7 +844,7 @@ final class TodayController extends Controller
                 }
                 if ($lead) {
                     $canHandle = userHasAnyRole($u, ['R_SUPER', 'R_MANAGER'])
-                        || (string) $lead->service_teacher === (string) $u->name
+                        || in_array((string) $lead->service_teacher, staffNames($u), true)
                         || (string) $lead->service_teacher === '';
                     if ($enforceLeadPermission) {
                         abort_unless($canHandle, 403, '无权处理该客资');

@@ -14,12 +14,15 @@ use App\Models\Lead;
 use App\Models\ModelGenerationRecord;
 use App\Models\SyncArtifact;
 use App\Models\SyncJob;
+use App\Models\StaffAlias;
 use App\Models\Task;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Symfony\Component\Process\Process;
 
 function ok($data)
@@ -257,9 +260,9 @@ function businessNotifications(User $user): array
     if (userHasRole($user, 'R_MANAGER')) {
         $taskQ->where('venue', $user->venue);
     } elseif (userIsTeacherSide($user)) {
-        $taskQ->where('venue', $user->venue)->where('owner', $user->name);
+        $taskQ->where('venue', $user->venue)->whereIn('owner', staffNames($user));
     } elseif (userHasRole($user, 'R_MEDIA')) {
-        $taskQ->where('owner', $user->name);
+        $taskQ->whereIn('owner', staffNames($user));
     }
     $taskCount = $taskQ->count();
     if ($taskCount > 0) {
@@ -289,7 +292,7 @@ function businessNotifications(User $user): array
         }
     }
     if (userHasRole($user, 'R_MEDIA') && ! userHasAnyRole($user, ['R_SUPER', 'R_MANAGER']) && ! userIsTeacherSide($user)) {
-        $newLeads = Lead::where('created_by', $user->name)->where('status', '新留资')->count();
+        $newLeads = Lead::whereIn('created_by', staffNames($user))->where('status', '新留资')->count();
         if ($newLeads > 0) {
             $items[] = ['key' => 'media-leads-'.$newLeads, 'category' => 'message', 'level' => 'info', 'title' => "你录入的 {$newLeads} 条新客资待承接", 'detail' => '新媒体客资', 'path' => '/yimai/leads'];
         }
@@ -382,6 +385,113 @@ function userIsTeacherSide(?User $user): bool
 }
 
 /**
+ * 该账号在业务归属字段里可能出现的**全部名字**。
+ *
+ * 归属列（`leads.service_teacher` / `customers.consultant|owner` /
+ * `ky_bookings.teacher_name` / `tasks.owner` / `training_plans.created_by` …）存的是
+ * 姓名字符串而不是外键，而姓名会变：改过名、随心瑜登记的是另一个姓名、
+ * 历史数据里写过 nickname。只比 `users.name` 会把这些数据判成"不是本人的"。
+ *
+ * 所以判断归属时一律用本函数取全集，再 `whereIn`：
+ *
+ *     $names = staffNames($user);
+ *     $q->whereIn('consultant', $names)->orWhereIn('owner', $names);
+ *
+ * 别名在 `staff_aliases` 表里维护（人员管理页可改），规范名 `users.name` 恒算在内。
+ * 结果挂在 User 实例上做请求内缓存；理由同 `privateStudentKeys()`。
+ */
+function staffNames(User $user): array
+{
+    if (isset($user->staffNamesCache)) {
+        return $user->staffNamesCache;
+    }
+
+    $names = [];
+    $canonical = trim((string) $user->name);
+    if ($canonical !== '') {
+        $names[$canonical] = true;
+    }
+
+    if ($user->id) {
+        foreach (StaffAlias::where('user_id', $user->id)->pluck('alias') as $alias) {
+            $alias = trim((string) $alias);
+            if ($alias !== '') {
+                $names[$alias] = true;
+            }
+        }
+    }
+
+    return $user->staffNamesCache = array_keys($names);
+}
+
+/**
+ * 业务数据里出现过、但对不上任何账号的归属姓名。
+ *
+ * 用来在人员管理页提示"这些名字还没映射到账号"。只要它非空，就说明有数据的归属
+ * 是悬空的 —— 那个（那些）人看不到自己的会员/客资/任务，管理员补一条别名即可修好。
+ *
+ * @return array<string, array{name: string, counts: array<string, int>}>
+ */
+function unmappedStaffNames(): array
+{
+    $known = [];
+    foreach (User::query()->pluck('name') as $n) {
+        $n = trim((string) $n);
+        if ($n !== '') {
+            $known[$n] = true;
+        }
+    }
+    foreach (StaffAlias::query()->pluck('alias') as $a) {
+        $a = trim((string) $a);
+        if ($a !== '') {
+            $known[$a] = true;
+        }
+    }
+
+    // 归属列 → 展示用的中文来源名
+    $columns = [
+        'customers.consultant' => '会员·会籍顾问',
+        'customers.owner' => '会员·负责人',
+        'leads.service_teacher' => '留资·会籍顾问',
+        'leads.trial_teacher' => '留资·上课老师',
+        'ky_bookings.teacher_name' => '排课·上课老师',
+        'tasks.owner' => '任务·负责人',
+        'training_plans.created_by' => '训练计划·创建人',
+        'post_class_reviews.teacher_name' => '课后分析·老师',
+    ];
+
+    $out = [];
+    foreach ($columns as $ref => $label) {
+        [$table, $column] = explode('.', $ref);
+        if (! Schema::hasTable($table) || ! Schema::hasColumn($table, $column)) {
+            continue;
+        }
+        $rows = DB::table($table)
+            ->select($column, DB::raw('count(*) as c'))
+            ->whereNotNull($column)
+            ->where($column, '!=', '')
+            ->groupBy($column)
+            ->get();
+
+        foreach ($rows as $row) {
+            $name = trim((string) $row->{$column});
+            if ($name === '' || isset($known[$name])) {
+                continue;
+            }
+            // 明确的非人员占位符不算未映射
+            if (in_array($name, ['未分配', '待分配', '待完善', '未确认'], true)) {
+                continue;
+            }
+            $out[$name] ??= ['name' => $name, 'counts' => []];
+            $out[$name]['counts'][$label] = (int) $row->c;
+        }
+    }
+
+    ksort($out);
+    return $out;
+}
+
+/**
  * 授课老师（私教主教练）实际授课的学员标识。
  *
  * 只统计私教（course_kind=private），signed 状态；小班与团课不算「我的学员」。
@@ -397,12 +507,12 @@ function privateStudentKeys(User $user): array
     }
 
     $keys = ['external_ids' => [], 'phones' => []];
-    if (! userHasRole($user, 'R_TEACHER') || ! $user->name) {
+    if (! userHasRole($user, 'R_TEACHER') || staffNames($user) === []) {
         return $user->privateStudentKeysCache = $keys;
     }
 
     $rows = KyBooking::query()
-        ->where('teacher_name', $user->name)
+        ->whereIn('teacher_name', staffNames($user))
         ->where('venue', $user->venue)
         ->where('course_kind', 'private')
         ->where('status', 'signed')
@@ -450,9 +560,13 @@ function scopeCustomersForUser($query, User $user)
         return $query->where('venue', $user->venue);
     }
 
+    // 归属列存的是姓名，而姓名会变（改名/随心瑜登记不一致/历史 nickname），
+    // 所以取该账号的全部名字来匹配，而不是只比 users.name
+    $names = staffNames($user);
+
     $personScopes = [];
     if (userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER'])) {
-        $personScopes[] = fn ($q) => $q->where('consultant', $user->name)->orWhere('owner', $user->name);
+        $personScopes[] = fn ($q) => $q->whereIn('consultant', $names)->orWhereIn('owner', $names);
     }
     if (in_array('R_TEACHER', $roles, true)) {
         $keys = privateStudentKeys($user);
@@ -496,15 +610,17 @@ function scopeLeadsForUser($query, User $user)
         return $query->where('venue', $user->venue);
     }
 
+    $names = staffNames($user);
+
     $scopes = [];
     if (in_array('R_SERVICE', $roles, true)) {
         // 服务老师是客资承接主体：本人名下的 + 待承接池
-        $scopes[] = fn ($q) => $q->where('service_teacher', $user->name)->orWhere('service_teacher', '');
+        $scopes[] = fn ($q) => $q->whereIn('service_teacher', $names)->orWhere('service_teacher', '');
     }
     if (in_array('R_TEACHER', $roles, true)) {
         $keys = privateStudentKeys($user);
-        $scopes[] = function ($q) use ($user, $keys) {
-            $q->where('service_teacher', $user->name)->orWhere('trial_teacher', $user->name);
+        $scopes[] = function ($q) use ($names, $keys) {
+            $q->whereIn('service_teacher', $names)->orWhereIn('trial_teacher', $names);
             if ($keys['phones'] !== []) {
                 $q->orWhereIn('phone', $keys['phones']);
             }
@@ -559,7 +675,7 @@ function canAccessCustomer(User $user, Customer $customer): bool
     }
     // 老师侧：名下会员 ∪ 私教课学员（多角色即两个条件的并集）
     if (userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER'])
-        && in_array($user->name, [$customer->owner, $customer->consultant], true)) {
+        && array_intersect(staffNames($user), [$customer->owner, $customer->consultant]) !== []) {
         return true;
     }
     if (userHasRole($user, 'R_TEACHER') && privateTeaches($user, $customer)) {

@@ -144,12 +144,12 @@ class LeadController extends Controller
                 abort(403, '无权限：仅可删除本店留资');
             }
             if (userHasRole($u, 'R_SERVICE')) {
-                if ($lead->service_teacher !== '' && $lead->service_teacher !== $u->name && $lead->created_by !== $u->name) {
+                if ($lead->service_teacher !== '' && ! in_array($lead->service_teacher, staffNames($u), true) && ! in_array($lead->created_by, staffNames($u), true)) {
                     abort(403, '无权限：仅可删除自己名下或未分配的留资');
                 }
             } else {
                 $mine = in_array($u->name, [(string) $lead->service_teacher, (string) $lead->trial_teacher], true)
-                    || $lead->created_by === $u->name;
+                    || in_array($lead->created_by, staffNames($u), true);
                 if (! $mine) {
                     abort(403, '无权限：授课老师仅可删除自己相关的留资');
                 }

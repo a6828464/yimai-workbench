@@ -100,6 +100,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ---------- 人员管理（仅超管） ----------
     Route::get('/accounts', [AccountController::class, 'index']);
+    // 人员归属映射：查未映射的姓名 / 维护别名。放在 /accounts/{key} 之前，避免被当参数吃掉
+    Route::get('/accounts/staff-mapping', [AccountController::class, 'staffMapping']);
+    Route::put('/accounts/{key}/aliases', [AccountController::class, 'updateAliases']);
     Route::post('/accounts', [AccountController::class, 'store']);
     Route::patch('/accounts/{key}', [AccountController::class, 'update']);
 

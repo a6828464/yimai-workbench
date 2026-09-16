@@ -387,12 +387,12 @@
   const canAccept = computed(() => {
     const r = detailDlg.row
     if (!r || r.status !== '进行中') return false
-    return isManager.value || isSuper.value || r.owner === userStore.getUserInfo.userName
+    return isManager.value || isSuper.value || r.owner === userStore.getUserInfo.staffName
   })
   const canStart = computed(() => {
     const r = detailDlg.row
     if (!r || r.status !== '待接收') return false
-    const me = userStore.getUserInfo.userName
+    const me = userStore.getUserInfo.staffName
     return r.owner === me || r.owner === '未分配' || isManager.value || isSuper.value
   })
   const canVerify = computed(() => {
@@ -429,7 +429,7 @@
   async function startTask() {
     const r = detailDlg.row
     if (!r) return
-    const me = userStore.getUserInfo.userName
+    const me = userStore.getUserInfo.staffName
     try {
       await updateTask(
         r.id,

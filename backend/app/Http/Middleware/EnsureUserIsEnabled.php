@@ -124,7 +124,7 @@ class EnsureUserIsEnabled
             if (in_array($user->name, [(string) $lead->service_teacher, (string) $lead->trial_teacher], true)) {
                 return true;
             }
-            if ((string) $lead->created_by === (string) $user->name) {
+            if (in_array((string) $lead->created_by, staffNames($user), true)) {
                 return true;
             }
             $phone = (string) $lead->phone;
@@ -150,7 +150,7 @@ class EnsureUserIsEnabled
         $allowed = $creating ? self::TEACHER_FIELDS_CREATE : self::TEACHER_FIELDS_UPDATE;
         abort_if(array_diff(array_keys($request->all()), $allowed) !== [], 403, '老师无权修改该客资字段');
         if ($request->exists('serviceTeacher')) {
-            abort_unless($request->input('serviceTeacher') === $user->name, 403, '老师只能将客资指派给自己');
+            abort_unless(in_array((string) $request->input('serviceTeacher'), staffNames($user), true), 403, '老师只能将客资指派给自己');
         }
         if ($request->exists('status')) {
             abort_if($request->input('status') === '已成交', 403, '老师不能直接标记成交，请由店长完成');

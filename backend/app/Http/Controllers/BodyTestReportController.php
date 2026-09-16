@@ -56,7 +56,7 @@ final class BodyTestReportController extends Controller
         if ($row->lead_id) {
             $l = Lead::find($row->lead_id);
 
-            return $l && (string) $l->service_teacher === (string) $u->name;
+            return $l && in_array((string) $l->service_teacher, staffNames($u), true);
         }
 
         return false;

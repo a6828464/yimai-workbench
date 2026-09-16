@@ -224,7 +224,7 @@
   const router = useRouter()
 
   const userStore = useUserStore()
-  const userName = computed(() => userStore.getUserInfo.userName ?? '')
+  const staffName = computed(() => userStore.getUserInfo.staffName ?? '')
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
   const venues = computed(() => userStore.getUserInfo.venues ?? [])
   const isDualStore = computed(() => venues.value.length > 1)
@@ -512,7 +512,7 @@
       const all = settled[1].value.records
       myLeads.value = isCoach.value
         ? all.filter(
-            (l) => l.serviceTeacher === userName.value || l.trialTeacher === userName.value
+            (l) => l.serviceTeacher === staffName.value || l.trialTeacher === staffName.value
           )
         : all
       Object.keys(leadLadder).forEach((k) => (leadLadder[k] = 0))

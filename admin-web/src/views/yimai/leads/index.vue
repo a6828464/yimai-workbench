@@ -660,7 +660,7 @@
         isManager.value || isTeacher.value
           ? (String(userStore.getUserInfo.venue ?? '绿地店') as YimaiLead['venue'])
           : ('绿地店' as YimaiLead['venue']),
-      serviceTeacher: isTeacher.value ? String(userStore.getUserInfo.userName ?? '') : '',
+      serviceTeacher: isTeacher.value ? String(userStore.getUserInfo.staffName ?? '') : '',
       status: '新留资' as YimaiLead['status'],
       grade: '' as YimaiLead['grade'],
       dealCard: '',
@@ -820,7 +820,7 @@
               source: dialog.form.source,
               orderPlatform: dialog.form.orderPlatform,
               venue: dialog.form.venue,
-              serviceTeacher: String(userStore.getUserInfo.userName ?? ''),
+              serviceTeacher: String(userStore.getUserInfo.staffName ?? ''),
               status: '新留资' as const,
               remark: dialog.form.remark
             }
@@ -828,7 +828,7 @@
               demand: dialog.form.demand,
               status: dialog.form.status,
               remark: dialog.form.remark,
-              serviceTeacher: String(userStore.getUserInfo.userName ?? ''),
+              serviceTeacher: String(userStore.getUserInfo.staffName ?? ''),
               trialCards: dialog.form.trialCards
             }
         : dialog.form

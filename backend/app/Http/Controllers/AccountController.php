@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\StaffAlias;
 use App\Models\User;
 use Illuminate\Http\Request;
 
@@ -47,8 +48,79 @@ final class AccountController extends Controller
                 'email' => $u->email,
                 'status' => $u->status ?? '启用',
                 'self' => $u->name === $selfName,
+                // 该账号在业务归属列里可能出现的其它名字（见 helpers.php staffNames）
+                'aliases' => StaffAlias::where('user_id', $u->id)->orderBy('id')->pluck('alias')->all(),
             ];
         }));
+    }
+
+    /**
+     * GET /accounts/staff-mapping
+     *
+     * 人员归属映射总览：每个账号的规范名/别名，以及业务数据里出现、但对不上任何账号的姓名。
+     * 「未映射」非空就说明有数据的归属是悬空的 —— 那个人看不到自己的会员/客资/任务。
+     */
+    public function staffMapping(Request $r)
+    {
+        requireSuper($r);
+
+        return ok([
+            'accounts' => User::orderBy('id')->get()->map(fn ($u) => [
+                'key' => $u->username,
+                'name' => (string) $u->name,
+                'aliases' => StaffAlias::where('user_id', $u->id)->orderBy('id')->pluck('alias')->all(),
+            ]),
+            'unmapped' => array_values(unmappedStaffNames()),
+        ]);
+    }
+
+    /**
+     * PUT /accounts/{key}/aliases
+     *
+     * 整体替换某账号的别名列表。别名全局唯一：一个名字只能属于一个账号，
+     * 否则归属就是歧义的 —— 宁可在这里被拦住，也不要在查询时静默算错。
+     */
+    public function updateAliases(Request $r, string $key)
+    {
+        requireSuper($r);
+        $user = User::where('username', $key)->first();
+        abort_if($user === null, 404, '账号不存在');
+
+        $d = $r->validate([
+            'aliases' => 'present|array|max:20',
+            // nullable：前端多选框留空行会传空串，Laravel 的 ConvertEmptyStringsToNull
+            // 会把它变成 null。这种行按"没有"处理即可，不该 422 打断整个保存。
+            'aliases.*' => 'nullable|string|max:60',
+        ]);
+
+        $aliases = [];
+        foreach ($d['aliases'] as $a) {
+            $a = trim((string) $a);
+            if ($a === '' || $a === (string) $user->name) {
+                continue; // 规范名不用登记（staffNames 恒把它算在内）
+            }
+            $aliases[$a] = true;
+        }
+        $aliases = array_keys($aliases);
+
+        // 与别的账号冲突的直接报出来，不做静默丢弃
+        $conflict = StaffAlias::whereIn('alias', $aliases)
+            ->where('user_id', '!=', $user->id)
+            ->pluck('alias')
+            ->all();
+        if ($conflict !== []) {
+            abort(422, '这些名字已属于其它账号：'.implode('、', $conflict));
+        }
+
+        StaffAlias::where('user_id', $user->id)->delete();
+        foreach ($aliases as $a) {
+            StaffAlias::create(['user_id' => $user->id, 'alias' => $a, 'source' => 'manual']);
+        }
+
+        // 归属范围变了，相关缓存要失效
+        invalidateBusinessCaches();
+
+        return ok(['aliases' => $aliases]);
     }
 
     /** POST /accounts */

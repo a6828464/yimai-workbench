@@ -6,17 +6,14 @@
       <p class="text-sm text-gray-400 mb-8">你拥有双店权限，进入后可随时在工作台切换</p>
 
       <div class="flex gap-6 justify-center flex-wrap">
-        <div
-          v-for="v in venues"
-          :key="v"
-          class="store-card"
-          @click="enter(v)"
-        >
+        <div v-for="v in venues" :key="v" class="store-card" @click="enter(v)">
           <ElIcon :size="34" style="color: var(--main-color)">
             <OfficeBuilding />
           </ElIcon>
           <div class="mt-3 text-base font-500">{{ v }}</div>
-          <div class="mt-1 text-xs text-gray-400">{{ v === '绿地店' ? '总店' : '分店' }} · 点击进入工作台</div>
+          <div class="mt-1 text-xs text-gray-400"
+            >{{ v === '绿地店' ? '总店' : '分店' }} · 点击进入工作台</div
+          >
         </div>
       </div>
     </div>
@@ -42,6 +39,7 @@
       roles: prev.roles ?? [],
       userId: prev.userId ?? 0,
       userName: prev.userName ?? '',
+      staffName: prev.staffName ?? '',
       email: prev.email ?? '',
       avatar: prev.avatar,
       venue,

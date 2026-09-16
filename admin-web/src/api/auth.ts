@@ -1,6 +1,6 @@
 import { HttpError } from '@/utils/http/error'
 import { useUserStore } from '@/store/modules/user'
-import { USE_BACKEND, apiGet, apiPost, apiPatch, setBackendToken } from './backend'
+import { USE_BACKEND, apiGet, apiPost, apiPatch, apiPut, setBackendToken } from './backend'
 
 /**
  * 认证：VITE_USE_BACKEND=true 走 Laravel 后端，否则本地模拟
@@ -17,6 +17,7 @@ export const LOCAL_ACCOUNTS: LocalAccount[] = [
     key: 'owner',
     userId: 1001,
     userName: '演示超管',
+    staffName: '演示超管',
     roles: ['R_SUPER'],
     buttons: [],
     email: 'owner@example.invalid',
@@ -28,6 +29,7 @@ export const LOCAL_ACCOUNTS: LocalAccount[] = [
     key: 'manager-green',
     userId: 1002,
     userName: '绿地店长',
+    staffName: '绿地店长',
     roles: ['R_MANAGER'],
     buttons: [],
     email: 'manager-green@example.invalid',
@@ -39,6 +41,7 @@ export const LOCAL_ACCOUNTS: LocalAccount[] = [
     key: 'manager-east',
     userId: 1003,
     userName: '东部店长',
+    staffName: '东部店长',
     roles: ['R_MANAGER'],
     buttons: [],
     email: 'manager-east@example.invalid',
@@ -50,6 +53,7 @@ export const LOCAL_ACCOUNTS: LocalAccount[] = [
     key: 'service',
     userId: 1004,
     userName: '演示服务老师',
+    staffName: '演示服务老师',
     roles: ['R_SERVICE'],
     buttons: [],
     email: 'service@example.invalid',
@@ -61,6 +65,7 @@ export const LOCAL_ACCOUNTS: LocalAccount[] = [
     key: 'teacher',
     userId: 1005,
     userName: '演示授课老师',
+    staffName: '演示授课老师',
     roles: ['R_TEACHER'],
     buttons: [],
     email: 'teacher@example.invalid',
@@ -72,6 +77,7 @@ export const LOCAL_ACCOUNTS: LocalAccount[] = [
     key: 'media',
     userId: 1006,
     userName: '演示新媒体',
+    staffName: '演示新媒体',
     roles: ['R_MEDIA'],
     buttons: [],
     email: 'media@example.invalid',
@@ -127,7 +133,18 @@ export function fetchGetUserInfo(): Promise<Api.Auth.UserInfo> {
     userStore.logOut()
     return Promise.reject(new HttpError('登录状态无效，请重新登录', 401))
   }
-  const { key: _key, roleLabel: _roleLabel, ...userInfo } = account
+  // 显式挑出 UserInfo 需要的字段：LocalAccount 的 key / roleLabel 只是本地演示用的标签，
+  // 不该混进登录用户信息（原来的 `...rest` 解构会留下两个未使用变量，lint 不认）。
+  const userInfo: Api.Auth.UserInfo = {
+    buttons: account.buttons,
+    roles: account.roles,
+    userId: account.userId,
+    userName: account.userName,
+    staffName: account.staffName,
+    email: account.email,
+    venue: account.venue,
+    venues: account.venues
+  }
   return Promise.resolve(userInfo)
 }
 
@@ -144,6 +161,15 @@ export interface AccountRow {
   email: string
   status: '启用' | '停用'
   self?: boolean
+  /** 该账号在业务归属列里可能出现的其它名字（见后端 staffNames） */
+  aliases?: string[]
+}
+
+/** 人员归属映射总览 */
+export interface StaffMapping {
+  accounts: { key: string; name: string; aliases: string[] }[]
+  /** 业务数据里出现过、但对不上任何账号的姓名 —— 非空即表示有数据的归属悬空了 */
+  unmapped: { name: string; counts: Record<string, number> }[]
 }
 
 export async function listAccounts(): Promise<AccountRow[]> {
@@ -187,4 +213,23 @@ export async function updateAccount(
     action,
     ...data
   } as Record<string, unknown>)
+}
+
+/**
+ * 人员归属映射总览（仅超管）
+ *
+ * 归属列存的是姓名，不是外键。未映射名单非空就说明有人看不到属于自己的数据。
+ */
+export async function getStaffMapping(): Promise<StaffMapping> {
+  if (!USE_BACKEND) return { accounts: [], unmapped: [] }
+  return apiGet<StaffMapping>('/accounts/staff-mapping')
+}
+
+/** 保存某账号的别名（整体替换，仅超管） */
+export async function saveStaffAliases(
+  key: string,
+  aliases: string[]
+): Promise<{ aliases: string[] }> {
+  if (!USE_BACKEND) throw new Error('演示模式不支持修改别名')
+  return apiPut<{ aliases: string[] }>(`/accounts/${encodeURIComponent(key)}/aliases`, { aliases })
 }

@@ -38,7 +38,7 @@ final class TrainingPlanController extends Controller
         } elseif (userHasRole($u, 'R_MANAGER')) {
             $q->where('venue', $u->venue);
         } else {
-            $q->where('created_by', $u->name);
+            $q->whereIn('created_by', staffNames($u));
         }
 
         return ok($q->orderBy('id')->get()->map(fn ($p) => $this->present($p)));
@@ -55,7 +55,7 @@ final class TrainingPlanController extends Controller
             return (string) $row->venue === (string) $u->venue;
         }
 
-        return (string) $row->created_by === (string) $u->name;
+        return in_array((string) $row->created_by, staffNames($u), true);
     }
 
     /** POST /training-plans：新建一条（也可用于带客户端 id 的补传） */
