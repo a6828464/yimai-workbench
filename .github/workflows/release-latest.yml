@@ -110,71 +110,17 @@ jobs:
             --notes "$(printf '%s' "$NOTES")"
 
       - name: Publish Gitee release
-        # Gitee 国际线路附件上传偶发慢/断，失败不阻断发布（服务器 update.sh 会回退 GitHub auto-latest）
+        # Gitee 免费仓有 1GB 附件配额：历史上每版本无脑传 4 个包（含冗余的固定名副本、
+        # 安装包 11MB 还要累积），到 v3.1.54 左右撑爆，此后连续 7 个版本静默失败——
+        # 因为这里一直是 continue-on-error。现在改由 scripts/publish-gitee.py 统管：
+        # 只传必要的包、回收超出窗口的旧安装包、并把 auto-latest 跟着版本刷新
+        # （服务器 update.sh 的回退下载源指向 auto-latest，此前那份一直是旧包）。
         continue-on-error: true
         # GitHub Actions 不允许在 if 条件里读 secrets/env，因此改为脚本内判断：未配置 Token 时直接跳过
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
-          GITEE_API: https://gitee.com/api/v5
           GITEE_REPO: meng-taoo/yimai-workbench
-        run: |
-          set -euo pipefail
-          if [ -z "${GITEE_TOKEN:-}" ]; then
-            echo "GITEE_TOKEN 未配置，跳过 Gitee 发布"
-            exit 0
-          fi
-          VERSION="$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -1 | tr -d 'v')"
-          NOTES="$(awk 'BEGIN{n=0} /^## /{n++; if(n==1) next; if(n==2) exit} n==1{print}' CHANGELOG.md | sed '/^[[:space:]]*$/d')"
-          TAG="v${VERSION}"
-          BODY="$(printf '# 一麦工作台 v%s\n\n%s\n---\n由 main 分支提交 %s 自动构建。后台更新请使用该发行包。' "$VERSION" "$NOTES" "$GITHUB_SHA")"
-          existing="$(curl --fail-with-body -sS -G "$GITEE_API/repos/$GITEE_REPO/releases" \
-            --data-urlencode "access_token=$GITEE_TOKEN" \
-            --data-urlencode "page=1" --data-urlencode "per_page=100")"
-          release_id="$(printf '%s' "$existing" | python3 -c 'import json,sys; tag=sys.argv[1]; print(next((str(x["id"]) for x in json.load(sys.stdin) if x.get("tag_name")==tag), ""))' "$TAG")"
-          if [ -n "$release_id" ]; then
-            curl --fail-with-body -sS -X DELETE "$GITEE_API/repos/$GITEE_REPO/releases/$release_id" \
-              --data-urlencode "access_token=$GITEE_TOKEN"
-          fi
-          response="$(curl --fail-with-body -sS -X POST "$GITEE_API/repos/$GITEE_REPO/releases" \
-            --data-urlencode "access_token=$GITEE_TOKEN" \
-            --data-urlencode "tag_name=$TAG" \
-            --data-urlencode "name=一麦工作台 $TAG" \
-            --data-urlencode "body=$BODY" \
-            --data-urlencode "target_commitish=main")"
-          # Gitee 创建 release 的响应不含 upload_url，需用返回的 id 拼附件上传地址
-          rid="$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-          # Gitee 附件上传偶发网络失败：5 次重试 + 递增间隔 + 失败后核对附件（防止"实际已传上"的假失败与重复附件）
-          gitee_assets() {
-            curl -sS -G "$GITEE_API/repos/$GITEE_REPO/releases/$rid" \
-              --data-urlencode "access_token=$GITEE_TOKEN" 2>/dev/null \
-              | python3 -c 'import json,sys; print("\n".join(a.get("name","") for a in (json.load(sys.stdin).get("assets") or [])))' 2>/dev/null
-          }
-          upload_file() {
-            local file="$1" attempt=1 max=5
-            local delays=(5 15 30 60 60)
-            while [ "$attempt" -le "$max" ]; do
-              echo "  上传 $file（第 $attempt/$max 次）"
-              err="$(curl --http1.1 --fail-with-body -sS --connect-timeout 20 --max-time 600 \
-                -X POST "$GITEE_API/repos/$GITEE_REPO/releases/$rid/attach_files" \
-                -F "access_token=$GITEE_TOKEN" -F "file=@$file" 2>&1)" && {
-                echo "  $file 上传成功"
-                return 0
-              }
-              echo "  上传报错: $err" >&2
-              if gitee_assets | grep -qx -- "$file"; then
-                echo "  复核确认 $file 已存在于附件中，视为成功"
-                return 0
-              fi
-              if [ "$attempt" -lt "$max" ]; then
-                sleep "${delays[$((attempt-1))]}"
-              fi
-              attempt=$((attempt + 1))
-            done
-            echo "⚠ 上传 $file 连续 $max 次失败，跳过（不阻断发布）" >&2
-            return 1
-          }
-          upload_file "yimai-workbench-v${VERSION}.zip" || true
-          upload_file "yimai-workbench-latest.zip" || true
-          upload_file "yimai-workbench-installer-v${VERSION}.zip" || true
-          upload_file "yimai-workbench-installer-latest.zip" || true
-          echo "Gitee 发布流程结束（个别附件失败见上方 ⚠ 警告，不影响 GitHub 发行）"
+          GITHUB_SHA: ${{ github.sha }}
+          # 保留最近多少个版本的安装包（升级包不受影响，全留）
+          KEEP_INSTALLERS: '20'
+        run: python3 scripts/publish-gitee.py
