@@ -131,6 +131,107 @@ class StaffAliasTest extends TestCase
         $this->assertArrayNotHasKey('未分配', unmappedStaffNames());
     }
 
+    public function test_lead_write_records_owner_user_id_alongside_name(): void
+    {
+        $u = $this->user('王教练', 'coach-a');
+        Sanctum::actingAs($u);
+
+        $this->postJson('/api/leads', [
+            'leadDate' => now()->toDateString(),
+            'name' => '新客甲',
+            'phone' => '13800000009',
+            'source' => '自然到店',
+            'venue' => '绿地店',
+            'serviceTeacher' => '王教练',
+        ])->assertOk();
+
+        $lead = Lead::where('name', '新客甲')->firstOrFail();
+        $this->assertSame((int) $u->id, (int) $lead->service_teacher_user_id, '写入时应把归属 id 一起落库');
+    }
+
+    public function test_ownership_is_union_of_id_and_name(): void
+    {
+        // 口径：id 或姓名**任一命中**即算本人的。
+        // 为什么不"id 优先、姓名仅在 id 为空时兜底"：账号删除重建后老数据的 id 会悬挂，
+        // 那种写法会让姓名明明对得上的本人也看不到数据 —— 静默丢数据，且「归属映射」
+        // 也发现不了（姓名能对上账号）。宁可重复可见（可被发现），不可静默消失。
+        $wang = $this->user('王教练', 'coach-a');
+        $li = $this->user('李教练', 'coach-b');
+
+        $this->lead('王教练', 'id 与姓名不一致的行');
+        Lead::where('name', 'id 与姓名不一致的行')->update(['service_teacher_user_id' => $li->id]);
+
+        foreach ([$wang, $li] as $who) {
+            Sanctum::actingAs($who);
+            $names = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))
+                ->pluck('name')->all();
+            $this->assertContains('id 与姓名不一致的行', $names, 'id 与姓名各命中一方时两边都能看到');
+        }
+    }
+
+    public function test_stale_owner_user_ids_are_reported(): void
+    {
+        // 账号删除重建后，老数据会留下指向不存在账号的 id。姓名这条路仍能让本人看到，
+        // 但这是需要管理员处理的历史包袱 —— 面板必须把它列出来，否则会一直存在。
+        $this->user('王教练', 'coach-a');
+        $this->lead('王教练', '悬挂 id 的数据');
+        Lead::where('name', '悬挂 id 的数据')->update(['service_teacher_user_id' => 999999]);
+
+        $stale = staleOwnerUserIds();
+        $this->assertNotEmpty($stale);
+        $this->assertSame('leads', $stale[0]['table']);
+        $this->assertSame(999999, $stale[0]['user_id']);
+        $this->assertSame(1, $stale[0]['rows']);
+    }
+
+    public function test_legacy_row_without_user_id_still_falls_back_to_name(): void
+    {
+        $u = $this->user('王教练', 'coach-a');
+        // 历史行：只有姓名、没有 id（迁移未能回填的情形）
+        $this->lead('王教练', '遗留数据');
+        $this->assertNull(Lead::where('name', '遗留数据')->value('service_teacher_user_id'));
+
+        Sanctum::actingAs($u);
+        $names = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))
+            ->pluck('name')->all();
+        $this->assertContains('遗留数据', $names, 'id 缺失的历史行仍应靠姓名被本人看到');
+    }
+
+    public function test_staff_user_id_refuses_ambiguous_names(): void
+    {
+        $this->user('王教练', 'coach-a');
+        $this->assertSame(1, staffUserId('王教练'));
+
+        // 同名第二个账号出现后，解析必须拒绝而不是猜
+        $this->user('王教练', 'coach-c');
+        $this->assertNull(staffUserId('王教练'));
+
+        $this->assertNull(staffUserId(''));
+        $this->assertNull(staffUserId('查无此人'));
+        $this->assertArrayNotHasKey('王教练', staffNameToIdMap(), '歧义姓名不应出现在批量映射里');
+    }
+
+    public function test_saving_aliases_backfills_historical_rows(): void
+    {
+        // 历史行：归属列有名字、但没有 id（迁移回填时对不上任何账号）
+        $this->lead('苏米', '老数据');
+        $this->assertNull(Lead::where('name', '老数据')->value('service_teacher_user_id'));
+
+        $u = $this->user('新来的苏米', 'sumi');
+        Sanctum::actingAs($this->user('超管', 'boss', 'R_SUPER'));
+
+        // 管理员把"苏米"映射到该账号，历史行应当立刻补上 id
+        $this->putJson('/api/accounts/sumi/aliases', ['aliases' => ['苏米']])
+            ->assertOk()
+            ->assertJsonPath('data.backfilled', 1);
+
+        $this->assertSame(
+            (int) $u->id,
+            (int) Lead::where('name', '老数据')->value('service_teacher_user_id'),
+            '补完别名后历史行的归属 id 应被回填'
+        );
+    }
+
     public function test_me_payload_exposes_staff_name_separate_from_display_name(): void
     {
         $u = User::factory()->create([

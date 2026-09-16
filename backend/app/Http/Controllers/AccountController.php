@@ -71,6 +71,8 @@ final class AccountController extends Controller
                 'aliases' => StaffAlias::where('user_id', $u->id)->orderBy('id')->pluck('alias')->all(),
             ]),
             'unmapped' => array_values(unmappedStaffNames()),
+            // 归属 id 指向已不存在账号的行（账号删掉重建留下的），需要清理
+            'staleIds' => staleOwnerUserIds(),
         ]);
     }
 
@@ -117,10 +119,14 @@ final class AccountController extends Controller
             StaffAlias::create(['user_id' => $user->id, 'alias' => $a, 'source' => 'manual']);
         }
 
+        // 别名改了要把历史行的归属 id 补上 —— 迁移只在校验时跑过一次，
+        // 管理员刚映射好的那些姓名对应的老数据还需要这一步才能真正落 id。
+        $filled = backfillStaffOwnerIds();
+
         // 归属范围变了，相关缓存要失效
         invalidateBusinessCaches();
 
-        return ok(['aliases' => $aliases]);
+        return ok(['aliases' => $aliases, 'backfilled' => $filled]);
     }
 
     /** POST /accounts */

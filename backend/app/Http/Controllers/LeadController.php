@@ -9,6 +9,25 @@ use Illuminate\Http\Request;
 
 class LeadController extends Controller
 {
+    /**
+     * 归属列双写：姓名字段随请求进来，这里补上对应的 user id。
+     *
+     * id 不随改名变化、也不怕同名，是归属判断的长期依据（姓名字段保留用于展示，
+     * 同时兜住"姓名对不上任何账号"的历史行）。详见 helpers.php 的 staffUserId()。
+     */
+    private function withStaffIds(array $values): array
+    {
+        foreach (['service_teacher' => 'service_teacher_user_id',
+            'trial_teacher' => 'trial_teacher_user_id',
+            'created_by' => 'created_by_user_id'] as $nameCol => $idCol) {
+            if (array_key_exists($nameCol, $values)) {
+                $values[$idCol] = staffUserId((string) $values[$nameCol]);
+            }
+        }
+
+        return $values;
+    }
+
     private array $leadFields = ['lead_date', 'name', 'phone', 'wechat', 'demand', 'source', 'order_platform', 'venue', 'service_teacher', 'status', 'grade', 'trial_time', 'trial_topic', 'trial_teacher', 'deal_card', 'deal_amount', 'redeem_amount', 'voucher_code', 'coupon_name', 'coupon_total', 'coupon_remaining', 'trial_cards', 'remark'];
 
     /** GET /leads */
@@ -82,6 +101,7 @@ class LeadController extends Controller
             'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0|decimal:0,2', 'redeemAmount' => 'nullable|numeric|min:0|decimal:0,2',
         ]);
         $values = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields)) + ['created_by' => $r->user()->name, 'status' => $r->input('status', '新留资')];
+        $values = $this->withStaffIds($values);
         $values['lead_date'] = $values['lead_date'] ?? now()->toDateString();
         foreach (['deal_amount', 'redeem_amount'] as $f) {
             if (($values[$f] ?? '') === '') {
@@ -110,6 +130,7 @@ class LeadController extends Controller
             'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0', 'redeemAmount' => 'nullable|numeric|min:0',
         ]);
         $changes = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields));
+        $changes = $this->withStaffIds($changes);
         if (isset($changes['lead_date']) && $changes['lead_date'] === '') {
             unset($changes['lead_date']);
         }
@@ -144,12 +165,14 @@ class LeadController extends Controller
                 abort(403, '无权限：仅可删除本店留资');
             }
             if (userHasRole($u, 'R_SERVICE')) {
-                if ($lead->service_teacher !== '' && ! in_array($lead->service_teacher, staffNames($u), true) && ! in_array($lead->created_by, staffNames($u), true)) {
+                if ($lead->service_teacher !== ''
+                    && ! staffOwnsRow($u, $lead, 'service_teacher_user_id', 'service_teacher')
+                    && ! staffOwnsRow($u, $lead, 'created_by_user_id', 'created_by')) {
                     abort(403, '无权限：仅可删除自己名下或未分配的留资');
                 }
             } else {
                 $mine = in_array($u->name, [(string) $lead->service_teacher, (string) $lead->trial_teacher], true)
-                    || in_array($lead->created_by, staffNames($u), true);
+                    || staffOwnsRow($u, $lead, 'created_by_user_id', 'created_by');
                 if (! $mine) {
                     abort(403, '无权限：授课老师仅可删除自己相关的留资');
                 }

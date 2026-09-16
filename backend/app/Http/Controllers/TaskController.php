@@ -19,14 +19,14 @@ final class TaskController extends Controller
         if (userHasRole($u, 'R_SERVICE')) {
             // 服务老师（会籍顾问）：本人名下 + 待认领池
             $q->where('venue', $u->venue)
-                ->where(fn ($w) => $w->whereIn('owner', staffNames($u))->orWhere('owner', '未分配'));
+                ->where(fn ($w) => $w->where(staffOwnerFilter($u, 'owner_user_id', 'owner'))->orWhere('owner', '未分配'));
         }
         if (userHasRole($u, 'R_TEACHER')) {
             // 授课老师：只处理派给本人的任务
-            $q->where('venue', $u->venue)->whereIn('owner', staffNames($u));
+            $q->where('venue', $u->venue)->where(staffOwnerFilter($u, 'owner_user_id', 'owner'));
         }
         if (userHasRole($u, 'R_MEDIA')) {
-            $q->whereIn('owner', staffNames($u));
+            $q->where(staffOwnerFilter($u, 'owner_user_id', 'owner'));
         }
         if ($status = $r->query('status')) {
             $q->where('status', $status);
@@ -65,6 +65,7 @@ final class TaskController extends Controller
             'customer_name' => $d['customerName'],
             'venue' => $d['venue'],
             'owner' => $d['owner'] ?? '未分配',
+            'owner_user_id' => staffUserId($d['owner'] ?? null),
             'priority' => $d['priority'] ?? '中',
             'deadline' => $d['deadline'] ?? '',
             'standard' => $d['standard'] ?? '',
@@ -101,7 +102,12 @@ final class TaskController extends Controller
                 abort_unless($task->status === '待验收', 422, '仅待验收任务可执行验收');
             }
             $allowed = ['title', 'customer_name', 'venue', 'owner', 'priority', 'deadline', 'standard', 'status'];
-            $task->update(collect(camelToSnake($r->all()))->only($allowed)->all());
+            $patch = collect(camelToSnake($r->all()))->only($allowed)->all();
+            if (array_key_exists('owner', $patch)) {
+                // 改负责人时 id 一起改，否则该任务还会挂在上一个人的 id 上
+                $patch['owner_user_id'] = staffUserId((string) $patch['owner']);
+            }
+            $task->update($patch);
 
             return $task;
         });

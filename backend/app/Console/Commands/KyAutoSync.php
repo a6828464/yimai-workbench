@@ -15,9 +15,6 @@ use Throwable;
 
 class KyAutoSync extends Command
 {
-    /** KeepYoga 门店与 venueId 映射（与 KyController::import 同源） */
-    private const STORES = ['绿地店' => '1', '东部店' => '4250'];
-
     protected $signature = 'ky:autosync {--venue= : 仅同步指定门店（绿地店/东部店），缺省双店}';
 
     protected $description = 'KeepYoga 定时增量同步：双店会员/卡项/出勤，幂等（当天已同步的门店自动跳过）';
@@ -34,14 +31,14 @@ class KyAutoSync extends Command
         }
 
         $only = (string) $this->option('venue');
-        if ($only !== '' && ! isset(self::STORES[$only])) {
+        if ($only !== '' && ! isset(kyStores()[$only])) {
             $this->error("无效门店：{$only}");
 
             return self::FAILURE;
         }
 
         $results = [];
-        foreach (self::STORES as $venue => $venueId) {
+        foreach (kyStores() as $venue => $venueId) {
             if ($only !== '' && $venue !== $only) {
                 continue;
             }

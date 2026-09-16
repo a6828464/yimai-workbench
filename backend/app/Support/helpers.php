@@ -260,9 +260,9 @@ function businessNotifications(User $user): array
     if (userHasRole($user, 'R_MANAGER')) {
         $taskQ->where('venue', $user->venue);
     } elseif (userIsTeacherSide($user)) {
-        $taskQ->where('venue', $user->venue)->whereIn('owner', staffNames($user));
+        $taskQ->where('venue', $user->venue)->where(staffOwnerFilter($user, 'owner_user_id', 'owner'));
     } elseif (userHasRole($user, 'R_MEDIA')) {
-        $taskQ->whereIn('owner', staffNames($user));
+        $taskQ->where(staffOwnerFilter($user, 'owner_user_id', 'owner'));
     }
     $taskCount = $taskQ->count();
     if ($taskCount > 0) {
@@ -292,7 +292,8 @@ function businessNotifications(User $user): array
         }
     }
     if (userHasRole($user, 'R_MEDIA') && ! userHasAnyRole($user, ['R_SUPER', 'R_MANAGER']) && ! userIsTeacherSide($user)) {
-        $newLeads = Lead::whereIn('created_by', staffNames($user))->where('status', '新留资')->count();
+        $newLeads = Lead::where(staffOwnerFilter($user, 'created_by_user_id', 'created_by'))
+            ->where('status', '新留资')->count();
         if ($newLeads > 0) {
             $items[] = ['key' => 'media-leads-'.$newLeads, 'category' => 'message', 'level' => 'info', 'title' => "你录入的 {$newLeads} 条新客资待承接", 'detail' => '新媒体客资', 'path' => '/yimai/leads'];
         }
@@ -378,10 +379,213 @@ function isTeacherSide(?string $role): bool
     return in_array($role, ['R_SERVICE', 'R_TEACHER'], true);
 }
 
+/**
+ * 本地门店名 → 随心瑜 venue_id。
+ *
+ * 单一来源在 config/services.php 的 ky.stores（可用 KY_STORES 环境变量覆盖）。
+ * 之前这份映射硬编码在 KyController 的三个方法里，加店要改三处、漏一处就会出现
+ * "某店在合同页有数据、在经营概览里没有"这种很难查的现象。
+ */
+function kyStores(): array
+{
+    return config('services.ky.stores') ?: [];
+}
+
 /** 该账号是否属于老师侧（多角色任一命中） */
 function userIsTeacherSide(?User $user): bool
 {
     return userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER']);
+}
+
+/**
+ * 姓名（含别名）→ 账号 id。**唯一命中才返回**，歧义或对不上返回 null。
+ *
+ * 写入归属时用它把 id 一起落库（`service_teacher` 与 `service_teacher_user_id` 双写）：
+ * id 不随改名变化，也不怕同名，是归属判断的长期依据。
+ *
+ * 不缓存：规范名与别名都建了索引，一两次查询成本很低；而函数级 static 在长驻进程／
+ * 测试串跑时会串数据（同 `privateStudentKeys()` 的注释）。
+ */
+function staffUserId(?string $name): ?int
+{
+    $name = trim((string) $name);
+    if ($name === '') {
+        return null;
+    }
+
+    $hits = User::where('name', $name)->limit(2)->pluck('id');
+    if ($hits->count() === 1) {
+        return (int) $hits->first();
+    }
+    if ($hits->count() > 1) {
+        return null; // 同名多账号：宁可不认，也不猜
+    }
+
+    $aliases = StaffAlias::where('alias', $name)->limit(2)->pluck('user_id');
+
+    return $aliases->count() === 1 ? (int) $aliases->first() : null;
+}
+
+/**
+ * 一次取出「姓名/别名 → 账号 id」全表映射，供同步这类批量写入使用。
+ *
+ * 歧义的名字（对上多个账号）不出现在结果里 —— 调用方拿不到就写空，该行仍能靠
+ * 「姓名 + 别名」这条路被本人看到，不会掉数据。
+ *
+ * @return array<string, int>
+ */
+function staffNameToIdMap(): array
+{
+    $map = [];
+    $ambiguous = [];
+
+    foreach (User::orderBy('id')->get(['id', 'name']) as $u) {
+        $n = trim((string) $u->name);
+        if ($n !== '') {
+            isset($map[$n]) ? $ambiguous[$n] = true : $map[$n] = (int) $u->id;
+        }
+    }
+    foreach (StaffAlias::orderBy('id')->get(['user_id', 'alias']) as $a) {
+        $n = trim((string) $a->alias);
+        if ($n !== '') {
+            isset($map[$n]) ? $ambiguous[$n] = true : $map[$n] = (int) $a->user_id;
+        }
+    }
+    foreach (array_keys($ambiguous) as $n) {
+        unset($map[$n]);
+    }
+
+    return $map;
+}
+
+/**
+ * 归属条件：**id 命中，或姓名/别名命中**（两者取并集）。
+ *
+ * ## 为什么姓名这一路不能省
+ *
+ * 曾经写成「id 命中，或（**id 为空**且姓名命中）」—— 想避免"id 已指明 A、姓名还写着 B"
+ * 时两个人同时看到同一条数据。但那种写法有个静默得多的失败模式：**id 悬挂时会永久挡住
+ * 姓名兜底**。账号被删掉重建后，老数据的 `*_user_id` 指向已不存在的账号，id 不为空、
+ * 姓名又明明对得上 —— 结果是这个人永远看不到这批数据，而且「归属映射」名单也发现不了
+ * （姓名能对上账号，不会被列为未映射）。
+ *
+ * **丢数据和重复可见之间，选重复可见**：重复至少能被发现（两个人都会去跟同一条客户），
+ * 丢了就是彻底看不见。实际写入是双写的，id 与姓名指向不同人只可能来自删除重建或历史脏
+ * 数据 —— 这种情形由「归属映射」面板的异常归属提示来暴露，而不是靠查询时静默取舍。
+ *
+ * @return \Closure(\Illuminate\Database\Eloquent\Builder): void
+ */
+function staffOwnerFilter(User $user, string $idColumn, string $nameColumn): Closure
+{
+    $names = staffNames($user);
+
+    return function ($q) use ($user, $idColumn, $nameColumn, $names) {
+        $q->where($idColumn, $user->id)->orWhereIn($nameColumn, $names);
+    };
+}
+
+/**
+ * 单条记录是否属于该账号（内存判断，口径与 `staffOwnerFilter` 完全一致）：id 或姓名任一命中。
+ */
+function staffOwnsRow(User $user, $row, string $idAttribute, string $nameAttribute): bool
+{
+    // 与 staffOwnerFilter 同口径：id 或姓名任一命中即算本人的（并集，不因 id 悬挂而漏）
+    if ((int) ($row->{$idAttribute} ?? 0) === (int) $user->id) {
+        return true;
+    }
+
+    return in_array(trim((string) ($row->{$nameAttribute} ?? '')), staffNames($user), true);
+}
+
+/**
+ * 归属 id 指向了**不存在的账号**的行（账号删掉重建、或历史脏数据留下的悬挂 id）。
+ *
+ * 这类行不会丢数据（姓名那一路仍能让本人看到，见 `staffOwnerFilter`），但属于需要清理的
+ * 历史包袱：id 不清掉，将来同一批数据可能被两个人同时认领。把它列在
+ * 「人员管理 → 归属映射」里让管理员能看见、能处理，而不是靠查询时静默取舍。
+ *
+ * @return array<int, array{table: string, column: string, user_id: int, rows: int}>
+ */
+function staleOwnerUserIds(): array
+{
+    $columns = [
+        'leads' => ['service_teacher_user_id', 'trial_teacher_user_id', 'created_by_user_id'],
+        'customers' => ['consultant_user_id', 'owner_user_id'],
+        'ky_bookings' => ['teacher_user_id'],
+        'tasks' => ['owner_user_id'],
+        'training_plans' => ['created_by_user_id'],
+        'post_class_reviews' => ['teacher_user_id'],
+    ];
+
+    $valid = User::query()->pluck('id')->map(fn ($id) => (int) $id)->all();
+    $valid = array_flip($valid);
+
+    $out = [];
+    foreach ($columns as $table => $cols) {
+        if (! Schema::hasTable($table)) {
+            continue;
+        }
+        foreach ($cols as $col) {
+            if (! Schema::hasColumn($table, $col)) {
+                continue;
+            }
+            $rows = DB::table($table)
+                ->select($col, DB::raw('count(*) as c'))
+                ->whereNotNull($col)
+                ->groupBy($col)
+                ->get();
+            foreach ($rows as $r) {
+                $id = (int) $r->{$col};
+                if ($id > 0 && ! isset($valid[$id])) {
+                    $out[] = ['table' => $table, 'column' => $col, 'user_id' => $id, 'rows' => (int) $r->c];
+                }
+            }
+        }
+    }
+
+    return $out;
+}
+
+/**
+ * 归属列的 id 回填（迁移里那份逻辑的可重入版本）。
+ *
+ * 为什么需要它：管理员在「人员管理 → 归属映射」里补了别名之后，**历史行的 id 不会自己出现**
+ * ——迁移在校验时已经跑过一次了。所以改完别名要能再回填一次，把刚对上的行补上 id。
+ * 返回补了多少行。
+ */
+function backfillStaffOwnerIds(): int
+{
+    /** 表 → [姓名列 => id 列]（与迁移 add_owner_user_ids 保持一致） */
+    $columns = [
+        'leads' => ['service_teacher' => 'service_teacher_user_id', 'trial_teacher' => 'trial_teacher_user_id', 'created_by' => 'created_by_user_id'],
+        'customers' => ['consultant' => 'consultant_user_id', 'owner' => 'owner_user_id'],
+        'ky_bookings' => ['teacher_name' => 'teacher_user_id'],
+        'tasks' => ['owner' => 'owner_user_id'],
+        'training_plans' => ['created_by' => 'created_by_user_id'],
+        'post_class_reviews' => ['teacher_name' => 'teacher_user_id'],
+    ];
+
+    $map = staffNameToIdMap();
+    $filled = 0;
+
+    foreach ($columns as $table => $pairs) {
+        if (! Schema::hasTable($table)) {
+            continue;
+        }
+        foreach ($pairs as $nameColumn => $idColumn) {
+            if (! Schema::hasColumn($table, $nameColumn) || ! Schema::hasColumn($table, $idColumn)) {
+                continue;
+            }
+            foreach ($map as $name => $userId) {
+                $filled += DB::table($table)
+                    ->where($nameColumn, $name)
+                    ->whereNull($idColumn)
+                    ->update([$idColumn => $userId]);
+            }
+        }
+    }
+
+    return $filled;
 }
 
 /**
@@ -512,7 +716,7 @@ function privateStudentKeys(User $user): array
     }
 
     $rows = KyBooking::query()
-        ->whereIn('teacher_name', staffNames($user))
+        ->where(staffOwnerFilter($user, 'teacher_user_id', 'teacher_name'))
         ->where('venue', $user->venue)
         ->where('course_kind', 'private')
         ->where('status', 'signed')
@@ -560,13 +764,11 @@ function scopeCustomersForUser($query, User $user)
         return $query->where('venue', $user->venue);
     }
 
-    // 归属列存的是姓名，而姓名会变（改名/随心瑜登记不一致/历史 nickname），
-    // 所以取该账号的全部名字来匹配，而不是只比 users.name
-    $names = staffNames($user);
-
     $personScopes = [];
     if (userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER'])) {
-        $personScopes[] = fn ($q) => $q->whereIn('consultant', $names)->orWhereIn('owner', $names);
+        $personScopes[] = fn ($q) => $q
+            ->where(staffOwnerFilter($user, 'consultant_user_id', 'consultant'))
+            ->orWhere(staffOwnerFilter($user, 'owner_user_id', 'owner'));
     }
     if (in_array('R_TEACHER', $roles, true)) {
         $keys = privateStudentKeys($user);
@@ -610,17 +812,18 @@ function scopeLeadsForUser($query, User $user)
         return $query->where('venue', $user->venue);
     }
 
-    $names = staffNames($user);
-
     $scopes = [];
     if (in_array('R_SERVICE', $roles, true)) {
         // 服务老师是客资承接主体：本人名下的 + 待承接池
-        $scopes[] = fn ($q) => $q->whereIn('service_teacher', $names)->orWhere('service_teacher', '');
+        $scopes[] = fn ($q) => $q
+            ->where(staffOwnerFilter($user, 'service_teacher_user_id', 'service_teacher'))
+            ->orWhere('service_teacher', '');
     }
     if (in_array('R_TEACHER', $roles, true)) {
         $keys = privateStudentKeys($user);
-        $scopes[] = function ($q) use ($names, $keys) {
-            $q->whereIn('service_teacher', $names)->orWhereIn('trial_teacher', $names);
+        $scopes[] = function ($q) use ($user, $keys) {
+            $q->where(staffOwnerFilter($user, 'service_teacher_user_id', 'service_teacher'))
+                ->orWhere(staffOwnerFilter($user, 'trial_teacher_user_id', 'trial_teacher'));
             if ($keys['phones'] !== []) {
                 $q->orWhereIn('phone', $keys['phones']);
             }
@@ -674,18 +877,24 @@ function canAccessCustomer(User $user, Customer $customer): bool
         return true;
     }
     // 老师侧：名下会员 ∪ 私教课学员（多角色即两个条件的并集）
-    if (userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER'])
-        && array_intersect(staffNames($user), [$customer->owner, $customer->consultant]) !== []) {
-        return true;
-    }
-    if (userHasRole($user, 'R_TEACHER') && privateTeaches($user, $customer)) {
-        return true;
+    //
+    // 与 staffOwnerFilter 同一口径：id 或姓名任一命中（并集），不因 id 悬挂而漏掉本人数据
+    if (userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER'])) {
+        $names = staffNames($user);
+        if ((int) $customer->owner_user_id === (int) $user->id
+            || (int) $customer->consultant_user_id === (int) $user->id
+            || in_array($customer->owner, $names, true)
+            || in_array($customer->consultant, $names, true)) {
+            return true;
+        }
+        if (privateTeaches($user, $customer)) {
+            return true;
+        }
     }
 
     return false;
 }
 
-/** 该授课老师是否给这位会员上过私教课（只认私教） */
 function privateTeaches(User $user, Customer $customer): bool
 {
     $keys = privateStudentKeys($user);

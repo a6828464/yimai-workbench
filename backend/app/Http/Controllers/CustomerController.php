@@ -270,6 +270,7 @@ class CustomerController extends Controller
                 'venue' => $c->venue,
                 'title' => $taskSpec['title'],
                 'owner' => $taskSpec['owner'],
+                'owner_user_id' => staffUserId($taskSpec['owner']),
                 'priority' => $taskSpec['priority'],
                 'deadline' => $deadline,
                 'status' => '待接收',

@@ -187,6 +187,23 @@
         </ElTableColumn>
       </ElTable>
 
+      <div v-if="mapDlg.staleIds.length" class="mt-4">
+        <div class="mb-1 text-sm font-500">待清理：归属 id 指向已不存在的账号</div>
+        <div class="text-xs text-gray-400 mb-2">
+          账号删掉重建后会留下这些行。本人仍能通过姓名看到数据，但建议清掉 id
+          以免将来被两人同时认领。
+        </div>
+        <ElTag
+          v-for="(s, i) in mapDlg.staleIds"
+          :key="`${s.table}-${s.column}-${i}`"
+          size="small"
+          type="warning"
+          class="mr-1 mb-1"
+        >
+          {{ s.table }}.{{ s.column }} → 账号 {{ s.user_id }}（{{ s.rows }} 行）
+        </ElTag>
+      </div>
+
       <div class="mt-4">
         <div class="mb-2 text-sm font-500">各账号的别名</div>
         <div class="text-xs text-gray-400 mb-2">
@@ -280,6 +297,7 @@
     saving: false,
     accounts: [] as { key: string; name: string; aliases: string[] }[],
     unmapped: [] as { name: string; counts: Record<string, number> }[],
+    staleIds: [] as { table: string; column: string; user_id: number; rows: number }[],
     aliases: {} as Record<string, string[]>,
     // 「未映射的姓名 → 要映射到哪个账号」，保存时并入该账号的别名
     picks: {} as Record<string, string>
@@ -295,6 +313,7 @@
       const d = await getStaffMapping()
       mapDlg.accounts = d.accounts
       mapDlg.unmapped = d.unmapped
+      mapDlg.staleIds = d.staleIds
       mapDlg.aliases = Object.fromEntries(d.accounts.map((a) => [a.key, [...a.aliases]]))
       mapDlg.picks = {}
     } catch (e) {

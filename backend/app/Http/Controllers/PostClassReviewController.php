@@ -44,7 +44,7 @@ final class PostClassReviewController extends Controller
         }
         if (userHasRole($u, 'R_TEACHER')) {
             return (int) $row->teacher_user_id === (int) $u->id
-                || in_array((string) $row->teacher_name, staffNames($u), true);
+                || staffOwnsRow($u, $row, 'teacher_user_id', 'teacher_name');
         }
         if (userHasRole($u, 'R_SERVICE')) {
             return $this->serviceOwns($u, $row);
@@ -64,7 +64,7 @@ final class PostClassReviewController extends Controller
         }
         if ($row->lead_id) {
             $l = Lead::find($row->lead_id);
-            if ($l && in_array((string) $l->service_teacher, staffNames($u), true)) {
+            if ($l !== null && staffOwnsRow($u, $l, 'service_teacher_user_id', 'service_teacher')) {
                 return true;
             }
         }
@@ -72,14 +72,14 @@ final class PostClassReviewController extends Controller
         $phone = (string) $row->student_phone;
         if ($phone !== '') {
             $owned = Customer::where('phone', $phone)->where('venue', $row->venue)
-                ->where(fn ($w) => $w->whereIn('consultant', staffNames($u))->orWhereIn('owner', staffNames($u)))
+                ->where(fn ($w) => $w->where(staffOwnerFilter($u, 'consultant_user_id', 'consultant'))->orWhere(staffOwnerFilter($u, 'owner_user_id', 'owner')))
                 ->exists();
             if ($owned) {
                 return true;
             }
 
             return Lead::where('phone', $phone)->where('venue', $row->venue)
-                ->whereIn('service_teacher', staffNames($u))->exists();
+                ->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher'))->exists();
         }
 
         return false;
@@ -140,11 +140,11 @@ final class PostClassReviewController extends Controller
             ->whereNotIn('status', ['cancelled', 'no_show']);
         $venueFilter($bookingQ);
         if (userHasRole($u, 'R_TEACHER')) {
-            $bookingQ->whereIn('teacher_name', staffNames($u));
+            $bookingQ->where(staffOwnerFilter($u, 'teacher_user_id', 'teacher_name'));
         } elseif ($isService) {
             // 服务老师不授课：看自己名下会员上过的课
             $myPhones = Customer::query()->where('venue', $u->venue)
-                ->where(fn ($w) => $w->whereIn('consultant', staffNames($u))->orWhereIn('owner', staffNames($u)))
+                ->where(fn ($w) => $w->where(staffOwnerFilter($u, 'consultant_user_id', 'consultant'))->orWhere(staffOwnerFilter($u, 'owner_user_id', 'owner')))
                 ->where('phone', '!=', '')->pluck('phone')->all();
             $bookingQ->whereIn('phone', $myPhones !== [] ? $myPhones : ['__none__']);
         }
@@ -252,7 +252,7 @@ final class PostClassReviewController extends Controller
         // ---------- 2) 留资分配给他的（服务老师与授课老师都看自己的） ----------
         $leads = [];
         $myLeadQ = Lead::query()->where(function ($w) use ($u) {
-            $w->whereIn('service_teacher', staffNames($u))->orWhereIn('trial_teacher', staffNames($u));
+            $w->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher'))->orWhere(staffOwnerFilter($u, 'trial_teacher_user_id', 'trial_teacher'));
         });
         $venueFilter($myLeadQ);
         foreach ($myLeadQ->orderByDesc('id')->limit(200)->get() as $l) {
@@ -277,7 +277,7 @@ final class PostClassReviewController extends Controller
         // ---------- 3) 会籍顾问归属他的会员 ----------
         $members = [];
         $myCustomerQ = Customer::query()
-            ->where(fn ($w) => $w->whereIn('consultant', staffNames($u))->orWhereIn('owner', staffNames($u)));
+            ->where(fn ($w) => $w->where(staffOwnerFilter($u, 'consultant_user_id', 'consultant'))->orWhere(staffOwnerFilter($u, 'owner_user_id', 'owner')));
         $venueFilter($myCustomerQ);
         foreach ($myCustomerQ->orderByDesc('id')->limit(200)->get() as $c) {
             $members[] = [
@@ -319,14 +319,14 @@ final class PostClassReviewController extends Controller
             $q->where('venue', $u->venue);
         }
         if (userHasRole($u, 'R_TEACHER')) {
-            $q->where(fn ($w) => $w->where('teacher_user_id', $u->id)->orWhereIn('teacher_name', staffNames($u)));
+            $q->where(fn ($w) => $w->where('teacher_user_id', $u->id)->orWhere(staffOwnerFilter($u, 'teacher_user_id', 'teacher_name')));
         }
         if (userHasRole($u, 'R_SERVICE')) {
             // 服务老师：自己名下会员/客资的课后分析（顾问衔接用）
             $customerIds = Customer::query()->where('venue', $u->venue)
-                ->where(fn ($w) => $w->whereIn('consultant', staffNames($u))->orWhereIn('owner', staffNames($u)))
+                ->where(fn ($w) => $w->where(staffOwnerFilter($u, 'consultant_user_id', 'consultant'))->orWhere(staffOwnerFilter($u, 'owner_user_id', 'owner')))
                 ->pluck('id')->all();
-            $leadIds = Lead::query()->where('venue', $u->venue)->whereIn('service_teacher', staffNames($u))
+            $leadIds = Lead::query()->where('venue', $u->venue)->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher'))
                 ->pluck('id')->all();
             $q->where(function ($w) use ($customerIds, $leadIds) {
                 $w->whereIn('customer_id', $customerIds ?: [-1])
@@ -560,6 +560,7 @@ final class PostClassReviewController extends Controller
             'status' => '待老师确认',
             'source' => 'fallback',
             'created_by' => (string) ($row->teacher_name ?: $u->name),
+            'created_by_user_id' => staffUserId((string) ($row->teacher_name ?: $u->name)),
             'source_review_id' => $row->id,
             'source_body_test_id' => $payload['bodyTest']['id'] ?? null,
         ]);
@@ -620,7 +621,7 @@ final class PostClassReviewController extends Controller
         if (userHasRole($u, 'R_SUPER')) {
             // 双店
         } elseif (userHasRole($u, 'R_TEACHER')) {
-            $q->whereIn('teacher_name', staffNames($u))->where('venue', $u->venue);
+            $q->where(staffOwnerFilter($u, 'teacher_user_id', 'teacher_name'))->where('venue', $u->venue);
         } else {
             $q->where('venue', $u->venue);
         }

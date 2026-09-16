@@ -46,7 +46,7 @@ final class KyController extends Controller
     public function pendingContracts(Request $r)
     {
         abort_unless(userHasAnyRole($r->user(), ['R_SUPER', 'R_MANAGER']), 403, '仅店长及以上可查看合同');
-        $stores = ['绿地店' => '1', '东部店' => '4250'];
+        $stores = kyStores();
         if (userHasRole($r->user(), 'R_MANAGER')) {
             $stores = [$r->user()->venue => $stores[$r->user()->venue]];
         }
@@ -126,7 +126,7 @@ final class KyController extends Controller
     public function overview(Request $r)
     {
         abort_unless(userHasAnyRole($r->user(), ['R_SUPER', 'R_MANAGER']), 403, '仅店长及以上可查看经营概览');
-        $stores = ['绿地店' => '1', '东部店' => '4250'];
+        $stores = kyStores();
         if (userHasRole($r->user(), 'R_MANAGER')) {
             $stores = [$r->user()->venue => $stores[$r->user()->venue]];
         }
@@ -208,7 +208,7 @@ final class KyController extends Controller
     public function import(Request $r)
     {
         requireSuper($r);
-        $stores = ['绿地店' => '1', '东部店' => '4250'];
+        $stores = kyStores();
         $venue = (string) $r->input('venue');
         $venueId = (string) $r->input('venueId');
         abort_unless(isset($stores[$venue]) && $stores[$venue] === $venueId, 422, '门店参数无效');

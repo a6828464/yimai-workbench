@@ -170,6 +170,8 @@ export interface StaffMapping {
   accounts: { key: string; name: string; aliases: string[] }[]
   /** 业务数据里出现过、但对不上任何账号的姓名 —— 非空即表示有数据的归属悬空了 */
   unmapped: { name: string; counts: Record<string, number> }[]
+  /** 归属 id 指向已不存在账号的行（账号删掉重建留下的），需要清理 */
+  staleIds: { table: string; column: string; user_id: number; rows: number }[]
 }
 
 export async function listAccounts(): Promise<AccountRow[]> {
@@ -221,7 +223,7 @@ export async function updateAccount(
  * 归属列存的是姓名，不是外键。未映射名单非空就说明有人看不到属于自己的数据。
  */
 export async function getStaffMapping(): Promise<StaffMapping> {
-  if (!USE_BACKEND) return { accounts: [], unmapped: [] }
+  if (!USE_BACKEND) return { accounts: [], unmapped: [], staleIds: [] }
   return apiGet<StaffMapping>('/accounts/staff-mapping')
 }
 

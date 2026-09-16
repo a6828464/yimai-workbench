@@ -39,6 +39,15 @@ return [
     'ky' => [
         'phone' => env('KY_PHONE'),
         'password' => env('KY_PASSWORD'),
+        // 本地门店名 → 随心瑜 venue_id。
+        //
+        // 这份映射原先硬编码在 KyController 的三个方法里，加第三家店要改三处、
+        // 漏一处就会出现"某店在合同页有数据、在经营概览里没有"这类诡异现象。
+        // 放到配置里只改一处；env 覆盖用 KY_STORES='{"绿地店":"1","东部店":"4250"}'。
+        'stores' => json_decode((string) env('KY_STORES', ''), true) ?: [
+            '绿地店' => '1',
+            '东部店' => '4250',
+        ],
     ],
 
     // Gitee API（版本更新对比远端提交）

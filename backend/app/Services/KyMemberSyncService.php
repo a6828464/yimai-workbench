@@ -37,6 +37,11 @@ class KyMemberSyncService
         $artifactWriter = SyncArtifactWriter::from($artifactContext, $venue);
         $snapshotDate = CarbonImmutable::today();
 
+        // 姓名 → 账号 id 的全表映射，一次取好。
+        // 归属列存的是姓名（会变、会撞），id 才是长期依据；批量写时逐行查库太慢，
+        // 所以在这里取一次、下列循环里用数组查。
+        $staffIds = staffNameToIdMap();
+
         $members = self::pagedRows('member/api/getmembersbycondwithpager', [
             'cond' => '', 'consultant_id' => -1, 'venue_id' => $venueId,
         ], ['members', 'list'], $deadline);
@@ -186,6 +191,7 @@ class KyMemberSyncService
                     'venue' => $venue,
                     'source' => $source,
                     'consultant' => $consultant,
+                    'consultant_user_id' => $staffIds[$consultant] ?? null,
                     'main_card' => $cardSummary['main_card'],
                     'remain_times' => $cardSummary['remain_times'],
                     'expire_date' => $cardSummary['expire_date'],
@@ -217,6 +223,7 @@ class KyMemberSyncService
                 if (! $customer) {
                     Customer::create($changes + [
                         'layer' => 'P4', 'status' => '待完善', 'owner' => $consultant ?: '未分配',
+                        'owner_user_id' => $staffIds[$consultant] ?? null,
                         'next_action' => '分配负责人并完善会员档案', 'external_id' => $externalId,
                     ]);
                     $created++;
@@ -230,7 +237,11 @@ class KyMemberSyncService
                 }
 
                 if ($customer->layer === 'P5' && $customer->main_card === '待同步卡项') {
-                    $changes += ['layer' => 'P4', 'status' => '待完善', 'owner' => $consultant ?: '未分配', 'next_action' => '分配负责人并完善会员档案'];
+                    $changes += [
+                        'layer' => 'P4', 'status' => '待完善', 'owner' => $consultant ?: '未分配',
+                        'owner_user_id' => $staffIds[$consultant] ?? null,
+                        'next_action' => '分配负责人并完善会员档案',
+                    ];
                 }
                 $customer->fill($changes);
                 if ($customer->isDirty()) {
@@ -600,13 +611,27 @@ class KyMemberSyncService
 
     private static function upsertBookingFacts(array $facts): void
     {
+        // 按唯一教师名解析一次 id（一节课几十条事实、老师只有几个），再回填到每一行
+        $teacherIds = [];
+        foreach (array_unique(array_column($facts, 'teacher_name')) as $tn) {
+            if ((string) $tn !== '') {
+                $teacherIds[$tn] = staffUserId((string) $tn);
+            }
+        }
+        foreach ($facts as &$fact) {
+            $fact['teacher_user_id'] = $teacherIds[$fact['teacher_name'] ?? ''] ?? null;
+        }
+        unset($fact);
+
         foreach (array_chunk($facts, 500) as $chunk) {
             $changed = self::changedFacts('ky_bookings', $chunk, [
                 'member_id', 'member_name', 'phone', 'start_at', 'course_name', 'teacher_name',
+                'teacher_user_id',
                 'status_raw', 'status', 'is_trial', 'course_kind', 'raw',
             ]);
             KyBooking::upsert($changed, ['source_key'], [
                 'member_id', 'member_name', 'phone', 'start_at', 'course_name', 'teacher_name',
+                'teacher_user_id',
                 'status_raw', 'status', 'is_trial', 'course_kind', 'raw', 'updated_at',
             ]);
         }
