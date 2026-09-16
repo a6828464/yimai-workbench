@@ -17,6 +17,22 @@ class LeadController extends Controller
      */
     private function withStaffIds(array $values): array
     {
+        // 顶层 trial_teacher 是旧版"单节"模型留下的字段，现在老师实际填在**逐节卡片**
+        // (trial_cards[].teacher) 里。这里把第一节的老师镜像过来，两个原因：
+        //   1. 列表/其它读取方仍按顶层字段取值，不镜像就一直是空的；
+        //   2. 老师的**归属与可见性**依赖它（scopeLeadsForUser 用 trial_teacher 判断
+        //      "这条留资是不是我上的课"）—— 只填卡片的话，老师看不到自己上过的课。
+        // 跟着卡片走：卡片里改了老师，这里同步改；卡片全空则保持原值，不清空。
+        if (array_key_exists('trial_cards', $values)) {
+            foreach ((array) $values['trial_cards'] as $card) {
+                $teacher = trim((string) (is_array($card) ? ($card['teacher'] ?? '') : ''));
+                if ($teacher !== '') {
+                    $values['trial_teacher'] = $teacher;
+                    break;
+                }
+            }
+        }
+
         foreach (['service_teacher' => 'service_teacher_user_id',
             'trial_teacher' => 'trial_teacher_user_id',
             'created_by' => 'created_by_user_id'] as $nameCol => $idCol) {

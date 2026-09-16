@@ -232,6 +232,59 @@ class StaffAliasTest extends TestCase
         );
     }
 
+    public function test_lead_teacher_is_mirrored_from_trial_cards(): void
+    {
+        // 老师实际填在逐节卡片里；顶层 trial_teacher 是旧版单节字段，必须跟着卡片走 ——
+        // 否则（a）列表的上课老师列为空，（b）该老师看不到自己上过的这条留资。
+        $ru = $this->user('冰璐', 'coach-bing');
+        Sanctum::actingAs($this->user('超管', 'boss', 'R_SUPER'));
+
+        $this->postJson('/api/leads', [
+            'leadDate' => now()->toDateString(),
+            'name' => '体验客甲',
+            'phone' => '13800000011',
+            'source' => '美团',
+            'venue' => '绿地店',
+            'trialCards' => [
+                ['session' => 1, 'teacher' => '冰璐', 'topic' => '内观流'],
+                ['session' => 2, 'teacher' => '婷婷', 'topic' => '核心床小班'],
+            ],
+        ])->assertOk();
+
+        $lead = Lead::where('name', '体验客甲')->firstOrFail();
+        $this->assertSame('冰璐', $lead->trial_teacher, '顶层老师应取第一节非空的卡片值');
+        $this->assertSame((int) $ru->id, (int) $lead->trial_teacher_user_id);
+
+        // 该老师应当能看到这条留资（归属依赖顶层字段）
+        Sanctum::actingAs($ru);
+        $names = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))
+            ->pluck('name')->all();
+        $this->assertContains('体验客甲', $names);
+    }
+
+    public function test_trial_teacher_follows_card_edits(): void
+    {
+        $this->user('冰璐', 'coach-bing');
+        Sanctum::actingAs($this->user('超管', 'boss', 'R_SUPER'));
+
+        $this->postJson('/api/leads', [
+            'leadDate' => now()->toDateString(),
+            'name' => '体验客乙',
+            'phone' => '13800000012',
+            'source' => '美团',
+            'venue' => '绿地店',
+            'trialCards' => [['session' => 1, 'teacher' => '冰璐']],
+        ])->assertOk();
+
+        // 卡片里把老师改掉，顶层要跟着改（不能因为"已有值"就不动）
+        $lead = Lead::where('name', '体验客乙')->firstOrFail();
+        $this->patchJson("/api/leads/{$lead->id}", [
+            'trialCards' => [['session' => 1, 'teacher' => '婷婷']],
+        ])->assertOk();
+
+        $this->assertSame('婷婷', $lead->fresh()->trial_teacher);
+    }
+
     public function test_me_payload_exposes_staff_name_separate_from_display_name(): void
     {
         $u = User::factory()->create([

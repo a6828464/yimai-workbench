@@ -79,9 +79,17 @@
             <ElTag v-else size="small" type="danger">待分配</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="上课老师" width="95">
+        <ElTableColumn label="上课老师" width="120">
           <template #default="{ row }">
-            <span v-if="row.trialTeacher">{{ row.trialTeacher }}</span>
+            <span v-if="classTeachers(row).length">{{ classTeachers(row).join('、') }}</span>
+            <span v-else class="text-gray-300">—</span>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="体验结果" width="90">
+          <template #default="{ row }">
+            <ElTag v-if="trialOutcome(row)" size="small" :type="trialOutcome(row)!.type">{{
+              trialOutcome(row)!.text
+            }}</ElTag>
             <span v-else class="text-gray-300">—</span>
           </template>
         </ElTableColumn>
@@ -940,6 +948,39 @@
     return map[status] ?? 'info'
   }
 
+  /**
+   * 上课老师。
+   *
+   * 数据实际存在**逐节体验课卡片**里（`trialCards[].teacher`）；顶层的 `trialTeacher`
+   * 是旧版"单节"模型留下的字段，只兼容还没转成卡片的老数据。列表原先只读顶层字段，
+   * 于是详情里逐节填了老师、列表却一直是空的。
+   */
+  function classTeachers(row: YimaiLead): string[] {
+    const fromCards = (row.trialCards ?? [])
+      .slice()
+      .sort((a, b) => (a.session ?? 0) - (b.session ?? 0))
+      .map((c) => (c.teacher ?? '').trim())
+      .filter(Boolean)
+    if (fromCards.length) return [...new Set(fromCards)]
+    return row.trialTeacher ? [row.trialTeacher] : []
+  }
+
+  /**
+   * 体验结果：这节课到底上了没有。
+   *
+   * 优先看逐节卡片上的结果标记 —— 那是「今日待办 → 体验课」标记"已接待/爽约"时回写的，
+   * 最贴近事实；卡片没有标记时再回落到留资状态（已体验/已成交 → 已体验，爽约 → 已爽约）。
+   */
+  function trialOutcome(row: YimaiLead): { text: string; type: 'success' | 'danger' } | null {
+    const cards = row.trialCards ?? []
+    if (cards.some((c) => c.attended)) return { text: '已体验', type: 'success' }
+    if (cards.some((c) => c.noShow)) return { text: '已爽约', type: 'danger' }
+    if (row.status === '已体验' || row.status === '已成交')
+      return { text: '已体验', type: 'success' }
+    if (row.status === '爽约') return { text: '已爽约', type: 'danger' }
+    return null
+  }
+
   // ---------- 移动端卡片 ----------
   //
   // 表格 16 列，手机可见区只有 310px（内容宽 1840px），横滑也看不到完整信息，
@@ -1005,7 +1046,8 @@
             t.total !== null && t.total !== undefined
               ? ` ${t.remaining ?? t.total}/${t.total}次`
               : ''
-          return `第${t.session}节${flags ? `（${flags}）` : ''}${remain}`
+          const who = (t.teacher ?? '').trim()
+          return `第${t.session}节${who ? ` ${who}` : ''}${flags ? `（${flags}）` : ''}${remain}`
         })
         .join('；')
     }
