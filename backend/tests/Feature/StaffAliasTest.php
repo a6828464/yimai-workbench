@@ -81,6 +81,25 @@ class StaffAliasTest extends TestCase
         $this->assertNotContains('别人的客户', $names);
     }
 
+    /**
+     * 别名归属的留资必须「看得见也改得动」。
+     *
+     * 可见范围走 staffNames（含别名），而准入校验（canAccessLead）此前只比规范名，
+     * 于是改过名/有别名的老师会看到一批点开就 403 的客资 —— 看得见但动不了最难排查。
+     */
+    public function test_lead_assigned_under_alias_is_editable_not_just_visible(): void
+    {
+        $u = $this->user('王教练', 'coach-alias-patch');
+        StaffAlias::create(['user_id' => $u->id, 'alias' => '王老师', 'source' => 'manual']);
+        $lead = $this->lead('王老师', '别名归属的客户');
+
+        Sanctum::actingAs($u);
+        $this->patchJson("/api/leads/{$lead->id}", ['remark' => '已电话联系'])
+            ->assertOk();
+
+        $this->assertDatabaseHas('leads', ['id' => $lead->id, 'remark' => '已电话联系']);
+    }
+
     public function test_alias_cannot_belong_to_two_accounts(): void
     {
         $a = $this->user('王教练', 'coach-a');

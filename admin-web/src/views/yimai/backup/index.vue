@@ -82,10 +82,22 @@
         <ElCol :xs="12" :md="9">
           <ElFormItem label="纳入 .env 凭据">
             <ElSwitch v-model="form.keepEnv" />
-            <span class="text-xs text-gray-400 ml-2">换机恢复更省事；备份包请妥善保管</span>
+            <span class="text-xs text-gray-400 ml-2"
+              >默认关闭。开启后包内含 APP_KEY 与全部口令</span
+            >
           </ElFormItem>
         </ElCol>
       </ElRow>
+      <!-- 凭据外泄面：备份包会被上传到第三方存储，.env 里的 APP_KEY 能解密全部加密字段 -->
+      <ElAlert
+        v-if="form.keepEnv"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="!mt-1"
+        title="备份包将包含 .env（APP_KEY、数据库口令、随心瑜与发布用 Token）"
+        description="启用前请确认远端存储可信。恢复流程本身不需要 .env，只有换机重建才用得上，建议改为手工保管。"
+      />
       <ElDivider class="!my-2" />
       <ElRow :gutter="12">
         <ElCol :xs="12" :md="4">
@@ -336,7 +348,8 @@
     enabled: false,
     runAt: '03:30',
     keepLocal: 7,
-    keepEnv: true,
+    // 与后端 BackupService::defaultConfig() 保持一致：默认不打包 .env（内含 APP_KEY 与全部口令）
+    keepEnv: false,
     remote: {
       type: 'none',
       url: '',

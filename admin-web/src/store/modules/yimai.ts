@@ -1,5 +1,19 @@
 import { defineStore } from 'pinia'
+import { USE_BACKEND } from '@/api/backend'
 import { useUserStore } from './user'
+
+/**
+ * 演示种子开关。
+ *
+ * 生产构建里 `USE_BACKEND` 是编译期常量 true（`VITE_USE_BACKEND=true`），所以
+ * `if (!DEMO_SEEDS)` 整块会被打包器消除 —— 种子数据连同下面的假会员名单不会进包。
+ * 之前种子是无条件调用的，于是入口 chunk 里躺着「王雅琴/郑好/许静姝…」一整套编造的
+ * 客户名单（约 10KB），任何人都能从发布产物里读到。
+ *
+ * 加 try 是因为打包器对 `if (常量) {}` 的消除是可靠的，但对 `x ? a : b` 里带函数调用
+ * 的分支会保守处理，所以判断必须写成语句形式，别改成三元表达式。
+ */
+const DEMO_SEEDS = !USE_BACKEND
 
 export interface YimaiLead {
   id: number
@@ -662,27 +676,39 @@ export const useYimaiStore = defineStore(
       nextLeadId: 100,
       nextAuditId: 1000,
       nextCustomerId: 5000,
-      leads: seedLeads(),
+      leads: [],
       auditLogs: [],
       snapshot: null,
-      customers: seedCustomers(),
+      customers: [],
       rules: { ...DEFAULT_RULES }
     })
+
+    // 演示种子（仅本地界面开发）。生产构建里这一块会被整段消除，见 DEMO_SEEDS 说明。
+    if (DEMO_SEEDS) {
+      state.value.leads = seedLeads()
+      state.value.customers = seedCustomers()
+    }
 
     function ensureSeed() {
       if (state.value.version !== SEED_VERSION) {
         const old = state.value
         // 版本升级：基础种子刷新；保留KeepYoga导入的外部会员与审计/快照/规则
         const imported = (old.customers ?? []).filter((c) => c.externalId?.startsWith('ky:'))
+        let seededLeads: YimaiLead[] = []
+        let seededCustomers: YimaiCustomer[] = []
+        if (DEMO_SEEDS) {
+          seededLeads = seedLeads()
+          seededCustomers = seedCustomers()
+        }
         state.value = {
           version: SEED_VERSION,
           nextLeadId: 100,
           nextAuditId: old.nextAuditId,
           nextCustomerId: old.nextCustomerId || 5000,
-          leads: seedLeads(),
+          leads: seededLeads,
           auditLogs: old.auditLogs,
           snapshot: old.snapshot,
-          customers: [...seedCustomers(), ...imported],
+          customers: [...seededCustomers, ...imported],
           rules: old.rules ?? { ...DEFAULT_RULES }
         }
       }
@@ -822,11 +848,15 @@ export const useYimaiStore = defineStore(
         nextLeadId: 100,
         nextAuditId: state.value.nextAuditId,
         nextCustomerId: 5000,
-        leads: seedLeads(),
+        leads: [],
         auditLogs: [],
         snapshot: null,
-        customers: seedCustomers(),
+        customers: [],
         rules: { ...DEFAULT_RULES }
+      }
+      if (DEMO_SEEDS) {
+        state.value.leads = seedLeads()
+        state.value.customers = seedCustomers()
       }
     }
 

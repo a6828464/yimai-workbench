@@ -10,6 +10,7 @@ use App\Models\Lead;
 use App\Models\PostClassReview;
 use App\Models\Task;
 use App\Models\TodoAction;
+use App\Services\VisitMetrics;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -157,9 +158,11 @@ final class TodayController extends Controller
 
         // 可见会员：统一走 scope（服务老师＝本人名下；授课老师＝本人私教学员 ∪ 本人会籍会员）
         $customers = scopeCustomersForUser(Customer::query(), $u)
-            ->get(['id', 'name', 'consultant', 'owner', 'external_id', 'phone']);
+            ->get(['id', 'name', 'consultant', 'owner', 'consultant_user_id', 'owner_user_id', 'external_id', 'phone']);
+        // 「我的会员」按 id 或姓名/别名并集判断，与 scopeCustomersForUser 同口径
         $serviceMemberCount = $customers->filter(
-            fn ($c) => in_array($u->name, [(string) $c->consultant, (string) $c->owner], true)
+            fn ($c) => staffOwnsRow($u, $c, 'consultant_user_id', 'consultant')
+                || staffOwnsRow($u, $c, 'owner_user_id', 'owner')
         )->count();
 
         $teachStudentCount = 0;
@@ -177,7 +180,7 @@ final class TodayController extends Controller
             ->when($isCoach, fn ($q) => $q->where(staffOwnerFilter($u, 'teacher_user_id', 'teacher_name')));
 
         $bookings = $bookingQ()->whereBetween('start_at', [$start, $end])
-            ->get(['start_at', 'status', 'course_kind', 'member_id', 'phone']);
+            ->get(['start_at', 'status', 'course_kind', 'is_trial', 'member_id', 'member_name', 'phone']);
         $signed = $bookings->where('status', 'signed');
         $classCount = $signed->count();
         $kindCount = [
@@ -203,9 +206,11 @@ final class TodayController extends Controller
             }
         }
 
-        // 个人客资漏斗（口径与全店一致：成交 ÷ 到店）
-        $leadRows = Lead::query()->where('venue', $u->venue)
-            ->when($isCoach, function ($q) use ($u) {
+        // 个人客资范围：授课老师＝本人上过体验课的＋本人作为会籍顾问的＋本人私教学员；
+        // 服务老师＝本人名下的。抽成闭包，供下面的列表与漏斗共用同一范围。
+        $personalLeadScope = function () use ($u, $isCoach) {
+            $q = Lead::query()->where('venue', $u->venue);
+            $q->when($isCoach, function ($q) use ($u) {
                 $keys = privateStudentKeys($u);
                 $q->where(function ($w) use ($u, $keys) {
                     $w->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher'))->orWhere(staffOwnerFilter($u, 'trial_teacher_user_id', 'trial_teacher'));
@@ -213,41 +218,53 @@ final class TodayController extends Controller
                         $w->orWhereIn('phone', $keys['phones']);
                     }
                 });
-            }, fn ($q) => $q->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher')))
-            // phone / name 必须一起取：身份键要靠它们，漏取会让所有人塌成同一个 key
-            ->get(['id', 'phone', 'name', 'status', 'deal_at', 'deal_amount', 'lead_date', 'service_teacher']);
+            }, fn ($q) => $q->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher')));
 
-        // 到店/成交与全店口径保持一致：按人去重（同一人来多次算一个人），
-        // 成交只统计「到店体验过的人」里的成交，分子分母同源。
-        //
-        // 这里刻意用纯数组而不是集合：$leadRows 是 Eloquent 集合，
-        // 其 intersect()/unique() 走 Eloquent 版 getDictionary()，会对字符串元素调 getKey() 直接报错。
-        $identity = fn ($l) => preg_replace('/\D+/', '', (string) $l->phone) ?: 'n:'.(string) $l->name;
-        $visitSet = [];
+            return $q;
+        };
+
+        // 个人客资列表：phone / name 必须一起取（身份键要靠它们，漏取会让人塌成同一个 key）；
+        // service_teacher_user_id 一起取（「我的客资」按 id 或姓名并集判断）
+        $leadRows = $personalLeadScope()
+            ->get(['id', 'phone', 'name', 'status', 'deal_at', 'deal_amount', 'lead_date', 'service_teacher', 'service_teacher_user_id']);
+
+        // 到店/成交口径与全店**完全同源**（VisitMetrics：三来源并集 + 分子分母同源），
+        // 只把范围收窄成本人。此前这里只认留资状态一条来源，于是「老师只勾了体验课卡片、
+        // 没把状态推进到已体验」的到店在老师侧整批消失，与老板看板对不上。
+        $myIdentities = [];
         foreach ($leadRows as $l) {
-            if (in_array($l->status, ['已体验', '已成交'], true)) {
-                $visitSet[$identity($l)] = true;
+            $id = VisitMetrics::identityOf($l->phone, (string) $l->name);
+            if ($id !== '') {
+                $myIdentities[$id] = true;
             }
         }
+        // 预约来源只取「同时也属于我的客资」的签到：服务老师是本店课表，
+        // 不加这层会把他人的到店算进个人漏斗
+        $myTrialBookings = $bookings->filter(function ($b) use ($myIdentities) {
+            $id = VisitMetrics::identityOf($b->phone, (string) ($b->member_id ?: $b->member_name));
+
+            return $id !== '' && isset($myIdentities[$id]);
+        });
+
+        $visit = VisitMetrics::visitSet($personalLeadScope(), $myTrialBookings, $start->toDateString(), $end->toDateString());
+        $visitSet = $visit['identities'];
         $visitCount = count($visitSet);
 
-        $dealSet = [];
-        $dealAmount = 0.0;
-        foreach ($leadRows as $l) {
-            if ($l->status !== '已成交' || ! $l->deal_at || ! $l->deal_at->between($start, $end)) {
-                continue;
-            }
-            $key = $identity($l);
-            // 分子分母同源：只有到店体验过的人才计入成交
-            if (! isset($visitSet[$key])) {
-                continue;
-            }
-            $dealSet[$key] = true;
-            $dealAmount += (float) $l->deal_amount;
-        }
-        $dealCount = count($dealSet);
+        $deal = VisitMetrics::dealSet($personalLeadScope(), $visitSet, $start->toDateString(), $end->toDateString());
+        $dealCount = $deal['count'];
+        $dealAmount = $deal['amount'];
+
         $leadCount = $leadRows->filter(fn ($l) => $l->lead_date
             && Carbon::parse($l->lead_date)->between($start, $end))->count();
+
+        // 逐日客资数（服务老师趋势图用）。数据取自同一批 $leadRows，口径与上面的漏斗一致。
+        $leadsByDate = [];
+        foreach ($leadRows as $l) {
+            $d = substr((string) $l->lead_date, 0, 10);
+            if ($d !== '') {
+                $leadsByDate[$d] = ($leadsByDate[$d] ?? 0) + 1;
+            }
+        }
 
         // 今日课程
         $todayClasses = $bookingQ()
@@ -274,6 +291,8 @@ final class TodayController extends Controller
                 'label' => $d->format('m-d'),
                 'classes' => $byDate[$key]['classes'] ?? 0,
                 'served' => count($byDate[$key]['members'] ?? []),
+                // 服务老师的趋势图画这一列；此前 series 里没有它，前端只能取到 0
+                'leads' => $leadsByDate[$key] ?? 0,
             ];
         }
 
@@ -293,7 +312,11 @@ final class TodayController extends Controller
             'leadCount' => $leadCount,
             'resourceCount' => $leadRows->count(),
             'newResourceCount' => $leadRows->where('status', '新留资')->count(),
-            'myLeadCount' => $leadRows->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher'))->count(),
+            // 内存判断必须用 staffOwnsRow：staffOwnerFilter 返回的是「给 Builder 用的闭包」，
+            // 传给集合的 where() 会被当成谓词逐条调用，而那个闭包没有返回值，结果恒为空集。
+            'myLeadCount' => $leadRows->filter(
+                fn ($l) => staffOwnsRow($u, $l, 'service_teacher_user_id', 'service_teacher')
+            )->count(),
             'visitCount' => $visitCount,
             'dealCount' => $dealCount,
             'dealAmount' => $dealAmount,

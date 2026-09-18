@@ -85,11 +85,17 @@ echo "── 4/4 压缩..."
 VERSION="$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' "$ROOT/CHANGELOG.md" | head -1 | tr -d 'v')"
 ZIP="$REL/yimai-workbench-v${VERSION}.zip"
 INSTALLER_ZIP="$REL/yimai-workbench-installer-v${VERSION}.zip"
-rm -f "$ZIP" "$INSTALLER_ZIP"
+# 固定名副本：服务器 update.sh 的回退下载源取的是 yimai-workbench-latest.zip，
+# 只出带版本号的包没法直接走那条路径。CI 一直会额外生成这两份，本地此前没有，两边产物不一致。
+LATEST_ZIP="$REL/yimai-workbench-latest.zip"
+LATEST_INSTALLER_ZIP="$REL/yimai-workbench-installer-latest.zip"
+rm -f "$ZIP" "$INSTALLER_ZIP" "$LATEST_ZIP" "$LATEST_INSTALLER_ZIP"
 cd "$WORK/update"
 zip -qr "$ZIP" app -x '*.DS_Store'
 cd "$WORK/installer"
 zip -qr "$INSTALLER_ZIP" app -x '*.DS_Store'
+cp "$ZIP" "$LATEST_ZIP"
+cp "$INSTALLER_ZIP" "$LATEST_INSTALLER_ZIP"
 du -sh "$ZIP" "$INSTALLER_ZIP"
-echo "在线升级包: $ZIP"
-echo "首次安装包: $INSTALLER_ZIP"
+echo "在线升级包: $ZIP（固定名副本 $LATEST_ZIP）"
+echo "首次安装包: $INSTALLER_ZIP（固定名副本 $LATEST_INSTALLER_ZIP）"

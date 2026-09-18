@@ -295,9 +295,7 @@
     return [
       {
         name: isCoach.value ? '上课节数' : '客资数',
-        data: series.map((p) =>
-          isCoach.value ? p.classes : ((p as unknown as { leads?: number }).leads ?? 0)
-        )
+        data: series.map((p) => (isCoach.value ? p.classes : p.leads))
       },
       {
         name: '服务人次',

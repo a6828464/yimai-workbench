@@ -53,6 +53,10 @@ class BackupServiceTest extends TestCase
         // 恢复前自动生成安全快照
         $this->assertStringContainsString('恢复前快照', $restore['safety']['label'] ?? '');
         $this->assertTrue(count(BackupService::listLocal()) >= 2);
+
+        // 工作目录必须被清掉：曾经只对第一层子目录 rmdir，而它是两层结构，
+        // 于是每次备份都在 storage/app/backups 留下一个空壳目录（只增不减）
+        $this->assertSame([], glob(BackupService::backupDir().'/work-*') ?: [], '备份临时目录应在结束后清空');
     }
 
     public function test_restore_rejects_tampered_zip(): void

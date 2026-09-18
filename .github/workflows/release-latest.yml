@@ -9,7 +9,52 @@ permissions:
   contents: write
 
 jobs:
+  # 质量门禁：测试或类型检查不过就不出包。
+  # 在此之前 CI 只做「能不能构建出包」，测试与类型检查全靠本地自觉 —— 结果就是
+  # 类型错误和回归测试失败都能一路发到生产（v3.1.51 的 MySQL-only 分支事故就是这类）。
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_sqlite, mbstring, openssl, fileinfo, curl, zip, gd, bcmath
+          coverage: none
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Backend tests
+        working-directory: backend
+        run: php artisan test
+
+      - name: Install frontend dependencies
+        working-directory: admin-web
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          npm install --global pnpm@11
+          pnpm install --no-frozen-lockfile --ignore-scripts --reporter=append-only
+
+      - name: Typecheck frontend
+        working-directory: admin-web
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        # 自动导入的类型声明（src/types/import/*.d.ts）由 vite 插件生成且不入库，
+        # 新检出时并不存在，因此必须先构建一次再由 vue-tsc 解析。
+        run: |
+          pnpm exec vite build
+          pnpm exec vue-tsc --noEmit
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

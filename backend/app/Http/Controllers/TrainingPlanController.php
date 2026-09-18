@@ -66,6 +66,8 @@ final class TrainingPlanController extends Controller
 
         $venue = userHasRole($r->user(), 'R_SUPER') ? '' : (string) $r->user()->venue;
         $result = DB::transaction(fn () => $this->upsertOne($plan, $this->owner($r), $venue, userHasRole($r->user(), 'R_MANAGER')));
+        $row = TrainingPlan::find($result['serverId']);
+        audit($r, '新增', '训练计划', (int) $result['serverId'], (string) ($row?->member_name ?? ''), (string) ($row?->venue ?? $venue), '创建训练计划');
 
         return ok($result);
     }
@@ -79,7 +81,14 @@ final class TrainingPlanController extends Controller
         $plan = $r->input('plan');
         abort_unless(is_array($plan), 422, 'plan 必须是对象');
 
-        $row->update($this->attributes($plan, $this->owner($r)));
+        // 与 upsertOne 对齐：门店沿用原值（此前没传 venue，attributes() 会写成空串——
+        // 店长保存一次老师的计划，该计划就既不在老师列表、也不在本店列表，等于消失），
+        // 归属也不改（否则店长一保存就变成自己的计划）。老计划没有门店时补当前门店。
+        $venue = (string) ($row->venue ?: (userHasRole($r->user(), 'R_SUPER') ? '' : (string) $r->user()->venue));
+        $attrs = $this->attributes($plan, (string) $row->created_by, $venue);
+        unset($attrs['created_by'], $attrs['created_by_user_id']);
+        $row->update($attrs);
+        audit($r, '修改', '训练计划', $row->id, (string) $row->member_name, (string) $row->venue, '更新训练计划');
 
         return ok(['id' => $row->id]);
     }
@@ -90,6 +99,7 @@ final class TrainingPlanController extends Controller
         $row = TrainingPlan::find($id);
         abort_if(! $row || ! $this->canRead($r, $row), 404, '计划不存在或不在你的可见范围内');
         $row->delete();
+        audit($r, '删除', '训练计划', $id, (string) $row->member_name, (string) $row->venue, '删除训练计划');
 
         return ok(['id' => $id]);
     }
@@ -125,6 +135,16 @@ final class TrainingPlanController extends Controller
 
             return $ids;
         });
+        // 批量保存会连带删除，且删除是靠 deletedIds 显式列表执行的，一次留痕记下全貌
+        audit(
+            $r,
+            '保存',
+            '训练计划',
+            0,
+            "批量保存 {$name}",
+            (string) ($r->user()->venue ?: '双店'),
+            sprintf('提交 %d 条、删除 %d 条', count($ids), count($deletedIds))
+        );
 
         return ok(['saved' => count($ids), 'ids' => $ids]);
     }

@@ -102,7 +102,8 @@ class TodayTodoTest extends TestCase
 
     public function test_media_todo_only_contains_leads_scope(): void
     {
-        Sanctum::actingAs($this->user('media', '新媒体小李', 'R_MEDIA', '绿地店'));
+        $media = $this->user('media', '新媒体小李', 'R_MEDIA', '绿地店');
+        Sanctum::actingAs($media);
 
         Customer::create($this->customerAttributes('在籍会员', '13800000021', [
             'main_card' => '私教卡', 'remain_times' => 3, 'attend_m3' => 2,
@@ -111,7 +112,14 @@ class TodayTodoTest extends TestCase
         Lead::create([
             'lead_date' => now()->subDays(2)->toDateString(), 'name' => '媒体客小王', 'phone' => '13900000002',
             'source' => '小红书', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '新留资',
+            'created_by' => '新媒体小李', 'created_by_user_id' => $media->id,
             'created_at' => now()->subDays(2),
+        ]);
+        // 别人录入的客资不进新媒体的待办：新媒体的可见范围是「自己录入的」，不是「双店全部」
+        Lead::create([
+            'lead_date' => now()->subDays(2)->toDateString(), 'name' => '同事录入客资', 'phone' => '13900000003',
+            'source' => '到店', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '新留资',
+            'created_by' => '绿地店长', 'created_at' => now()->subDays(2),
         ]);
 
         $res = $this->getJson('/api/today/todo')->assertOk()->json('data');
@@ -120,6 +128,7 @@ class TodayTodoTest extends TestCase
         $this->assertSame(0, $res['counts']['churnRisks']);
         $this->assertSame(0, $res['counts']['birthdays']);
         $this->assertSame(1, $res['counts']['newLeads']);
+        $this->assertSame('媒体客小王', $res['newLeads'][0]['name']);
         $this->assertTrue($res['newLeads'][0]['stale']);
     }
 

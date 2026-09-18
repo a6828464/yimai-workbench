@@ -233,6 +233,74 @@ class PostClassReviewTest extends TestCase
         $this->assertSame(1, $data['serviceMemberCount']);
     }
 
+    /** 服务老师工作台：「我的客资」与逐日客资趋势必须来自真实数据（此前分别为恒 0 与缺字段） */
+    public function test_service_teacher_overview_counts_own_leads_and_daily_series(): void
+    {
+        $service = $this->makeUser('R_SERVICE', '李顾问', 'service-li');
+        Sanctum::actingAs($service);
+
+        $today = now()->toDateString();
+        $twoDaysAgo = now()->subDays(2)->toDateString();
+        Lead::create([
+            'lead_date' => $today, 'name' => '今日客资', 'phone' => '13900002001',
+            'source' => '小红书', 'venue' => '绿地店', 'service_teacher' => '李顾问', 'status' => '新留资',
+        ]);
+        Lead::create([
+            'lead_date' => $twoDaysAgo, 'name' => '两天前客资', 'phone' => '13900002002',
+            'source' => '大众点评', 'venue' => '绿地店', 'service_teacher' => '李顾问', 'status' => '已体验',
+        ]);
+        // 待承接池与同事名下都不算「我的客资」
+        Lead::create([
+            'lead_date' => $today, 'name' => '待承接客资', 'phone' => '13900002003',
+            'source' => '到店', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '新留资',
+        ]);
+        Lead::create([
+            'lead_date' => $today, 'name' => '同事客资', 'phone' => '13900002004',
+            'source' => '到店', 'venue' => '绿地店', 'service_teacher' => '张三', 'status' => '新留资',
+        ]);
+
+        $data = $this->getJson('/api/today/teacher-overview?startDate='.$twoDaysAgo.'&endDate='.$today)
+            ->assertOk()
+            ->json('data');
+
+        $this->assertSame(2, $data['myLeadCount']);
+        $byDate = collect($data['series'])->keyBy('date');
+        $this->assertSame(1, $byDate[$today]['leads']);
+        $this->assertSame(1, $byDate[$twoDaysAgo]['leads']);
+    }
+
+    /**
+     * 老师侧漏斗与全店看板同源（VisitMetrics）：只勾了体验课卡片、整条留资状态没推进的
+     * 到店也要算进来。此前老师侧只认 status，同一份数据在老板看板与老师工作台上是两个数。
+     */
+    public function test_teacher_funnel_uses_same_visit_sources_as_dashboard(): void
+    {
+        $service = $this->makeUser('R_SERVICE', '李顾问', 'service-li');
+        Sanctum::actingAs($service);
+
+        $today = now()->toDateString();
+        Lead::create([
+            'lead_date' => $today, 'name' => '只勾卡片的客人', 'phone' => '13900003001',
+            'source' => '小红书', 'venue' => '绿地店', 'service_teacher' => '李顾问', 'status' => '新留资',
+            'trial_cards' => [['time' => $today.' 10:00', 'attended' => true, 'teacher' => '王教练']],
+        ]);
+        Lead::create([
+            'lead_date' => $today, 'name' => '成交的客人', 'phone' => '13900003002',
+            'source' => '小红书', 'venue' => '绿地店', 'service_teacher' => '李顾问', 'status' => '已成交',
+            'deal_at' => now(), 'deal_amount' => 1200,
+        ]);
+
+        $data = $this->getJson('/api/today/teacher-overview?startDate='.$today.'&endDate='.$today)
+            ->assertOk()
+            ->json('data');
+
+        // 到店 2 人（一个靠卡片命中、一个靠状态命中），成交 1 人 → 50%
+        $this->assertSame(2, $data['visitCount']);
+        $this->assertSame(1, $data['dealCount']);
+        $this->assertSame(50.0, (float) $data['dealRate']);
+        $this->assertSame(1200.0, (float) $data['dealAmount']);
+    }
+
     public function test_red_flag_blocks_plan_and_handoff(): void
     {
         $coach = $this->makeUser('R_TEACHER', '王教练', 'coach-wang');

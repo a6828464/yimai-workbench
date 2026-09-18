@@ -17,6 +17,7 @@ use App\Models\SyncJob;
 use App\Models\StaffAlias;
 use App\Models\Task;
 use App\Models\User;
+use App\Services\KyMemberSyncService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -139,7 +140,7 @@ function retentionSettings(): array
 function pruneSystemRecords(): array
 {
     $settings = retentionSettings();
-    $deleted = ['systemLogs' => 0, 'auditLogs' => 0, 'modelGenerations' => 0];
+    $deleted = ['systemLogs' => 0, 'auditLogs' => 0, 'modelGenerations' => 0, 'cacheRows' => 0];
     if ($settings['auditLogDays'] !== null) {
         $deleted['auditLogs'] = AuditLog::where('time', '<', now()->subDays((int) $settings['auditLogDays']))->delete();
     }
@@ -152,6 +153,21 @@ function pruneSystemRecords(): array
             if (filemtime($file) < $cutoff && @unlink($file)) {
                 $deleted['systemLogs']++;
             }
+        }
+    }
+
+    // 清理已过期的缓存行。
+    //
+    // database 驱动的过期键只是「读不到」，行本身不会消失；而业务缓存键带着版本号
+    // （member_lists:v12:…），每次写操作失效后都会换一批新键，旧键 120 秒后过期却永远
+    // 留在 cache 表里 —— 在 2H2G 的机器上这是持续增长的磁盘占用（也是每次业务缓存读
+    // 都要查的那张表）。`Cache::forever` 写的版本号键 expiration 是 9999999999，不受影响。
+    if (config('cache.default') === 'database') {
+        $table = (string) config('cache.stores.database.table', 'cache');
+        if (Schema::hasTable($table)) {
+            $deleted['cacheRows'] = DB::table($table)
+                ->where('expiration', '<', now()->subHour()->getTimestamp())
+                ->delete();
         }
     }
 
@@ -800,7 +816,23 @@ function scopeCustomersForUser($query, User $user)
     return $query;
 }
 
-/** 客资可见范围（多角色取并集），口径与会员一致 */
+/**
+ * 客资可见范围（多角色取并集），口径与会员一致。
+ *
+ *  超管  → 不加条件（双店）
+ *  店长  → 本店全部
+ *  服务老师 → 本店 + 本人名下 + 待承接池
+ *  授课老师 → 本店 + 本人名下 + 本人上过体验课的 + 本人私教学员
+ *  新媒体 → 自己录入的客资
+ *
+ * **新媒体必须在这里收窄**。这个函数此前对 media 直接返回未加条件的查询，注释写的是
+ * 「由调用方按场景叠加自己的过滤」—— 但 `/leads` 列表与 `/today/alerts` 都没叠加，
+ * 结果是新媒体账号能拉到双店全部留资（姓名/手机号/微信/成交金额）。"调用方记得补"
+ * 这种约定只要有一处漏掉就是一次客户名单泄露，所以口径收回到这里，调用方只管调用。
+ *
+ * 新媒体不叠加门店条件：它是双店账号（`venue` 为空），锁门店会把范围压成空集；
+ * 它看到什么由「谁录入的」决定，本身就跨门店。
+ */
 function scopeLeadsForUser($query, User $user)
 {
     $roles = userRoles($user);
@@ -812,16 +844,18 @@ function scopeLeadsForUser($query, User $user)
         return $query->where('venue', $user->venue);
     }
 
-    $scopes = [];
+    $storeScopes = [];  // 坐店角色（服务老师/授课老师）：本店 + 按人
+    $mediaScope = null; // 新媒体：跨门店，只看自己录入的
+
     if (in_array('R_SERVICE', $roles, true)) {
         // 服务老师是客资承接主体：本人名下的 + 待承接池
-        $scopes[] = fn ($q) => $q
+        $storeScopes[] = fn ($q) => $q
             ->where(staffOwnerFilter($user, 'service_teacher_user_id', 'service_teacher'))
             ->orWhere('service_teacher', '');
     }
     if (in_array('R_TEACHER', $roles, true)) {
         $keys = privateStudentKeys($user);
-        $scopes[] = function ($q) use ($user, $keys) {
+        $storeScopes[] = function ($q) use ($user, $keys) {
             $q->where(staffOwnerFilter($user, 'service_teacher_user_id', 'service_teacher'))
                 ->orWhere(staffOwnerFilter($user, 'trial_teacher_user_id', 'trial_teacher'));
             if ($keys['phones'] !== []) {
@@ -829,18 +863,30 @@ function scopeLeadsForUser($query, User $user)
             }
         };
     }
-    if ($scopes !== []) {
-        return $query->where('venue', $user->venue)->where(function ($q) use ($scopes) {
-            $q->where(function ($inner) use ($scopes) {
-                foreach ($scopes as $scope) {
-                    $inner->orWhere($scope);
-                }
-            });
-        });
+    if (in_array('R_MEDIA', $roles, true)) {
+        $mediaScope = fn ($q) => $q->where(staffOwnerFilter($user, 'created_by_user_id', 'created_by'));
     }
-    // 注意：新媒体在这里不加条件 —— 原实现即如此，由调用方按场景叠加自己的过滤
-    // （如 P5 / created_by / whereRaw('1 = 0')）。此处若擅自收窄会改变既有口径。
-    return $query;
+
+    if ($storeScopes === [] && $mediaScope === null) {
+        // 一个角色都没识别出来时按最小权限处理。原先返回未加条件的查询，
+        // 意味着 `roles` 漏写的账号会静默拿到全量客资 —— 越权不该是默认值。
+        return $query->whereRaw('1 = 0');
+    }
+
+    return $query->where(function ($outer) use ($user, $storeScopes, $mediaScope) {
+        if ($storeScopes !== []) {
+            $outer->orWhere(function ($w) use ($user, $storeScopes) {
+                $w->where('venue', $user->venue)->where(function ($inner) use ($storeScopes) {
+                    foreach ($storeScopes as $scope) {
+                        $inner->orWhere($scope);
+                    }
+                });
+            });
+        }
+        if ($mediaScope !== null) {
+            $outer->orWhere($mediaScope);
+        }
+    });
 }
 
 /** 经营看板 venue 下推：超管看双店，新媒体按 venues 授权，店长/服务老师/授课老师锁定本店。 */
@@ -912,10 +958,14 @@ function renewalEvaluationContext(Customer $customer): array
     $memberId = str_starts_with((string) $customer->external_id, 'ky:')
         ? (string) last(explode(':', (string) $customer->external_id))
         : '';
+    // 近 30 天出勤走 KyMemberSyncService 的窗口定义（含今天共 30 天），
+    // 与会员表 attend_m3 同口径 —— 此前这里用 subDays(30)（31 天），
+    // 边界日算出的节数比清单里的 attend_m3 多一天，同一个会员在两个页面上一个进清单一个不进。
+    [$m3Start, $m3End] = KyMemberSyncService::attendanceWindows()[2];
     $attendance = KyBooking::query()
         ->where('venue', $customer->venue)
         ->where('status', 'signed')
-        ->where('start_at', '>=', now()->subDays(30)->startOfDay())
+        ->whereBetween('start_at', [$m3Start, $m3End])
         ->where(function ($q) use ($customer, $memberId) {
             if ($memberId !== '') {
                 $q->where('member_id', $memberId);
@@ -1015,6 +1065,14 @@ function camel($model): array
     return $out;
 }
 
+/**
+ * 请求字段名转库表列名（camelCase → snake_case）。
+ *
+ * 这里**不再丢掉 null**：null 是「字段传了、值为空」，与「字段根本没传」是两件事，
+ * 谁都不能少。丢 null 会让前端清空输入框的请求（空串经 ConvertEmptyStringsToNull 变 null）
+ * 看起来跟没传一样，于是「怎么删都删不掉」；反过来拿 `?? ''` 兜底再把键补成 null，
+ * 就会把用户没碰过的字段一起抹掉。清空语义统一交给 normalizeEmptyValues() 按列定义处理。
+ */
 function camelToSnake(array $in): array
 {
     $out = [];
@@ -1025,7 +1083,69 @@ function camelToSnake(array $in): array
         $out[strtolower(preg_replace('/([a-z\d])([A-Z])/', '$1_$2', $k))] = $v;
     }
 
-    return array_filter($out, fn ($v) => $v !== null);
+    return $out;
+}
+
+/**
+ * 把「显式清空」（null）按列定义落到该列真正能接受的形态。
+ *
+ * 前端清空输入框提交的是空串，Laravel 的 ConvertEmptyStringsToNull 会先把它变成 null。
+ * 这个 null 的含义是「用户要清空这个字段」，处理方式只有两种是对的：
+ *   - 键不存在 → 该字段保持原值。部分字段提交依赖这一点（老师只改备注、只保存续课预报）；
+ *   - 键存在且为 null → 可空列写 null，非空字符串列写 ''。
+ * 混为一谈的两个方向都会出数据问题：当成「没传」就清不掉（备注删了刷新又回来），
+ * 当成「清空」就误伤（编辑留资只改备注，成交金额被一起清成 null）。
+ *
+ * NOT NULL 的日期/数字列存不下空值，保持键缺失（等同「不可清空」），不写 '' 以免触发类型错误。
+ *
+ * @param  array  $except  不允许被清空的列，命中则丢键、保持原值。门店、来源、状态这类字段
+ *                         写空会让这行从列表和统计里直接消失，不该由「清空输入框」触发。
+ */
+function normalizeEmptyValues(string $table, array $values, array $except = []): array
+{
+    if (! in_array(null, $values, true)) {
+        return $values; // 没有要清空的字段，不必查列定义
+    }
+    if (! Schema::hasTable($table)) {
+        return $values; // 取不到列定义就不猜，原样交回
+    }
+
+    $stringTypes = ['varchar', 'char', 'text', 'tinytext', 'mediumtext', 'longtext'];
+    foreach (Schema::getColumns($table) as $column) {
+        $key = $column['name'];
+        if (! array_key_exists($key, $values) || $values[$key] !== null) {
+            continue;
+        }
+        if (in_array($key, $except, true)) {
+            unset($values[$key]); // 不可清空：等同没传，保持原值
+
+            continue;
+        }
+        if ($column['nullable']) {
+            continue; // 可空列：null 本身就是「清空」
+        }
+        if (in_array(strtolower((string) $column['type_name']), $stringTypes, true)) {
+            $values[$key] = '';
+
+            continue;
+        }
+        unset($values[$key]); // 非空且非字符串：清不了，宁可不写
+    }
+
+    return $values;
+}
+
+/**
+ * 手机号归一：只保留数字。
+ *
+ * 全站的手机号比对（身份键、去重、归属匹配）都按「纯数字」进行，上游同步入库的也是纯数字，
+ * 但手工录入的留资可能带 `138-0000-0001` / `138 0000 0001` 这类分隔符。只要有一处按
+ * 原始输入去查，同一号码就会被当成两个人（查重漏报 → 重复客资；关联匹配失败 → 会员 360 断链）。
+ * 因此写入与查询都必须先归一，统一走这个函数，不要再各自写正则。
+ */
+function normalizePhone(?string $phone): string
+{
+    return preg_replace('/\D+/', '', (string) $phone) ?? '';
 }
 
 function assertPublicHttpsUrl(string $url): void
@@ -1143,6 +1263,14 @@ function filteredIds(string $list): array
 function memberListIds(): array
 {
     $rules = rules();
+    // 键 = 缓存版本 + 规则哈希 + customers 表指纹。
+    //
+    // 指纹（MAX(updated_at) + COUNT(*)）是**自愈兜底**：清单依赖 card_stats / attend_* /
+    // last_visit 等列，正常路径（随心瑜同步、待复活开关）写完都会 invalidateBusinessCaches，
+    // 但只要有任意一条写入路径忘了失效，没有指纹就会一直发旧清单、且不会被任何人发现。
+    // 之前的问题是这条 SQL 没有可用索引、每次调用都全表扫（customer_lists 的每个请求
+    // 会调多次）—— 已为 customers.updated_at 补索引（2026_09_17_000003），
+    // MAX 走索引反向扫描、COUNT 走这条窄索引，成本降到可忽略。
     $fingerprint = Customer::query()
         ->selectRaw('MAX(updated_at) as mu, COUNT(*) as cnt')
         ->first();

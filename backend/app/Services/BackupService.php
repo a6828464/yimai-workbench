@@ -37,7 +37,10 @@ final class BackupService
             'enabled' => false,
             'run_at' => '03:30',
             'keep_local' => 7,
-            'keep_env' => true,
+            // 默认不打包 .env：里面是 APP_KEY（可解密所有加密字段、伪造签名 URL）、
+            // 数据库口令、随心瑜账号与 GITEE_TOKEN。备份包会经 WebDAV/S3 落到第三方存储，
+            // 一旦外泄等于把整站凭据交出去，而恢复流程并不需要它（只回灌数据表）。
+            'keep_env' => false,
             'remote' => [
                 'type' => 'none', 'url' => '', 'username' => '', 'password' => '', 'path' => 'yimai-backup',
                 's3' => [
@@ -276,7 +279,9 @@ final class BackupService
         @set_time_limit(0);
         @ini_set('memory_limit', '512M');
 
-        $safety = self::create('恢复前快照', uploadRemote: false);
+        // 恢复前快照：恢复是整库覆写，这份快照是唯一的回滚点。
+        // 配了远端就一并上传 —— 本地盘出问题（正是需要恢复的常见原因）时，本地快照会跟着一起没。
+        $safety = self::create('恢复前快照', uploadRemote: self::remoteType() !== 'none');
 
         Artisan::call('migrate', ['--force' => true]);
 
@@ -335,6 +340,17 @@ final class BackupService
                     DB::table($table)->insert($buffer);
                     $count += count($buffer);
                 }
+                // 逐表核对行数：先 truncate 再灌入，一旦中途失败（超时/重复键/断电）
+                // 该表就停在「已清空但没灌完」的状态。这里拿库里的实际行数与 manifest 比对，
+                // 让恢复在出问题的当口就报错，而不是留下一张半空的表等着业务发现。
+                $expected = (int) $rows;
+                $actual = DB::table($table)->count();
+                if ($actual !== $expected) {
+                    throw new RuntimeException(
+                        "表 {$table} 恢复不完整：期望 {$expected} 行，实际 {$actual} 行。"
+                        ."请用「恢复前快照」{$safety['file']} 重新恢复。"
+                    );
+                }
                 $restored[$table] = $count;
             }
         } finally {
@@ -379,11 +395,22 @@ final class BackupService
         return $list;
     }
 
-    public static function localPath(string $name): string
+    /**
+     * 备份文件名校验：必须以固定前缀开头、只含安全字符、以 .zip 结尾。
+     *
+     * 本地路径与远端对象键都要过这一关 —— 远端（S3）此前直接把 `$name` 拼进对象键，
+     * 带上 `../` 就能读到备份目录以外的对象；本地侧一直有这个校验，远端漏了。
+     */
+    private static function assertSafeName(string $name): void
     {
         if (! preg_match('/^'.preg_quote(self::FILE_PREFIX, '/').'[A-Za-z0-9._-]+\.zip$/', $name)) {
             throw new RuntimeException('非法备份文件名');
         }
+    }
+
+    public static function localPath(string $name): string
+    {
+        self::assertSafeName($name);
         $path = self::ensureBackupDir().'/'.$name;
         if (! is_file($path)) {
             throw new RuntimeException("本地不存在备份文件 {$name}");
@@ -804,6 +831,7 @@ final class BackupService
 
     private static function s3Upload(string $localPath, string $name): void
     {
+        self::assertSafeName($name);
         $key = self::s3Prefix().$name;
         $payloadHash = hash_file('sha256', $localPath);
         if ($payloadHash === false) {
@@ -851,6 +879,7 @@ final class BackupService
 
     private static function s3Fetch(string $name): string
     {
+        self::assertSafeName($name);
         $tmp = self::ensureBackupDir().'/tmp-'.Str::random(8).'.zip';
         $res = self::s3Request('GET', self::s3Prefix().$name, [], ['sink' => $tmp, 'timeout' => 1800]);
         if ($res->status() !== 200) {
@@ -863,6 +892,7 @@ final class BackupService
 
     private static function s3Delete(string $name): void
     {
+        self::assertSafeName($name);
         $res = self::s3Request('DELETE', self::s3Prefix().$name);
         if (! in_array($res->status(), [200, 202, 204, 404], true)) {
             throw new RuntimeException("S3 删除失败（HTTP {$res->status()}）：{$name}");
@@ -970,11 +1000,17 @@ final class BackupService
         if (! is_dir($dir)) {
             return;
         }
+        // 递归删目录，目录必须**深的先删**。
+        //
+        // 此前只对第一层子目录做 rmdir，而备份工作目录是两层结构
+        // （work-x/{data, files/public, files/private}），第二层还非空，rmdir 必然失败 ——
+        // 结果是每次备份都在 storage/app/backups 下留一个空壳目录（本地实测累积了 400+ 个，
+        // 生产同样只增不减）。
         foreach (self::filesIn($dir) as $f) {
             @unlink($f);
         }
-        foreach (array_reverse(glob($dir.'/*', GLOB_ONLYDIR) ?: []) as $d) {
-            @rmdir($d);
+        foreach (glob($dir.'/*', GLOB_ONLYDIR) ?: [] as $sub) {
+            self::rrmdir($sub);
         }
         @rmdir($dir);
     }

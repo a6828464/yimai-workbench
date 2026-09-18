@@ -167,12 +167,10 @@ class CustomerController extends Controller
             'renewal_plan', 'decline', 'stop_reason', 'expected_return',
             'last_touch', 'needs_help', 'in_revive', 'birthday',
         ])->all();
-        if (($patch['last_touch'] ?? '') === '') {
-            $patch['last_touch'] = null;
-        }
-        if (($patch['birthday'] ?? '') === '') {
-            $patch['birthday'] = null;
-        }
+        // 清空的字段按列定义落地：可空列（最近沟通/生日）写 null，非空文本列（停练原因/预期复活）写 ''。
+        // 这里不能再写 `($patch[$f] ?? '') === ''` 那种兜底 —— 键缺失和值为空是两件事，
+        // 兜底会把「只保存续课预报」也变成「顺手清掉最近沟通和生日」。
+        $patch = normalizeEmptyValues('customers', $patch);
         foreach (['needs_help', 'in_revive'] as $f) {
             if (array_key_exists($f, $patch) && ! is_bool($patch[$f])) {
                 $patch[$f] = filter_var($patch[$f], FILTER_VALIDATE_BOOLEAN);

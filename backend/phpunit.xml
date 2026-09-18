@@ -19,6 +19,9 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <!-- 固定测试用 APP_KEY：CI 上没有 .env，缺了它加密相关的路径会直接失败，
+             让测试结果依赖本机环境。这里写死一个仅供测试的密钥，与生产无关。 -->
+        <env name="APP_KEY" value="base64:YrzFwp6Vnq+Z9w64GU9YMSTZZvxu5R3MKNiZj85+2ug="/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>

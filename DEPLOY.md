@@ -116,17 +116,23 @@ window.__YIMAI_API_BASE__ = '/api'
 > 1. 服务器执行 `cd /www/wwwroot/站点目录/backend && php artisan schedule:list`，能列出 `ky:autosync`（每日 05:30）等条目即为正常。
 > 2. 后台「系统管理 → 系统日志 → 运行日志」按关键词 `KeepYoga 同步` 过滤，手动同步与系统定时同步（含「当天已同步，跳过」）都会逐条留痕；「KeepYoga同步 → 历史同步批次」的「触发方」列可区分操作人与「系统定时」。
 
-系统日志默认保留 7 天，人员操作日志默认永久保留；超管可在对应日志页面调整。未配置调度器时，修改保留策略会立即清理一次，但之后不会按日自动清理。
+系统日志默认保留 7 天，人员操作日志默认保留 **180 天**（可在日志页面调整，也能设为永久保留）；未配置调度器时，修改保留策略会立即清理一次，但之后不会按日自动清理。
 
 发行包命名：版本号取自 `CHANGELOG.md` 首个版本标题（如 `v3.1.8`），安装包为 `yimai-workbench-v3.1.8.zip`，并额外生成 `yimai-workbench-latest.zip` 供 `update.sh` 固定名下载；Release 标题/备注含版本号与更新日志。
 
-Gitee Release 自动发布需要在 GitHub 仓库配置 Actions Secret：`GITEE_TOKEN`。Token 至少需要仓库 Release 的创建和上传权限。Token 只用于创建发行包，不写入代码。服务器更新脚本优先读取 Gitee 最新 Release 中的 `yimai-workbench-latest.zip`，Gitee 暂时不可用时回退到 GitHub 的 `auto-latest` 包。
+Gitee Release 自动发布需要在 GitHub 仓库配置 Actions Secret：`GITEE_TOKEN`。Token 至少需要仓库 Release 的创建和上传权限。Token 只用于创建发行包，不写入代码。服务器更新脚本**优先读取 GitHub `auto-latest` 的 `yimai-workbench-latest.zip`，GitHub 不可用时回退到 Gitee `auto-latest`**（以 `update.sh` 里 `GITHUB_PACKAGE_URL` / `GITEE_PACKAGE_URL` 的顺序为准）。
 
 配置 Secret：GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret，名称填 `GITEE_TOKEN`。配置后重新推送一次 `main`，或在 Actions 中手动运行工作流，Gitee 会出现对应 Release 和发布包。
 
-如果没有配置 `GITEE_TOKEN`，工作流会跳过 Gitee 发布（不影响 GitHub 发行包），服务器会自动回退到 GitHub `auto-latest`。
+如果没有配置 `GITEE_TOKEN`，工作流会跳过 Gitee 发布（不影响 GitHub 发行包），服务器会直接用 GitHub `auto-latest`。
 
 更新脚本位于安装目录 `app/update.sh`，会自动以自身目录为站点根。生产服务器不安装 Node.js、不运行前端构建，也不通过 Web 请求直接执行任意 Shell 命令。
+
+**升级回滚点**（v3.1.64 起）：`update.sh` 在覆盖代码之前会先执行
+`php artisan backup:snapshot --label=升级前(<时间戳>)` 生成数据库快照，并把当前代码目录
+（不含 `vendor` 与 `storage`）打成 tar 存到站点根目录的 `.update-backup/<时间戳>/`（只保留最近 3 份）。
+若 `migrate` 或迁移后的结构健康检查失败，脚本会**自动还原代码**并提示用「升级前」快照恢复数据库。
+注意：回滚只还原代码，不回退已执行过的迁移。
 
 每次更新前应保留站点和数据库备份。后端迁移应使用 `php artisan migrate --force`，不要使用 `migrate:fresh`。
 

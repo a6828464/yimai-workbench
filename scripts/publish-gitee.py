@@ -216,6 +216,10 @@ def main():
         log("GITEE_TOKEN 未配置，跳过 Gitee 发布")
         return 0
 
+    # 计数「本该传上去但没成功」的文件。以非 0 退出而不是静默成功 ——
+    # 此前顶层 except 一律 sys.exit(0)，Gitee 连续 7 个版本没传上包都没人察觉。
+    failed = 0
+
     version, notes = read_changelog()
     tag = f"v{version}"
     body = (
@@ -262,14 +266,27 @@ def main():
     log(f"   检查 {scanned} 个 release，删除 {removed} 个附件，释放约 {freed / 1024 / 1024:.0f} MB")
 
     # ------------------------------------------------------------ 版本化发布
+    # 同名附件不能只按「存在就跳过」处理：Gitee 的下载地址会解析到已有的那一份，
+    # 而工作流被中途取消 / 手动重跑时，上一轮构建的包往往已经传上去了 —— 实测 v3.1.63
+    # 就在 Gitee 上留着「已被 revert 的版本」，与 GitHub 的包不是同一个 commit，
+    # 而 DEPLOY.md 把两者当作同一份下载源。所以按体积判断内容是否变化，变了就删旧重传。
     log(f"\n── 2/4 发布 {tag}")
     rid = ensure_release(releases, tag, f"一麦工作台 {tag}", body)
-    existing = {a.get("name") for a in list_assets(rid)} if rid else set()
+    existing = {a.get("name"): a for a in (list_assets(rid) if rid else [])}
     for f in (f"yimai-workbench-v{version}.zip", f"yimai-workbench-installer-v{version}.zip"):
-        if f in existing:
-            log(f"  跳过 {f}（已存在）")
-        elif rid:
-            upload(rid, f)
+        local = os.path.join(PKG_DIR, f)
+        if not os.path.exists(local):
+            warn(f"本地找不到 {local}，跳过 {f}")
+            failed += 1
+            continue
+        same = existing.get(f)
+        if same is not None and int(same.get("size") or 0) == os.path.getsize(local):
+            log(f"  跳过 {f}（已存在且体积一致）")
+            continue
+        if same is not None:
+            delete_asset(rid, same.get("id"), f"{tag}/{f}（同名旧包，内容已变）")
+        if rid and not upload(rid, f):
+            failed += 1
 
     # ------------------------------------------------------------ auto-latest
     log("\n── 3/4 刷新 auto-latest（服务器 update.sh 的回退下载源）")
@@ -290,7 +307,9 @@ def main():
             # 每次发布都传（不做"内容一样就跳过"的启发式判断）——判断靠尺寸，两个版本
             # 恰好同尺寸时会误判成"已是最新"，回退源就悄悄停在旧版本上，代价比省一次
             # 2.9MB 上传大得多。确定性优先。
-            upload(arid, f"yimai-workbench-v{version}.zip", f"{LATEST}（v{version}）", as_name=LATEST)
+            if not upload(arid, f"yimai-workbench-v{version}.zip", f"{LATEST}（v{version}）", as_name=LATEST):
+                # 固定名包是服务器 update.sh 的回退下载源，传不上去必须让人知道
+                failed += 1
 
             # 收尾：确保每个固定名**只留一份**（保留 id 最大的，即刚传的）。
             #
@@ -322,12 +341,21 @@ def main():
         log("   --quota：逐条统计体积（较慢）...")
         total = sum(a.get("size") or 0 for r in list_releases() for a in list_assets(r["id"]))
         log(f"   合计约 {total / 1024 / 1024:.0f} MB / 1024 MB 配额")
+
+    if failed:
+        warn(f"Gitee 发布未完成：{failed} 个发行包没能上传（详见上方日志）。Gitee 只是兜底下载源，")
+        warn("生产在线升级走 GitHub auto-latest 不受影响，但请确认不是配额问题。")
+        return 1
+
     return 0
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as e:  # noqa: BLE001 —— 发布失败不该阻断构建（workflow 侧也设了 continue-on-error）
+    except Exception as e:  # noqa: BLE001
+        # 以非 0 退出：这个脚本此前把所有异常都吞成 exit(0)，Gitee 连续 7 个版本没传上包
+        # 都没人发现。workflow 侧仍是 continue-on-error（Gitee 不该阻断 GitHub 发布），
+        # 但失败会在 Actions 里标出来，而不是显示成一片绿。
         warn(f"Gitee 发布失败：{e}")
-        sys.exit(0)
+        sys.exit(1)

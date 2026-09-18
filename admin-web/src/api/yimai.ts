@@ -1697,20 +1697,11 @@ export async function getDashboardSeries(
     }
   }
   const daily = [...merged.values()].sort((x, y) => x.date.localeCompare(y.date))
-  if (a.isTeacher) {
-    for (const p of daily) {
-      p.bookings = Math.round(p.bookings * 0.28)
-      p.trials = Math.round(p.trials * 0.28)
-      p.visits = Math.round(p.visits * 0.28)
-      p.deals = Math.round(p.deals * 0.28)
-      p.amount = Math.round(p.amount * 0.28)
-      p.leads = Math.round(p.leads * 0.28)
-      p.privateDomain = Math.round(p.privateDomain * 0.28)
-      p.redeem = Math.round(p.redeem * 0.28)
-      p.classes = Math.round(p.classes * 0.28)
-      p.cardSales = Math.round(p.cardSales * 0.28)
-    }
-  }
+  // 老师视角在这里**不再**按系数（原先 ×0.28）编一份"我的业绩"。
+  // 演示数据没有"这条留资/这节课属于谁"的信息，乘出来的数字没有任何依据，
+  // 却会以「我的客资 / 我的成交 / 我的金额」出现在老师工作台上。
+  // 老师的真实数据走后端 /today/teacher-overview（演示模式下该接口明确报错：
+  // 「老师工作台需要连接后端服务」），这里不编造替代品。
   const sum = (fn: (p: DashboardDayPoint) => number) => daily.reduce((s, p) => s + fn(p), 0)
   const visitCount = sum((p) => p.visits)
   const dealCount = sum((p) => p.deals)
@@ -1855,6 +1846,8 @@ export interface TeacherSeriesPoint {
   label: string
   classes: number
   served: number
+  /** 逐日客资数（服务老师趋势图用）；授课老师侧无意义，恒为 0 */
+  leads: number
 }
 
 export interface TeacherOverview {

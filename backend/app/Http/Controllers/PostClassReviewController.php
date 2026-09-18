@@ -58,7 +58,9 @@ final class PostClassReviewController extends Controller
     {
         if ($row->customer_id) {
             $c = Customer::find($row->customer_id);
-            if ($c && in_array($u->name, [(string) $c->consultant, (string) $c->owner], true)) {
+            // 归属判断走 staffOwnsRow（id 或姓名/别名并集），与列表范围同口径
+            if ($c && (staffOwnsRow($u, $c, 'consultant_user_id', 'consultant')
+                || staffOwnsRow($u, $c, 'owner_user_id', 'owner'))) {
                 return true;
             }
         }
@@ -439,6 +441,8 @@ final class PostClassReviewController extends Controller
         $payload = $this->validatedPayload($r);
         $row->update($this->attributesFrom($payload, $u, $row));
         $this->linkBodyTest($payload, $row);
+        // 对客方案文案可被改写，必须留痕（与 store/confirm/destroy 保持一致）
+        audit($r, '修改', '课后分析', $row->id, (string) $row->student_name, (string) $row->venue, '更新课后分析');
 
         return ok(['id' => $row->id]);
     }

@@ -169,7 +169,9 @@
   const savingRetention = ref(false)
   const retention = reactive<RetentionSettings>({
     systemLogDays: 7,
-    auditLogDays: null,
+    // 与后端 retentionSettings() 的默认值一致（180 天）。此前这里写 null（= 永久保留），
+    // 一旦设置接口失败，表单会显示一个比真实策略更宽松的值，容易让人误判合规口径。
+    auditLogDays: 180,
     modelGenerationDays: 90
   })
   const auditRetentionValue = computed<number | string>({

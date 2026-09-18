@@ -8,6 +8,7 @@ use App\Models\KyCard;
 use App\Models\Lead;
 use App\Models\Task;
 use App\Models\User;
+use App\Services\VisitMetrics;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -20,12 +21,15 @@ final class AnalyticsController extends Controller
     private static function cacheKey(string $endpoint, User $u, string $venue, string $start, string $end): string
     {
         // 缓存键必须完整体现可见范围，否则会串数据：
+        //  - 账号 id：非超管的数据现在是**按人**收窄的（服务老师只看自己名下的会员），
+        //    同店两个老师角色与门店都相同，只靠「角色 + 门店」做键会把一个人的数字发给另一个人
+        //    （曾只漏了 venues 就串过一条数据，这里一并把 id 带上）；
         //  - 角色：同一门店下「店长」与「店长 + 授课老师」的范围不同；
-        //  - 授权门店列表：两个新媒体账号角色相同，但授权门店不同时范围不同
-        //    （曾漏掉 venues 导致一个账号拿到了另一个账号的看板数据）。
+        //  - 授权门店列表：两个新媒体账号角色相同，但授权门店不同时范围不同。
         $scope = userHasRole($u, 'R_SUPER')
             ? 'all'
-            : implode(',', userRoles($u))
+            : 'u'.$u->id
+                .'|'.implode(',', userRoles($u))
                 .'|'.(string) $u->venue
                 .'|'.implode(',', (array) $u->venues);
 
@@ -48,11 +52,11 @@ final class AnalyticsController extends Controller
 
     private function computeSummary($u): array
     {
-        $custQ = Customer::query();
-        if (! userHasRole($u, 'R_SUPER')) {
-            $custQ->where('venue', $u->venue);
-        }
-        $customers = $custQ->get();
+        // 会员统计按角色收窄（与 /customers 同一口径）。
+        // 此前只卡门店，于是服务老师/授课老师看到的是**全店**会员数却标成"我的"，
+        // 而新媒体账号 venue 为空、`where venue is null` 恒为 0 —— 同一处代码在两种角色下
+        // 分别表现为"偏大"和"恒为 0"。
+        $customers = scopeCustomersForUser(Customer::query(), $u)->get();
         $totalMembers = $customers->filter(fn ($c) => $c->layer !== 'P5' || str_starts_with((string) $c->external_id, 'ky:'))->count();
         // 待分配以随心瑜顾问字段为准，本地负责人只是后续执行归属。
         $unassigned = $customers->filter(fn ($c) => trim((string) $c->consultant) === '')->count();
@@ -236,17 +240,12 @@ final class AnalyticsController extends Controller
         }
 
         // ---- 到店人数与成交率（区间整体口径，按人去重） ----
-        // 业务口径：同一人来一次、两次、三次都只算一个人；成交率 = 到店体验的人里成交的人数 ÷ 到店人数。
-        // 到店证据来自两处，按人合并去重：
-        //   1) 预约系统：ky_bookings 已签到的体验课 —— 按上课日期归期
-        //   2) 留资管理：状态为已体验/已成交 —— 优先核销时间，缺失时回退留资日期（历史数据兼容）
-        // 之前只按留资日期分桶且只按留资侧统计，上月留资、本月到店的人会被整段漏掉，
-        // 线上到店因此明显偏少。
-        $identityOf = function ($phone, string $fallback = ''): string {
-            $digits = preg_replace('/\D+/', '', (string) $phone) ?? '';
-
-            return $digits !== '' ? 'p:'.$digits : ($fallback !== '' ? 'n:'.$fallback : '');
-        };
+        // 口径本身（谁是到店、谁是成交）统一由 VisitMetrics 提供：
+        // 到店是三来源并集（预约签到体验课 / 留资状态 / 体验课卡片已上课），
+        // 成交只算「到店过的人」里的成交，分子分母同源。
+        // 老师工作台的个人漏斗调用同一份实现 —— 此前两处各写一份，改一处忘一处，
+        // 结果是同一页面上老板与老师看到两个成交率。
+        $identityOf = fn ($phone, string $fallback = '') => VisitMetrics::identityOf($phone, $fallback);
 
         // 线上身份集合：不限区间（上月留资、本月到店也要能认出线上来源）
         $onlineIdentities = [];
@@ -257,81 +256,29 @@ final class AnalyticsController extends Controller
             }
         }
 
-        $visitIdentities = [];
+        $visit = VisitMetrics::visitSet($leadQ, $bookings, $start, $end);
+        $visitIdentities = $visit['identities'];
+        // 各来源命中的身份（仅供接口给出构成核对，同一人可能命中多个来源，不是相加关系）
+        $visitSources = $visit['sources'];
         $onlineVisitIdentities = [];
-        // 按来源分别记录命中的身份，便于在接口里给出可核对的构成
-        $visitSources = ['booking' => [], 'leadStatus' => [], 'trialCard' => []];
-        $markVisit = function (string $identity, string $source) use (&$visitIdentities, &$onlineVisitIdentities, &$visitSources, $onlineIdentities): void {
-            if ($identity === '') {
-                return;
-            }
-            $visitIdentities[$identity] = true;
-            $visitSources[$source][$identity] = true;
+        foreach ($visitIdentities as $identity => $_) {
             if (isset($onlineIdentities[$identity])) {
                 $onlineVisitIdentities[$identity] = true;
             }
-        };
-
-        // 来源 1：预约系统已签到的体验课，按上课日期落在区间
-        foreach ($bookings as $booking) {
-            if ($booking->status !== 'signed' || ! $booking->is_trial) {
-                continue;
-            }
-            $markVisit($identityOf($booking->phone, (string) ($booking->member_id ?: $booking->member_name)), 'booking');
-        }
-        // 来源 2：留资管理里已到店的客资
-        //
-        // 核销时间与留资日期只要有一个落在区间就算（两个条件是「或」）。
-        // 之前写成了「核销时间在区间，或者（核销时间为空且留资日期在区间）」，
-        // 于是上月买券、本月才到店的人（redeemed_at 在区间外）会被排除——
-        // 而这类恰是线上到店的常见情形，是人数偏少的一个原因。
-        $visitedLeads = (clone $leadQ)->whereIn('status', ['已体验', '已成交'])
-            ->where(function ($q) use ($start, $end) {
-                $q->whereBetween('redeemed_at', [$start.' 00:00:00', $end.' 23:59:59'])
-                    ->orWhereBetween('lead_date', [$start, $end]);
-            })->get(['phone', 'name']);
-        foreach ($visitedLeads as $l) {
-            $markVisit($identityOf($l->phone, (string) $l->name), 'leadStatus');
         }
 
-        // 来源 3：留资里的体验课卡片已勾「已上课」，按卡片时间落在区间。
-        // 老师常常只勾了卡片、没把整条留资的状态推进到「已体验」，
-        // 只认 status 会把这类到店整批漏掉——这正是线上到店人数偏少的常见原因。
-        $cardLeads = (clone $leadQ)->whereNotNull('trial_cards')
-            ->get(['phone', 'name', 'trial_cards']);
-        foreach ($cardLeads as $l) {
-            foreach ((array) $l->trial_cards as $card) {
-                if (! is_array($card) || ! empty($card['cancelled']) || empty($card['attended'])) {
-                    continue;
-                }
-                $day = substr((string) ($card['time'] ?? ''), 0, 10);
-                if ($day === '' || $day < $start || $day > $end) {
-                    continue;
-                }
-                $markVisit($identityOf($l->phone, (string) $l->name), 'trialCard');
-                break;
-            }
-        }
-
-        // 成交：只统计「到店体验过的人」里的成交，分子分母同源，比率不会超过 100%
-        $dealIdentities = [];
+        $deal = VisitMetrics::dealSet($leadQ, $visitIdentities, $start, $end);
+        $dealIdentities = $deal['identities'];
         $onlineDealIdentities = [];
-        foreach ($sales as $sale) {
-            $identity = $identityOf($sale->phone ?? '', (string) ($sale->name ?? ''));
-            if ($identity === '' || ! isset($visitIdentities[$identity])) {
-                continue;
-            }
-            $dealIdentities[$identity] = true;
+        foreach ($dealIdentities as $identity => $_) {
             if (isset($onlineIdentities[$identity])) {
                 $onlineDealIdentities[$identity] = true;
             }
         }
 
-        // 客户到店分布（最近30天有到店记录）
-        $custQ = Customer::query();
-        if (! userHasRole($u, 'R_SUPER')) {
-            $custQ->where('venue', $u->venue);
-        } elseif ($venue !== '') {
+        // 客户到店分布（最近30天有到店记录）：同样按角色收窄，超管才吃 venue 参数
+        $custQ = scopeCustomersForUser(Customer::query(), $u);
+        if (userHasRole($u, 'R_SUPER') && $venue !== '') {
             $custQ->where('venue', $venue);
         }
         $visitQ = (clone $custQ)->where('last_visit', '>=', now()->subDays(30)->toDateString());

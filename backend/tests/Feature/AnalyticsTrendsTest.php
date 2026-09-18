@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\Customer;
 use App\Models\KyBooking;
 use App\Models\KyCard;
 use App\Models\Lead;
@@ -254,5 +255,39 @@ class AnalyticsTrendsTest extends TestCase
             'is_trial' => $isTrial,
             'raw' => ['course_type' => $courseType],
         ]);
+    }
+
+    /**
+     * 会员统计按角色按人收窄，且缓存不跨账号串数据。
+     *
+     * 修之前 /analytics/summary 的会员只卡门店：服务老师看到的是全店会员数却被标成"我的"；
+     * 而缓存键只有「角色 + 门店」，两个同店老师会互相拿到对方的数字。
+     */
+    public function test_summary_member_counts_are_person_scoped_and_cache_is_per_user(): void
+    {
+        Customer::create([
+            'name' => '李顾问名下会员', 'phone' => '13900004001', 'venue' => '绿地店',
+            'external_id' => 'ky:1001', 'layer' => 'P2', 'consultant' => '李顾问',
+        ]);
+        Customer::create([
+            'name' => '张三名下会员', 'phone' => '13900004002', 'venue' => '绿地店',
+            'external_id' => 'ky:1002', 'layer' => 'P2', 'consultant' => '张三',
+        ]);
+
+        $li = User::factory()->create([
+            'username' => 'sum-li', 'name' => '李顾问', 'role' => 'R_SERVICE', 'roles' => ['R_SERVICE'],
+            'venue' => '绿地店', 'venues' => ['绿地店'], 'status' => '启用',
+        ]);
+        $zhang = User::factory()->create([
+            'username' => 'sum-zhang', 'name' => '张三', 'role' => 'R_SERVICE', 'roles' => ['R_SERVICE'],
+            'venue' => '绿地店', 'venues' => ['绿地店'], 'status' => '启用',
+        ]);
+
+        Sanctum::actingAs($li);
+        $this->assertSame(1, (int) $this->getJson('/api/analytics/summary')->assertOk()->json('data.totalMembers'));
+
+        // 缓存不能把李顾问的数字发给张三（非超管的键必须含账号 id）
+        Sanctum::actingAs($zhang);
+        $this->assertSame(1, (int) $this->getJson('/api/analytics/summary')->assertOk()->json('data.totalMembers'));
     }
 }

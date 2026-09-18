@@ -44,18 +44,26 @@ class LeadController extends Controller
         return $values;
     }
 
+    /** 手机号落库前归一（纯数字）：与同步入库、全站比对口径保持一致 */
+    private function withNormalizedPhone(array $values): array
+    {
+        if (array_key_exists('phone', $values)) {
+            $values['phone'] = normalizePhone($values['phone']);
+        }
+
+        return $values;
+    }
+
     private array $leadFields = ['lead_date', 'name', 'phone', 'wechat', 'demand', 'source', 'order_platform', 'venue', 'service_teacher', 'status', 'grade', 'trial_time', 'trial_topic', 'trial_teacher', 'deal_card', 'deal_amount', 'redeem_amount', 'voucher_code', 'coupon_name', 'coupon_total', 'coupon_remaining', 'trial_cards', 'remark'];
 
     /** GET /leads */
     public function index(Request $r)
     {
         $u = $r->user();
-        $q = Lead::query()->where('venue', 'like', '%');
-        if (userHasAnyRole($u, ['R_MANAGER', 'R_SERVICE', 'R_TEACHER'])) {
-            // 按人隔离统一走 scopeLeadsForUser：
-            // 服务老师＝本人名下＋待承接池；授课老师＝本人客资＋本人上过体验课的＋本人私教学员的
-            scopeLeadsForUser($q, $u);
-        }
+        // 按人隔离统一走 scopeLeadsForUser：服务老师＝本人名下＋待承接池；
+        // 授课老师＝本人客资＋本人上过体验课的＋本人私教学员的；新媒体＝本人录入的。
+        // 这里不再按角色分支调用 —— 漏掉任何一个角色都等于把全量客资交出去。
+        $q = scopeLeadsForUser(Lead::query(), $u);
         if ($n = $r->query('name')) {
             $q->where('name', 'like', "%{$n}%");
         }
@@ -67,9 +75,14 @@ class LeadController extends Controller
         }
         // 联系方式：手机号 / 电话尾号 / 微信
         if ($c = trim((string) $r->query('phone', ''))) {
-            $q->where(function ($w) use ($c) {
+            $digits = normalizePhone($c);
+            $q->where(function ($w) use ($c, $digits) {
                 $w->where('phone', 'like', "%{$c}%")
                     ->orWhere('wechat', 'like', "%{$c}%");
+                if ($digits !== '' && $digits !== $c) {
+                    // 输入带分隔符时库里存的是纯数字，再按数字形态命中一次
+                    $w->orWhere('phone', 'like', "%{$digits}%");
+                }
             });
         }
         // 留资日期范围
@@ -92,17 +105,20 @@ class LeadController extends Controller
     /** GET /leads/check：新增留资时校验手机号是否已命中会员 / 已有留资 */
     public function check(Request $r)
     {
-        $phone = trim((string) $r->query('phone', ''));
-        if ($phone === '') {
+        $raw = trim((string) $r->query('phone', ''));
+        if ($raw === '') {
             return ok(['exists' => false, 'matches' => []]);
         }
+        // 归一后再查：录入时带分隔符（138-0000-0001）不应该让查重静默漏报。
+        // 原始形态一并查，是为了兼容历史里按带分隔符写库的行。
+        $forms = array_values(array_unique(array_filter([normalizePhone($raw), $raw])));
 
         $matches = [];
-        foreach (Customer::where('phone', $phone)->get() as $c) {
+        foreach (Customer::whereIn('phone', $forms)->get() as $c) {
             $layer = $c->layer === 'P5' ? '留资' : '会员';
             $matches[] = ['kind' => $layer, 'name' => $c->name, 'venue' => $c->venue, 'detail' => trim((string) $c->main_card) !== '' && $c->main_card !== '—' ? $c->main_card : '尚未购卡'];
         }
-        foreach (Lead::where('phone', $phone)->orderByDesc('id')->get() as $l) {
+        foreach (Lead::whereIn('phone', $forms)->orderByDesc('id')->get() as $l) {
             $matches[] = ['kind' => '已有留资', 'name' => $l->name, 'venue' => $l->venue, 'detail' => $l->status, 'id' => $l->id];
         }
 
@@ -116,14 +132,14 @@ class LeadController extends Controller
             'name' => 'required|string', 'source' => 'required|string', 'venue' => 'required|string',
             'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0|decimal:0,2', 'redeemAmount' => 'nullable|numeric|min:0|decimal:0,2',
         ]);
-        $values = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields)) + ['created_by' => $r->user()->name, 'status' => $r->input('status', '新留资')];
+        $values = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields)) + ['created_by' => $r->user()->name];
         $values = $this->withStaffIds($values);
+        $values = $this->withNormalizedPhone($values);
+        // 清空的字段（null）按列定义落成该列能接受的形态：可空列写 null，非空文本列写 ''。
+        // status 不可清空：写空会让这条留资在按状态筛选/统计里消失，留空一律按「新留资」入档。
+        $values = normalizeEmptyValues('leads', $values, except: ['status']);
+        $values['status'] = $values['status'] ?? '新留资';
         $values['lead_date'] = $values['lead_date'] ?? now()->toDateString();
-        foreach (['deal_amount', 'redeem_amount'] as $f) {
-            if (($values[$f] ?? '') === '') {
-                $values[$f] = null;
-            }
-        }
         if ($values['status'] === '已成交') {
             $values['deal_at'] = now();
         }
@@ -147,14 +163,11 @@ class LeadController extends Controller
         ]);
         $changes = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields));
         $changes = $this->withStaffIds($changes);
-        if (isset($changes['lead_date']) && $changes['lead_date'] === '') {
-            unset($changes['lead_date']);
-        }
-        foreach (['deal_amount', 'redeem_amount'] as $f) {
-            if (($changes[$f] ?? '') === '') {
-                $changes[$f] = null;
-            }
-        }
+        $changes = $this->withNormalizedPhone($changes);
+        // 显式清空的字段落成该列能接受的形态；没传的字段不在 $changes 里，保持原值。
+        // 注意别再写"$changes[$f] ?? '' 就置 null"那种兜底 —— 那会把用户没碰过的字段一起清掉
+        // （老师只改备注也会把成交金额抹成 null）。lead_date 是非空日期列，由列定义兜住（清不掉）。
+        $changes = normalizeEmptyValues('leads', $changes, except: ['venue', 'source', 'status', 'name']);
         if (($changes['status'] ?? null) === '已成交' && ! $lead->deal_at) {
             $changes['deal_at'] = now();
         }
@@ -187,7 +200,9 @@ class LeadController extends Controller
                     abort(403, '无权限：仅可删除自己名下或未分配的留资');
                 }
             } else {
-                $mine = in_array($u->name, [(string) $lead->service_teacher, (string) $lead->trial_teacher], true)
+                // 与范围过滤同口径：id 或姓名/别名任一命中都算本人的（改过名的历史留资要能删）
+                $mine = staffOwnsRow($u, $lead, 'service_teacher_user_id', 'service_teacher')
+                    || staffOwnsRow($u, $lead, 'trial_teacher_user_id', 'trial_teacher')
                     || staffOwnsRow($u, $lead, 'created_by_user_id', 'created_by');
                 if (! $mine) {
                     abort(403, '无权限：授课老师仅可删除自己相关的留资');

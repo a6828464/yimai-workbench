@@ -90,7 +90,10 @@ class EnsureUserIsEnabled
             return ($match['kind'] ?? '') === '留资';
         }
 
-        $query = Customer::where('phone', trim((string) $request->query('phone')))
+        // 与 check() 同口径：按归一后的号码（以及原始输入形态）匹配，否则带分隔符的录入
+        // 会因为「查得到但判定为无权限」而被过滤掉，前端看到的仍是无重复。
+        $rawPhone = trim((string) $request->query('phone'));
+        $query = Customer::whereIn('phone', array_values(array_unique(array_filter([normalizePhone($rawPhone), $rawPhone]))))
             ->where('name', $match['name'] ?? '')
             ->where('venue', $match['venue'] ?? '');
         if (userHasRole($user, 'R_MANAGER')) {
@@ -115,19 +118,26 @@ class EnsureUserIsEnabled
         if (userHasRole($user, 'R_MANAGER') && $lead->venue === $user->venue) {
             return true;
         }
-        // 服务老师（会籍顾问）：本人名下的客资 + 待承接池
-        if (userHasRole($user, 'R_SERVICE') && in_array($lead->service_teacher, ['', $user->name], true)) {
+        // 服务老师（会籍顾问）：本人名下的客资 + 待承接池。
+        // 本人判断走 staffOwnsRow（id 或姓名/别名并集），与 scopeLeadsForUser 完全同口径 ——
+        // 只比 $user->name 会出现「列表里看得见、点开改却 403」：改过名或有别名的老师，
+        // 其历史留资的归属列写的是旧名，列表（走 staffNames）认，这里原先不认。
+        if (userHasRole($user, 'R_SERVICE')
+            && ((string) $lead->service_teacher === ''
+                || staffOwnsRow($user, $lead, 'service_teacher_user_id', 'service_teacher'))) {
             return true;
         }
         // 授课老师：本人作为会籍顾问的 + 本人上过体验课的 + 本人私教学员对应的 + 本人录入的
         if (userHasRole($user, 'R_TEACHER')) {
-            if (in_array($user->name, [(string) $lead->service_teacher, (string) $lead->trial_teacher], true)) {
+            if (staffOwnsRow($user, $lead, 'service_teacher_user_id', 'service_teacher')
+                || staffOwnsRow($user, $lead, 'trial_teacher_user_id', 'trial_teacher')) {
                 return true;
             }
             if (staffOwnsRow($user, $lead, 'created_by_user_id', 'created_by')) {
                 return true;
             }
-            $phone = (string) $lead->phone;
+            // privateStudentKeys 里的号码是纯数字，留资侧的也要先归一才能比中
+            $phone = normalizePhone((string) $lead->phone);
 
             return $phone !== '' && in_array($phone, privateStudentKeys($user)['phones'], true);
         }

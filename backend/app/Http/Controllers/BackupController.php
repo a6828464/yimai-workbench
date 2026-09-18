@@ -137,6 +137,8 @@ final class BackupController extends Controller
         requireSuper($r);
         $uploadRemote = $r->boolean('uploadRemote', true);
         [$job, $ack, $lock] = $this->startJob($r, '数据备份', '数据备份', ['uploadRemote' => $uploadRemote]);
+        // 备份动作本身要留痕：备份包里是整库数据，谁在什么时候导出了它，是事后追溯的起点
+        audit($r, '执行', '数据备份', 0, '手动备份', '双店', $uploadRemote ? '本地 + 远端' : '仅本地');
         $run = function () use ($job, $uploadRemote) {
             $result = BackupService::create('手动', uploadRemote: $uploadRemote);
             $job->update([
@@ -219,6 +221,10 @@ final class BackupController extends Controller
             $name = $d['name'];
         }
         [$job, $ack, $lock] = $this->startJob($r, '数据恢复', '数据恢复', ['source' => $source, 'name' => $name]);
+        // 恢复＝整库覆写（含账号与角色），是超管侧权限最大的一步操作，必须留痕。
+        // 注意：恢复会回滚 audit_logs 表本身，所以这条记录落在"操作日志"里是为了
+        // 恢复前后都能看到"谁在什么时候发起过恢复"，而不是依赖恢复后的库内数据。
+        audit($r, '恢复', '数据备份', 0, $name, '双店', "来源：{$source}（整库覆写）");
         $run = function () use ($job, $source, $name, $zipPath) {
             if ($zipPath === null) {
                 $zipPath = $source === 'remote' ? BackupService::fetchRemote($name) : BackupService::localPath($name);
@@ -250,6 +256,7 @@ final class BackupController extends Controller
         requireSuper($r);
         $d = $r->validate(['scope' => 'required|in:local,remote', 'name' => 'required|string|max:200']);
         [$job, $ack, $lock] = $this->startJob($r, '备份校验', '备份校验', $d);
+        audit($r, '校验', '数据备份', 0, $d['name'], '双店', "来源：{$d['scope']}（完整性校验）");
         $run = function () use ($job, $d) {
             $zipPath = $d['scope'] === 'remote' ? BackupService::fetchRemote($d['name']) : BackupService::localPath($d['name']);
             try {

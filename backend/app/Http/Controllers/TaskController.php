@@ -103,6 +103,8 @@ final class TaskController extends Controller
             }
             $allowed = ['title', 'customer_name', 'venue', 'owner', 'priority', 'deadline', 'standard', 'status'];
             $patch = collect(camelToSnake($r->all()))->only($allowed)->all();
+            // 截止时间/验收标准可清空（非空文本列写 ''）；门店、负责人、状态是流转与归属依据，不许被清空
+            $patch = normalizeEmptyValues('tasks', $patch, except: ['venue', 'owner', 'priority', 'status', 'title', 'customer_name']);
             if (array_key_exists('owner', $patch)) {
                 // 改负责人时 id 一起改，否则该任务还会挂在上一个人的 id 上
                 $patch['owner_user_id'] = staffUserId((string) $patch['owner']);

@@ -245,12 +245,56 @@ class LeadAuthorizationTest extends TestCase
         $managerAlerts = collect($this->getJson('/api/today/alerts')->assertOk()->json('data'))->pluck('text')->join(' ');
         $this->assertStringNotContainsString('跨店', $managerAlerts);
 
-        Sanctum::actingAs($this->user('today-media', '新媒体', 'R_MEDIA', null));
+        // 新媒体：只看自己录入的客资。别人的客资（含跨店）都不应出现在提醒里。
+        $media = $this->user('today-media', '新媒体', 'R_MEDIA', null);
+        Sanctum::actingAs($media);
+        $this->lead('媒体自己客资', '13800000014', '东部店', '', $media->name);
         $this->getJson('/api/today/followups')->assertOk()->assertJsonCount(0, 'data');
         $mediaAlerts = collect($this->getJson('/api/today/alerts')->assertOk()->json('data'))->pluck('text')->join(' ');
-        $this->assertStringContainsString('客资', $mediaAlerts);
+        $this->assertStringContainsString('媒体自己客资', $mediaAlerts);
+        $this->assertStringNotContainsString('老师客资', $mediaAlerts);
+        $this->assertStringNotContainsString('待分配客资', $mediaAlerts);
+        $this->assertStringNotContainsString('跨店客资', $mediaAlerts);
         $this->assertStringNotContainsString('任务', $mediaAlerts);
         $this->assertStringNotContainsString('卡项临近到期', $mediaAlerts);
+    }
+
+    /** 新媒体账号的客资列表只返回自己录入的（此前的实现返回双店全量） */
+    public function test_media_lead_list_only_shows_own_entries(): void
+    {
+        $this->lead('自己录入', '13800000021', '绿地店', '', '新媒体小张');
+        $this->lead('绿地同事录入', '13800000022', '绿地店', '', '绿地店长');
+        $this->lead('东部同事录入', '13800000023', '东部店', '', '东部店长');
+
+        Sanctum::actingAs($this->user('list-media', '新媒体小张', 'R_MEDIA', null));
+        $mediaNames = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all();
+        $this->assertSame(['自己录入'], $mediaNames);
+
+        // 店长口径不变：本店全部，但不含跨店
+        Sanctum::actingAs($this->user('list-manager', '绿地店长', 'R_MANAGER', '绿地店'));
+        $managerNames = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all();
+        $this->assertContains('自己录入', $managerNames);
+        $this->assertContains('绿地同事录入', $managerNames);
+        $this->assertNotContains('东部同事录入', $managerNames);
+    }
+
+    /** 手机号带分隔符也要能查到重复，且落库归一为纯数字（否则查重静默漏报 → 重复客资） */
+    public function test_lead_check_and_store_normalize_phone_separators(): void
+    {
+        $this->lead('已有客资', '13800000031', '绿地店', '', '绿地店长');
+        Sanctum::actingAs($this->user('check-manager', '绿地店长', 'R_MANAGER', '绿地店'));
+
+        $res = $this->getJson('/api/leads/check?phone=138-0000-0031')->assertOk();
+        $this->assertTrue($res->json('data.exists'));
+        $this->assertSame('已有客资', $res->json('data.matches.0.name'));
+
+        $id = $this->postJson('/api/leads', [
+            'name' => '带分隔符录入', 'source' => '到店', 'venue' => '绿地店', 'phone' => '138 0000 0032',
+        ])->assertOk()->json('data.id');
+        $this->assertDatabaseHas('leads', ['id' => $id, 'phone' => '13800000032']);
+
+        // 归一后再查这条新数据，同样能命中
+        $this->assertTrue($this->getJson('/api/leads/check?phone=13800000032')->assertOk()->json('data.exists'));
     }
 
     public function test_media_tasks_are_personal_and_analytics_follow_allowed_venues(): void
@@ -295,7 +339,7 @@ class LeadAuthorizationTest extends TestCase
         ]);
     }
 
-    private function lead(string $name, string $phone, string $venue, string $teacher = ''): Lead
+    private function lead(string $name, string $phone, string $venue, string $teacher = '', string $createdBy = ''): Lead
     {
         return Lead::create([
             'lead_date' => now()->toDateString(),
@@ -304,6 +348,7 @@ class LeadAuthorizationTest extends TestCase
             'source' => '测试',
             'venue' => $venue,
             'service_teacher' => $teacher,
+            'created_by' => $createdBy,
             'status' => '新留资',
         ]);
     }
