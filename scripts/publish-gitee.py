@@ -21,6 +21,17 @@ Gitee 免费仓库有 **1GB 附件配额**。原先的做法是每个版本往�
 
 稳态占用约 `(2.9 + 11) × KEEP_INSTALLERS + 13.9` MB，KEEP_INSTALLERS=20 时约 292MB。
 
+## 上传为什么做成了「停滞超时」
+
+跨洋上传（GitHub runner → Gitee）本来就慢，**成功的**一次也可能花好几分钟：实测安装包
+10.9MB 约 440s、升级包 3.0MB 约 270s。所以不能用「整个请求的总时长」做超时——任何小于
+~450s 的值都会把这些慢但成功的上传判死。
+
+改用流式请求体（`_MultipartBody`）后，socket 超时作用在「块与块之间」：只要上传还在推进
+就一直等，**连续 `UPLOAD_STALL_TIMEOUT` 无进展**才判定连接已死。卡死的连接会被及时识别
+（run #99 曾因固定 5 次 × 每次卡满 600s 把整轮 CI 拖到 62 分钟），慢而成功的仍能传完。
+安装包单独用更少的尝试次数，因为它最容易卡住、也最容易事后手工补传。
+
 ## 用法
 
     GITEE_TOKEN=xxx python3 scripts/publish-gitee.py            # 正式发布
@@ -28,6 +39,7 @@ Gitee 免费仓库有 **1GB 附件配额**。原先的做法是每个版本往�
 """
 
 import argparse
+import io
 import json
 import os
 import re
@@ -48,6 +60,38 @@ PKG_DIR = os.environ.get("PKG_DIR") or ROOT
 LATEST = "yimai-workbench-latest.zip"
 LATEST_INSTALLER = "yimai-workbench-installer-latest.zip"
 
+# 普通 API 调用（列 release/附件、删除、建 release）的超时。runner 上实测单次 6~9s，
+# 120s 有十几倍余量；此前沿用 600s，一个挂死的请求会白白拖住十分钟。
+API_TIMEOUT = int(os.environ.get("API_TIMEOUT", "120"))
+# 上传的「停滞」超时：**连续多久没有任何进展**就判定这条连接已死。
+#
+# 为什么不直接缩短总超时：跨洋上传本来就慢，实测有效上传的时间是
+#   run #97  安装包 10.9MB  成功，耗时约 440s
+#   run #99  升级包  3.0MB  成功，耗时约 270s
+# 任何小于 ~450s 的**总时长**上限都会把这些「慢但成功」的上传判死，反而制造失败。
+#
+# 所以改成按「有无进展」计时：上传体做成流式（见 _MultipartBody），只要还在推进就继续
+# 等，**连续 180s 一点都推不动**才认定连接已死。run #99 里那 5 次 "The write operation
+# timed out" 都是彻底卡死（600s 一点没动），所以任取一个有限阈值都能识别；180s 选的
+# 是「明显大于正常的上传后排队/处理等待、又远小于 600s」的位置。
+#
+# 注意这个值同时约束「等响应」那段：包体发完后服务器还要校验入库才回响应。实测成功的
+# 上传总耗时在 270~440s 量级，但那是整条链路（连接、TLS、传输、处理）的总和，
+# 单段无进展的间隔远小于此。若日后发现安装包偶发在本步被判超时，优先调大这个值，
+# 而不是调大尝试次数 —— 它可以通过环境变量覆盖，不用改代码。
+UPLOAD_STALL_TIMEOUT = int(os.environ.get("UPLOAD_STALL_TIMEOUT", "180"))
+# 普通发行包（3MB 升级包）的上传尝试次数
+UPLOAD_ATTEMPTS = int(os.environ.get("UPLOAD_ATTEMPTS", "3"))
+# 安装包 11MB，最容易卡住，也最容易事后手工补传：少试几次，别为它拖住整轮发布。
+# 原来固定 5 次、每次卡满 600s ≈ 50 分钟（run #99 实测把整轮 CI 拖到 62 分钟）；
+# 收口后最坏 2 次 × 180s 停滞判定 + 退避 ≈ 7 分钟。失败仍会非 0 退出并打告警，不会静默。
+INSTALLER_ATTEMPTS = int(os.environ.get("INSTALLER_ATTEMPTS", "2"))
+# 失败重试的退避秒数，按尝试序号取，超出部分沿用最后一个
+RETRY_BACKOFF = (5, 15, 30, 60)
+
+# 文件名里带 installer 的即首次安装包，用于自动套用小尝试次数（见 upload）
+INSTALLER_MARK = "installer"
+
 DRY = False
 TOKEN = ""
 # 不走系统代理：Gitee 应直连（CI runner 上无所谓，本地开发机可能挂着代理）
@@ -62,7 +106,11 @@ def warn(msg):
     print(f"⚠ {msg}", file=sys.stderr, flush=True)
 
 
-def http(method, path, params=None, body=None, ctype=None, timeout=600):
+def http(method, path, params=None, body=None, ctype=None, timeout=None):
+    # 普通 API 调用（列出 release/附件、删除、建 release）默认走 API_TIMEOUT：
+    # runner 上实测单次 6~9s，120s 有十几倍余量。上传体积大、本来就慢，走 multipart 时
+    # 显式传更宽的 UPLOAD_STALL_TIMEOUT（见那里的说明）。
+    timeout = timeout or API_TIMEOUT
     params = dict(params or {})
     params["access_token"] = TOKEN
     qs = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None})
@@ -75,25 +123,101 @@ def http(method, path, params=None, body=None, ctype=None, timeout=600):
     req = urllib.request.Request(url, data=body, method=method)
     if ctype:
         req.add_header("Content-Type", ctype)
+    # 流式 body 必须显式给出 Content-Length：http.client 只要看到 body 有 read()，
+    # 就会放弃算长度并改用 Transfer-Encoding: chunked。原实现传的是 bytes、带 Content-Length，
+    # 换成分块编码是对上游的行为改变（部分服务端不接受 chunked 上传），所以在这里显式补上。
+    if hasattr(body, "read"):
+        try:
+            req.add_header("Content-Length", str(len(body)))
+        except TypeError:
+            pass
     with OPENER.open(req, timeout=timeout) as resp:
         raw = resp.read()
     return json.loads(raw) if raw else {}
 
 
-def multipart(path, filename, filepath):
-    """手写 multipart，避免给 CI 引入第三方依赖。"""
+class _MultipartBody(io.RawIOBase):
+    """把 multipart 请求体做成「按需吐块」的流，而不是一次性拼成一个大 bytes。
+
+    这是停滞超时能生效的前提：urllib 对 file-like 的 body 会分多次 read/send，
+    socket 超时因此作用在**块与块之间**上 —— 只要还在推进，多慢都能传完；真的卡住
+    超过 UPLOAD_STALL_TIMEOUT 才会抛错。若这里返回一个大 bytes，urllib 走单次
+    sendall，超时就会变成「整个请求的总时长」上限，反而会把慢但成功的上传判死。
+    """
+
+    def __init__(self, filepath, filename, boundary):
+        self._segs = [
+            (
+                f'--{boundary}\r\nContent-Disposition: form-data; name="access_token"\r\n\r\n'
+                f"{TOKEN}\r\n"
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                f'filename="{filename}"\r\nContent-Type: application/zip\r\n\r\n'
+            ).encode(),
+            filepath,  # 占位：文件内容按需从磁盘读，不整个塞进内存
+            f"\r\n--{boundary}--\r\n".encode(),
+        ]
+        self._idx = 0
+        self._off = 0
+        self._file = open(filepath, "rb")
+        self._total = len(self._segs[0]) + os.path.getsize(filepath) + len(self._segs[2])
+
+    def readable(self):
+        return True
+
+    def __len__(self):
+        # urllib 用它填 Content-Length；有长度就能走相对高效的路径
+        return self._total
+
+    def readinto(self, b):
+        while self._idx < len(self._segs):
+            seg = self._segs[self._idx]
+            if isinstance(seg, str):  # 文件段：直接从磁盘读，一次只读 b 那么长
+                n = self._file.readinto(b)
+                if n:
+                    return n
+                # 空文件/读完则跳到下一段，循环继续（不递归，避免空段叠加时爆栈）
+                self._idx += 1
+                self._off = 0
+                continue
+            chunk = seg[self._off:self._off + len(b)]
+            n = len(chunk)
+            if n:
+                b[:n] = chunk
+                self._off += n
+                if self._off >= len(seg):
+                    self._idx += 1
+                    self._off = 0
+                return n
+            self._idx += 1
+            self._off = 0
+        return 0
+
+    def close(self):
+        try:
+            self._file.close()
+        except Exception:
+            pass
+        super().close()
+
+
+def multipart(path, filename, filepath, timeout=UPLOAD_STALL_TIMEOUT):
+    """手写 multipart，避免给 CI 引入第三方依赖。
+
+    body 用流式实现（见 _MultipartBody），使 timeout 表现为「停滞超时」：
+    只要上传还在推进就不设总时长上限，卡住不动才放弃。
+    """
     boundary = f"----yimai{int(time.time() * 1000)}"
-    body = (
-        f'--{boundary}\r\nContent-Disposition: form-data; name="access_token"\r\n\r\n{TOKEN}\r\n'
-    ).encode()
-    body += (
-        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        f"Content-Type: application/zip\r\n\r\n"
-    ).encode()
-    with open(filepath, "rb") as fh:
-        body += fh.read()
-    body += f"\r\n--{boundary}--\r\n".encode()
-    return http("POST", path, body=body, ctype=f"multipart/form-data; boundary={boundary}")
+    body = _MultipartBody(filepath, filename, boundary)
+    try:
+        return http(
+            "POST",
+            path,
+            body=body,
+            ctype=f"multipart/form-data; boundary={boundary}",
+            timeout=timeout,
+        )
+    finally:
+        body.close()
 
 
 def list_releases():
@@ -141,10 +265,13 @@ def upload(rid, filename, label=None, as_name=None):
     if DRY:
         log(f"  [dry-run] 上传 {label}（{size / 1024 / 1024:.1f}MB）")
         return True
-    for attempt in range(1, 6):
+    # 安装包用更少的尝试次数：它最容易卡住，也最容易事后手工补传。
+    attempts = INSTALLER_ATTEMPTS if INSTALLER_MARK in filename else UPLOAD_ATTEMPTS
+    started = time.time()
+    for attempt in range(1, attempts + 1):
         try:
             multipart(f"/repos/{REPO}/releases/{rid}/attach_files", name, path)
-            log(f"  ✓ {label}（{size / 1024 / 1024:.1f}MB）")
+            log(f"  ✓ {label}（{size / 1024 / 1024:.1f}MB，耗时 {time.time() - started:.0f}s）")
             return True
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:200]
@@ -152,12 +279,16 @@ def upload(rid, filename, label=None, as_name=None):
                 # 400 基本是配额满或文件不合法，重试无意义，直接报出来
                 warn(f"{label} 上传被拒（HTTP 400）：{detail}")
                 return False
-            warn(f"{label} 第 {attempt}/5 次失败：HTTP {e.code} {detail}")
+            warn(f"{label} 第 {attempt}/{attempts} 次失败：HTTP {e.code} {detail}")
         except Exception as e:
-            warn(f"{label} 第 {attempt}/5 次失败：{e}")
-        if attempt < 5:
-            time.sleep([5, 15, 30, 60][attempt - 1])
-    warn(f"{label} 连续 5 次失败，跳过")
+            warn(f"{label} 第 {attempt}/{attempts} 次失败：{e}")
+        if attempt < attempts:
+            time.sleep(RETRY_BACKOFF[min(attempt - 1, len(RETRY_BACKOFF) - 1)])
+    # 把"折腾了多久"打出来：这个数直接决定整轮 CI 的时长，也便于判断是否该进一步收口
+    warn(
+        f"{label} 连续 {attempts} 次失败，跳过（累计耗时 {time.time() - started:.0f}s）；"
+        f"该包需事后手工补传，不影响其它包与 auto-latest"
+    )
     return False
 
 

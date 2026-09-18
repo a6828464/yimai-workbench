@@ -160,6 +160,10 @@ jobs:
         # 因为这里一直是 continue-on-error。现在改由 scripts/publish-gitee.py 统管：
         # 只传必要的包、回收超出窗口的旧安装包、并把 auto-latest 跟着版本刷新
         # （服务器 update.sh 的回退下载源指向 auto-latest，此前那份一直是旧包）。
+        #
+        # 上传超时按「无进展」计时而非总时长（跨洋上传慢，成功的也可能要几分钟）。
+        # 若日后安装包偶发被判超时，先调大 UPLOAD_STALL_TIMEOUT，不要加尝试次数 ——
+        # 次数多只是把同样的卡死重复几遍，白白拉长 CI。
         continue-on-error: true
         # GitHub Actions 不允许在 if 条件里读 secrets/env，因此改为脚本内判断：未配置 Token 时直接跳过
         env:
@@ -168,4 +172,6 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
           # 保留最近多少个版本的安装包（升级包不受影响，全留）
           KEEP_INSTALLERS: '20'
+          # 停滞超时（秒）：连续多久无进展判定连接已死。安装包偶发超时时优先调大它
+          UPLOAD_STALL_TIMEOUT: '180'
         run: python3 scripts/publish-gitee.py

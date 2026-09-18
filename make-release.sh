@@ -97,5 +97,8 @@ zip -qr "$INSTALLER_ZIP" app -x '*.DS_Store'
 cp "$ZIP" "$LATEST_ZIP"
 cp "$INSTALLER_ZIP" "$LATEST_INSTALLER_ZIP"
 du -sh "$ZIP" "$INSTALLER_ZIP"
-echo "在线升级包: $ZIP（固定名副本 $LATEST_ZIP）"
-echo "首次安装包: $INSTALLER_ZIP（固定名副本 $LATEST_INSTALLER_ZIP）"
+# 变量名必须用 ${} 括起来：后面紧跟的全角「（」是多字节字符，bash 会把它的首字节当成
+# 变量名的一部分，在 set -u 下报 "unbound variable" 并以 127 退出 —— 包已经打好，
+# 脚本却报失败，任何检查退出码的调用方都会误判。
+echo "在线升级包: ${ZIP}（固定名副本 ${LATEST_ZIP}）"
+echo "首次安装包: ${INSTALLER_ZIP}（固定名副本 ${LATEST_INSTALLER_ZIP}）"

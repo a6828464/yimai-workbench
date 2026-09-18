@@ -47,29 +47,28 @@
       </div>
     </ElCard>
 
-    <!-- 概览 -->
+    <!-- 概览：点卡片即筛选下方列表，再点一次取消 -->
     <ElRow :gutter="12" class="mb-3">
-      <ElCol :xs="12" :sm="8" :md="4">
-        <ElCard shadow="never"><Stat label="新入会会员" :value="summary.total" /></ElCard>
-      </ElCol>
-      <ElCol :xs="12" :sm="8" :md="4">
-        <ElCard shadow="never"><Stat label="待激活(0上课)" :value="summary.idle" warn /></ElCard>
-      </ElCol>
-      <ElCol :xs="12" :sm="8" :md="4">
-        <ElCard shadow="never"><Stat label="待养成" :value="summary.cultivating" /></ElCard>
-      </ElCol>
-      <ElCol :xs="12" :sm="8" :md="4">
-        <ElCard shadow="never"><Stat label="已养成" :value="summary.cultured" /></ElCard>
-      </ElCol>
-      <ElCol :xs="12" :sm="8" :md="4">
-        <ElCard shadow="never"><Stat label="有私教课" :value="summary.private" /></ElCard>
-      </ElCol>
-      <ElCol :xs="12" :sm="8" :md="4">
-        <ElCard shadow="never"
-          ><Stat label="有小班/团课" :value="summary.small + summary.group"
-        /></ElCard>
+      <ElCol v-for="s in STATS" :key="s.key" :xs="12" :sm="8" :md="4">
+        <ElCard
+          shadow="never"
+          class="stat-card"
+          :class="{ 'stat-card--active': statFilter === s.key }"
+          @click="toggleStat(s.key)"
+        >
+          <Stat
+            :label="s.label"
+            :value="s.value(statCounts)"
+            :warn="s.warn"
+            :active="statFilter === s.key"
+          />
+        </ElCard>
       </ElCol>
     </ElRow>
+    <div v-if="statFilter" class="mb-3 flex items-center gap-2 text-xs text-gray-400">
+      <span>已筛选：{{ activeStatLabel }}（{{ filteredRecords.length }} 人）</span>
+      <ElButton link type="primary" size="small" @click="statFilter = ''">清除筛选</ElButton>
+    </div>
 
     <!-- 列表 -->
     <ElCard shadow="never">
@@ -150,7 +149,7 @@
         <ElPagination
           v-model:current-page="page.current"
           :page-size="page.size"
-          :total="records.length"
+          :total="filteredRecords.length"
           layout="total, prev, pager, next"
         />
       </div>
@@ -262,12 +261,17 @@
     props: {
       label: { type: String, required: true },
       value: { type: Number, required: true },
-      warn: { type: Boolean }
+      warn: { type: Boolean },
+      active: { type: Boolean }
     },
     setup(props) {
       return () =>
         h('div', {}, [
-          h('div', { class: 'text-sm text-gray-500' }, props.label),
+          h(
+            'div',
+            { class: ['text-sm', props.active ? 'text-primary' : 'text-gray-500'] },
+            props.label
+          ),
           h(
             'div',
             {
@@ -298,20 +302,78 @@
   const cardType = ref('')
   const records = ref<NewMemberCultivation[]>([])
   const page = ref({ current: 1, size: 20 })
+  /** 概览卡片筛选：空=不筛选；与上方筛选条叠加生效 */
+  const statFilter = ref<StatKey>('')
 
-  const summary = computed(() => lastSummary.value)
-  const lastSummary = ref({
-    total: 0,
-    private: 0,
-    small: 0,
-    group: 0,
-    idle: 0,
-    cultivating: 0,
-    cultured: 0
+  type StatKey = '' | 'total' | 'idle' | 'cultivating' | 'cultured' | 'private' | 'smallGroup'
+
+  /**
+   * 概览卡片按「人」计数，且一律从当前列表数据算出。
+   *
+   * 卡片现在可点击筛选，所以「卡片上的数字 = 点下去看到的行数」必须成立；后端 summary 在
+   * 勾了课型筛选时统计的是未筛选的全量，两者会对不上。另外后端 summary 的 small+group 是
+   * 两个「人数」相加，同时上过小班和团课的人会被算两次，这里按并集去重。
+   */
+  const statCounts = computed(() => {
+    const rows = records.value
+    return {
+      total: rows.length,
+      idle: rows.filter((r) => r.health === 'idle').length,
+      cultivating: rows.filter((r) => r.health === 'cultivating').length,
+      cultured: rows.filter((r) => r.health === 'cultured').length,
+      private: rows.filter((r) => r.categories.private.signed > 0).length,
+      smallGroup: rows.filter((r) => r.categories.small.signed + r.categories.group.signed > 0)
+        .length
+    }
   })
 
+  const STATS: {
+    key: Exclude<StatKey, ''>
+    label: string
+    warn?: boolean
+    value: (c: typeof statCounts.value) => number
+  }[] = [
+    { key: 'total', label: '新入会会员', value: (c) => c.total },
+    { key: 'idle', label: '待激活(0上课)', warn: true, value: (c) => c.idle },
+    { key: 'cultivating', label: '待养成', value: (c) => c.cultivating },
+    { key: 'cultured', label: '已养成', value: (c) => c.cultured },
+    { key: 'private', label: '有私教课', value: (c) => c.private },
+    { key: 'smallGroup', label: '有小班/团课', value: (c) => c.smallGroup }
+  ]
+
+  const activeStatLabel = computed(() => STATS.find((s) => s.key === statFilter.value)?.label ?? '')
+
+  function matchStat(row: NewMemberCultivation, key: StatKey): boolean {
+    switch (key) {
+      case 'idle':
+        return row.health === 'idle'
+      case 'cultivating':
+        return row.health === 'cultivating'
+      case 'cultured':
+        return row.health === 'cultured'
+      case 'private':
+        return row.categories.private.signed > 0
+      case 'smallGroup':
+        return row.categories.small.signed + row.categories.group.signed > 0
+      default:
+        return true
+    }
+  }
+
+  /** 概览卡片筛选后的记录；分页基于它，页数不会超出 */
+  const filteredRecords = computed(() =>
+    statFilter.value === ''
+      ? records.value
+      : records.value.filter((r) => matchStat(r, statFilter.value))
+  )
+
+  function toggleStat(key: Exclude<StatKey, ''>) {
+    statFilter.value = statFilter.value === key ? '' : key
+    page.value.current = 1
+  }
+
   const pagedList = computed(() =>
-    records.value.slice(
+    filteredRecords.value.slice(
       (page.value.current - 1) * page.value.size,
       page.value.current * page.value.size
     )
@@ -337,7 +399,6 @@
         cardType: cardType.value || undefined
       })
       records.value = res.records
-      lastSummary.value = res.summary
       syncTime.value = res.syncTime
       error.value = ''
     } catch {
@@ -352,6 +413,7 @@
     venue.value = ''
     name.value = ''
     cardType.value = ''
+    statFilter.value = ''
     reload()
   }
 
@@ -359,6 +421,23 @@
 </script>
 
 <style scoped lang="scss">
+  // 概览卡片可点击筛选，选中态给出明确反馈（否则用户不知道点了有没有生效）
+  .stat-card {
+    cursor: pointer;
+    transition:
+      border-color 0.2s,
+      box-shadow 0.2s;
+
+    &:hover {
+      border-color: var(--el-color-primary);
+    }
+
+    &--active {
+      border-color: var(--el-color-primary);
+      box-shadow: 0 0 0 1px var(--el-color-primary) inset;
+    }
+  }
+
   // 卡片里的养成进度区，与「预约主题」用一条虚线分隔
   .nm-card {
     &__body {

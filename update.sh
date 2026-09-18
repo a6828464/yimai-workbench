@@ -15,7 +15,10 @@ GITHUB_PACKAGE_URL="https://github.com/a6828464/yimai-workbench/releases/downloa
 EXPECTED_SHA256="${RELEASE_SHA256:-}"
 
 if [ ! -d "$APP_ROOT" ]; then
-  echo "错误：站点目录不存在：$APP_ROOT（请设置 SITE_ROOT 后重试）"
+  # 变量名用 ${} 括起来：后面紧跟的全角「（」是多字节字符，bash 会把首字节并进变量名，
+  # 在 set -u 下报 "unbound variable" —— 恰恰是路径配错、最需要看到这条提示的时候，
+  # 用户只能看到一句看不懂的 bash 报错。
+  echo "错误：站点目录不存在：${APP_ROOT}（请设置 SITE_ROOT 后重试）"
   exit 1
 fi
 
