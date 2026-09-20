@@ -82,21 +82,55 @@
     }
   }
 
-  // 3. el-input-number 的加减按钮。controls-position="right" 时 EP 把它拆成
-  //    右侧上下两个 15px 高的小箭头（实测命中区 32x22），单手根本点不准；
-  //    手机上改成左右两个 44x44 的大按钮，输入内容左右各留出按钮宽度。
-  .el-input-number.is-controls-right {
+  // 3. el-input-number 的加减按钮。
+  //
+  //    这里必须覆盖**两个变体**，不能只写 .is-controls-right：
+  //    起初只包了 is-controls-right，但业务弹窗里用的几乎都是默认变体
+  //    （实测「会员管理 → 调整标签阈值」弹窗内 11 个 input-number，is-controls-right 计数为 0），
+  //    于是规则整片落空，按钮停在 32x42 —— 低于 44px 规范。
+  //    教训：CSS 兜底按「变体」写选择器时，要确认业务代码实际用的是哪个变体。
+  //
+  //    两个变体在手机上的目标形态是同一个（左减右加的两个大按钮），所以公共部分写在
+  //    .el-input-number 上；.is-controls-right 只需额外纠正它自带的上下分栏边框。
+  .el-input-number {
     // 左右各一个 44px 按钮，输入区还要放得下数字；不设下限的话容器会被父级
     // 压到 41px（实测），两个按钮就会盖住输入区
     min-width: 140px !important;
 
     .el-input-number__increase,
     .el-input-number__decrease {
-      top: 1px !important;
-      bottom: 1px !important;
+      // 不能留 1px 内缩：那会让按钮实际高度变成「容器高 - 2」= 42px，低于 44px 规范。
+      // 贴边到 0 才能拿到完整的 44px（实测 44x44）。
+      top: 0 !important;
+      bottom: 0 !important;
       width: $touch-target-min !important;
       height: auto !important;
       line-height: normal !important;
+    }
+
+    // 输入内容左右各留出按钮宽度 + 间隙，避免数字被按钮压住
+    .el-input__wrapper {
+      padding-left: 50px !important;
+      padding-right: 50px !important;
+    }
+  }
+
+  // 默认变体的定位 EP 本身就是「左减右加」，直接沿用，无需改 left/right。
+  // controls-position="right" 则把按钮拆成右侧上下两个 15px 高的小箭头（实测 32x22），
+  // 这里把它掰回左右布局，与默认变体统一（手机上上下分栏的命中区太小）。
+  //
+  // ⚠️ 必须写满 `.el-input-number--default.is-controls-right` 三要素：
+  //    el-ui.scss:543 有一条更高特异度的规则
+  //      `.el-input-number--default.is-controls-right .el-input-number__{in,de}crease
+  //         { height: calc(var(--el-component-size) / 2) !important }`
+  //    它把按钮高度压成组件高的一半（手机上 44/2 = 22px）。上面 `.el-input-number` 的
+  //    `height: auto` 特异度更低，压制不住它，实测按钮变成 44x22（宽度够了、高度不够）。
+  //    height 用 auto 会继续被那条规则按一半算，所以这里直接给 44px。
+  .el-input-number--default.is-controls-right,
+  .el-input-number.is-controls-right {
+    .el-input-number__increase,
+    .el-input-number__decrease {
+      height: $touch-target-min !important;
     }
 
     .el-input-number__increase {
@@ -114,11 +148,6 @@
       border-left: 0 !important;
       border-radius: var(--el-border-radius-base) 0 0 var(--el-border-radius-base) !important;
     }
-
-    .el-input__wrapper {
-      padding-left: 50px !important;
-      padding-right: 50px !important;
-    }
   }
 
   // 4. ElDropdown 菜单（卡片上的「更多」）：每一项也要够高才点得中
@@ -126,6 +155,26 @@
     min-height: $touch-target-min;
     padding: 10px 16px;
     line-height: 1.5;
+  }
+
+  // 4b. 只有图标的关闭类按钮：抽屉右上角关闭、MessageBox 关闭。
+  //
+  //     el-drawer__close-btn 是个纯图标 <button>，EP 没给宽高，实测只有 20x20：
+  //     抽屉在手机上占满屏，关闭按钮是用户唯一出口，点不中就只能靠 Esc/滑动，很容易卡住。
+  //     （el-dialog__headerbtn 已自带 48x48，不必处理；el-message-box__headerbtn 是 40x40，
+  //      低于 44，一并放大。）
+  .el-drawer__close-btn,
+  .el-message-box__headerbtn {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    min-width: $touch-target-min !important;
+    min-height: $touch-target-min !important;
+  }
+
+  .el-message-box__headerbtn {
+    width: $touch-target-min !important;
+    height: $touch-target-min !important;
   }
 
   // 5. ElTabs：窄屏下 EP 退化成「只显示 2~3 个页签 + 两个 20px 宽的左右箭头」，
