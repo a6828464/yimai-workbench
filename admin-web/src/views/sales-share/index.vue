@@ -1,6 +1,13 @@
 <template>
   <div class="min-h-100vh bg-[#faf7f2] pb-10">
-    <div v-if="invalid" class="flex-c h-100vh flex-col gap-3">
+    <!-- 分享码现在由服务端随机签发，本地初始码与 URL 必然不同，
+         等待公开接口返回前先显示加载态，避免有效链接闪一下「已失效」 -->
+    <div v-if="loading" class="flex-c h-100vh flex-col gap-3">
+      <img src="@imgs/yimai-logo.png" class="w-14 h-14 object-contain" alt="一麦" />
+      <p class="text-gray-400">正在加载…</p>
+    </div>
+
+    <div v-else-if="invalid" class="flex-c h-100vh flex-col gap-3">
       <img src="@imgs/yimai-logo.png" class="w-14 h-14 object-contain" alt="一麦" />
       <p class="text-gray-500">链接已失效或已停用，请联系门店获取最新资料</p>
     </div>
@@ -111,8 +118,11 @@
     cases: sales.state.cases
   })
   const loading = ref(true)
+  /** 服务端明确判定失效（404：不存在 / 已停用）——此时不允许回退本地数据 */
+  const revoked = ref(false)
 
   const invalid = computed(() => {
+    if (revoked.value) return true
     if (!data.value.share.enabled) return true
     return route.params.code !== data.value.share.code
   })
@@ -141,18 +151,26 @@
     async (codeRaw) => {
       const code = String(codeRaw ?? '')
       loading.value = true
+      revoked.value = false
       try {
         const base = (import.meta.env.VITE_API_BASE as string) || '/api'
         const resp = await axios.get(`${base.replace(/\/$/, '')}/public/sales/${encodeURIComponent(code)}`)
         data.value = resp.data?.data
-      } catch {
-        // 回退本地（演示模式/同浏览器）
+      } catch (e) {
+        // 服务端已明确判定该分享不存在/已停用：直接展示失效页，不回退到本地演示数据 ——
+        // 否则停用后在同浏览器打开仍能看到内容，与服务端的停用语义矛盾。
+        if (axios.isAxiosError(e) && e.response?.status === 404) {
+          revoked.value = true
+          return
+        }
+        // 其他失败（演示模式 / 网络不可达）：回退本地（同浏览器）。
+        // 本地回退同样只取已授权案例，不因为「没连上服务端」就放宽口径。
         data.value = {
           share: sales.state.share,
           info: sales.state.info,
           coaches: sales.state.coaches,
           products: sales.state.products,
-          cases: sales.state.cases
+          cases: sales.state.cases.filter((c) => c.authorized)
         }
       } finally {
         loading.value = false
@@ -161,9 +179,14 @@
     { immediate: true }
   )
 
-  onMounted(() => {
-    if (!invalid.value) sales.registerView()
-  })
+  // 访问量计数：链接确认为有效后再登记（加载完成前 invalid 恒为 true，不能用 onMounted 判定）
+  watch(
+    [loading, invalid],
+    () => {
+      if (!loading.value && !invalid.value) sales.registerView()
+    },
+    { immediate: true }
+  )
 </script>
 
 <style scoped lang="scss">

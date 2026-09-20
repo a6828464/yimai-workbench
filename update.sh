@@ -116,6 +116,49 @@ tar czf "$ROLLBACK_DIR/backend-code.tar.gz" -C "$APP_ROOT" \
   --exclude='./vendor' --exclude='./storage' --exclude='./.env' --exclude='./node_modules' . \
   || { echo "致命错误：代码快照生成失败，已中止更新。"; exit 1; }
 
+# ── 迁移必须随包到达（rsync 之前的硬门禁） ──────────────────────────
+# 失败形态：新代码引用了新列，而包里**没有**对应迁移，rsync 覆盖代码后
+# `php artisan migrate` 无迁移可跑、新代码却已经在跑 —— 公开接口直接 500，
+# 且因为迁移没跑，回滚代码也修不好「列不存在」之外的问题。
+# 所以在覆盖任何文件**之前**就确认：包内携带的迁移集合里，必须有新增的迁移。
+# 做法：把包内迁移与线上迁移对比，若线上缺少包内的任一 .php 文件即为「包不完整」。
+if [ -d "$RELEASE_ROOT/backend/database/migrations" ]; then
+  missing_migrations=""
+  for f in "$RELEASE_ROOT/backend/database/migrations"/*.php; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f")"
+    if [ ! -f "$APP_ROOT/database/migrations/$name" ]; then
+      missing_migrations="$missing_migrations $name"
+    fi
+  done
+  # 线上已有、包内没有的迁移不算错（可能是人工补丁），这里只拦「包内必须有却缺失」。
+  # 但包内迁移目录必须非空 —— 空目录说明打包含数据库迁移那一步被跳过了。
+  if [ -z "$(ls -1 "$RELEASE_ROOT/backend/database/migrations"/*.php 2>/dev/null)" ]; then
+    echo "致命错误：升级包内 database/migrations 为空，包不完整，已中止更新（未覆盖任何文件）。"
+    exit 1
+  fi
+  if [ -n "$missing_migrations" ]; then
+    echo "  包内迁移（线上尚未应用）：$missing_migrations"
+  fi
+else
+  echo "致命错误：升级包内缺少 backend/database/migrations 目录，包不完整，已中止更新（未覆盖任何文件）。"
+  exit 1
+fi
+
+# 包内代码引用了 published_shares 的相关列时，包里必须真的带着建那些列的迁移。
+# 这一条直接对标「迁移没进版本控制 / 打包漏了」这个具体事故：
+# 代码在线上、建列的迁移不在包里，migrate 什么也不做，公开接口直接 500。
+if grep -rqs "published_shares" "$RELEASE_ROOT/backend/app" 2>/dev/null; then
+  for required in add_enabled_to_published_shares add_owner_and_source_to_published_shares; do
+    if ! ls "$RELEASE_ROOT/backend/database/migrations"/*"$required"*.php >/dev/null 2>&1; then
+      echo "致命错误：包内代码引用 published_shares，但包里缺少必需迁移 *${required}*.php。"
+      echo "  已中止更新，未覆盖任何文件。请重新打包后再发布。"
+      exit 1
+    fi
+  done
+  echo "  迁移完整：published_shares 所需迁移均在包内"
+fi
+
 # Preserve production-only files while replacing application code and built assets.
 # 发布包不携带 vendor，保留服务器现有生产依赖。
 #

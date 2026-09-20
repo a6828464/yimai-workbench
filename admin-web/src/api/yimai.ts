@@ -2352,14 +2352,43 @@ export async function syncTrainingPlansCloud(
   )
 }
 
-/** 发布对外分享快照（H5 跨设备访问） */
+/** 发布对外分享快照（H5 跨设备访问），返回服务端权威分享码 */
+export interface SharePublishResult {
+  /** 服务端签发的分享码（销售分享由服务端决定，客户端传入值不再生效） */
+  token: string
+  code: string
+  enabled: boolean
+}
+
 export function publishShare(
   type: string,
   token: string,
   payload: Record<string, unknown>
-): Promise<void> {
-  if (!USE_BACKEND) return Promise.resolve()
-  return apiPost('/shares/publish', { type, token, payload }).then(() => undefined)
+): Promise<SharePublishResult | undefined> {
+  if (!USE_BACKEND) return Promise.resolve(undefined)
+  return apiPost<SharePublishResult>('/shares/publish', { type, token, payload })
+}
+
+/**
+ * 停用对外分享（服务端置 enabled=false）。
+ *
+ * 关闭分享开关必须落到服务端：原先停用只改前端状态，服务端记录原样保留，
+ * 任何人都还能用旧链接打开对客页。
+ */
+export function disableShare(type: string): Promise<{ enabled: boolean; affected: number }> {
+  return apiPost<{ enabled: boolean; affected: number }>('/shares/disable', { type })
+}
+
+/** 本人当前对外分享的权威状态（token 为空表示尚未在服务端发布/仍是旧的可猜码） */
+export interface CurrentShareState {
+  enabled: boolean
+  token: string | null
+  code: string | null
+  views: number
+}
+
+export function getCurrentShare(type: string): Promise<CurrentShareState> {
+  return apiGet<CurrentShareState>('/shares/current', { type })
 }
 
 // ==================== 今日工作台汇总 ====================

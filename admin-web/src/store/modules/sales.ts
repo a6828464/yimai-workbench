@@ -42,6 +42,30 @@ export interface SalesShare {
   views: number
 }
 
+/**
+ * 分享码形态：16 位小写十六进制。
+ *
+ * 与服务端签发口径一致（Laravel 侧 ShareController::issueToken() =
+ * bin2hex(random_bytes(8))）。历史上这里是编译期常量 'yimai-lvdi'，谁都能猜出来
+ * 并直接请求公开接口；现在分享码一律随机，且后端模式下以服务端签发的值为权威。
+ */
+const SHARE_CODE_PATTERN = /^[0-9a-f]{16}$/
+
+/** 本地兜底分享码（演示模式/尚未发布时用）：不再使用可猜的固定常量 */
+function randomShareCode(): string {
+  // 旧 WebView 可能没有 crypto，兜底也不能退回到可猜的固定值
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(8)
+    crypto.getRandomValues(bytes)
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  }
+  return Array.from({ length: 16 }, () => Math.floor(Math.random() * 16).toString(16)).join('')
+}
+
+export function isIssuedShareCode(code: string): boolean {
+  return SHARE_CODE_PATTERN.test(code)
+}
+
 const SEED_INFO: SalesStoreInfo = {
   name: '一麦瑜伽（绿地店）',
   industry: '瑜伽 · 普拉提',
@@ -89,7 +113,9 @@ export const useSalesStore = defineStore('salesStore', () => {
     products: seedProducts(),
     coaches: seedCoaches(),
     cases: seedCases(),
-    share: { enabled: true, code: 'yimai-lvdi', views: 0 }
+    // 分享码随机生成（不再用可猜的编译期常量）；后端模式下开启分享时
+    // 以服务端签发并返回的 token 为准，见 setShareCode()
+    share: { enabled: true, code: randomShareCode(), views: 0 }
   })
 
   function audit(action: string, targetLabel: string, detail: string) {
@@ -125,19 +151,36 @@ export const useSalesStore = defineStore('salesStore', () => {
     audit('修改', '分享设置', `分享链接${enabled ? '已开启' : '已停用'}；访问量 ${state.value.share.views}`)
   }
 
-  function resetShareCode(code: string) {
-    state.value.share.code = code
-    audit('修改', '分享设置', `分享码重置为 ${code}，旧链接失效`)
+  /**
+   * 采用服务端签发/返回的分享码。
+   *
+   * 发布成功后后端会回传权威 token，这里落库，保证「预览/发送 H5」用的链接
+   * 与公开接口认的码一致（分享页按 route.params.code === data.share.code 判定有效性，
+   * 两者不一致会一直显示「链接已失效」）。
+   * 传空表示丢弃当前码并重新随机生成（旧链接失效）。
+   */
+  function setShareCode(code: string) {
+    const next = code.trim()
+    state.value.share.code = next && isIssuedShareCode(next) ? next : randomShareCode()
+    audit('修改', '分享设置', `分享码已更新，旧链接失效`)
   }
 
   function registerView() {
     state.value.share.views += 1
   }
 
-  return { state, updateInfo, saveProducts, saveCoaches, saveCases, setShareEnabled, resetShareCode, registerView }
+  return { state, updateInfo, saveProducts, saveCoaches, saveCases, setShareEnabled, setShareCode, registerView }
 }, {
   persist: {
     key: 'yimai-sales-store',
-    storage: localStorage
+    storage: localStorage,
+    // 历史持久化数据里存着可猜的固定分享码（'yimai-lvdi'）。升级后必须自愈，
+    // 否则老浏览器上的 localStorage 会一直把那个常量当作对外链接的码。
+    afterHydrate: ({ store }) => {
+      const s = store as unknown as { state: SalesState }
+      if (!isIssuedShareCode(s.state.share.code)) {
+        s.state.share.code = randomShareCode()
+      }
+    }
   }
 })

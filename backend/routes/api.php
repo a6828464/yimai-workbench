@@ -177,6 +177,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ---------- 对外发布（H5 分享快照） ----------
     Route::post('/shares/publish', [ShareController::class, 'publish']);
+    // 本人当前分享的权威状态：前端开关/链接以服务端为准
+    Route::get('/shares/current', [ShareController::class, 'current']);
+    // 停用对外分享：关闭分享开关必须落到服务端，公开接口据此返回 404
+    Route::post('/shares/disable', [ShareController::class, 'disable']);
+    // 归属孤儿行（created_by 查无此人 / 缺 user_id）的一次性清理与重新归属 —— 仅超管
+    Route::get('/shares/orphans', [ShareController::class, 'orphans']);
+    Route::post('/shares/orphans/repair', [ShareController::class, 'repairOrphan']);
 
     // ---------- 版本更新（仅超管） ----------
     Route::get('/system/version', [SystemController::class, 'version']);
