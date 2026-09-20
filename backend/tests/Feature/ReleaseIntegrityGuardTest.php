@@ -150,14 +150,24 @@ class ReleaseIntegrityGuardTest extends TestCase
         return array_map('basename', File::glob(database_path('migrations').'/*.php'));
     }
 
+    /**
+     * 跑 git 并返回 stdout；git 不可用（命令缺失/非零退出）时返回 null 表示「无法判定」。
+     *
+     * 刻意用 exec() 而不是 shell_exec()：shell_exec 在命令**输出为空**时也返回 null，
+     * 于是「本应断言空输出」的用例会伪装成 skipped 静默通过 ——
+     * 守卫测试最不该有的行为就是「什么都没检查却显示通过」。
+     */
     private function runGit(array $args): ?string
     {
-        $cmd = 'git -C '.escapeshellarg($this->repoRoot()).' '.implode(' ', array_map('escapeshellarg', $args)).' 2>/dev/null';
-        $out = @shell_exec($cmd);
-        if ($out === null) {
+        $cmd = 'git -C '.escapeshellarg($this->repoRoot()).' '
+            .implode(' ', array_map('escapeshellarg', $args)).' 2>/dev/null';
+        $lines = [];
+        $code = 1;
+        exec($cmd, $lines, $code);
+        if ($code !== 0) {
             return null;
         }
 
-        return $out;
+        return implode("\n", $lines);
     }
 }
