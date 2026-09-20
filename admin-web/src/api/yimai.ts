@@ -2374,9 +2374,18 @@ export function publishShare(
  *
  * 关闭分享开关必须落到服务端：原先停用只改前端状态，服务端记录原样保留，
  * 任何人都还能用旧链接打开对客页。
+ *
+ * 服务端可能回 503（数据库结构升级尚未完成，enabled 列还不存在）——
+ * 那是**暂时**不可操作，不是「停用成功」，调用方必须按失败处理。
  */
-export function disableShare(type: string): Promise<{ enabled: boolean; affected: number }> {
-  return apiPost<{ enabled: boolean; affected: number }>('/shares/disable', { type })
+export function disableShare(
+  type: string,
+  token?: string
+): Promise<{ enabled: boolean; affected: number }> {
+  return apiPost<{ enabled: boolean; affected: number }>('/shares/disable', {
+    type,
+    ...(token ? { token } : {})
+  })
 }
 
 /** 本人当前对外分享的权威状态（token 为空表示尚未在服务端发布/仍是旧的可猜码） */
@@ -2387,6 +2396,14 @@ export interface CurrentShareState {
   views: number
 }
 
+/**
+ * 读本人分享状态。
+ *
+ * 两种「不可用」必须与「未开启」区分开，否则界面会把运维状态显示成业务状态：
+ *  - 403：当前角色无权管理对外分享（前端菜单是 MGMT，后端也已收口）；
+ *  - 503：数据库结构升级尚未完成。
+ * 返回 null 表示调用成功（即使 enabled=false），抛错表示无法判定。
+ */
 export function getCurrentShare(type: string): Promise<CurrentShareState> {
   return apiGet<CurrentShareState>('/shares/current', { type })
 }

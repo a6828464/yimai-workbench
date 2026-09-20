@@ -11,9 +11,14 @@
         <ElTag size="small" :type="sales.state.share.enabled ? 'success' : 'danger'">
           {{ sales.state.share.enabled ? '分享中' : '已停用' }}
         </ElTag>
+        <!-- 没读到服务端权威状态时明确标注：此时开关只是本地草稿，不代表线上 -->
+        <ElTag v-if="USE_BACKEND && !shareReady" size="small" type="warning" effect="plain">
+          未同步服务端
+        </ElTag>
         <span class="text-xs text-gray-400">访问量 {{ sales.state.share.views }}</span>
         <ElSwitch
           :model-value="sales.state.share.enabled"
+          :loading="toggling"
           active-text="开启"
           inactive-text="停用"
           @change="(v: string | number | boolean) => onShareToggle(Boolean(v))"
@@ -49,12 +54,16 @@
   const tab = ref('basic')
   /** 开关请求进行中，避免连点造成「开了又停」的竞态 */
   const toggling = ref(false)
+  /** 是否已成功读到服务端权威状态（false 表示界面上的开关只是本地值，不可信） */
+  const shareReady = ref(false)
 
   /**
    * 打开页面时以服务端为准回填分享状态。
    *
    * 分享码由服务端签发后，本地持久化的那份可能已经过期（换发过码、或仍是历史
    * 可猜常量），页面必须拿到权威 token 才能给出正确的分享链接。
+   * 拉取失败时给出可读提示而不是静默 —— 静默会让界面显示本地旧状态，
+   * 与线上事实不一致（正是本次修复要消灭的那类「界面说停用、线上还开着」）。
    */
   async function syncShareState() {
     if (!USE_BACKEND) return
@@ -62,8 +71,15 @@
       const cur = await getCurrentShare('sales')
       sales.setShareEnabled(cur.enabled)
       if (cur.enabled && cur.token) sales.setShareCode(cur.token)
-    } catch {
-      /* 拉取失败不阻塞页面，保持本地状态 */
+      shareReady.value = true
+    } catch (e) {
+      shareReady.value = false
+      const status = (e as { response?: { status?: number } })?.response?.status
+      if (status === 403) {
+        ElMessage.warning('当前账号无权管理对外分享（仅超管与店长），页面显示的是本地草稿')
+      } else if (status === 503) {
+        ElMessage.warning('服务端结构升级尚未完成，分享开关暂时不可用，请稍后重试')
+      }
     }
   }
 
@@ -95,6 +111,7 @@
         })
         if (res?.token) sales.setShareCode(res.token)
         sales.setShareEnabled(true)
+        shareReady.value = true
         ElMessage.success('已发布到线上，客户可在微信中打开')
       } else {
         await disableShare('sales')
@@ -102,8 +119,16 @@
         ElMessage.success('已停用分享，旧链接打开会提示已失效')
       }
     } catch (e) {
+      // 失败必须回退开关：否则界面显示已停用、线上其实还能访问
       sales.setShareEnabled(!enabled)
-      ElMessage.error(`${enabled ? '线上发布' : '停用'}失败：${String(e).slice(0, 80)}`)
+      const status = (e as { response?: { status?: number } })?.response?.status
+      const tip =
+        status === 403
+          ? '无权管理对外分享（仅超管与店长）'
+          : status === 503
+            ? '服务端结构升级尚未完成，暂时无法停用，请稍后重试'
+            : String(e).slice(0, 80)
+      ElMessage.error(`${enabled ? '线上发布' : '停用'}失败：${tip}`)
     } finally {
       toggling.value = false
     }

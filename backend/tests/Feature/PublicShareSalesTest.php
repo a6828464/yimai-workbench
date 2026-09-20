@@ -11,6 +11,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\Sanctum;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 /**
@@ -204,7 +205,7 @@ class PublicShareSalesTest extends TestCase
         ];
     }
 
-    /** @dataProvider falsyEnabledValues */
+    #[DataProvider('falsyEnabledValues')]
     public function test_non_truthy_enabled_values_fail_closed(mixed $stored): void
     {
         $token = 'a1b2c3d4e5f60718';
@@ -227,7 +228,7 @@ class PublicShareSalesTest extends TestCase
         ];
     }
 
-    /** @dataProvider truthyEnabledValues */
+    #[DataProvider('truthyEnabledValues')]
     public function test_truthy_enabled_values_stay_visible(mixed $stored): void
     {
         $token = 'b1b2c3d4e5f60718';
