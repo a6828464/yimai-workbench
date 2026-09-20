@@ -6,6 +6,7 @@ use App\Models\PublishedShare;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
@@ -145,5 +146,48 @@ class PublishedShareMigrationTest extends TestCase
         ]);
 
         $this->getJson("/api/public/sales/{$lookalike}")->assertStatus(404);
+    }
+
+    /**
+     * 上线前探测：迁移会把「已存在 16hex 形态的 sales 行」记为 warning。
+     *
+     * 这类行在本次迁移之前不可能由服务端签发（那时没有签发标记代码），
+     * 因此要么是巧合、要么是有人猜中后长期有效的库存链接 —— 两种都需要人工确认。
+     * 这里锁定「探测确实会报警」，否则升级时这段风险提示会静默失效。
+     */
+    public function test_migration_warns_when_hex_shaped_sales_rows_exist(): void
+    {
+        $this->dropOwnershipColumns();
+
+        DB::table('published_shares')->insert([
+            'type' => 'sales', 'token' => 'aabbccddeeff0011',
+            'payload' => '{}', 'created_by' => '老王', 'enabled' => true,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        // 非 16hex 的历史码（可猜常量形态）不应触发这条 warning
+        DB::table('published_shares')->insert([
+            'type' => 'sales', 'token' => 'yimai-lvdi',
+            'payload' => '{}', 'created_by' => '老王', 'enabled' => true,
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $warnings = [];
+        Log::listen(function ($event) use (&$warnings) {
+            $warnings[] = ['level' => $event->level, 'message' => $event->message, 'context' => $event->context];
+        });
+
+        $this->runMigration();
+
+        $hit = array_values(array_filter(
+            $warnings,
+            fn ($w) => str_contains((string) $w['message'], '16hex')
+        ));
+        $this->assertCount(1, $hit, '存量存在 16hex 销售行时必须告警');
+        $this->assertSame('warning', $hit[0]['level']);
+        $this->assertSame(1, (int) ($hit[0]['context']['rows'] ?? 0), '只应统计 16hex 形态的行');
+        $this->assertSame('high', $hit[0]['context']['risk'] ?? null);
+
+        // 探测不阻断迁移：列仍会建出来
+        $this->assertTrue(Schema::hasColumn('published_shares', 'token_source'));
     }
 }
