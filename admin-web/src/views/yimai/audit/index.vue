@@ -54,7 +54,9 @@
         </template>
       </ArtTableHeader>
 
-      <ElTable v-loading="loading" :data="list" border stripe>
+      <!-- 手持设备：改用卡片列表。9 列表格在 390px 上只剩左右固定列，中间全被挤掉；
+           日志类列表的核心是「谁、什么时候、对什么做了什么」，卡片按这个顺序排 -->
+      <ElTable v-if="!isHandheld" v-loading="loading" :data="list" border stripe max-height="520">
         <ElTableColumn prop="time" label="时间" width="170" sortable />
         <ElTableColumn label="操作人" width="150">
           <template #default="{ row }">
@@ -79,6 +81,22 @@
           >
         </ElTableColumn>
       </ElTable>
+
+      <!-- 手持设备：卡片列表。日志的读法是「谁 / 何时 / 对什么做了什么」，
+           所以标题给操作对象、副标题给操作人+时间，动作与模块用标签，变更明细收进 note -->
+      <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="row in list"
+          :key="row.id"
+          :title="row.targetLabel || '—'"
+          :subtitle="`${row.time} · ${row.operatorName}（${row.operatorRole}）`"
+          :tags="cardTags(row)"
+          :note="row.detail"
+          note-label="变更明细"
+          :actions="[{ text: '溯源', type: 'primary', onClick: () => showDetail(row) }]"
+        />
+        <div v-if="!loading && !list.length" class="m-card-list__empty">暂无操作日志</div>
+      </div>
 
       <div class="mt-4 flex justify-end">
         <ElPagination
@@ -149,8 +167,13 @@
     type RetentionSettings
   } from '@/api/system-records'
   import type { YimaiAuditLog } from '@/store/modules/yimai'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type { MobileCardTag } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiAudit' })
+
+  // 手持设备上用卡片列表代替宽表格（见下方 cardTags）
+  const { isHandheld } = useDevice()
 
   const RETENTION_OPTIONS = [
     { label: '保留 90 天', value: 90 },
@@ -269,6 +292,18 @@
     if (action === '新增') return 'success'
     if (action === '修改') return 'warning'
     return 'primary'
+  }
+
+  /**
+   * 卡片标签：动作（语义色，扫读时最先看到）+ 模块 + 门店
+   *
+   * 表格里的时间/操作人已移到副标题，动作/模块/门店改为标签 —— 三个字段一个都没丢。
+   */
+  function cardTags(row: YimaiAuditLog): MobileCardTag[] {
+    const tags: MobileCardTag[] = [{ text: row.action, type: actionType(row.action), effect: 'dark' }]
+    if (row.module) tags.push({ text: row.module, effect: 'plain' })
+    if (row.venue) tags.push({ text: row.venue, effect: 'plain' })
+    return tags
   }
 
   onMounted(async () => {

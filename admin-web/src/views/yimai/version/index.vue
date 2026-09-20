@@ -303,7 +303,38 @@
 </script>
 
 <style scoped>
+  /* 注意：这个 style 块是纯 CSS（没有 lang="scss"），只能用斜杠星号注释。 */
   .changelog-body :deep(code) {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /*
+    手机端宽度异常修复
+
+    CHANGELOG.md 里有「test_super_and_media_can_manage_leads_access」这类长 token
+    （下划线不构成换行机会），而渲染出的列表项是 flex 容器。
+    flex 子项默认 min-width:auto，无法收缩到小于自身 min-content 宽度，
+    于是 413px 的 code 把整行撑到 490px、页面撑到 536px ——
+    手机上 layout viewport 被顶宽，innerWidth 从 390 变成 536（整页被缩小）。
+
+    这里让长 token 可断行 + 允许 flex 子项收缩到 0，页面宽度回到视口宽度。
+    桌面端容器更宽、本来就不会触发断行，所以不改变桌面端观感。
+  */
+  .changelog-body {
+    /* 长 token 一律允许在任意字符处断行（默认只在空格/连字符处断） */
+    overflow-wrap: anywhere;
+  }
+
+  /* 块级/flex 容器的 min-width 归零，否则长内容会撑破容器 */
+  .changelog-body :deep(ul),
+  .changelog-body :deep(li),
+  .changelog-body :deep(p),
+  .changelog-body :deep(div) {
+    min-width: 0;
+  }
+
+  .changelog-body :deep(li > span) {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 </style>

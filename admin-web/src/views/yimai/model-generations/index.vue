@@ -59,7 +59,8 @@
         </template>
       </ArtTableHeader>
 
-      <ElTable v-loading="loading" :data="records" border stripe>
+      <!-- 手持设备：改用卡片列表。9 列表格在 390px 上固定列吃满可见宽度 -->
+      <ElTable v-if="!isHandheld" v-loading="loading" :data="records" border stripe max-height="520">
         <ElTableColumn prop="createdAt" label="生成时间" width="170" sortable />
         <ElTableColumn label="操作人" width="150">
           <template #default="{ row }">
@@ -97,6 +98,23 @@
           </template>
         </ElTableColumn>
       </ElTable>
+
+      <!-- 手持设备：卡片列表。运维看这条记录只关心「成功没有 / 用了哪个模型 / 花了多久多少 Token」，
+           所以把状态做成标签，耗时与 Token 做成两个指标，错误/预览收进 note（失败时标红） -->
+      <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="row in cardRows"
+          :key="String(row.id)"
+          :title="row.featureType || '—'"
+          :subtitle="`${row.createdAt} · ${row.operatorName}（${row.operatorRole}）`"
+          :tags="row.tags"
+          :metrics="row.metrics"
+          :note="row.note?.text"
+          :note-label="row.note?.label"
+          :note-danger="row.note?.danger"
+        />
+        <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无生成记录</div>
+      </div>
 
       <div class="mt-4 flex justify-end">
         <ElPagination
@@ -147,8 +165,13 @@
     type ModelGenerationRecord,
     type RetentionSettings
   } from '@/api/system-records'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type { MobileCardMetric, MobileCardTag } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiModelGenerations' })
+
+  // 手持设备上用卡片列表代替宽表格（见下方 cardRows）
+  const { isHandheld } = useDevice()
 
   const RETENTION_OPTIONS = [
     { label: '保留 30 天', value: 30 },
@@ -265,6 +288,43 @@
   function unique(values: string[]): string[] {
     return [...new Set(values.filter(Boolean))]
   }
+
+  // ---------- 手持设备卡片 ----------
+  //
+  // 9 列表格在手机上只剩固定列。运维看一条生成记录只关心三件事：
+  // 成功没有 / 用了哪个模型 / 花了多久多少 Token。
+  // 保留：功能（标题）、时间+操作人（副标题）、状态+来源+模型（标签）、耗时+Token（指标）、
+  //       错误或结果预览（note，失败标红）。
+  // 表格里没有独立成项的信息：操作人角色并入副标题、服务商并入模型标签、
+  // 「结果预览 / 错误」原文进 note —— 九列一个都没丢。
+  const cardRows = computed(() =>
+    records.value.map((row) => {
+      const ok = isSuccess(row.status)
+
+      const tags: MobileCardTag[] = [
+        { text: statusLabel(row.status), type: ok ? 'success' : 'danger', effect: 'dark' },
+        { text: sourceLabel(row.source), effect: 'plain' }
+      ]
+      const modelText = [row.provider, row.model].filter(Boolean).join(' / ')
+      if (modelText) tags.push({ text: modelText, effect: 'plain' })
+
+      const metrics: MobileCardMetric[] = [
+        { label: '耗时', value: row.latencyMs == null ? '—' : row.latencyMs, unit: row.latencyMs == null ? '' : 'ms' },
+        {
+          label: 'Token（入/出/总）',
+          value: tokenSummary(row)
+        }
+      ]
+
+      // 失败时说清失败原因；成功时给结果预览。和表格同一取数口径（错误优先）
+      const preview = row.errorMessage || row.outputPreview || ''
+      const note = preview
+        ? { text: preview, label: row.errorMessage ? '错误' : '结果预览', danger: !!row.errorMessage }
+        : null
+
+      return { id: row.id, featureType: row.featureType, createdAt: row.createdAt, operatorName: row.operatorName, operatorRole: row.operatorRole, tags, metrics, note }
+    })
+  )
 
   onMounted(async () => {
     const [, settings] = await Promise.all([load(), getRetentionSettings().catch(() => null)])

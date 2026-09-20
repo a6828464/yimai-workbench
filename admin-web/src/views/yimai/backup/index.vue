@@ -247,7 +247,7 @@
       </template>
       <ElTabs v-model="scope">
         <ElTabPane label="本地备份" name="local">
-          <ElTable :data="currentFiles" size="small">
+          <ElTable v-if="!isHandheld" :data="currentFiles" size="small" max-height="420">
             <ElTableColumn prop="name" label="文件名" min-width="260" show-overflow-tooltip />
             <ElTableColumn label="大小" width="100">
               <template #default="{ row }">{{ humanSize(row.size) }}</template>
@@ -278,9 +278,27 @@
               <ElEmpty description="暂无本地备份，点击上方「立即备份」生成" :image-size="60" />
             </template>
           </ElTable>
+
+          <!-- 手持设备：备份文件改用卡片。文件名（标题）+ 大小 + 时间（指标），
+               四个操作平铺在最前面的是「下载/校验」，破坏性的「恢复/删除」收进「更多」 -->
+          <div v-if="isHandheld" v-loading="busy" class="m-card-list min-h-[80px]">
+            <MobileCard
+              v-for="row in currentFiles"
+              :key="row.name"
+              :title="row.name"
+              :metrics="[
+                { label: '大小', value: humanSize(row.size) },
+                { label: '时间', value: row.mtime || '—' }
+              ]"
+              :actions="fileCardActions(row)"
+            />
+            <div v-if="!currentFiles.length" class="m-card-list__empty"
+              >暂无本地备份，点击上方「立即备份」生成</div
+            >
+          </div>
         </ElTabPane>
         <ElTabPane :label="`远端备份（${remoteFiles.length}）`" name="remote">
-          <ElTable :data="currentFiles" size="small">
+          <ElTable v-if="!isHandheld" :data="currentFiles" size="small" max-height="420">
             <ElTableColumn prop="name" label="文件名" min-width="260" show-overflow-tooltip />
             <ElTableColumn label="大小" width="100">
               <template #default="{ row }">{{ humanSize(row.size) }}</template>
@@ -318,6 +336,25 @@
               />
             </template>
           </ElTable>
+
+          <!-- 手持设备：远端备份同样用卡片，与本地标签页保持一致的读法 -->
+          <div v-if="isHandheld" v-loading="remoteLoading" class="m-card-list min-h-[80px]">
+            <MobileCard
+              v-for="row in currentFiles"
+              :key="row.name"
+              :title="row.name"
+              :metrics="[
+                { label: '大小', value: humanSize(row.size) },
+                { label: '时间', value: row.mtime || '—' }
+              ]"
+              :actions="fileCardActions(row)"
+            />
+            <div v-if="!currentFiles.length" class="m-card-list__empty">{{
+              status.remoteConfigured
+                ? '点击右上角「刷新远端列表」查看远端备份'
+                : '未配置远端存储（WebDAV / S3）'
+            }}</div>
+          </div>
         </ElTabPane>
       </ElTabs>
     </ElCard>
@@ -340,9 +377,14 @@
   } from '@/api/yimai'
   import type { BackupConfig, BackupFileInfo, BackupStatus } from '@/api/yimai'
   import { USE_BACKEND } from '@/api/backend'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type { MobileCardAction } from '@/components/business/mobile-card/types'
   import { ElMessage, ElMessageBox } from 'element-plus'
 
   defineOptions({ name: 'YimaiBackup' })
+
+  // 手持设备上用卡片列表代替宽表格（见下方 fileCardActions）
+  const { isHandheld } = useDevice()
 
   const defaultForm = (): BackupConfig => ({
     enabled: false,
@@ -593,4 +635,23 @@
   }
 
   onMounted(loadAll)
+
+  // ---------- 手持设备卡片 ----------
+  //
+  // 备份文件卡片：文件名（标题）+ 大小 + 时间（指标）。
+  // 表格里的四列（文件名/大小/时间/操作）一个都没丢。
+  // 操作排序按「日常先做、破坏性其次」：下载、校验平铺在卡片上直接点得到，
+  // 恢复、删除收进 MobileCard 的「更多」（恢复本身还有输入「恢复」的二次确认兜底）。
+  function fileCardActions(row: BackupFileInfo): MobileCardAction[] {
+    return [
+      {
+        text: '下载',
+        type: 'primary',
+        onClick: () => void onAction(row, 'download')
+      },
+      { text: '校验', onClick: () => void onAction(row, 'verify') },
+      { text: '恢复', type: 'danger', onClick: () => void onAction(row, 'restore') },
+      { text: '删除', type: 'danger', onClick: () => void onAction(row, 'delete') }
+    ]
+  }
 </script>

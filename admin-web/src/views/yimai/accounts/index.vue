@@ -11,7 +11,9 @@
         </div>
       </template>
 
-      <ElTable :data="accounts" border stripe v-loading="loading">
+      <!-- 手持设备：改用卡片列表。宽表格的「操作」列 fixed=right 宽 300px，
+           390px 视口里左右固定列就吃满了可见宽度，中间的数据列会被挤成零宽 -->
+      <ElTable v-if="!isHandheld" :data="accounts" border stripe v-loading="loading" max-height="520">
         <ElTableColumn prop="userName" label="姓名" width="120" />
         <ElTableColumn prop="key" label="登录名" width="130">
           <template #default="{ row }">
@@ -78,6 +80,23 @@
           </template>
         </ElTableColumn>
       </ElTable>
+
+      <!-- 手持设备：卡片列表。账号管理最该一眼看到的是「这个人是谁 / 什么身份 / 能不能登录」，
+           所以卡片保留 姓名+登录名+角色+门店+状态，操作按危险程度分区（主操作平铺、破坏性操作收进「更多」） -->
+      <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="row in cardRows"
+          :key="row.key"
+          :title="row.userName"
+          :subtitle="`登录名 ${row.key}${row.email ? ` · ${row.email}` : ''}`"
+          :tags="row.tags"
+          :metrics="row.metrics"
+          :note="row.note"
+          :note-label="row.noteLabel"
+          :actions="row.actions"
+        />
+        <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无账号</div>
+      </div>
     </ElCard>
 
     <!-- 新增账号 -->
@@ -275,9 +294,14 @@
     updateAccount
   } from '@/api/auth'
   import type { AccountRow } from '@/api/auth'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type { MobileCardAction, MobileCardMetric, MobileCardTag } from '@/components/business/mobile-card/types'
   import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiAccounts' })
+
+  // 手持设备上用卡片列表代替宽表格（见下方 cardRows）
+  const { isHandheld } = useDevice()
 
   const ROLE_OPTIONS: Record<string, string> = {
     R_MANAGER: '店长',
@@ -512,4 +536,60 @@
   }
 
   onMounted(load)
+
+  // ---------- 手持设备卡片 ----------
+  //
+  // 卡片不是把 7 列表格换个样子：账号管理最该一眼看到的是「这个人是谁 / 什么身份 / 能不能登录」。
+  // 保留：姓名（标题）、登录名 + 邮箱（副标题）、角色标签、门店标签、状态标签、本人标记。
+  // 对比表格少放的：没有独立成行展示的门店/邮箱 —— 门店改用标签、邮箱并入副标题，
+  // 信息都还在卡片上，只是换了更省纵向空间的位置。
+  const cardRows = computed(() =>
+    accounts.value.map((row) => {
+      const tags: MobileCardTag[] = []
+      for (const r of row.roles ?? []) {
+        tags.push({ text: ROLE_OPTIONS[r] ?? r, type: roleType(r), effect: 'dark' })
+      }
+      // 门店：空数组在后端表示「双店」，与表格里的「双店」占位一致，不能静默丢掉
+      if (row.venues?.length) {
+        for (const v of row.venues) tags.push({ text: v, effect: 'plain' })
+      } else {
+        tags.push({ text: '双店', effect: 'plain' })
+      }
+      tags.push({ text: row.status, type: row.status === '启用' ? 'success' : 'info', effect: 'plain' })
+      if (row.self) tags.push({ text: '本人', effect: 'plain' })
+
+      const metrics: MobileCardMetric[] = []
+
+      const actions: MobileCardAction[] = []
+      // 本人账号不能改自己的角色/停用/删除（与表格 :disabled 一致）；
+      // 主操作平铺，破坏性操作交给 MobileCard 收进「更多」
+      actions.push({ text: '编辑', type: 'primary', show: !row.self, onClick: () => openEdit(row) })
+      actions.push({
+        text: '重置密码',
+        type: 'warning',
+        show: !row.self,
+        onClick: () => doResetPassword(row)
+      })
+      if (row.status === '启用') {
+        actions.push({ text: '停用', show: !row.self, onClick: () => doDisable(row) })
+      } else {
+        // 停用状态可重新启用，是管理员的常见操作，放在平铺位
+        actions.push({ text: '启用', type: 'success', onClick: () => doEnable(row) })
+      }
+      actions.push({ text: '删除', type: 'danger', show: !row.self, onClick: () => doDelete(row) })
+
+      return {
+        key: row.key,
+        userName: row.userName,
+        email: row.email,
+        tags,
+        metrics,
+        // 自己的账号不能改自己的角色、也不能停用/删除（与表格的 :disabled 一致）。
+        // 卡片上没有按钮时要说清原因，不然用户会以为界面坏了。
+        note: row.self ? '当前登录账号：为避免把自己锁在外面，不能停用、删除或修改自己的角色' : '',
+        noteLabel: row.self ? '本人账号' : '',
+        actions
+      }
+    })
+  )
 </script>

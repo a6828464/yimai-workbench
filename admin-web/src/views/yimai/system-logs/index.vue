@@ -41,7 +41,7 @@
         日志文件：{{ files.join('、') }}
       </div>
 
-      <ElTable v-loading="loading" :data="records" border stripe>
+      <ElTable v-if="!isHandheld" v-loading="loading" :data="records" border stripe max-height="520">
         <ElTableColumn prop="time" label="时间" width="180" sortable />
         <ElTableColumn label="级别" width="100">
           <template #default="{ row }">
@@ -53,7 +53,39 @@
           <template #default="{ row }">{{ formatContext(row.context) }}</template>
         </ElTableColumn>
       </ElTable>
+
+      <!-- 手持设备：卡片列表。
+           系统日志单次最多返回 500 条（实测 500 行 × 20196px），全量铺成卡片会明显拖慢滚动，
+           所以默认只渲染前 DEFAULT_CARD_LIMIT 条，其余由用户点「显示全部」按需展开。 -->
+      <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+        <MobileCard
+          v-for="(row, i) in shownRecords"
+          :key="`${row.time}-${i}`"
+          :title="row.message || '—'"
+          :subtitle="row.time"
+          :tags="cardTags(row)"
+          :note="contextText(row)"
+          note-label="上下文"
+          :actions="[{ text: '详情', type: 'primary', onClick: () => openDetail(row) }]"
+        />
+        <div v-if="!loading && !records.length" class="m-card-list__empty">暂无日志记录</div>
+        <div v-if="!loading && records.length > shownRecords.length" class="pt-2 text-center">
+          <ElButton link type="primary" @click="showAllLogs = true">
+            显示全部 {{ records.length }} 条（当前 {{ shownRecords.length }} 条）
+          </ElButton>
+        </div>
+      </div>
     </ElCard>
+
+    <!-- 日志详情：卡片上的变更/上下文默认折叠，避免长 JSON 把一屏撑成几十屏 -->
+    <ElDrawer v-model="detailVisible" title="日志详情" size="460px">
+      <ElDescriptions v-if="detailRow" :column="1" border>
+        <ElDescriptionsItem label="时间">{{ detailRow.time }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="级别">{{ detailRow.level }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="日志消息">{{ detailRow.message }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="上下文">{{ contextText(detailRow) }}</ElDescriptionsItem>
+      </ElDescriptions>
+    </ElDrawer>
 
     <ElDialog v-model="retentionVisible" title="系统日志保留策略" width="440px">
       <ElAlert
@@ -94,8 +126,24 @@
     type SystemLogChannel,
     type SystemLogRecord
   } from '@/api/system-records'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type { MobileCardTag } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiSystemLogs' })
+
+  // 手持设备上用卡片列表代替宽表格（见下方 shownRecords / cardTags）
+  const { isHandheld } = useDevice()
+
+  /**
+   * 卡片默认渲染条数上限
+   *
+   * 系统日志接口单次最多返回 500 条，全量铺成卡片 DOM 会明显拖慢滚动。
+   * 首屏只渲染前 40 条，其余由「显示全部」按钮按需展开。
+   */
+  const DEFAULT_CARD_LIMIT = 40
+  const showAllLogs = ref(false)
+  const detailVisible = ref(false)
+  const detailRow = ref<SystemLogRecord | null>(null)
 
   const LEVELS = ['DEBUG', 'INFO', 'WARN', 'ERROR']
   const RETENTION_OPTIONS = [
@@ -170,6 +218,30 @@
     if (level === 'WARN') return 'warning'
     if (level === 'INFO') return 'success'
     return 'info'
+  }
+
+  /** 卡片默认只渲染前 N 条；切换筛选后要收回到首屏，避免上次的「显示全部」残留 */
+  const shownRecords = computed(() =>
+    showAllLogs.value ? records.value : records.value.slice(0, DEFAULT_CARD_LIMIT)
+  )
+
+  watch([() => channel.value, () => filters.date, () => filters.level, () => filters.keyword], () => {
+    showAllLogs.value = false
+  })
+
+  /** 上下文文本：与表格列同一取数口径，保证卡片不丢信息 */
+  function contextText(row: SystemLogRecord): string {
+    return formatContext(row.context)
+  }
+
+  /** 级别标签；上下文很长时不放在标签里，改由 note 展示 */
+  function cardTags(row: SystemLogRecord): MobileCardTag[] {
+    return [{ text: row.level || '—', type: levelType(row.level), effect: 'dark' }]
+  }
+
+  function openDetail(row: SystemLogRecord): void {
+    detailRow.value = row
+    detailVisible.value = true
   }
 
   onMounted(async () => {

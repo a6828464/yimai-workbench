@@ -61,7 +61,7 @@
         </template>
       </ArtTableHeader>
 
-      <ElTable v-if="!isHandheld" v-loading="loading" :data="filteredList" border stripe>
+      <ElTable v-if="!isHandheld" v-loading="loading" :data="filteredList" border stripe max-height="520">
         <ElTableColumn prop="leadDate" label="留资日期" width="100" sortable />
         <ElTableColumn label="姓名 / 联系方式" min-width="150">
           <template #default="{ row }">

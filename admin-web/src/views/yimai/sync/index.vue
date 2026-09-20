@@ -186,7 +186,14 @@
             <ElButton :loading="memberLoading" @click="searchMembers">检索</ElButton>
             <span class="text-xs text-gray-400">内部系统全量显示手机号</span>
           </div>
-          <ElTable :data="members" size="small" max-height="240" v-loading="memberLoading" border>
+          <ElTable
+            v-if="!isHandheld"
+            :data="members"
+            size="small"
+            max-height="240"
+            v-loading="memberLoading"
+            border
+          >
             <ElTableColumn prop="name" label="姓名" width="110" />
             <ElTableColumn prop="phone" label="手机号" width="120" />
             <ElTableColumn prop="source" label="来源" min-width="110" show-overflow-tooltip />
@@ -200,6 +207,22 @@
               </template>
             </ElTableColumn>
           </ElTable>
+
+          <!-- 手持设备：检索结果改用卡片。样本检索是「看一眼 → 决定导不导」，
+               卡片上姓名+手机号+来源+顾问+录入日期一屏看得完，操作按钮直接平铺 -->
+          <div v-if="isHandheld" v-loading="memberLoading" class="m-card-list min-h-[80px]">
+            <MobileCard
+              v-for="(row, i) in members"
+              :key="`${row.memberId}-${i}`"
+              :title="row.name || '—'"
+              :subtitle="row.phone || '—'"
+              :tags="memberCardTags(row)"
+              :actions="[{ text: '导入客资', type: 'primary', onClick: () => importLead(row) }]"
+            />
+            <div v-if="!memberLoading && !members.length" class="m-card-list__empty"
+              >暂无检索结果</div
+            >
+          </div>
         </ElCard>
       </ElCol>
     </ElRow>
@@ -219,17 +242,52 @@
       </ArtTableHeader>
 
       <ArtTable
+        v-if="!isHandheld"
         :loading="loading"
         :data="data"
         :columns="columns"
         :pagination="pagination"
+        max-height="520"
         @pagination:size-change="handleSizeChange"
         @pagination:current-change="handleCurrentChange"
       />
+
+      <!-- 手持设备：批次记录改用卡片。看一批同步只关心「哪一类数据 / 什么时候 / 成没成 / 失败几条」，
+           总数-成功-失败做成一个指标（失败标红），明细收进 note -->
+      <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[80px]">
+        <MobileCard
+          v-for="row in syncCardRows"
+          :key="row.id"
+          :title="row.title"
+          :subtitle="row.subtitle"
+          :tags="row.tags"
+          :metrics="row.metrics"
+          :note="row.note"
+          :actions="row.actions"
+        />
+        <div v-if="!loading && !data.length" class="m-card-list__empty">暂无同步批次</div>
+      </div>
+
+      <div v-if="isHandheld" class="mt-4 flex justify-end">
+        <ElPagination
+          :current-page="pagination.current"
+          :page-size="pagination.size"
+          :total="pagination.total"
+          layout="total, prev, pager, next"
+          @current-change="handleCurrentChange"
+        />
+      </div>
     </ElCard>
 
     <ElDialog v-model="artifactDialog.visible" title="历史导入表格" width="820px">
-      <ElTable v-loading="artifactDialog.loading" :data="artifactDialog.rows" border stripe>
+      <ElTable
+        v-if="!isHandheld"
+        v-loading="artifactDialog.loading"
+        :data="artifactDialog.rows"
+        border
+        stripe
+        max-height="520"
+      >
         <ElTableColumn prop="displayName" label="表格名称" min-width="280" show-overflow-tooltip />
         <ElTableColumn label="范围" width="150">
           <template #default="{ row }">{{
@@ -246,6 +304,22 @@
           ></ElTableColumn
         >
       </ElTable>
+
+      <!-- 手持设备：导入表格清单改用卡片，一屏看清「哪张表 / 多少行 / 多大 / 能否下载」 -->
+      <div v-if="isHandheld" v-loading="artifactDialog.loading" class="m-card-list">
+        <MobileCard
+          v-for="row in artifactDialog.rows"
+          :key="String(row.id)"
+          :title="row.displayName || '—'"
+          :subtitle="row.isFull ? '全量' : `${row.dateFrom || '-'} ~ ${row.dateTo || '-'}`"
+          :metrics="[
+            { label: '行数', value: row.rowCount ?? '—' },
+            { label: '大小', value: formatSize(row.size) }
+          ]"
+          :actions="[{ text: '下载', type: 'primary', onClick: () => downloadArtifact(row) }]"
+        />
+      </div>
+
       <ElEmpty
         v-if="!artifactDialog.loading && !artifactDialog.rows.length"
         description="该批次暂无可下载表格"
@@ -267,8 +341,17 @@
   import { apiDownload, apiGet, apiPut, USE_BACKEND } from '@/api/backend'
   import { toLocalDateString } from '@/utils'
   import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiSync' })
+
+  // 手持设备上用卡片列表代替宽表格（见下方 syncCardRows / memberCardTags）
+  const { isHandheld } = useDevice()
 
   const yimaiStore = useYimaiStore()
 
@@ -727,4 +810,64 @@
   onMounted(() => {
     connect()
   })
+
+  // ---------- 手持设备卡片 ----------
+  //
+  // 8 列批次表格在手机上只剩固定列。看一批同步只关心四件事：
+  // 哪一类数据 / 什么时候 / 成没成 / 失败几条。
+  // 保留：批次名（标题）、批次号+数据类型+完成时间（副标题）、门店+触发方（标签）、
+  //       状态标签、总数-成功-失败（指标，失败标红）、同步明细（note）、表格/错误（操作）。
+  // 放弃的：数据范围独立成行 —— 改并入副标题，信息仍在卡片上。
+  const syncCardRows = computed(() =>
+    data.value.map((row) => {
+      const tags: MobileCardTag[] = []
+      if (row.venue) tags.push({ text: row.venue, effect: 'plain' })
+      tags.push({ text: row.status, type: STATUS_TAG[row.status] ?? 'info', effect: 'dark' })
+      if (row.operator) tags.push({ text: row.operator, effect: 'plain' })
+
+      const metrics: MobileCardMetric[] = [
+        {
+          label: '总数 / 成功 / 失败',
+          value: `${row.totalCount} / ${row.successCount} / ${row.failCount}`,
+          danger: row.failCount > 0
+        }
+      ]
+
+      // 数据范围与完成时间并入副标题，不再单独占一行
+      const subtitleParts = [row.batchNo, row.dataType]
+      if (row.dateRange) subtitleParts.push(row.dateRange)
+      if (row.finishedAt) subtitleParts.push(formatDateTime(row.finishedAt))
+
+      const actions: MobileCardAction[] = []
+      if (row.artifactsCount) {
+        actions.push({
+          text: `表格(${row.artifactsCount})`,
+          type: 'primary',
+          onClick: () => showArtifacts(row)
+        })
+      }
+      if (row.failCount > 0 || row.errorMessage) {
+        actions.push({ text: '错误', type: 'danger', onClick: () => showErrors(row) })
+      }
+
+      return {
+        id: row.id,
+        title: row.displayName || row.batchNo,
+        subtitle: subtitleParts.filter(Boolean).join(' · '),
+        tags,
+        metrics,
+        note: row.detail,
+        actions
+      }
+    })
+  )
+
+  /** 样本检索结果的卡片标签：来源 + 会籍顾问 + 录入日期（三个字段都留在卡片上） */
+  function memberCardTags(row: KyMemberRow): MobileCardTag[] {
+    const tags: MobileCardTag[] = []
+    if (row.source) tags.push({ text: row.source, effect: 'plain' })
+    if (row.consultant) tags.push({ text: row.consultant, effect: 'plain' })
+    if (row.createdAt) tags.push({ text: row.createdAt, effect: 'plain' })
+    return tags
+  }
 </script>

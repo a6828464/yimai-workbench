@@ -39,6 +39,133 @@
 }
 
 // ---------------------------------------------------------------------------
+// 触控目标（手持设备全局兜底）
+// ---------------------------------------------------------------------------
+//
+// 规范：交互元素 >= 44px（$touch-target-min / breakpoints.ts 的 TOUCH_TARGET_MIN）。
+// 桌面端有鼠标指针，24px 高的 link 按钮也点得准；手机上这类元素普遍只有 18~28px，
+// 老师站着单手操作必然误触。这里在手持断点内统一兜底放大，页面不必各写一遍。
+//
+// 全部规则都包在 handheld-only（<= 768px）里，桌面端一条都不生效。
+@include handheld-only {
+  // 1. 按钮：size="small" 只有 24px 高，is-link 更是 18px 高
+  .el-button {
+    min-height: $touch-target-min !important;
+
+    // link / text 按钮没有背景，宽度往往只有 30px（「编辑」「溯源」「刷新」…），
+    // 高度放开后还要把宽度也撑到可点范围
+    &.is-link,
+    &.is-text {
+      min-width: $touch-target-min !important;
+    }
+  }
+
+  // 2. 分页器：el-ui.scss 把 --el-pagination-button-width 压到 28px，
+  //    手机上「上一页/下一页」只有 28x28。同时允许换行 + 限制不超屏宽，
+  //    否则 44px 的页码会把分页条撑得比视口还宽。
+  .el-pagination {
+    flex-wrap: wrap;
+    row-gap: 8px;
+    max-width: 100%;
+
+    .btn-prev,
+    .btn-next,
+    .el-pager li {
+      box-sizing: border-box;
+      min-width: $touch-target-min !important;
+      height: $touch-target-min !important;
+      line-height: $touch-target-min !important;
+    }
+
+    .el-select .el-select__wrapper {
+      min-height: $touch-target-min !important;
+    }
+  }
+
+  // 3. el-input-number 的加减按钮。controls-position="right" 时 EP 把它拆成
+  //    右侧上下两个 15px 高的小箭头（实测命中区 32x22），单手根本点不准；
+  //    手机上改成左右两个 44x44 的大按钮，输入内容左右各留出按钮宽度。
+  .el-input-number.is-controls-right {
+    // 左右各一个 44px 按钮，输入区还要放得下数字；不设下限的话容器会被父级
+    // 压到 41px（实测），两个按钮就会盖住输入区
+    min-width: 140px !important;
+
+    .el-input-number__increase,
+    .el-input-number__decrease {
+      top: 1px !important;
+      bottom: 1px !important;
+      width: $touch-target-min !important;
+      height: auto !important;
+      line-height: normal !important;
+    }
+
+    .el-input-number__increase {
+      right: 1px !important;
+      left: auto !important;
+      border-bottom: 0 !important;
+      border-left: var(--el-border) !important;
+      border-radius: 0 var(--el-border-radius-base) var(--el-border-radius-base) 0 !important;
+    }
+
+    .el-input-number__decrease {
+      right: auto !important;
+      left: 1px !important;
+      border-right: var(--el-border) !important;
+      border-left: 0 !important;
+      border-radius: var(--el-border-radius-base) 0 0 var(--el-border-radius-base) !important;
+    }
+
+    .el-input__wrapper {
+      padding-left: 50px !important;
+      padding-right: 50px !important;
+    }
+  }
+
+  // 4. ElDropdown 菜单（卡片上的「更多」）：每一项也要够高才点得中
+  .el-dropdown-menu__item {
+    min-height: $touch-target-min;
+    padding: 10px 16px;
+    line-height: 1.5;
+  }
+
+  // 5. ElTabs：窄屏下 EP 退化成「只显示 2~3 个页签 + 两个 20px 宽的左右箭头」，
+  //    会员管理有 6 个清单，要点 5 次箭头才看得全，而且箭头本身点不准。
+  //    这里改成整条页签横向滑动（与今日待办的 chip 条同一交互），并把箭头去掉。
+  .el-tabs__nav-wrap.is-top {
+    padding: 0 !important;
+
+    .el-tabs__nav-prev,
+    .el-tabs__nav-next {
+      display: none !important;
+    }
+
+    .el-tabs__nav-scroll {
+      overflow: visible !important;
+    }
+
+    .el-tabs__nav {
+      display: flex !important;
+      float: none !important;
+      // 让 .el-tabs__nav 自己成为滚动容器：宽度被约束在容器内，内容横向滑动。
+      // 不要再让 EP 用 transform 位移（transform 会与手动滑动打架）。
+      overflow-x: auto !important;
+      overscroll-behavior-x: contain;
+      transform: none !important;
+      scrollbar-width: none;
+
+      &::-webkit-scrollbar {
+        display: none;
+      }
+    }
+
+    .el-tabs__item {
+      flex: none;
+      min-height: $touch-target-min;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 课后分析向导（review-wizard）
 // ---------------------------------------------------------------------------
 //
