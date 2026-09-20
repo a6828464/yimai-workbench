@@ -66,12 +66,20 @@ class AuthController extends Controller
             return response()->json(['code' => 1, 'message' => '邀请码错误'], 422);
         }
 
+        // 自助注册账号的角色：与「人员管理」开通账号同一口径 —— roles 是唯一事实来源，
+        // role 单值列同步写成 primaryRole（这里只有 R_TEACHER 一个角色，两者必然相等）。
+        // 之前只写 role 单值、roles 留空，靠 userRoles() 的回退才能工作：账号在 UI 上
+        // 显示成一个角色，但「多角色叠加」的模型对它不成立，后面有人在 roles 上做
+        // 判断（如 AccountController 的角色展示/编辑、多角色叠加的可见范围并集）就会踩空。
+        $roles = ['R_TEACHER'];
+
         $user = User::create([
             'name' => $data['name'],
             'username' => $data['userName'],
             'email' => $data['userName'].'@yimai.local',
             'password' => $data['password'],
-            'role' => 'R_TEACHER',
+            'role' => primaryRole($roles),
+            'roles' => $roles,
             'venue' => $data['venue'],
             'venues' => [$data['venue']],
             'status' => '启用',

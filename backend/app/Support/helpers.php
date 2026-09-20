@@ -271,16 +271,9 @@ function contractPartyState(array $row, string $party): string
 function businessNotifications(User $user): array
 {
     $items = [];
-    $taskQ = Task::query()->whereNotIn('status', ['已完成']);
-    // 多角色按「最大范围」取任务范围：店长看本店，老师侧看本人，新媒体看本人
-    if (userHasRole($user, 'R_MANAGER')) {
-        $taskQ->where('venue', $user->venue);
-    } elseif (userIsTeacherSide($user)) {
-        $taskQ->where('venue', $user->venue)->where(staffOwnerFilter($user, 'owner_user_id', 'owner'));
-    } elseif (userHasRole($user, 'R_MEDIA')) {
-        $taskQ->where(staffOwnerFilter($user, 'owner_user_id', 'owner'));
-    }
-    $taskCount = $taskQ->count();
+    // 可见范围收敛到 scopeTasksForUser（唯一收口点，含角色不明兜底）。
+    // 本处此前是 if/elseif 的「最大范围」口径，与其它出口的逐条 AND 不同，故单独作为 'notify' 口径保留。
+    $taskCount = scopeTasksForUser(Task::query()->whereNotIn('status', ['已完成']), $user, 'notify')->count();
     if ($taskCount > 0) {
         $items[] = ['key' => 'tasks-'.$taskCount, 'category' => 'todo', 'level' => 'warning', 'title' => "有 {$taskCount} 项任务待处理", 'detail' => userHasRole($user, 'R_SUPER') ? '双店任务' : ($user->venue ?: '本人任务'), 'path' => '/yimai/tasks'];
     }
@@ -375,6 +368,23 @@ function userHasRole(?User $user, string $role): bool
 function userHasAnyRole(?User $user, array $roles): bool
 {
     return array_intersect($roles, userRoles($user)) !== [];
+}
+
+/**
+ * 是否至少认识一个角色 —— 权限收口的**共用判据**。
+ *
+ * 起因：`roles` 漏写、或账号还挂着已下架的旧角色码时，各出口原先的「按角色加条件」
+ * 全都不会命中，于是查询上没有任何条件，这个账号就静默拿到了全量/他人数据
+ * （t8 会员、t15 客资与任务列表、t17 任务各出口，同一根因反复出现）。
+ *
+ * 所以「认不认得出来」只在这里定义一次，各 scope 函数统一用它做兜底判据，
+ * 而不各自写 `! userHasAnyRole($u, ROLE_PRECEDENCE)`：
+ *  - 角色全集来自 ROLE_PRECEDENCE，将来新增角色只改那一处，所有兜底自动跟着放开；
+ *  - 兜底方向一律是**失败关闭**（空集），不是「按 venue/姓名猜一个范围」。
+ */
+function isKnownRoleUser(?User $user): bool
+{
+    return userHasAnyRole($user, ROLE_PRECEDENCE);
 }
 
 /** 主角色：按权限从大到小取第一个命中的（用于展示与 role 单值列回写） */
@@ -531,6 +541,10 @@ function staleOwnerUserIds(): array
         'tasks' => ['owner_user_id'],
         'training_plans' => ['created_by_user_id'],
         'post_class_reviews' => ['teacher_user_id'],
+        // 销售分享行同样会在账号删除后留下悬挂 id（t27 新增列）。
+        // 它不在上面那张「姓名 ↔ id」迁移清单里，因此单独在此登记：
+        // 本函数是人员管理「归属映射」面板 staleIds 的唯一数据源，漏一张表就少一处运维可见性。
+        'published_shares' => ['created_by_user_id'],
     ];
 
     $valid = User::query()->pluck('id')->map(fn ($id) => (int) $id)->all();
@@ -605,6 +619,49 @@ function backfillStaffOwnerIds(): int
 }
 
 /**
+ * 请求内、按模型实例隔离的临时缓存容器。
+ *
+ * ## 为什么需要它（原实现是一个真实缺陷）
+ *
+ * 这里以前把缓存直接挂成模型的**动态属性**：
+ *
+ *     $user->staffNamesCache = array_keys($names);      // 旧写法
+ *
+ * `staffNamesCache` 不是 users 表的列，而 Eloquent 的 `attributes` 数组同时承担
+ * 「数据库列」与「动态属性」两个角色，于是这个值进了 `attributes`：
+ *
+ *   - 同实例随后 `save()`（`ProfileController::updateMyProfile` 就是 `$u->save()`）会把它
+ *     当作列写进去 → `SQLSTATE[42S22] no such column: staffNamesCache`；
+ *   - `getDirty()`/`toArray()` 也被污染，缓存值会混进「已改动字段」判断与序列化结果。
+ *
+ * 触发条件是「同一请求内先做归属解析、再写 users 表」—— 服务老师打开会员列表
+ * （`canAccessCustomer` → `staffNames`）后保存个人资料即命中，实测 500。
+ *
+ * ## 为什么用 WeakMap 而不是给 $guarded 加名字
+ *
+ * `$guarded` 只约束**批量赋值**（`fill`/`create`/`update`），而旧写法是直接赋值，
+ * 走的是 `setAttribute`，`$guarded` 根本不参与 —— 实测把 `staffNamesCache` 加进
+ * `$guarded` 后 `save()` 依旧抛 `no such column`（`User` 定义了 `$fillable`，
+ * `$guarded` 默认为 `['*']`，该键本来就已经不是 fillable）。
+ * 更根本的是：只要缓存还挂在**模型**上，下一次加列时仍然可能撞名。
+ *
+ * 换成 WeakMap 后缓存存在模型**之外**，物理上不可能被 Eloquent 写进任何表 ——
+ * 这从「靠约定防错」变成「结构上不可能」，不需要每加一列就回来维护一张黑名单。
+ *
+ * 键用对象实例而不是 user id，是为了保持与原来完全一致的语义：
+ * 同一实例复用、不同实例各算各的（同 id 的两个实例也不会串，长驻进程/测试串跑都安全）。
+ * 容器随实例被回收，不需要手动清理。
+ */
+function modelScopedCache(object $model): stdClass
+{
+    /** @var WeakMap<object, stdClass>|null $storage */
+    static $storage = null;
+    $storage ??= new WeakMap();
+
+    return $storage[$model] ??= new stdClass();
+}
+
+/**
  * 该账号在业务归属字段里可能出现的**全部名字**。
  *
  * 归属列（`leads.service_teacher` / `customers.consultant|owner` /
@@ -618,12 +675,14 @@ function backfillStaffOwnerIds(): int
  *     $q->whereIn('consultant', $names)->orWhereIn('owner', $names);
  *
  * 别名在 `staff_aliases` 表里维护（人员管理页可改），规范名 `users.name` 恒算在内。
- * 结果挂在 User 实例上做请求内缓存；理由同 `privateStudentKeys()`。
+ * 结果放在请求内缓存里（见 `modelScopedCache()`），**不再挂到模型属性上** ——
+ * 挂模型属性会让它被当作列写入数据库。
  */
 function staffNames(User $user): array
 {
-    if (isset($user->staffNamesCache)) {
-        return $user->staffNamesCache;
+    $cache = modelScopedCache($user);
+    if (isset($cache->staffNames)) {
+        return $cache->staffNames;
     }
 
     $names = [];
@@ -641,7 +700,7 @@ function staffNames(User $user): array
         }
     }
 
-    return $user->staffNamesCache = array_keys($names);
+    return $cache->staffNames = array_keys($names);
 }
 
 /**
@@ -717,18 +776,22 @@ function unmappedStaffNames(): array
  * 只统计私教（course_kind=private），signed 状态；小班与团课不算「我的学员」。
  * 返回 external_id（ky:{venueId}:{memberId}）与手机号两组键，
  * 供会员/客资按人隔离时交叉匹配（external_id 精确匹配，手机号兜底乱序数据）。
- * 本函数结果挂在 User 实例上做请求内缓存。
+ *
+ * 缓存同样放在 `modelScopedCache()` 里而不是模型属性上 —— 原来挂
+ * `privateStudentKeysCache` 动态属性与 `staffNamesCache` 是同一个缺陷（实测该键
+ * 也会进入 `attributes`/`getDirty()`，同实例 `save()` 即抛 `no such column`）。
  * 不用函数级 static：长驻进程／测试串跑时，不同请求的同 id 实例会读到上一次的结果。
  */
 function privateStudentKeys(User $user): array
 {
-    if (isset($user->privateStudentKeysCache)) {
-        return $user->privateStudentKeysCache;
+    $cache = modelScopedCache($user);
+    if (isset($cache->privateStudentKeys)) {
+        return $cache->privateStudentKeys;
     }
 
     $keys = ['external_ids' => [], 'phones' => []];
     if (! userHasRole($user, 'R_TEACHER') || staffNames($user) === []) {
-        return $user->privateStudentKeysCache = $keys;
+        return $cache->privateStudentKeys = $keys;
     }
 
     $rows = KyBooking::query()
@@ -752,7 +815,7 @@ function privateStudentKeys(User $user): array
         }
     }
 
-    return $user->privateStudentKeysCache = [
+    return $cache->privateStudentKeys = [
         'external_ids' => array_keys($ids),
         'phones' => array_keys($phones),
     ];
@@ -768,6 +831,18 @@ function privateStudentKeys(User $user): array
  *  新媒体 → P5 留资
  *
  * 多角色时把各自的「按人条件」并起来；店长/超管这类更大范围直接吸收其余角色。
+ *
+ * **一个角色都识别不出来时按最小权限处理（空集），不再返回未加条件的查询。**
+ * 这与姊妹函数 scopeLeadsForUser 是同一口径，也是同一教训：`roles` 漏写、或账号角色是
+ * 已下架的旧角色码（`ASSIGNABLE` 里已不存在，但历史库里仍有这类账号）时，原先末尾的
+ * `return $query;` 会让这个账号静默拿到**双店全量会员名单**——越权不该是默认值。
+ *
+ * 为什么选空集而不是「按 `user->venues` 收窄」：本函数的角色口径里并没有 venues 这一维。
+ * `venues` 只服务于经营看板的门店下拉（见 applyVenueScope），而这里是**会员名单**的可见性；
+ * 用 venues 收窄会给一个角色不明的账号开出「授权门店内全部会员」这种既非超管、也非店长的
+ * 第三类权限，等于为提示「配置缺失」而先发一份名单出去。空集则与 scopeLeadsForUser 完全对称，
+ * 且失败方向是「本人看不到数据（会被立刻上报）」而不是「别人看到不该看的数据（可能无人发现）」。
+ * 修配置的路径很短：roles/role 任一列写对即刻恢复，不需要改代码。
  */
 function scopeCustomersForUser($query, User $user)
 {
@@ -813,7 +888,10 @@ function scopeCustomersForUser($query, User $user)
         return $query->where('layer', 'P5');
     }
 
-    return $query;
+    // 兜底：一个角色都没识别出来（roles 漏写、或旧角色码已下架）——最小权限空集。
+    // 原先这里 `return $query;` 等于给角色不明的账号发双店全量会员，与 scopeLeadsForUser 的
+    // 收口口径不一致；`1 = 0` 与调用方后续叠加的任何过滤都只可能更窄，不会放大范围。
+    return $query->whereRaw('1 = 0');
 }
 
 /**
@@ -889,9 +967,172 @@ function scopeLeadsForUser($query, User $user)
     });
 }
 
+/**
+ * 任务可见范围 —— **所有任务出口的唯一收口点**。
+ *
+ * 背景：任务可见范围此前在 6 处各写一遍（TaskController::index、TodayController 的
+ * summary/alerts/todo、helpers::businessNotifications、以及经营看板那次 applyVenueScope 调用）。
+ * 结果是每个出口都要各自记得补兜底，而「漏一处」的代价是他人任务静默可见：
+ * 角色不明账号（roles 漏写、或 role 是已下架的旧角色码）在 /api/today/todo、/api/today/alerts
+ * 上都能拿到**他人**任务的标题与客户姓名，/api/today/summary 与 /api/analytics/summary
+ * 还在拿它们计数。现在角色识别与兜底只此一份，调用方只选口径（$surface），不再自己写角色分支。
+ *
+ * 兜底（本函数存在的主要理由）：一个已知角色都识别不出来 → 最小权限空集。
+ * 与 scopeLeadsForUser / scopeCustomersForUser 同口径；角色全集取 ROLE_PRECEDENCE，
+ * 将来新增角色只改那一处，这里自动跟着放开。
+ *
+ * $surface 保留各出口沿用至今的口径。**它们历史上确实不一致，本次刻意逐字保留**
+ * （改口径会牵动前端已适配的展示，属于另一件事），只把「角色 → 范围」的知识与兜底收敛到此处：
+ *
+ *   surface    超管  店长      服务老师                授课老师      新媒体
+ *   list       全部  本店      本店 + (本人∨待认领)    本店 + 本人   本人（跨店）
+ *   alerts     全部  本店      本店 + (本人∨待认领)    本店 + 本人   **无**
+ *   todo       全部  本店      本店 + (本人∨待认领)    本店 + 本人   本人（跨店，优先于门店）
+ *   summary    全部  本店      (本人∨待认领)【不限门店】 本人【不限门店】 本人【不限门店】
+ *   notify     全部  本店      本店 + 本人             本店 + 本人   本人（跨店）
+ *
+ * 多角色叠加的实测口径（同样是既存行为）：list/alerts/todo/summary 是**逐条 AND**（叠加只会更窄），
+ * notify 是**if/elseif 首个命中**（店长 > 老师侧 > 新媒体）。
+ * 注意这与会员/客资侧的「并集」口径相反，属既存差异，勿顺手改。
+ *
+ * 经营看板（/api/analytics/*）不在本函数的 surface 里：它走 applyVenueScope 的 venue 下推口径，
+ * 那个函数自带同一个「角色不明 → 空集」兜底（helpers.php），两处共用 isKnownRoleUser 判据。
+ *
+ * 这些分歧本身是待收敛的技术债（同一份数据在不同页面口径不同，用户会看到"任务数对不上"），
+ * 但收敛它们需要产品确认统一口径，不在本次范围；本次只消除「重复实现 + 兜底散落」。
+ */
+function scopeTasksForUser($query, User $user, string $surface = 'list')
+{
+    $roles = userRoles($user);
+    $isSuper = in_array('R_SUPER', $roles, true);
+    $isManager = in_array('R_MANAGER', $roles, true);
+    $isService = in_array('R_SERVICE', $roles, true);
+    $isTeacher = in_array('R_TEACHER', $roles, true);
+    $isMedia = in_array('R_MEDIA', $roles, true);
+
+    // 兜底：一个已知角色都没有 → 空集（判据与其它 scope 共用 isKnownRoleUser）。
+    if (! isKnownRoleUser($user)) {
+        return $query->whereRaw('1 = 0');
+    }
+
+    // 本人：id 或姓名/别名任一命中（staffOwnerFilter 口径）
+    $own = fn ($q) => $q->where(staffOwnerFilter($user, 'owner_user_id', 'owner'));
+    // 本人名下 + 待认领池
+    $pool = fn ($q) => $q->where(fn ($w) => $w->where(staffOwnerFilter($user, 'owner_user_id', 'owner'))->orWhere('owner', '未分配'));
+
+    if ($surface === 'notify') {
+        // 历史口径是 if/elseif（首个命中即定），不是逐条 AND
+        if ($isManager) {
+            return $query->where('venue', $user->venue);
+        }
+        if ($isService || $isTeacher) {
+            return $query->where('venue', $user->venue)->where($own);
+        }
+        if ($isMedia) {
+            return $query->where($own);
+        }
+
+        return $query;
+    }
+
+    // 注意：这里**没有** R_SUPER 的早退分支。原实现在 list/summary/alerts/notify 里同样没有 ——
+    // 超管单独一个角色时「不加任何条件」是「所有角色分支都不命中」的自然结果，
+    // 而不是一条显式短路。若在这里补一条 `if ($isSuper) return $query;`，
+    // 超管叠加老师侧角色时就会被放开成全量（实测 R_SUPER+R_SERVICE 的 riskCount 应从 4 变成 9），
+    // 那是行为变更。保持与实测一致：逐条叠加、只收紧不放宽。
+
+    if ($surface === 'todo' && $isMedia) {
+        // 待办页把新媒体单独提前：按人（跨店），且不再叠加门店（历史口径）
+        return $query->where($own);
+    }
+
+    if ($surface === 'todo') {
+        // 原实现是「非新媒体」分支内的三条**顺序 if**（不是 elseif）：
+        // 叠加服务老师+授课老师时两条都要生效（实测 todo=[G本人]，只留 pool 会多出待认领）。
+        if (! $isSuper) {
+            $query->where('venue', $user->venue);
+        }
+        if ($isService) {
+            $query->where($pool);
+        }
+        if ($isTeacher) {
+            $query->where($own);
+        }
+
+        return $query;
+    }
+
+    if ($surface === 'summary') {
+        // 待办汇总：店长卡门店，老师侧/新媒体按人且**不限门店**（历史口径）。
+        // 注意这里**没有** R_SUPER 短路分支 —— 超管叠加老师侧角色时仍会被按人收窄，
+        // 这是既存行为（实测 R_SUPER+R_SERVICE 的 riskCount=4 而非 9），勿顺手"修正"。
+        if ($isManager) {
+            $query->where('venue', $user->venue);
+        }
+        if ($isService) {
+            $query->where($pool);
+        }
+        if ($isTeacher || $isMedia) {
+            $query->where($own);
+        }
+
+        return $query;
+    }
+
+    if ($surface === 'alerts') {
+        if ($isManager) {
+            $query->where('venue', $user->venue);
+        }
+        if ($isService) {
+            $query->where('venue', $user->venue)->where($pool);
+        }
+        if ($isTeacher) {
+            $query->where('venue', $user->venue)->where($own);
+        }
+        if ($isMedia) {
+            // 逾期提醒对新媒体一律不展示（历史口径）
+            $query->whereRaw('1 = 0');
+        }
+
+        return $query;
+    }
+
+    // list（GET /api/tasks）
+    if ($isManager) {
+        $query->where('venue', $user->venue);
+    }
+    if ($isService) {
+        $query->where('venue', $user->venue)->where($pool);
+    }
+    if ($isTeacher) {
+        $query->where('venue', $user->venue)->where($own);
+    }
+    if ($isMedia) {
+        $query->where($own);
+    }
+
+    return $query;
+}
+
 /** 经营看板 venue 下推：超管看双店，新媒体按 venues 授权，店长/服务老师/授课老师锁定本店。 */
 function applyVenueScope($query, User $user, string $venue)
 {
+    // 兜底：角色不明账号（roles 漏写、或 role 是已下架角色码）一律失败关闭。
+    //
+    // 这个兜底必须在门店分支**之前**：下面的 else 分支会把范围压成 `venue = 本人门店`，
+    // 而角色不明账号的 venue 恰好等于本人门店时，本店**他人**的数据就会被计进来。
+    // 实测影响 /api/analytics/summary 的 totalTasks（把别人家的任务算进自己的数字）与
+    // leads/cards/bookings 的同类计数。该函数是经营看板的唯一 venue 口径入口
+    // （AnalyticsController 全部 7 处调用都走它），所以在这里收口等于 7 个出口一次修好，
+    // 不必去改调用方、也不新增重复实现。
+    //
+    // 口径与 scopeLeadsForUser / scopeCustomersForUser / scopeTasksForUser 一致：
+    // 身份未确认时不猜范围。两种失败方向的代价不对称（空集=本人看不到自己的数据、会被立刻上报；
+    // 放行=他人数据静默可见），故取空集。
+    if (! isKnownRoleUser($user)) {
+        return $query->whereRaw('1 = 0');
+    }
+
     if (userHasRole($user, 'R_SUPER')) {
         if ($venue !== '') {
             $query->where('venue', $venue);

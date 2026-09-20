@@ -90,20 +90,10 @@ final class TodayController extends Controller
         $leadQ = scopeLeadsForUser(Lead::query(), $u);
         $leads = $leadQ->get();
 
-        $taskQ = Task::query();
-        if (userHasRole($u, 'R_MANAGER')) {
-            $taskQ->where('venue', $u->venue);
-        }
-        if (userHasRole($u, 'R_SERVICE')) {
-            $taskQ->where(fn ($w) => $w->where(staffOwnerFilter($u, 'owner_user_id', 'owner'))->orWhere('owner', '未分配'));
-        }
-        if (userHasRole($u, 'R_TEACHER')) {
-            $taskQ->where(staffOwnerFilter($u, 'owner_user_id', 'owner'));
-        }
-        if (userHasRole($u, 'R_MEDIA')) {
-            $taskQ->where(staffOwnerFilter($u, 'owner_user_id', 'owner'));
-        }
-        $overdueTasks = $taskQ->where('status', '已逾期')->count();
+        // 可见范围收敛到 scopeTasksForUser（helpers.php，唯一收口点，含角色不明兜底）。
+        // 本处此前自写四个角色分支且**没有兜底**，角色不明账号会把他人任务计进 riskCount。
+        $overdueTasks = scopeTasksForUser(Task::query(), $u, 'summary')
+            ->where('status', '已逾期')->count();
 
         $renewalIds = filteredIds('待续课');
         $expiringMembers = $scopedCustomers->whereIn('id', $renewalIds)->count();
@@ -359,19 +349,9 @@ final class TodayController extends Controller
             $alerts[] = ['id' => 9000 + $l->id, 'level' => '高', 'text' => "[{$l->venue}] 新客资 {$l->name} 待首响（{$l->source}）", 'action' => '24小时内完成首轮联系'];
         }
 
-        $taskQ = Task::query()->where('status', '已逾期');
-        if (userHasRole($u, 'R_MANAGER')) {
-            $taskQ->where('venue', $u->venue);
-        }
-        if (userHasRole($u, 'R_SERVICE')) {
-            $taskQ->where('venue', $u->venue)->where(fn ($w) => $w->where(staffOwnerFilter($u, 'owner_user_id', 'owner'))->orWhere('owner', '未分配'));
-        }
-        if (userHasRole($u, 'R_TEACHER')) {
-            $taskQ->where('venue', $u->venue)->where(staffOwnerFilter($u, 'owner_user_id', 'owner'));
-        }
-        if (userHasRole($u, 'R_MEDIA')) {
-            $taskQ->whereRaw('1 = 0');
-        }
+        // 可见范围收敛到 scopeTasksForUser（唯一收口点）。本处此前**完全没有兜底**，
+        // 角色不明账号会看到双店他人任务的「标题-客户姓名」（t10/t15 查实）。
+        $taskQ = scopeTasksForUser(Task::query()->where('status', '已逾期'), $u, 'alerts');
         foreach ($taskQ->limit(4)->get() as $t) {
             $alerts[] = ['id' => 100 + $t->id, 'level' => '中', 'text' => "任务「{$t->title}-{$t->customer_name}」已逾期", 'action' => '提醒责任人完成闭环'];
         }
@@ -743,23 +723,16 @@ final class TodayController extends Controller
         }
 
         // ---- 今日任务：今天到期或逾期 ----
-        $taskQ = Task::query()
-            ->whereNotIn('status', ['已完成'])
-            ->where('deadline', '!=', '')
-            ->where('deadline', '<=', $today->format('Y-m-d 23:59'));
-        if ($isMedia) {
-            $taskQ->where(staffOwnerFilter($u, 'owner_user_id', 'owner'));
-        } else {
-            if (! $isSuper) {
-                $taskQ->where('venue', $u->venue);
-            }
-            if (userHasRole($u, 'R_SERVICE')) {
-                $taskQ->where(fn ($w) => $w->where(staffOwnerFilter($u, 'owner_user_id', 'owner'))->orWhere('owner', '未分配'));
-            }
-            if (userHasRole($u, 'R_TEACHER')) {
-                $taskQ->where(staffOwnerFilter($u, 'owner_user_id', 'owner'));
-            }
-        }
+        // 可见范围收敛到 scopeTasksForUser（唯一收口点）。本处此前只有「非超管卡本店」这一层，
+        // 角色不明账号的 venue 恰好等于本人门店时就会看到本店他人任务（t15 残留项①）。
+        $taskQ = scopeTasksForUser(
+            Task::query()
+                ->whereNotIn('status', ['已完成'])
+                ->where('deadline', '!=', '')
+                ->where('deadline', '<=', $today->format('Y-m-d 23:59')),
+            $u,
+            'todo'
+        );
         $tasks = collect($taskQ->orderBy('deadline')->get())->map(fn ($t) => camel($t))
             ->map(fn ($t) => $t + ['overdue' => (string) $t['deadline'] < $today->format('Y-m-d 00:00') || $t['status'] === '已逾期'])
             ->all();

@@ -29,7 +29,18 @@
  * @module utils/storage/storage-key-manager
  * @author Art Design Pro Team
  */
-import { StorageConfig } from '@/utils/storage'
+import { StorageConfig } from './storage-config'
+
+/**
+ * 最小存储接口（与 pinia-plugin-persistedstate 的 StorageLike 形状一致）
+ *
+ * 只声明清理所需的方法，便于在 Node 环境下用假实现替换 localStorage。
+ */
+export interface StorageLike {
+  getItem: (key: string) => string | null
+  setItem: (key: string, value: string) => void
+  removeItem: (key: string) => void
+}
 
 /**
  * 存储键名管理器
@@ -73,6 +84,52 @@ export class StorageKeyManager {
     } catch (error) {
       console.warn(`[Storage] 数据迁移失败: ${fromKey}`, error)
     }
+  }
+
+  /**
+   * 纯函数：从给定键集合中挑出所有需要清理的业务 PII 键
+   *
+   * 覆盖三种形态，且**不硬编码任何版本号**，故口径与写入端永远同源：
+   * 1. 当前版本键 sys-v{CURRENT_VERSION}-{storeId}（持久化插件实际写入的键）
+   * 2. 历史版本前缀残留键 sys-v{旧版本}-{storeId}（VITE_VERSION 每版必改，旧键无清理路径）
+   * 3. 无版本前缀的裸键与按用户维度分键的前缀类键 yimai-training-store:user:{id}
+   *
+   * @param keys 待筛选的键集合（默认取 localStorage 全部键）
+   * @param storeIds 业务 PII storeId 列表
+   * @param prefixes 需整段按前缀清理的键前缀列表
+   */
+  static collectBusinessPiiKeys(
+    keys: readonly string[],
+    storeIds: readonly string[] = StorageConfig.BUSINESS_PII_STORE_IDS,
+    prefixes: readonly string[] = StorageConfig.BUSINESS_PII_KEY_PREFIXES
+  ): string[] {
+    const doomed = new Set<string>()
+
+    keys.forEach((key) => {
+      // matchesStoreIdKey 版本号无关：当前版本与全部历史版本一次命中
+      const ownedByStoreId = storeIds.some((storeId) =>
+        StorageConfig.matchesStoreIdKey(key, storeId)
+      )
+      const ownedByPrefix = prefixes.some((prefix) => key.startsWith(prefix))
+
+      if (ownedByStoreId || ownedByPrefix) doomed.add(key)
+    })
+
+    return [...doomed].sort()
+  }
+
+  /**
+   * 清理业务 PII 持久化数据（登出 / 切号 / 会话失效共用）
+   *
+   * @param storage 目标存储，默认 localStorage
+   * @returns 实际被移除的键列表（便于调用方与校验脚本核对）
+   */
+  purgeBusinessPiiKeys(storage: StorageLike | Storage = localStorage): string[] {
+    const doomed = StorageKeyManager.collectBusinessPiiKeys(Object.keys(storage))
+
+    doomed.forEach((key) => storage.removeItem(key))
+
+    return doomed
   }
 
   /**

@@ -184,8 +184,12 @@ class PublishedShareMigrationTest extends TestCase
         ));
         $this->assertCount(1, $hit, '存量存在 16hex 销售行时必须告警');
         $this->assertSame('warning', $hit[0]['level']);
-        $this->assertSame(1, (int) ($hit[0]['context']['rows'] ?? 0), '只应统计 16hex 形态的行');
+        $this->assertSame(1, (int) ($hit[0]['context']['hexShapedRows'] ?? 0), '只应统计 16hex 形态的行');
         $this->assertSame('high', $hit[0]['context']['risk'] ?? null);
+        // 影响面：升级瞬间会失效的生效中链接数（两行都是 enabled，故为 2 —— 运维据此
+        // 评估「要让几家门店重新开启分享」）
+        $this->assertSame(2, (int) ($hit[0]['context']['affectedEnabledRows'] ?? 0));
+        $this->assertSame(1, (int) ($hit[0]['context']['affectedEnabledHexRows'] ?? 0));
 
         // 探测不阻断迁移：列仍会建出来
         $this->assertTrue(Schema::hasColumn('published_shares', 'token_source'));

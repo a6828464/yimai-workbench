@@ -67,7 +67,7 @@
         <!-- 学员案例（仅已授权） -->
         <section v-if="authedCases.length" class="mt-5">
           <h2 class="sec-title">学员案例</h2>
-          <p class="text-xs text-gray-400 mb-2">以下案例均取得会员授权 · 展示不含面部信息</p>
+          <p class="text-xs text-gray-400 mb-2">以下案例由门店确认已取得会员授权 · 展示不含面部信息</p>
           <div v-for="c in authedCases" :key="c.id" class="card mb-3">
             <div class="text-xs text-gray-400 mb-1">目标</div>
             <h3 class="font-600">{{ c.goal }}</h3>

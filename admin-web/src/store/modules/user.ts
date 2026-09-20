@@ -42,28 +42,33 @@ import { setPageTitle } from '@/utils/router'
 import { resetRouterState } from '@/router/guards/beforeEach'
 import { useMenuStore } from './menu'
 import { StorageConfig } from '@/utils/storage/storage-config'
+import { StorageKeyManager } from '@/utils/storage/storage-key-manager'
 import { notifySessionReset, notifyUserChange } from '@/utils/session-lifecycle'
 
 /**
  * 清理可能含客户/留资 PII 的持久化业务数据（登出 / 会话失效 / 切换账号共用），
- * 避免共用电脑换账号后数据串号：
- * - yimai-store：演示态客户/留资/审计快照
+ * 避免共用电脑换账号后数据串号。
+ *
+ * ## 为什么不能写裸键
+ *
+ * 持久化插件写入的键由 `store/index.ts` 的
+ * `key: (storeId) => storageKeyManager.getStorageKey(storeId)` 生成，
+ * 实际键形如 `sys-v{VITE_VERSION}-yimai-store`；
+ * 而 VITE_VERSION 每版必改（.env 与 .env.production 各有一套），
+ * 因此**硬编码 `yimai-store` 永远清不到真正落盘的键**，
+ * 且旧版本前缀的键会永久累积、无任何清理路径。
+ *
+ * 现在改为从 `StorageKeyManager` 派生：键名口径与写入端同源，
+ * 且 createKeyPattern 不绑定版本号 → 当前版本与全部历史版本残留一次清干净。
+ *
+ * 覆盖范围（storeId 维度）：
+ * - yimai-store：演示态客户/留资/审计快照（含完整手机号）
  * - yimai-ai-config：AI 配置与营销人设
  * - yimai-sales-store：谈单工具门店资料/产品/教练/案例
- * - yimai-training-store:user:*：训练计划按用户键持久化
+ * - yimai-training-store*：训练计划按用户键持久化（yimai-training-store:user:{id}）
  */
 export function clearBusinessPiiStorage(): void {
-  localStorage.removeItem('yimai-store')
-  localStorage.removeItem('yimai-ai-config')
-  localStorage.removeItem('yimai-sales-store')
-  const prefix = 'yimai-training-store:user:'
-  const stale: string[] = []
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)
-    if (key && key.startsWith(prefix)) stale.push(key)
-  }
-  stale.forEach((key) => localStorage.removeItem(key))
-  localStorage.removeItem('yimai-training-store')
+  new StorageKeyManager().purgeBusinessPiiKeys()
 }
 
 /**

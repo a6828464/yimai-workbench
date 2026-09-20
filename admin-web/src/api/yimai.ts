@@ -2358,15 +2358,30 @@ export interface SharePublishResult {
   token: string
   code: string
   enabled: boolean
+  /** 该快照归属的账号（超管代发时会是被代发者，而不是超管自己） */
+  ownerUserId?: number
+  ownerName?: string
 }
 
+/**
+ * 发布对外分享。
+ *
+ * 销售分享的选址完全在服务端：默认只写**本人**那一行，不会命中他人记录。
+ * 超管确需替某人发布时显式传 `ownerUserId`（服务端校验账号存在且要求超管）。
+ */
 export function publishShare(
   type: string,
   token: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  ownerUserId?: number
 ): Promise<SharePublishResult | undefined> {
   if (!USE_BACKEND) return Promise.resolve(undefined)
-  return apiPost<SharePublishResult>('/shares/publish', { type, token, payload })
+  return apiPost<SharePublishResult>('/shares/publish', {
+    type,
+    token,
+    payload,
+    ...(ownerUserId ? { ownerUserId } : {})
+  })
 }
 
 /**
@@ -2375,37 +2390,61 @@ export function publishShare(
  * 关闭分享开关必须落到服务端：原先停用只改前端状态，服务端记录原样保留，
  * 任何人都还能用旧链接打开对客页。
  *
+ * 目标语义（服务端 t27 起）：
+ *  - **不带任何目标**：只停用**本人**记录。超管也不会再「一次停全库」——
+ *    跨归属停用必须显式给 token 或 ownerUserId；
+ *  - 带 `token`：停用该条具体链接（处置泄漏链接的运维入口）；
+ *  - 带 `ownerUserId`：停用某人的分享（仅超管）。
+ *
  * 服务端可能回 503（数据库结构升级尚未完成，enabled 列还不存在）——
  * 那是**暂时**不可操作，不是「停用成功」，调用方必须按失败处理。
  */
 export function disableShare(
   type: string,
-  token?: string
+  target?: { token?: string; ownerUserId?: number }
 ): Promise<{ enabled: boolean; affected: number }> {
   return apiPost<{ enabled: boolean; affected: number }>('/shares/disable', {
     type,
-    ...(token ? { token } : {})
+    ...(target?.token ? { token: target.token } : {}),
+    ...(target?.ownerUserId ? { ownerUserId: target.ownerUserId } : {})
   })
 }
 
-/** 本人当前对外分享的权威状态（token 为空表示尚未在服务端发布/仍是旧的可猜码） */
+/** 本人（或超管显式查看的他人）当前对外分享的权威状态 */
 export interface CurrentShareState {
+  /** token 为空表示：尚未在服务端发布 / 码来源不可信（见 needsRepublish） */
   enabled: boolean
   token: string | null
   code: string | null
   views: number
+  /**
+   * 启用中但分享码不可信（存量链接在升级后被标记为 legacy）→ 链接实际打不开。
+   * 前端据此提示「分享码已失效，请重新开启分享」，而不是显示「分享中」却让客户看到 404。
+   */
+  needsRepublish: boolean
+  /** 该记录是否属于他人（超管显式传 ownerUserId 查询时 true） */
+  viewingOther: boolean
+  /** 记录归属人姓名（viewingOther 时用于标注「这是 XX 的分享」） */
+  ownerName: string | null
+  ownerUserId: number | null
 }
 
 /**
- * 读本人分享状态。
+ * 读当前分享状态。
  *
- * 两种「不可用」必须与「未开启」区分开，否则界面会把运维状态显示成业务状态：
+ * 默认只回**本人**记录（含超管）—— 服务端已收口，不会再返回「全表最新一条」。
+ * 超管可显式传 ownerUserId 查看他人，此时 `viewingOther=true`，调用方**必须**
+ * 标注来源且不得把它当作自己的码写入本地 store。
+ *
+ * 两种「不可用」需与「未开启」区分开，否则界面会把运维状态显示成业务状态：
  *  - 403：当前角色无权管理对外分享（前端菜单是 MGMT，后端也已收口）；
  *  - 503：数据库结构升级尚未完成。
- * 返回 null 表示调用成功（即使 enabled=false），抛错表示无法判定。
  */
-export function getCurrentShare(type: string): Promise<CurrentShareState> {
-  return apiGet<CurrentShareState>('/shares/current', { type })
+export function getCurrentShare(type: string, ownerUserId?: number): Promise<CurrentShareState> {
+  return apiGet<CurrentShareState>('/shares/current', {
+    type,
+    ...(ownerUserId ? { ownerUserId } : {})
+  })
 }
 
 // ==================== 今日工作台汇总 ====================

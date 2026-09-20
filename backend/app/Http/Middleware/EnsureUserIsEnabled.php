@@ -90,6 +90,27 @@ class EnsureUserIsEnabled
             return ($match['kind'] ?? '') === '留资';
         }
 
+        // 角色不明账号（roles 漏写、或 role 是已下架的旧角色码）直接拒绝。
+        //
+        // 这个判断**必须放在门店/scope 收窄之前**，因为它挡的是更低一层的问题：
+        // /api/leads/check 无状态、手机号可枚举，每个命中都回姓名 + 门店 + 卡名，
+        // 本质是一台客户名单 oracle。收口前，这类账号能按号码反查出**跨店他人会员**
+        // 的完整档案（实测 detail="东部私教年卡48次"），而同一时刻 /api/customers 已是空集 ——
+        // 同一个人的可见范围在两个出口上互相矛盾，矛盾的那一侧就是洞口。
+        //
+        // 与下面 teacherSide 分支的关系（历史陷阱，改动时务必确认）：
+        // 收口前这里调 `scopeCustomersForUser($query, $user)` 却**丢弃返回值**，靠该函数
+        // 原地修改 $query 的副作用生效；而 t8 之前 scopeCustomersForUser 的兜底是
+        // `return $query;`（不产生任何副作用），所以这条路径当时等于什么都没做。
+        // t8 把兜底换成 `whereRaw('1 = 0')` 后才「顺带」生效。也就是说：这条判断的松紧
+        // 一直取决于另一个函数的返回值形态，很脆弱。现在角色不明在入口处就拒绝，
+        // 不再依赖任何一个 scope 函数的副作用；下面 teacherSide 分支保持原样，
+        // 只负责五种已知角色里「服务老师/授课老师」按人收窄。
+        // 判据共用 isKnownRoleUser（helpers.php），角色全集只定义一次。
+        if (! isKnownRoleUser($user)) {
+            return false;
+        }
+
         // 与 check() 同口径：按归一后的号码（以及原始输入形态）匹配，否则带分隔符的录入
         // 会因为「查得到但判定为无权限」而被过滤掉，前端看到的仍是无重复。
         $rawPhone = trim((string) $request->query('phone'));
@@ -99,7 +120,9 @@ class EnsureUserIsEnabled
         if (userHasRole($user, 'R_MANAGER')) {
             $query->where('venue', $user->venue);
         } elseif (userIsTeacherSide($user)) {
-            scopeCustomersForUser($query, $user);
+            // 这里**赋值**给 $query（原先丢弃返回值）：函数原地改查询、返回值也是同一个实例，
+            // 赋值即同时保留「原地生效」与「返回值可见」两种语义，不再依赖调用方的疏忽。
+            $query = scopeCustomersForUser($query, $user);
         }
 
         return $query->exists();

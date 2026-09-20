@@ -7,6 +7,13 @@
       :closable="false"
       class="mb-4"
     />
+    <ElAlert
+      title="说明：「展示授权」是操作者声明，不是系统核验结果。系统目前没有会员授权凭据的存档，勾选即由你确认已取得授权；发布时会记录本条声明以便事后追溯。"
+      type="info"
+      show-icon
+      :closable="false"
+      class="mb-4"
+    />
     <ElButton type="primary" plain class="mb-3" @click="addCase">新增案例</ElButton>
 
     <ElCollapse v-model="opened" accordion>

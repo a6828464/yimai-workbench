@@ -24,14 +24,33 @@ class ReleaseIntegrityGuardTest extends TestCase
         return dirname(base_path());
     }
 
-    /** 应用代码引用了 published_shares.enabled 时，HEAD 必须有对应的建列迁移 */
+    /**
+     * 应用代码引用了 published_shares 时，HEAD 必须有对应的建列迁移。
+     *
+     * 前提断言扫**整个 app 目录**而不是某一个控制器：t27 把清洗与判定收敛到
+     * ShareController 后，PublicShareController 里已不再出现 `published_shares`
+     * 字面量（它改成委托调用）。盯着单个文件会让这个守卫在某次重构后静默失去前提 ——
+     * 守卫的前提本身也需要跟着代码结构走。
+     */
     public function test_enabled_migration_is_version_controlled_when_code_references_it(): void
     {
-        $controller = File::get(app_path('Http/Controllers/PublicShareController.php'));
-        $this->assertStringContainsString(
-            'published_shares',
-            $controller,
-            '前提断言：控制器确实在读写 published_shares'
+        $referencing = [];
+        foreach (File::allFiles(app_path()) as $file) {
+            if ($file->getExtension() !== 'php') {
+                continue;
+            }
+            if (str_contains(File::get($file->getPathname()), 'published_shares')) {
+                $referencing[] = $file->getRelativePathname();
+            }
+        }
+        $this->assertNotEmpty(
+            $referencing,
+            '前提断言：应用代码里确实有读写 published_shares 的地方'
+        );
+        $this->assertContains(
+            'Http/Controllers/ShareController.php',
+            $referencing,
+            '前提断言：ShareController 是权威实现（含建列存在性判定与清洗）'
         );
 
         $tracked = $this->trackedMigrationNames();

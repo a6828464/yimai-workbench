@@ -12,22 +12,10 @@ final class TaskController extends Controller
     public function index(Request $r)
     {
         $u = $r->user();
-        $q = Task::query();
-        if (userHasRole($u, 'R_MANAGER')) {
-            $q->where('venue', $u->venue);
-        }
-        if (userHasRole($u, 'R_SERVICE')) {
-            // 服务老师（会籍顾问）：本人名下 + 待认领池
-            $q->where('venue', $u->venue)
-                ->where(fn ($w) => $w->where(staffOwnerFilter($u, 'owner_user_id', 'owner'))->orWhere('owner', '未分配'));
-        }
-        if (userHasRole($u, 'R_TEACHER')) {
-            // 授课老师：只处理派给本人的任务
-            $q->where('venue', $u->venue)->where(staffOwnerFilter($u, 'owner_user_id', 'owner'));
-        }
-        if (userHasRole($u, 'R_MEDIA')) {
-            $q->where(staffOwnerFilter($u, 'owner_user_id', 'owner'));
-        }
+        // 可见范围收敛到 scopeTasksForUser（helpers.php）—— 任务可见范围的**唯一收口点**，
+        // 角色识别与「角色不明 → 空集」兜底都在那里。本方法此前自己写了一遍四个角色分支
+        // 外加一段兜底注释与 whereRaw，是六处重复实现之一（t17 消除）。
+        $q = scopeTasksForUser(Task::query(), $u, 'list');
         if ($status = $r->query('status')) {
             $q->where('status', $status);
         }
@@ -82,6 +70,12 @@ final class TaskController extends Controller
     {
         $u = $r->user();
         abort_if(userHasRole($u, 'R_MEDIA'), 403, '无权操作任务');
+        // 与 index() 同一兜底：角色不明账号连**写**都不该放行。
+        // 下面每个分支都是「按角色授权」，一个都不命中时没有任何守卫，原先这个账号能改任意
+        // 门店任意人的任务（标题/负责人/门店/优先级），实测 PATCH 他人任务返回 200 且字段真的被改。
+        // store() 早就有同类守卫（abort_unless userHasAnyRole），这里补齐同一口径：
+        // 角色不明 = 身份未确认 = 一律 403，而不是「按门店猜一个范围」。
+        abort_unless(isKnownRoleUser($u), 403, '无权操作任务');
         $task = DB::transaction(function () use ($r, $id, $u) {
             $task = Task::whereKey($id)->lockForUpdate()->firstOrFail();
             abort_if(userHasRole($u, 'R_MANAGER') && $task->venue !== $u->venue, 403, '无权操作其它门店任务');

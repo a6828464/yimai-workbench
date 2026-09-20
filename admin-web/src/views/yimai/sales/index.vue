@@ -15,15 +15,24 @@
         <ElTag v-if="USE_BACKEND && !shareReady" size="small" type="warning" effect="plain">
           未同步服务端
         </ElTag>
+        <!-- 启用中但码已失效（升级后存量链接）：界面不能显示「分享中」而让客户看到 404 -->
+        <ElTag v-if="needsRepublish" size="small" type="danger" effect="plain">
+          分享码已失效，请重新开启分享
+        </ElTag>
+        <!-- 展示的是他人记录：明确标注来源，且禁止就地开关 -->
+        <ElTag v-if="viewingOtherName !== null" size="small" type="info" effect="plain">
+          这是 {{ viewingOtherName }} 的分享（不可在此开关）
+        </ElTag>
         <span class="text-xs text-gray-400">访问量 {{ sales.state.share.views }}</span>
         <ElSwitch
           :model-value="sales.state.share.enabled"
           :loading="toggling"
+          :disabled="viewingOtherName !== null"
           active-text="开启"
           inactive-text="停用"
           @change="(v: string | number | boolean) => onShareToggle(Boolean(v))"
         />
-        <ElButton type="primary" @click="preview">预览 / 发送 H5</ElButton>
+        <ElButton type="primary" :disabled="viewingOtherName !== null" @click="preview">预览 / 发送 H5</ElButton>
       </div>
     </ElCard>
 
@@ -56,6 +65,20 @@
   const toggling = ref(false)
   /** 是否已成功读到服务端权威状态（false 表示界面上的开关只是本地值，不可信） */
   const shareReady = ref(false)
+  /**
+   * 服务端当前分享码是否已失效（启用中但来源不可信）。
+   *
+   * 升级后存量链接会被标为 legacy：`enabled` 仍是 true，但公开接口一律 404。
+   * 没有这个标志时界面会显示「分享中」而客户打开是 404。
+   */
+  const needsRepublish = ref(false)
+  /**
+   * 若当前展示的不是本人记录（超管显式查看他人），这里是被查看人姓名。
+   *
+   * 超管页面**默认不会再回填他人链接**（服务端只回本人）；只有超管显式查询他人时
+   * 才会出现该值，此时必须标注来源，且不得把对方的码写进本地 store。
+   */
+  const viewingOtherName = ref<string | null>(null)
 
   /**
    * 打开页面时以服务端为准回填分享状态。
@@ -70,8 +93,15 @@
     try {
       const cur = await getCurrentShare('sales')
       sales.setShareEnabled(cur.enabled)
-      if (cur.enabled && cur.token) sales.setShareCode(cur.token)
+      needsRepublish.value = Boolean(cur.needsRepublish)
+      viewingOtherName.value = cur.viewingOther ? (cur.ownerName ?? '') : null
+      // 只有自己的码才写入本地 store：超管查看他人时若落本地，
+      // 预览按钮会发出别人的链接、开关也会显示成「我的分享」。
+      if (!cur.viewingOther && cur.enabled && cur.token) sales.setShareCode(cur.token)
       shareReady.value = true
+      if (cur.needsRepublish) {
+        ElMessage.warning('当前分享码已失效（升级后需重新发布），请重新开启一次分享生成新链接')
+      }
     } catch (e) {
       shareReady.value = false
       const status = (e as { response?: { status?: number } })?.response?.status
@@ -98,6 +128,12 @@
       return
     }
     if (toggling.value) return
+    // 展示的是他人记录时不允许就地开关：这会让人以为在操作自己的分享。
+    // 服务端也已收口（不带目标的 disable 只影响本人），前端必须在动手前就拦住。
+    if (viewingOtherName.value !== null) {
+      ElMessage.warning(`当前展示的是 ${viewingOtherName.value} 的分享，请勿在此开关；如需处置请用运维入口指定链接`)
+      return
+    }
     toggling.value = true
     try {
       if (enabled) {
@@ -112,22 +148,28 @@
         if (res?.token) sales.setShareCode(res.token)
         sales.setShareEnabled(true)
         shareReady.value = true
+        needsRepublish.value = false
         ElMessage.success('已发布到线上，客户可在微信中打开')
       } else {
+        // 不带目标：服务端只停用本人记录（超管也不会一次停全库）
         await disableShare('sales')
         sales.setShareEnabled(false)
+        needsRepublish.value = false
         ElMessage.success('已停用分享，旧链接打开会提示已失效')
       }
     } catch (e) {
       // 失败必须回退开关：否则界面显示已停用、线上其实还能访问
       sales.setShareEnabled(!enabled)
       const status = (e as { response?: { status?: number } })?.response?.status
+      const serverMsg = (e as { response?: { data?: { emsg?: string } } })?.response?.data?.emsg
       const tip =
         status === 403
           ? '无权管理对外分享（仅超管与店长）'
           : status === 503
             ? '服务端结构升级尚未完成，暂时无法停用，请稍后重试'
-            : String(e).slice(0, 80)
+            : status === 422 && serverMsg
+              ? serverMsg
+              : String(e).slice(0, 80)
       ElMessage.error(`${enabled ? '线上发布' : '停用'}失败：${tip}`)
     } finally {
       toggling.value = false

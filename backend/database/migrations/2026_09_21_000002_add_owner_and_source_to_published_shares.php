@@ -106,35 +106,60 @@ return new class extends Migration
     }
 
     /**
-     * 存量行一律 'legacy'；顺带探测「是否已存在 16hex 形态的 sales 行」。
+     * 存量行一律 'legacy'；顺带探测「影响面」并告警。
      *
-     * 16hex 说明这条记录的码**看起来**是服务端签发的。在本次迁移之前，服务端并没有
-     * 任何「签发并标记来源」的代码，所以这种行要么是巧合，要么是有人手工写入/猜中后
-     * 长期有效的库存链接 —— 两种都需要人工确认。这里只记 warning（不阻断迁移，
-     * 因为阻断会让线上停在半新半旧），发布侧一律换发。
+     * 标 legacy 之后，**所有**存量销售链接都会在下一次访问时 404（读侧只认
+     * token_source='server'）—— 这是保守方向的必要代价，但运维必须能一眼看到
+     * 「这次升级会让多少条正在流通的链接失效」，否则上线预案无从做起。
+     *
+     * 因此除了 16hex 计数（来源可疑、需人工确认），另记**生效中行的总数**
+     * （升级瞬间会失效的链接数）。这里只记 warning、不阻断迁移：
+     * 阻断会让线上停在半新半旧，比多一次重新发布更糟。
      */
     private function flagLegacyTokenSources(): void
     {
         DB::table('published_shares')->whereNull('token_source')->update(['token_source' => 'legacy']);
 
         $suspicious = 0;
+        $affectedEnabled = 0;
+        $affectedEnabledHex = 0;
+        $hasEnabled = Schema::hasColumn('published_shares', 'enabled');
+
         DB::table('published_shares')
             ->where('type', 'sales')
             ->orderBy('id')
-            ->select('id', 'token')
-            ->chunk(500, function ($rows) use (&$suspicious) {
+            ->select(array_values(array_filter(['id', 'token', $hasEnabled ? 'enabled' : null])))
+            ->chunk(500, function ($rows) use (&$suspicious, &$affectedEnabled, &$affectedEnabledHex, $hasEnabled) {
                 foreach ($rows as $row) {
-                    if (preg_match('/^[0-9a-f]{16}$/', (string) $row->token) === 1) {
+                    $isHex = preg_match('/^[0-9a-f]{16}$/', (string) $row->token) === 1;
+                    if ($isHex) {
                         $suspicious++;
+                    }
+                    // enabled 列不存在时（迁移顺序异常）按「视为启用」计，宁可高报影响面
+                    $enabled = ! $hasEnabled || filter_var($row->enabled ?? true, FILTER_VALIDATE_BOOLEAN) === true;
+                    if ($enabled) {
+                        $affectedEnabled++;
+                        if ($isHex) {
+                            $affectedEnabledHex++;
+                        }
                     }
                 }
             });
 
-        if ($suspicious > 0) {
+        if ($affectedEnabled > 0 || $suspicious > 0) {
             logger()->warning(
-                'published_shares 存量中存在 16hex 形态的销售分享码，来源不可信（迁移前无签发标记）。'
-                .'已全部标记为 legacy，本人下次发布会换发新码；建议人工确认这些链接是否仍在对外流通。',
-                ['rows' => $suspicious, 'risk' => 'high']
+                'published_shares 存量销售分享已标记为 legacy：升级后这些链接一律不可读，'
+                .'需由各门店重新开启一次 H5 分享以换发新码。'
+                .'另注意存量中存在 16hex 形态的码，来源不可信（迁移前无签发标记），'
+                .'建议人工确认其是否仍在对外流通。',
+                [
+                    // 升级瞬间会失效的生效中链接数（运维据此评估影响面、安排重新发布）
+                    'affectedEnabledRows' => $affectedEnabled,
+                    // 其中形态像服务端签发、但来源不可信的那些（需人工确认）
+                    'affectedEnabledHexRows' => $affectedEnabledHex,
+                    'hexShapedRows' => $suspicious,
+                    'risk' => 'high',
+                ]
             );
         }
     }
