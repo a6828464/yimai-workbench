@@ -89,7 +89,7 @@
           v-for="row in list"
           :key="row.id"
           :title="row.targetLabel || '—'"
-          :subtitle="`${row.time} · ${row.operatorName}（${row.operatorRole}）`"
+          :subtitle="cardSubtitle(row)"
           :tags="cardTags(row)"
           :note="row.detail"
           note-label="变更明细"
@@ -112,11 +112,9 @@
     <ElDrawer v-model="detail.visible" title="操作溯源" size="460px">
       <ElDescriptions v-if="detail.row" :column="1" border>
         <ElDescriptionsItem label="日志编号">{{ detail.row.id }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="操作时间">{{ detail.row.time }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="操作人">{{
-          `${detail.row.operatorName}（${detail.row.operatorRole}）`
-        }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="所属模块">{{ detail.row.module }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="操作时间">{{ detail.row.time || '—' }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="操作人">{{ cardSubtitle(detail.row) }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="所属模块">{{ detail.row.module || '—' }}</ElDescriptionsItem>
         <ElDescriptionsItem label="动作">{{ detail.row.action }}</ElDescriptionsItem>
         <ElDescriptionsItem label="操作对象">{{ detail.row.targetLabel }}</ElDescriptionsItem>
         <ElDescriptionsItem label="关联门店">{{ detail.row.venue }}</ElDescriptionsItem>
@@ -287,20 +285,44 @@
     return `${isMobile ? '移动端' : '桌面端'} · ${os} · ${browser}`
   }
 
-  function actionType(action: string): 'danger' | 'warning' | 'info' | 'success' | 'primary' {
-    if (action.includes('驳回') || action.includes('删除')) return 'danger'
-    if (action === '新增') return 'success'
-    if (action === '修改') return 'warning'
+  /**
+   * 动作 → 标签语义色。
+   *
+   * action 类型上是 string，但历史日志行可能缺这个字段（返回 null）。
+   * 原实现直接 `action.includes(...)`，缺字段时会抛
+   * `Cannot read properties of null (reading 'includes')`，把整页列表渲染打断
+   * （实测手机端整页只剩 32 字，卡片与表格都不出来）。这里先归一化成字符串。
+   */
+  function actionType(action: unknown): 'danger' | 'warning' | 'info' | 'success' | 'primary' {
+    const a = action === null || action === undefined ? '' : String(action)
+    if (a.includes('驳回') || a.includes('删除')) return 'danger'
+    if (a === '新增') return 'success'
+    if (a === '修改') return 'warning'
     return 'primary'
+  }
+
+  /**
+   * 卡片副标题：时间 · 操作人（角色）
+   *
+   * 各段独立兜底：历史日志行可能缺时间/操作人/角色，任一段缺失只显示「—」，
+   * 不再把 undefined 拼进文案（原实现是无兜底模板字符串）。
+   */
+  function cardSubtitle(row: YimaiAuditLog): string {
+    const who = row.operatorName || '—'
+    const role = row.operatorRole ? `（${row.operatorRole}）` : ''
+    return `${row.time || '—'} · ${who}${role}`
   }
 
   /**
    * 卡片标签：动作（语义色，扫读时最先看到）+ 模块 + 门店
    *
    * 表格里的时间/操作人已移到副标题，动作/模块/门店改为标签 —— 三个字段一个都没丢。
+   * 动作缺失时显示「—」，不渲染成 undefined 也不给空标签。
    */
   function cardTags(row: YimaiAuditLog): MobileCardTag[] {
-    const tags: MobileCardTag[] = [{ text: row.action, type: actionType(row.action), effect: 'dark' }]
+    const tags: MobileCardTag[] = [
+      { text: row.action || '—', type: actionType(row.action), effect: 'dark' }
+    ]
     if (row.module) tags.push({ text: row.module, effect: 'plain' })
     if (row.venue) tags.push({ text: row.venue, effect: 'plain' })
     return tags

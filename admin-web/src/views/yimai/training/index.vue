@@ -25,7 +25,7 @@
         </ElTableColumn>
         <ElTableColumn prop="freq" label="频率" width="120" />
         <ElTableColumn label="阶段" width="90">
-          <template #default="{ row }">{{ row.stageWeeks }}周</template>
+          <template #default="{ row }">{{ stageWeeksText(row.stageWeeks) }}</template>
         </ElTableColumn>
         <ElTableColumn prop="risks" label="风险提示" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">
@@ -243,7 +243,9 @@
     <ElDrawer
       v-model="detail.visible"
       size="480px"
-      :title="detail.row ? `训练计划 #${detail.row.id} · ${detail.row.memberName}` : ''"
+      :title="
+        detail.row ? `训练计划 #${detail.row.id} · ${detail.row.memberName || '—'}` : ''
+      "
     >
       <template v-if="detail.row && detail.row.content">
         <ElTag size="small" effect="dark" :type="statusType(detail.row.status)" class="mb-3">
@@ -338,7 +340,7 @@
 
 <script setup lang="ts">
   import { useTrainingStore } from '@/store/modules/training'
-  import type { TrainingPlan, PlanContent } from '@/store/modules/training'
+  import type { TrainingPlan, PlanContent, PlanImage, TrainingStatus } from '@/store/modules/training'
   import { generateTrainingPlan, detectHighRisk } from '@/api/ai'
   import { loadTrainingPlansCloud, syncTrainingPlansCloud } from '@/api/yimai'
   import { USE_BACKEND } from '@/api/backend'
@@ -366,6 +368,71 @@
   let syncing = false
   let pendingSync: ReturnType<typeof setTimeout> | null = null
 
+  // ---------- 云端数据归一化 ----------
+  //
+  // 为什么要在数据边界归一化，而不是只给卡片那一处拼字符串打补丁：
+  //
+  // TrainingPlan 的字段在类型上都是必填（stageWeeks: string 等），但 GET /training-plans
+  // 返回的是「当时写进 payload 的整块 JSON」原样展开
+  // （后端 TrainingPlanController::present() = array_merge(['id'=>..], $p->payload ?? [], ...)）。
+  // 也就是说字段是否齐全由**当初写入那一刻的 payload 形状**决定，不受前端类型约束。
+  // 实测当前库里 6 条计划的 payload 是历史形状 {"sessions":[...]}，
+  // 完全没有 memberName / freq / stageWeeks / risks / status / createdBy / images / share，
+  // 接口逐条返回 null（已用 curl 直连接口核实）。
+  //
+  // 这一层不做兜底的话，缺失会蔓延到所有消费点：表格列（第 28 行）、卡片标签、卡片副标题、
+  // 详情抽屉标题、images.length、share.enabled…… 每个点各补一次既漏又散。
+  // 所以在「接口数据进入应用」这一个位置一次性补齐，下游（表格/卡片/抽屉/复制文案）共用同一份
+  // 已归一化数据，行为自然一致。
+  //
+  // 注意保留 status 的原值语义：这里只在缺失时给一个安全默认，不做业务判断。
+  function normalizePlan(raw: Record<string, unknown>): TrainingPlan {
+    const s = (v: unknown, fallback = ''): string =>
+      v === null || v === undefined || v === '' ? fallback : String(v)
+
+    const images: PlanImage[] = Array.isArray(raw.images)
+      ? (raw.images as Record<string, unknown>[]).map((img, i) => ({
+          id: Number(img?.id ?? i + 1),
+          url: s(img?.url),
+          label: s(img?.label)
+        }))
+      : []
+
+    const share = (raw.share ?? {}) as Record<string, unknown>
+    const content = (raw.content ?? null) as PlanContent | null
+
+    return {
+      id: Number(raw.id ?? 0),
+      memberName: s(raw.memberName, '未命名会员'),
+      age: s(raw.age),
+      gender: raw.gender === '男' ? '男' : '女',
+      height: s(raw.height),
+      weight: s(raw.weight),
+      bodyFat: s(raw.bodyFat),
+      focus: s(raw.focus),
+      coreGoal: s(raw.coreGoal),
+      freq: s(raw.freq),
+      // 缺周期时给空串：卡片/表格统一显示「—」，而不是字面量 undefined
+      stageWeeks: s(raw.stageWeeks),
+      stageGoal: s(raw.stageGoal),
+      risks: s(raw.risks),
+      status: s(raw.status, '待生成') as TrainingStatus,
+      content: content && typeof content === 'object' ? content : null,
+      source: (s(raw.source) || '') as TrainingPlan['source'],
+      sourceReviewId: (raw.sourceReviewId ?? null) as number | null,
+      sourceBodyTestId: (raw.sourceBodyTestId ?? null) as number | null,
+      createdBy: s(raw.createdBy, '—'),
+      createdAt: s(raw.createdAt),
+      confirmedAt: s(raw.confirmedAt),
+      images,
+      share: {
+        enabled: Boolean(share.enabled),
+        code: s(share.code),
+        views: Number(share.views ?? 0) || 0
+      }
+    }
+  }
+
   onMounted(async () => {
     const userId = String(useUserStore().getUserInfo.userId ?? '')
     trainingStore.loadForUser(userId)
@@ -376,7 +443,8 @@
     try {
       const remote = await loadTrainingPlansCloud()
       if (trainingStore.loadedUserId === userId) {
-        trainingStore.replacePlans((remote ?? []) as unknown as TrainingPlan[])
+        // 在入口处归一化：下游表格/卡片/抽屉共用同一份数据（见 normalizePlan 注释）
+        trainingStore.replacePlans((remote ?? []).map(normalizePlan))
       }
       const planId = String(route.query.planId ?? '')
       if (planId) focusFromQuery(planId)
@@ -606,6 +674,18 @@
     return 'success'
   }
 
+  /**
+   * 「阶段（周）」的展示文案。
+   *
+   * 缺失时显示「—」而不是 `undefined周`：这个值来源于服务器上历史 payload，
+   * 类型上是 string、运行时却可能没有（见 normalizePlan 注释）。
+   * 表格列与卡片标签共用本函数，保证两处口径一致。
+   */
+  function stageWeeksText(weeks: unknown): string {
+    const v = weeks === null || weeks === undefined ? '' : String(weeks).trim()
+    return v ? `${v}周` : '—'
+  }
+
   // ---------- 移动端卡片 ----------
   //
   // 桌面表格的操作列固定 200px（手机可见区仅 310px），所以窄屏换卡片。
@@ -633,7 +713,8 @@
       if (row.status !== '待生成') {
         tags.push({ text: row.source === 'llm' ? 'AI' : '模板', effect: 'plain' })
       }
-      tags.push({ text: `${row.stageWeeks}周`, effect: 'plain' })
+      // 周期缺失时显示「—」（原实现是无兜底拼接，会渲染成字面量 `undefined周`）
+      tags.push({ text: stageWeeksText(row.stageWeeks), effect: 'plain' })
 
       const metrics: MobileCardMetric[] = [{ label: '频率', value: row.freq || '—' }]
 

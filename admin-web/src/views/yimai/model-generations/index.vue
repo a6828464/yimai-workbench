@@ -264,20 +264,33 @@
     }
   }
 
-  function isSuccess(status: string): boolean {
-    return ['success', 'succeeded', '成功'].includes(status.toLowerCase())
+  /**
+   * 状态字符串归一化。
+   *
+   * 接口返回的记录里 status 在类型上是 string，但历史行可能缺这个字段（返回 null）。
+   * 原实现直接 `status.toLowerCase()`，缺字段时会抛
+   * `Cannot read properties of null (reading 'toLowerCase')`，
+   * 把整个列表渲染打断（实测手机端整页只剩 32 字，卡片与表格都不出来）。
+   */
+  function normStatus(status: unknown): string {
+    return status === null || status === undefined ? '' : String(status)
   }
 
-  function statusLabel(status: string): string {
-    if (isSuccess(status)) return '成功'
-    if (['failed', 'failure', 'error', '失败'].includes(status.toLowerCase())) return '失败'
-    return status || '未知'
+  function isSuccess(status: unknown): boolean {
+    return ['success', 'succeeded', '成功'].includes(normStatus(status).toLowerCase())
   }
 
-  function sourceLabel(source: string): string {
+  function statusLabel(status: unknown): string {
+    const s = normStatus(status)
+    if (isSuccess(s)) return '成功'
+    if (['failed', 'failure', 'error', '失败'].includes(s.toLowerCase())) return '失败'
+    return s || '未知'
+  }
+
+  function sourceLabel(source: unknown): string {
     if (source === 'llm') return '模型 API'
     if (source === 'fallback' || source === 'template') return '本地模板'
-    return source || '—'
+    return source ? String(source) : '—'
   }
 
   function tokenSummary(row: ModelGenerationRecord): string {
