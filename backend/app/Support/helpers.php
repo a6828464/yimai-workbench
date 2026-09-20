@@ -662,6 +662,56 @@ function modelScopedCache(object $model): stdClass
 }
 
 /**
+ * 课型的**唯一**判定入口：随心瑜 `course_type` → private/small/group。
+ *
+ * ## 为什么必须只有一个入口
+ *
+ * `course_type` 存在时的映射原本抄了 5 份（同步写入、模型访问器、今日预约、
+ * 新客培养、看板），而 `course_type` **缺失时**的兜底各写各的、方向甚至相反：
+ * 同步写 `private`、模型访问器写 `private`、今日预约写「团课」、新客培养与看板写
+ * `group`。后果是**同一行预约在不同出口显示的课型不同**，而课型又参与
+ * 「我的学员」按人隔离、三分统计、课后分析候选，属于同一份事实被多处推断。
+ * 现在映射与兜底都只在本函数定义，各出口传值进来即可。
+ *
+ * 映射值（`2`=私教 / `3`=小班 / `1`=团课）**保持原样**：`course_type` 的方向本身
+ * 存在未决争议（代码写 2=私教，而《随心瑜后台完整解读》写 2=私教小班），本地库
+ * `ky_bookings` 810 行全是演示数据（`raw` 恒为 `{"demo":true}`），无法裁决。
+ * 该争议另行处置，本函数不选边。
+ *
+ * ## 缺失时兜底为什么选 `group`（而非按接口来源取 private）
+ *
+ * 两种原策略方向相反，证据不足以判定上游到底哪种课会漏 `course_type`，所以按
+ * 「**不放大可见范围**」取保守侧：
+ *
+ *  - `course_kind='private'` 是**按人隔离的判据**（`privateStudentKeys()` 取
+ *    `course_kind='private'` 的学员，再被会员列表、客资可见性、客资详情读写
+ *    ——`EnsureUserIsEnabled` 与 `privateTeaches()`——当授权依据）。兜底偏
+ *    `private` 会把「课型未知」的行算进授课老师的私教学员，从而**扩大**该老师
+ *    在会员/客资上的可见范围；漏判成 `group` 只会让老师少看到一行，属失败关闭。
+ *  - `group` 是三分里的**剩余类**：能确定是私教的行上游会带 `course_type=2`
+ *    （同步侧注释亦自述小班行带 `3`），所以「没带课型」时按非私教处理，与
+ *    「private 必须有显式证据」的权限原则一致。
+ *
+ * 代价（需在后续裁决时一并处理）：若漏 `course_type` 的行实为私教，该老师的
+ * 「我的学员」会少人。这是把授权正确性置于展示完整性之上 —— 展示少一行可被发现，
+ * 越权看到他人会员数据不可撤。同步侧原有注释称按私教兜底是为「避免授课老师的
+ * 『我的学员』静默为空」，本函数以显式的失败关闭取代该取舍：宁可空，不可越权；
+ * 若确认上游确有私教行不带 `course_type`，应由同步侧补 `course_type`（数据修正），
+ * 而不是让读侧的授权判据跟着放宽。
+ *
+ * @param  string|null  $courseType  随心瑜原始 course_type（缺失传 null / ''）
+ */
+function courseKindFrom(?string $courseType): string
+{
+    return match ((string) $courseType) {
+        '2' => 'private',
+        '3' => 'small',
+        '1' => 'group',
+        default => 'group',
+    };
+}
+
+/**
  * 该账号在业务归属字段里可能出现的**全部名字**。
  *
  * 归属列（`leads.service_teacher` / `customers.consultant|owner` /

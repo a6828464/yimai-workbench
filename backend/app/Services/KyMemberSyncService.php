@@ -577,16 +577,10 @@ class KyMemberSyncService
         ]));
         $recordId = self::pick($row, ['id', 'reservation_id']);
         $identity = $recordId !== '' ? $recordId : sha1(implode('|', [$memberId, $memberName, $startAt, $courseName]));
-        // 课型：2=私教，3=小班（精品课），1=团课（精品团课）。
-        // 缺失时按接口来源兜底：团课接口的行算团课，私教接口的行算私教
-        // （小班行带 course_type=3，所以私教接口上无 course_type 的行按私教处理，
-        // 避免授课老师的「我的学员」静默为空）。口径与 2026_09_15_000001 迁移一致。
-        $courseKind = match ((string) ($row['course_type'] ?? '')) {
-            '2' => 'private',
-            '3' => 'small',
-            '1' => 'group',
-            default => $type === '团课' ? 'group' : 'private',
-        };
+        // 课型判定统一走 courseKindFrom()（映射与缺失兜底的理由见该函数注释）。
+        // 本处**不再**按接口来源兜底：读侧的授权判据（privateStudentKeys 取
+        // course_kind='private'）会跟着兜底放宽，故缺失一律按 group（失败关闭）。
+        $courseKind = courseKindFrom($row['course_type'] ?? null);
         $now = now();
 
         return [

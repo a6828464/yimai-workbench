@@ -348,11 +348,9 @@ class CustomerController extends Controller
                 ->groupBy('member_id');
         }
 
-        $kindOf = fn (KyBooking $b): string => match ((string) ($b->raw['course_type'] ?? '')) {
-            '2' => 'private',
-            '3' => 'small',
-            default => 'group',
-        };
+        // 课型判定统一走模型访问器（列值优先，缺失时的兜底见 courseKindFrom）：
+        // 与课程事实、课后分析列表同口径，避免同一行在不同出口显示不同课型
+        $kindOf = fn (KyBooking $b): string => $b->courseKind();
 
         $emptyCat = fn (): array => ['signed' => 0, 'booked' => 0, 'no_show' => 0];
         $records = [];

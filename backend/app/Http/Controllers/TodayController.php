@@ -476,12 +476,8 @@ final class TodayController extends Controller
             foreach ($bookingQ->orderBy('start_at')->get() as $b) {
                 $phone = preg_replace('/\D+/', '', (string) $b->phone) ?? '';
                 $customer = $matchCustomer($phone, (string) $b->member_id, (string) $b->member_name, (string) $b->venue);
-                $rawData = is_array($b->raw) ? $b->raw : ((array) json_decode((string) $b->raw, true));
-                $kind = match ((string) ($rawData['course_type'] ?? '')) {
-                    '2' => '私教',
-                    '3' => '小班',
-                    default => '团课',
-                };
+                // 与课程事实/课后分析同源：走模型访问器（列值优先，缺失时兜底见 courseKindFrom）
+                $kind = KyBooking::KIND_LABELS[$b->courseKind()] ?? '团课';
                 $bookings[] = [
                     'id' => $b->id,
                     'key' => 'booking:'.$b->id,

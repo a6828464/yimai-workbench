@@ -196,13 +196,8 @@ final class AnalyticsController extends Controller
                 continue;
             }
             $identity = $booking->phone ?: ($booking->member_id ?: $booking->source_key);
-            // 课型：course_type 2=私教，3=小班（精品课），1=团课（精品团课）
-            $courseType = (string) ($booking->raw['course_type'] ?? '');
-            $kindKey = match ($courseType) {
-                '2' => 'private',
-                '3' => 'small',
-                default => 'group',
-            };
+            // 课型判定统一走模型访问器（列值优先，缺失时的兜底见 courseKindFrom）
+            $kindKey = $booking->courseKind();
             if (! in_array($booking->status, ['cancelled', 'no_show'], true)) {
                 $kyByDate[$date][$booking->venue]['booked'][$identity] = true;
                 $kyByDate[$date][$booking->venue]['booked_'.$kindKey][$identity] = true;
