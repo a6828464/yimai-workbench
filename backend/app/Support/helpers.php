@@ -889,7 +889,22 @@ function privateStudentKeys(User $user): array
 
     return $cache->privateStudentKeys = [
         'external_ids' => array_keys($ids),
-        'phones' => array_keys($phones),
+        // ⚠️ 必须 strval 归一化，**不要**「简化」成 array_keys($phones)。
+        //
+        // `$phones` 是拿手机号当数组键去重（见上 `$phones[$phone] = true`），而 PHP 会把
+        // **纯数字字符串键强转成 int** ⇒ array_keys() 返回 int[]。调用方全部按 string
+        // 严格比较（`in_array($phone, $keys['phones'], true)`），于是**恒为 false**：
+        // 手机号关联通道整个失效，老师会静默漏看「只能靠手机号关联」的学员
+        // （external_id 缺失/乱序时唯一的关联途径）。
+        //
+        // 归一化只做在这一处（返回边界），而不是在收集处改写键：既保持上面的去重语义
+        // 不变（'13800000001' 与 int 13800000001 本就是同一个键，去重仍然正确），
+        // 又让所有读方拿到的类型与它们的断言口径一致。
+        //
+        // 注意强转是**不一致**的：只有「纯数字」才变 int，带 `+86` 前缀或前导 0 的
+        // （如 '+8613800000002'、'01380000001'）仍留在 string —— 所以这个缺陷表现为
+        // 「部分号码能命中、部分不能」，比全量失效更难被发现。
+        'phones' => array_map('strval', array_keys($phones)),
     ];
 }
 

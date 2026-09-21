@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\Customer;
+use App\Models\KyBooking;
 use App\Models\PublishedShare;
 use App\Models\StaffAlias;
 use App\Models\Task;
@@ -339,6 +341,193 @@ class StaffRenameRegressionTest extends TestCase
     {
         $unsaved = new User(['name' => '未落库']);
         $this->assertSame(['未落库'], staffNames($unsaved));
+    }
+
+    // --------------------------- 5. privateStudentKeys() 的手机号必须是 string（t36）
+
+    /**
+     * ⚠️ `privateStudentKeys()['phones']` 的元素**必须是 string**。
+     *
+     * ## 缺陷（t36）
+     *
+     * `privateStudentKeys()` 用手机号当数组键去重（`$phones[$phone] = true`），
+     * 而 PHP 会把**纯数字字符串键强转成 int** ⇒ `array_keys()` 返回 `int[]`。
+     * 而所有读方都按 **string 严格比较**（`in_array(..., ..., true)`），于是恒为
+     * false：**手机号关联通道整个失效**。
+     *
+     * ## 为什么必须是「严格比较能命中」而不是「宽松能命中」
+     *
+     * 宽松比较（`in_array($p, $keys, false)`）在旧代码下**也是 true**，
+     * 所以断言宽松命中区分不了修复前后 —— 那样的测试是同义反复。
+     * 这里钉的正是**严格**语义，因为生产里三条消费路径都用严格比较：
+     *   - `helpers.php` `privateTeaches()`（客资详情/会员可见）
+     *   - `EnsureUserIsEnabled:165`（客资读写准入）
+     *   - `TodayController:163`（今日待办的按人收窄）
+     */
+    public function test_private_student_phones_are_strings_and_strict_match_works(): void
+    {
+        $teacher = $this->user('号码老师', 't36-phone-types', 'R_TEACHER');
+
+        KyBooking::create([
+            'source_key' => '77:私教:t36p1',
+            'venue' => '绿地店',
+            'booking_type' => '私教',
+            'course_kind' => 'private',
+            'member_id' => 'M3601',
+            'member_name' => '号码学员',
+            'phone' => '13800003601',
+            'start_at' => now(),
+            'course_name' => '私教课',
+            'teacher_name' => '号码老师',
+            'teacher_user_id' => $teacher->id,
+            'status' => 'signed',
+            'is_trial' => false,
+            'raw' => [],
+        ]);
+
+        $keys = privateStudentKeys($teacher);
+
+        // ① 元素类型必须是 string（缺陷本体）
+        $this->assertNotSame([], $keys['phones'], '前提：该老师应解析出至少一个手机号');
+        foreach ($keys['phones'] as $i => $p) {
+            $this->assertIsString(
+                $p,
+                "phones[{$i}] 必须是 string；出现 int 说明 PHP 的数字键强转又回来了（见本用例注释）"
+            );
+        }
+
+        // ② 严格比较必须命中（修复前恒 false）
+        $this->assertTrue(
+            in_array('13800003601', $keys['phones'], true),
+            '手机号通道的严格比较必须能命中；恒 false 会让老师静默漏看只能靠手机号关联的学员'
+        );
+
+        // ③ 反向：不得因为归一化而凭空多出号码
+        $this->assertNotContains('13900000000', $keys['phones'], '不得出现未授课学员的号码');
+        $this->assertCount(1, $keys['phones'], '该老师只有 1 名手机号可解析的私教学员');
+    }
+
+    /**
+     * 「只有手机号能关联」的学员必须能被老师看到（external_id 缺失）。
+     *
+     * 这是缺陷的**真实业务后果**，也是本任务修复的价值所在：
+     * 学员档案没有 `external_id`（或与随心瑜对不上）时，手机号是**唯一**关联途径；
+     * 严格比较恒 false ⇒ `privateTeaches()` 恒 false ⇒ 老师看不到自己的学员。
+     *
+     * 本用例直接断言端到端判据 `privateTeaches()`，而不是只测数组类型 ——
+     * 避免「类型对了但消费路径没通」这种假修复。
+     */
+    public function test_student_linkable_only_by_phone_is_visible_to_own_teacher(): void
+    {
+        $teacher = $this->user('手机老师', 't36-phone-only', 'R_TEACHER');
+
+        KyBooking::create([
+            'source_key' => '77:私教:t36p2',
+            'venue' => '绿地店',
+            'booking_type' => '私教',
+            'course_kind' => 'private',
+            'member_id' => 'M3602',
+            'member_name' => '仅手机号学员',
+            'phone' => '13800003602',
+            'start_at' => now(),
+            'course_name' => '私教课',
+            'teacher_name' => '手机老师',
+            'teacher_user_id' => $teacher->id,
+            'status' => 'signed',
+            'is_trial' => false,
+            'raw' => [],
+        ]);
+
+        // 学员档案：**故意不带 external_id**（external_id 为空）
+        $customer = Customer::create([
+            'name' => '仅手机号学员',
+            'phone' => '13800003602',
+            'venue' => '绿地店',
+            'external_id' => '',
+            'layer' => 'P1',
+        ]);
+
+        $this->assertTrue(
+            privateTeaches($teacher, $customer),
+            '只能靠手机号关联的学员必须能被自己的授课老师看到（修复前此处恒 false）'
+        );
+
+        // 反向：别的老师不得因此看到该学员（修复只补回本该可见的，不引入越权）。
+        //
+        // ⚠️ 关键是给这位老师**也配一名真实手机号私教学员**，让它的 `phones` 非空。
+        // 否则该老师的 phones 恒为空数组，断言会「因为列表是空的」而 trivially 为真 ——
+        // 那样测不出「手机号通道是按老师隔离的」这一性质（同义反复）。
+        $other = $this->user('无关老师', 't36-other-teacher', 'R_TEACHER');
+
+        KyBooking::create([
+            'source_key' => '77:私教:t36p2o',
+            'venue' => '绿地店',
+            'booking_type' => '私教',
+            'course_kind' => 'private',
+            'member_id' => 'M3602O',
+            'member_name' => '无关老师的学员',
+            'phone' => '13800003603',
+            'start_at' => now(),
+            'course_name' => '私教课',
+            'teacher_name' => '无关老师',
+            'teacher_user_id' => $other->id,
+            'status' => 'signed',
+            'is_trial' => false,
+            'raw' => [],
+        ]);
+
+        $otherKeys = privateStudentKeys($other);
+        $this->assertNotSame([], $otherKeys['phones'], '前提：这位老师自己的手机号通道是通的（否则下面的断言无意义）');
+        $this->assertContains('13800003603', $otherKeys['phones']);
+
+        $this->assertFalse(
+            privateTeaches($other, $customer),
+            '其它老师即使手机号通道正常，也不得看到不属于自己的学员'
+        );
+    }
+
+    /**
+     * 修复方向定性：**放宽**（补回本该可见的），但不得放宽到他人。
+     *
+     * 用同一份数据同时断言两侧：
+     *  - 自己的学员 → 手机号通道命中（修复目标）；
+     *  - 他人学员的同名/异号 → 不命中（不得越权）。
+     * 另断言 `external_ids` 的元素形状未变（`ky:{venueId}:{memberId}` 带前缀，
+     * 天然是 string，不受数字键强转影响），说明本次只动 `phones`。
+     */
+    public function test_phone_channel_widens_only_to_own_students(): void
+    {
+        $teacher = $this->user('边界老师', 't36-boundary', 'R_TEACHER');
+
+        KyBooking::create([
+            'source_key' => '77:私教:t36p3',
+            'venue' => '绿地店',
+            'booking_type' => '私教',
+            'course_kind' => 'private',
+            'member_id' => 'M3603',
+            'member_name' => '本人学员',
+            'phone' => '13800003603',
+            'start_at' => now(),
+            'course_name' => '私教课',
+            'teacher_name' => '边界老师',
+            'teacher_user_id' => $teacher->id,
+            'status' => 'signed',
+            'is_trial' => false,
+            'raw' => [],
+        ]);
+
+        $keys = privateStudentKeys($teacher);
+
+        // external_ids 形状不变（带 ky: 前缀 ⇒ 恒为 string，不受本次修复影响）
+        foreach ($keys['external_ids'] as $i => $id) {
+            $this->assertIsString($id);
+            $this->assertStringStartsWith('ky:', $id, "external_ids[{$i}] 应保持 ky:{{venueId}}:{{memberId}} 形状");
+        }
+
+        // 自己的学员：命中
+        $this->assertTrue(in_array('13800003603', $keys['phones'], true));
+        // 他人号码：不命中
+        $this->assertFalse(in_array('13800009999', $keys['phones'], true));
     }
 
     // ---------------------------------------------------------------------- 工具

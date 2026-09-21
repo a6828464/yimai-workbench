@@ -355,16 +355,19 @@ class CourseKindFallbackTest extends TestCase
         // ① 只含真实私教学员
         $this->assertContains('ky:77:M3501', $keys['external_ids'], '真实私教学员必须在授权键里（否则老师「我的学员」为空）');
 
-        // 手机号通道：先用 strval 归一，避免被 PHP 的「纯数字字符串数组键 → int」强制
-        // 转换干扰。⚠️ 该转换导致 `$keys['phones']` 实际返回 **int[]**，而调用方
-        // （`EnsureUserIsEnabled:165`、`privateTeaches()`）用 `in_array($phone, …, true)`
-        // 拿 **string** 严格比较 ⇒ **恒为 false，手机号通道从不命中**。
-        // 这是**既有**缺陷（HEAD 同样如此，与本任务映射修正无关），方向是「收窄」而非越权，
-        // 故不在本任务擅自修（contract 明令不得改其它授权逻辑）。已上报船长另开单。
-        // 此处只断言**键集合的语义**（哪些号码被算作私教学员），不依赖其元素类型。
-        $phoneStrings = array_map('strval', $keys['phones']);
-        $this->assertContains('13900003501', $phoneStrings, '真实私教学员的手机号应在键集合里');
-        $this->assertNotContains('13900003502', $phoneStrings, '小班学员手机号不得作为会员/客资可见判据');
+        // 手机号通道：t36 已修掉「PHP 把纯数字字符串键强转成 int ⇒ int 元素 vs string
+        // 严格比较恒 false」的既有缺陷（详见 StaffRenameRegressionTest 第 5 节的用例）。
+        // 因此这里直接断言**严格比较命中**，并顺带钉住元素类型 —— 不再需要 strval 绕行
+        // （原先绕行是为了规避缺陷，现在若还绕行，就等于把这个回归漏测掉）。
+        $this->assertContains('13900003501', $keys['phones'], '真实私教学员的手机号应在键集合里');
+        $this->assertNotContains('13900003502', $keys['phones'], '小班学员手机号不得作为会员/客资可见判据');
+        $this->assertTrue(
+            in_array('13900003501', $keys['phones'], true),
+            '手机号通道必须是 string 严格比较可命中的（否则老师静默漏看自己的学员，即 t36 修掉的缺陷）'
+        );
+        foreach ($keys['phones'] as $i => $p) {
+            $this->assertIsString($p, "phones[{$i}] 必须是 string（int 说明数字键强转又回来了）");
+        }
 
         // ② 绝不含小班学员 —— 这是越权面
         $this->assertNotContains('ky:77:M3502', $keys['external_ids'], '小班学员（course_type=2）不得进入私教学员授权键：那是越权可见他人学员');
