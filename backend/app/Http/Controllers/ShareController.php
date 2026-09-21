@@ -620,7 +620,20 @@ final class ShareController extends Controller
 
         // 单对象容器（share / info）
         foreach (self::NESTED_FIELDS as $container => $allowed) {
-            if (! isset($out[$container]) || ! is_array($out[$container])) {
+            // 键不存在：本来就没什么可清洗的
+            if (! array_key_exists($container, $out)) {
+                continue;
+            }
+            // 键存在但**类型不符** = 异常请求 → 丢弃该键。
+            //
+            // 这里刻意不写「continue 跳过清洗」：上面 :629 已把客户端原值抄进 $out，
+            // 跳过清洗 ≠ 删除，未清洗的原值会原样留在输出里一路出网（fail-open）。
+            // 只有数组才可能有内层字段可白名单化，非数组没有任何「保留」的理由。
+            //
+            // 用 array_key_exists 而非 isset：`cases => null` 也算「存在且类型不符」，
+            // 同样应当丢弃（isset(null) 为 false，会把「键存在但值为 null」误判成「键不存在」）。
+            if (! is_array($out[$container])) {
+                unset($out[$container]);
                 continue;
             }
             $kept = [];
@@ -634,7 +647,15 @@ final class ShareController extends Controller
 
         // 列表容器（products / coaches / cases）
         foreach (self::ITEM_FIELDS as $container => $allowed) {
-            if (! isset($out[$container]) || ! is_array($out[$container])) {
+            if (! array_key_exists($container, $out)) {
+                continue;
+            }
+            // 与上面的单对象容器同一条规则：类型不符即丢弃该键（fail-closed）。
+            // 容器不是数组时，其中的「每个元素」无从逐个白名单化；保留原值等于
+            // 让客户端塞进来的任意字符串/数字直接出网（t28-02：cases 传字符串时
+            // 未授权案例原文原样通过）。
+            if (! is_array($out[$container])) {
+                unset($out[$container]);
                 continue;
             }
             $out[$container] = array_values(array_filter(array_map(

@@ -1207,4 +1207,275 @@ class PublicShareSalesTest extends TestCase
 
         $this->assertNull($records->firstWhere('token', '7777aaaa8888bbbb'));
     }
+
+    // ============================================================
+    // 16. 容器类型不符必须 fail-closed（t28-02 回归）
+    // ============================================================
+
+    /**
+     * **类型不符**的输入集（参数化）：这些不是数组，没有任何内层字段可白名单化。
+     *
+     * 前端始终提交数组，所以这些形态只可能来自**绕过前端**的直接调用
+     * （`POST /api/shares/publish` 只校验 `payload` 是 array，内层不校验）。
+     * 每项都塞了同一段未授权原文，用于断言「原文任何部分都不出网」。
+     *
+     * 注意与 `validArrayWithJunk()` 的区别：数组里塞垃圾是**合法类型**，
+     * 应当清洗而不是丢弃整个容器 —— 两者是不同规则，不能混在一个数据集里断言。
+     */
+    public static function wrongContainerTypes(): array
+    {
+        $raw = 'UNAUTH-RAW产后8个月子宫恢复情况';
+
+        return [
+            '字符串' => [$raw],
+            '数字' => [12345],
+            '浮点数' => [3.14],
+            '布尔 true' => [true],
+            '布尔 false' => [false],
+            'null' => [null],
+            '空字符串' => [''],
+        ];
+    }
+
+    /**
+     * `cases` 传非数组时必须**丢弃该键**，不得原样保留。
+     *
+     * 修复前（t27 引入的回归）：`! is_array(...) → continue` 只是跳过清洗，
+     * 而原值在上一层已被原样抄进 `$out`，于是字符串形式的未授权案例原文
+     * 一路出网（t22 是无条件赋值、恒输出数组，反而没这个问题）。
+     * 现在类型不符即 `unset`，失败方向为 fail-closed。
+     */
+    #[DataProvider('wrongContainerTypes')]
+    public function test_non_array_cases_container_is_dropped(mixed $casesValue): void
+    {
+        $payload = $this->salesPayload();
+        $payload['cases'] = $casesValue;
+
+        $out = ShareController::sanitizeSalesPayload($payload, 'abc123', null);
+
+        $this->assertArrayNotHasKey('cases', $out, '类型不符的 cases 容器必须被丢弃，而不是原样保留');
+        $this->assertStringNotContainsString(
+            'UNAUTH-RAW',
+            (string) json_encode($out, JSON_UNESCAPED_UNICODE),
+            '未授权原文任何部分都不得出现在清洗后的负载里'
+        );
+    }
+
+    /** `info` 传非数组必须丢弃（不得只修 cases） */
+    #[DataProvider('wrongContainerTypes')]
+    public function test_non_array_info_container_is_dropped(mixed $value): void
+    {
+        $payload = $this->salesPayload();
+        $payload['info'] = $value;
+
+        $out = ShareController::sanitizeSalesPayload($payload, 'abc123', null);
+
+        $this->assertArrayNotHasKey('info', $out, 'info 类型不符时必须被丢弃');
+        $this->assertStringNotContainsString('UNAUTH-RAW', (string) json_encode($out, JSON_UNESCAPED_UNICODE));
+    }
+
+    /** `products` / `coaches` 同样必须 fail-closed（不止 cases / info） */
+    #[DataProvider('wrongContainerTypes')]
+    public function test_non_array_products_and_coaches_are_dropped(mixed $value): void
+    {
+        foreach (['products', 'coaches'] as $container) {
+            $payload = $this->salesPayload();
+            $payload[$container] = $value;
+
+            $out = ShareController::sanitizeSalesPayload($payload, 'abc123', null);
+
+            $this->assertArrayNotHasKey($container, $out, "{$container} 类型不符时必须被丢弃");
+            $this->assertStringNotContainsString('UNAUTH-RAW', (string) json_encode($out, JSON_UNESCAPED_UNICODE));
+        }
+    }
+
+    /**
+     * `share` 传非数组：**不得把原值带出去**。
+     *
+     * 与 info/products/cases 的区别：`share` 在方法末尾总会被权威值重写
+     * （`['enabled'=>true,'code'=>权威token,'views'=>...]`），所以它不表现为「键消失」，
+     * 而表现为「原值被覆盖」。这里按事实断言：最终一定是数组、且不含原文。
+     */
+    #[DataProvider('wrongContainerTypes')]
+    public function test_non_array_share_container_never_leaks_raw_value(mixed $value): void
+    {
+        $payload = $this->salesPayload();
+        $payload['share'] = $value;
+
+        $out = ShareController::sanitizeSalesPayload($payload, 'abc123', null);
+
+        $this->assertIsArray($out['share'] ?? null, 'share 最终必须是数组（权威值重写）');
+        $this->assertSame('abc123', $out['share']['code']);
+        $this->assertSame(0, $out['share']['views']);
+        $this->assertStringNotContainsString('UNAUTH-RAW', (string) json_encode($out, JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * 合法数组里塞垃圾：**清洗**而非丢弃整个容器（与类型不符区分开）。
+     *
+     * 非数组元素被逐个丢弃（array_filter + null），未知内层键被白名单丢掉 ——
+     * 容器本身是合法类型，应当保留。
+     */
+    public function test_valid_array_container_with_junk_is_cleaned_not_dropped(): void
+    {
+        $raw = 'UNAUTH-RAW产后8个月子宫恢复情况';
+
+        $payload = $this->salesPayload();
+        $payload['cases'] = [
+            $raw,                                                   // 非数组元素 → 丢
+            ['id' => 1, 'goal' => '授权', 'authorized' => true],     // 合法 → 留
+            ['note' => $raw],                                       // 无 authorized → 丢
+        ];
+        $payload['products'] = ['not-an-item-array', ['id' => 7, 'name' => '产品A', 'junk' => $raw]];
+
+        $out = ShareController::sanitizeSalesPayload($payload, 'abc123', null);
+
+        // 容器保留（合法类型）
+        $this->assertArrayHasKey('cases', $out);
+        $this->assertArrayHasKey('products', $out);
+        // 内容被清洗
+        $this->assertCount(1, $out['cases']);
+        $this->assertSame(1, $out['cases'][0]['id']);
+        $this->assertCount(1, $out['products']);
+        $this->assertSame(['id', 'name'], array_keys($out['products'][0]));
+        $this->assertStringNotContainsString($raw, (string) json_encode($out, JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * 端到端：绕过前端直接提交字符串 cases → 公开接口不得出现原文。
+     *
+     * 这条覆盖「入库路径」（publishSales 调 sanitizeSalesPayload）；
+     * 下发路径由 PublicShareController::sales 调同一函数，另有历史快照用例覆盖。
+     */
+    public function test_string_cases_cannot_reach_public_endpoint_via_stored_snapshot(): void
+    {
+        // 手工造一条「已是脏数据」的快照（模拟修复前入库/或库被直接改写）
+        $token = 'e5f60718293a4b5c';
+        $payload = $this->salesPayload();
+        $payload['cases'] = 'UNAUTH-RAW产后8个月子宫恢复情况';
+        $this->seedTrusted($token, $payload);
+
+        $res = $this->getJson("/api/public/sales/{$token}")->assertOk();
+
+        $this->assertResponseLacks($res, 'UNAUTH-RAW');
+        $this->assertResponseLacks($res, '子宫恢复情况');
+        $this->assertArrayNotHasKey('cases', $res->json('data'));
+        // 其余白名单字段照常下发，说明只丢异常键、不影响正常内容
+        $this->assertResponseContains($res, '一麦瑜伽（绿地店）');
+    }
+
+    /** 端到端：经真实发布接口提交非数组 cases，入库结果里不得留下原文 */
+    public function test_publish_drops_non_array_cases_before_storing(): void
+    {
+        $payload = $this->salesPayload();
+        $payload['cases'] = 'UNAUTH-RAW产后8个月子宫恢复情况';
+
+        $token = $this->publishSales($this->makeUser(), $payload);
+        $stored = PublishedShare::where('token', $token)->firstOrFail();
+
+        $this->assertArrayNotHasKey('cases', $stored->payload);
+        $this->assertStringNotContainsString(
+            'UNAUTH-RAW',
+            (string) json_encode($stored->payload, JSON_UNESCAPED_UNICODE)
+        );
+
+        // 公开接口同样干净
+        $this->assertResponseLacks($this->getJson("/api/public/sales/{$token}")->assertOk(), 'UNAUTH-RAW');
+    }
+
+    /** 空数组是**合法**类型：应保留为 `cases => []`（而不是被当成类型不符丢弃） */
+    public function test_empty_array_cases_is_kept_as_empty_list(): void
+    {
+        $payload = $this->salesPayload();
+        $payload['cases'] = [];
+
+        $out = ShareController::sanitizeSalesPayload($payload, 'abc123', null);
+
+        $this->assertArrayHasKey('cases', $out, '空数组是合法类型，不应被丢弃');
+        $this->assertSame([], $out['cases']);
+    }
+
+    /**
+     * 正常路径不回归：数组 cases 的过滤与归一行为与修复前一致。
+     *
+     * 逐一锁定：未授权（false / 'false' / 'off' / 'no' / 缺失）被过滤；
+     * 已授权保留且 authorized 归一为 true；stages 经 sanitizeStages 清洗。
+     */
+    public static function unauthorizedFlags(): array
+    {
+        return [
+            'false 布尔' => [false],
+            '字符串 false' => ['false'],
+            '字符串 off' => ['off'],
+            '字符串 no' => ['no'],
+            '字符串 0' => ['0'],
+            '整数 0' => [0],
+        ];
+    }
+
+    #[DataProvider('unauthorizedFlags')]
+    public function test_array_cases_still_filters_unauthorized(mixed $flag): void
+    {
+        $payload = $this->salesPayload();
+        $payload['cases'] = [
+            ['id' => 1, 'goal' => '授权案例', 'desc' => 'ok', 'authorized' => true, 'stages' => [['duration' => '第4周', 'leak' => 'X']]],
+            ['id' => 2, 'goal' => '未授权案例', 'desc' => 'UNAUTH-RAW', 'authorized' => $flag, 'stages' => []],
+        ];
+
+        $out = ShareController::sanitizeSalesPayload($payload, 'abc123', null);
+
+        $this->assertCount(1, $out['cases'], '未授权案例必须被过滤');
+        $this->assertSame(1, $out['cases'][0]['id']);
+        $this->assertTrue($out['cases'][0]['authorized'], 'authorized 应归一为 true');
+        // stages 经 sanitizeStages：每阶段只剩 duration
+        $this->assertSame(['duration'], array_keys($out['cases'][0]['stages'][0]));
+        $this->assertSame('第4周', $out['cases'][0]['stages'][0]['duration']);
+        $this->assertStringNotContainsString('UNAUTH-RAW', (string) json_encode($out, JSON_UNESCAPED_UNICODE));
+    }
+
+    /** 缺失 authorized 字段的案例必须被过滤（默认未授权，fail-closed） */
+    public function test_array_cases_missing_authorized_is_filtered(): void
+    {
+        $payload = $this->salesPayload();
+        $payload['cases'] = [['id' => 9, 'goal' => '无授权字段', 'desc' => 'UNAUTH-RAW']];
+
+        $out = ShareController::sanitizeSalesPayload($payload, 'abc123', null);
+
+        $this->assertSame([], $out['cases'], '缺失 authorized 视为未授权');
+        $this->assertStringNotContainsString('UNAUTH-RAW', (string) json_encode($out, JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * 白名单取值未被本轮改动：顶层仍是那 5 个键，内层取值不变。
+     *
+     * 用「未授权案例 + 类型不符容器」组合断言：修复只改了失败方向，
+     * 没有顺手增删任何白名单字段（t34 边界要求）。
+     */
+    public function test_whitelists_unchanged_by_this_repair(): void
+    {
+        $this->assertSame(
+            ['share', 'info', 'products', 'coaches', 'cases'],
+            ShareController::SALES_TOP_FIELDS
+        );
+        $this->assertSame(['enabled', 'code', 'views'], ShareController::NESTED_FIELDS['share']);
+        $this->assertSame(['name', 'industry', 'slogan', 'intro', 'address', 'phone'], ShareController::NESTED_FIELDS['info']);
+        $this->assertSame(['id', 'name', 'desc', 'showPrice', 'cols', 'rows'], ShareController::ITEM_FIELDS['products']);
+        $this->assertSame(['id', 'name', 'title', 'tags', 'intro'], ShareController::ITEM_FIELDS['coaches']);
+        $this->assertSame(['id', 'coachId', 'goal', 'desc', 'stages', 'authorized'], ShareController::ITEM_FIELDS['cases']);
+        $this->assertSame(['duration'], ShareController::STAGE_FIELDS);
+    }
+
+    /** views 归零行为未回归：首次发布仍固定 0，不受本轮修复影响 */
+    public function test_views_still_zeroed_on_first_publish_after_repair(): void
+    {
+        $payload = $this->salesPayload();
+        $payload['share'] = ['enabled' => true, 'code' => 'x', 'views' => 4242];
+        $payload['cases'] = 'not-an-array'; // 同时带一个异常容器
+
+        $out = ShareController::sanitizeSalesPayload($payload, 'abc123', null);
+
+        $this->assertSame(0, $out['share']['views'], '首次发布 views 仍须归零');
+        $this->assertSame('abc123', $out['share']['code'], '权威 token 覆盖仍生效');
+        $this->assertArrayNotHasKey('cases', $out);
+    }
 }
