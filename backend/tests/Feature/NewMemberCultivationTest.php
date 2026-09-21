@@ -19,12 +19,15 @@ class NewMemberCultivationTest extends TestCase
         $today = now()->toDateString();
 
         // 会员 A：入会 10 天，私教签到 8 节（达标 cultured），小班签到 1 节（待养成 → 因有未达标类别整体 cultivating）
+        // 课型编码按修正后的映射：course_type=3 才是「私教课」（对客「定制私教」）→ 工作台 private；
+        // course_type=2 是「精品课」（对客「私教小班」）→ 工作台 small。旧测试把这两个写反了
+        // （它以 '2' 配「私教基础」），故此处随之对调，断言语义不变。
         $a = Customer::create([
             'name' => '新客甲', 'phone' => '13800000001', 'venue' => '绿地店', 'external_id' => 'ky:1:1001',
             'enrolled_at' => now()->subDays(10)->toDateString(), 'layer' => 'P4', 'status' => '在籍',
         ]);
-        $this->booking('1001', '绿地店', '13800000001', '2', 'signed', 8, '私教基础');
-        $this->booking('1001', '绿地店', '13800000001', '3', 'signed', 1, '小班普拉提');
+        $this->booking('1001', '绿地店', '13800000001', '3', 'signed', 8, '私教基础');
+        $this->booking('1001', '绿地店', '13800000001', '2', 'signed', 1, '小班普拉提');
 
         // 会员 B：入会 5 天，0 上课 → idle 待激活
         Customer::create([

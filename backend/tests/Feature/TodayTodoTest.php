@@ -31,7 +31,10 @@ class TodayTodoTest extends TestCase
             'main_card' => '私教卡', 'birthday' => date('Y').'-'.date('m-d'),
         ]));
 
-        $this->booking('待续会员', '13800000001', '09:00', 'signed', ['course_type' => '2']);
+        // course_type=3 才是「私教课」（对客显示「定制私教」）；2 是「精品课/私教小班」，
+        // 即工作台的「小班」。该行的会员持「私教卡」、课程名默认「普拉提私教」，
+        // 下方断言 kind='私教' —— 故 fixture 用 3，而非旧口径的 2。
+        $this->booking('待续会员', '13800000001', '09:00', 'signed', ['course_type' => '3']);
         $this->booking('体验客小张', '', '10:30', 'booked', ['course_type' => '1'], true);
         $this->booking('已取消会员', '', '11:00', 'cancelled', ['course_type' => '2']);
 
@@ -181,7 +184,10 @@ class TodayTodoTest extends TestCase
         KyBooking::create([
             'source_key' => uniqid('t-'),
             'venue' => $venue,
-            'booking_type' => ($raw['course_type'] ?? '1') === '2' ? '私教' : '团课',
+            // booking_type 来自接口路径（league→团课 / private→私教）。修正后的映射里
+            // 「私教课」是 course_type=3（旧代码把 2 当私教，故此处同步纠正，避免 fixture
+            // 自己讲错口径）。注意 booking_type 现已无任何读方（t30 起课型只认 course_kind）。
+            'booking_type' => ($raw['course_type'] ?? '1') === '3' ? '私教' : '团课',
             'member_id' => 'm-'.md5($memberName),
             'member_name' => $memberName,
             'phone' => $phone,

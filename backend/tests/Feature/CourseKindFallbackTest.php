@@ -21,9 +21,12 @@ use Tests\TestCase;
  *
  * 现在映射与兜底都只在 `courseKindFrom()` 定义（helpers.php），本文件锁住两点：
  *  1. 缺失时各出口一致（跨出口一致性，缺陷本体）；
- *  2. 显式 `course_type` 的映射未被改动（2=private / 3=small / 1=group）——
- *     映射方向本身另有争议（t26 判定「现有证据无法判定」），本任务不得选边，
- *     所以这里把「现状映射」原样锁住，谁改谁红。
+ *  2. 显式 `course_type` 的映射方向 = **1=group / 2=small（精品课，对客「私教小班」）
+ *     / 3=private（私教课，对客「定制私教」）**。
+ *     t30 时该方向「另有争议」故只锁现状（当时写的是 2=private/3=small）；
+ *     **t35 已据用户第一手实地笔记裁决**（`随心瑜后台解读/notes.md:425-426`
+ *     直接绑定数字↔内部名，另见《随心瑜后台完整解读》`:262-268` 的字段级佐证），
+ *     方向已翻转并在此按新口径钉死——谁改回旧方向谁红。
  */
 class CourseKindFallbackTest extends TestCase
 {
@@ -61,17 +64,38 @@ class CourseKindFallbackTest extends TestCase
         $this->assertSame('group', $this->factWithoutCourseType('course/api/queryreversionprivate')['course_kind']);
     }
 
-    /** 显式 `course_type` 的映射保持原样（本任务不裁决方向，只锁现状） */
-    public function test_explicit_course_type_mapping_is_unchanged(): void
+    /**
+     * 显式 `course_type` 的映射方向（t35 已裁决，此处按新口径钉死）。
+     *
+     * 1=团课（对客「精品团课」）/ 2=精品课（对客「私教小班」）→ 小班 /
+     * 3=私教课（对客「定制私教」）→ 私教。
+     * 该断言同时走**两条路径**（同步写入 `bookingFact()` 与 `courseKindFrom()`），
+     * 避免只锁其中一处。
+     */
+    public function test_explicit_course_type_mapping_is_the_adjudicated_direction(): void
     {
-        foreach (['2' => 'private', '3' => 'small', '1' => 'group'] as $code => $expected) {
+        foreach (['1' => 'group', '2' => 'small', '3' => 'private'] as $code => $expected) {
             $this->assertSame(
                 $expected,
                 $this->factWithoutCourseType('course/api/queryreversionprivate', ['course_type' => (string) $code])['course_kind'],
-                "course_type={$code} 的映射被改动了（映射方向另有任务裁决，此处不得选边）"
+                "course_type={$code} 的映射方向不对（应为 1=group/2=small/3=private；改回旧方向即为错误的私有约定）"
             );
             $this->assertSame($expected, \courseKindFrom((string) $code));
         }
+    }
+
+    /**
+     * 方向护栏：旧的反向映射（2=private / 3=small）必须**不再**成立。
+     *
+     * 单独立一条是为了让「谁把它改回去」以最直白的方式变红，
+     * 而不是仅由上面那条的循环隐式覆盖。
+     */
+    public function test_legacy_reversed_mapping_is_gone(): void
+    {
+        $this->assertSame('small', \courseKindFrom('2'), '2=精品课（对客「私教小班」）→ 小班，不是私教');
+        $this->assertSame('private', \courseKindFrom('3'), '3=私教课（对客「定制私教」）→ 私教，不是小班');
+        $this->assertNotSame('private', \courseKindFrom('2'), '旧反向映射（2=private）已被 t35 裁决推翻，不得回潮');
+        $this->assertNotSame('small', \courseKindFrom('3'), '旧反向映射（3=small）已被 t35 裁决推翻，不得回潮');
     }
 
     /** 缺失（含空串/未设置）一律 group，且两种缺失写法结果相同 */
@@ -270,5 +294,103 @@ class CourseKindFallbackTest extends TestCase
         $keys = \privateStudentKeys($teacher);
         $this->assertSame([], $keys['external_ids'], '课型未知的行不得进入私教学员授权键（会放大可见范围）');
         $this->assertSame([], $keys['phones'], '课型未知的行不得进入私教学员授权键（会放大可见范围）');
+    }
+
+    /**
+     * 【t35 最重要的一条】授权语义回归：修正映射后，授课老师的「我的学员」
+     * **只含其真实私教学员**（`course_type=3`，对客「定制私教」），
+     * **绝不含小班学员**（`course_type=2`，对客「私教小班」）。
+     *
+     * 为什么这是本任务的核心安全面：`course_kind='private'` 是
+     * `privateStudentKeys()` 的**按人隔离授权判据**，其返回值再被
+     *  - `scopeCustomersForUser()`（会员/客资可见范围）、
+     *  - `EnsureUserIsEnabled`（客资详情读写准入）、
+     *  - `privateTeaches()`
+     * 当授权依据使用。
+     *
+     * 映射反向时的真实后果（不只是「看不到」，而是**越权可见**）：
+     * 老师被算作小班学员的「私教学员」⇒ 能看到**别人的**学员档案，
+     * 同时自己的真实私教学员反而进不了授权键。
+     *
+     * 本用例走**真实同步写入路径**（`bookingFact()` → 落库），确保验证的是
+     * 「同步怎么算课型」而不是人造列值。
+     */
+    public function test_authz_teacher_private_students_exclude_small_class_students(): void
+    {
+        $teacher = User::factory()->create([
+            'username' => 't35-teacher',
+            'name' => '定制私教老师',
+            'role' => 'R_TEACHER',
+            'venue' => '绿地店',
+        ]);
+
+        // 同一老师、同一门店、都是 signed，唯一差别是 course_type：
+        //   3=私教课（对客「定制私教」）→ 应进授权键
+        //   2=精品课（对客「私教小班」）→ 绝不可进授权键
+        // 注意必须带 status 描述符：bookingStatus() 只认「已签到/签到/已完成」→signed，
+        // 否则落库为 unknown，而 privateStudentKeys() 只取 status='signed' 的行。
+        $private = $this->factWithoutCourseType('course/api/queryreversionprivate', [
+            'id' => '3501', 'm_id' => 'M3501', 'm_name' => '真私教学员',
+            'phone' => '13900003501', 'course_type' => '3', 'coach_name' => '定制私教老师',
+            'status_desc' => '已签到',
+        ]);
+        $small = $this->factWithoutCourseType('course/api/queryreversionprivate', [
+            'id' => '3502', 'm_id' => 'M3502', 'm_name' => '小班学员',
+            'phone' => '13900003502', 'course_type' => '2', 'coach_name' => '定制私教老师',
+            'status_desc' => '已签到',
+        ]);
+
+        KyBooking::create($private);
+        KyBooking::create($small);
+
+        // 落库口径先钉住（防止测试通过只是因为两条都算成了 group）
+        $this->assertSame('private', (string) KyBooking::where('member_id', 'M3501')->value('course_kind'), 'course_type=3 必须落 private');
+        $this->assertSame('small', (string) KyBooking::where('member_id', 'M3502')->value('course_kind'), 'course_type=2 必须落 small');
+
+        Sanctum::actingAs($teacher);
+        Cache::flush();
+
+        $keys = \privateStudentKeys($teacher);
+
+        // ① 只含真实私教学员
+        $this->assertContains('ky:77:M3501', $keys['external_ids'], '真实私教学员必须在授权键里（否则老师「我的学员」为空）');
+
+        // 手机号通道：先用 strval 归一，避免被 PHP 的「纯数字字符串数组键 → int」强制
+        // 转换干扰。⚠️ 该转换导致 `$keys['phones']` 实际返回 **int[]**，而调用方
+        // （`EnsureUserIsEnabled:165`、`privateTeaches()`）用 `in_array($phone, …, true)`
+        // 拿 **string** 严格比较 ⇒ **恒为 false，手机号通道从不命中**。
+        // 这是**既有**缺陷（HEAD 同样如此，与本任务映射修正无关），方向是「收窄」而非越权，
+        // 故不在本任务擅自修（contract 明令不得改其它授权逻辑）。已上报船长另开单。
+        // 此处只断言**键集合的语义**（哪些号码被算作私教学员），不依赖其元素类型。
+        $phoneStrings = array_map('strval', $keys['phones']);
+        $this->assertContains('13900003501', $phoneStrings, '真实私教学员的手机号应在键集合里');
+        $this->assertNotContains('13900003502', $phoneStrings, '小班学员手机号不得作为会员/客资可见判据');
+
+        // ② 绝不含小班学员 —— 这是越权面
+        $this->assertNotContains('ky:77:M3502', $keys['external_ids'], '小班学员（course_type=2）不得进入私教学员授权键：那是越权可见他人学员');
+        $this->assertCount(1, $keys['external_ids'], '授权键应恰好只含 1 名真实私教学员');
+        $this->assertCount(1, $keys['phones'], '授权键手机号应恰好只含 1 名真实私教学员');
+    }
+
+    /**
+     * 同一格的**反向**护栏：旧映射下这两条断言恰好相反（小班学员被算成私教），
+     * 因此本用例能真实捕捉「映射回潮」，不是同义反复。
+     *
+     * 直接对 `courseKindFrom()` 断言两条课型的归属，并在注释里写明旧值，
+     * 便于后人一眼看出方向。
+     */
+    public function test_small_class_is_not_treated_as_private_student(): void
+    {
+        // course_type=2 → small（旧：private ← 就是那个越权方向）
+        $this->assertSame('small', \courseKindFrom('2'));
+        // course_type=3 → private（旧：small ← 老师自己的学员反而看不见）
+        $this->assertSame('private', \courseKindFrom('3'));
+
+        // 只有 3 能产出 private：遍历全部显式值，private 的唯一来源是 '3'
+        $privateSources = array_filter(
+            ['1', '2', '3'],
+            fn ($code) => \courseKindFrom($code) === 'private'
+        );
+        $this->assertSame(['3'], array_values($privateSources), 'private 只能由 course_type=3 产出（授权判据的唯一来源）');
     }
 }
