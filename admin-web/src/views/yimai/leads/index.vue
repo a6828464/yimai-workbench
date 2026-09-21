@@ -61,7 +61,24 @@
         </template>
       </ArtTableHeader>
 
-      <ElTable v-if="!isHandheld" v-loading="loading" :data="filteredList" border stripe max-height="520">
+      <!--
+        表格高度
+        ----------
+        以前写死 max-height="520"，14 条数据只能看到 7 行，卡片底部还空着 124px
+        （用户反馈的「屏幕下面还有空白」就是这个）。改成跟着可用的纵向空间走：
+        `--art-full-height` 是布局层算好的「当前视口下内容区高度」（useLayoutHeight
+        维护），减去本页固定占位（筛选区 + 提示行 + 分页器 + 卡片内边距）即可。
+        用 calc 传给 max-height 是 EP 支持的写法（style-helper 里
+        `calc(${maxHeight} - ${headerHeight}px)`，已实测生效）。
+      -->
+      <ElTable
+        v-if="!isHandheld"
+        v-loading="loading"
+        :data="filteredList"
+        border
+        stripe
+        :max-height="tableMaxHeight"
+      >
         <ElTableColumn prop="leadDate" label="留资日期" width="100" sortable />
         <ElTableColumn label="姓名 / 联系方式" min-width="150">
           <template #default="{ row }">
@@ -239,9 +256,11 @@
       <div class="mt-4 flex justify-end">
         <ElPagination
           v-model:current-page="page.current"
-          :page-size="page.size"
+          v-model:page-size="page.size"
+          :page-sizes="PAGE_SIZES"
           :total="total"
-          layout="total, prev, pager, next"
+          layout="total, sizes, prev, pager, next"
+          @size-change="onSizeChange"
         />
       </div>
     </ElCard>
@@ -629,9 +648,44 @@
     status: '',
     dateRange: null as [string, string] | null
   })
-  const page = ref({ current: 1, size: 20 })
+  /**
+   * 每页条数档位
+   *
+   * 默认 50 的理由：用户抱怨「屏幕下面还有空白」，说明一屏能放下的行数明显多于当前的 20。
+   * 实测单行 72px，1440x900 下表格可用高度约 560px（约 7.5 行）——
+   * 也就是说桌面端一页 20 条本来就要滚 3 屏，屏幕上的空白并不是「条数不够」造成的，
+   * 而是表格被写死 max-height:520 卡住了高度（见 tableMaxHeight）。
+   * 两处一起改之后：默认 50 条 = 约 7 屏，既让桌面端把可视区填满（无空白），
+   * 又不会像 200 那样在一页里塞进过多 DOM（单行 72px 的重表格，未虚拟化）。
+   * 保留 20 档给「只要最近几条」的场景，最大 200 兜住全量（后端 size 上限 5000）。
+   */
+  const PAGE_SIZES = [20, 50, 100, 200]
+  const DEFAULT_PAGE_SIZE = 50
+
+  const page = ref({ current: 1, size: DEFAULT_PAGE_SIZE })
   const list = ref<YimaiLead[]>([])
   const total = ref(0)
+
+  /**
+   * 表格最大高度：跟随布局给出的可用内容高度，让表格把卡片填满（消除底部空白）。
+   *
+   * 减项 = 本页除表格外必须占用的高度（实测拆解，1440x900）：
+   *   筛选区 36 + 数据范围提示行 48 + 提示行下方间距 8
+   *   + 分页器 32 + 表格与分页器间距 16 + 卡片上下内边距 40
+   *   = 180
+   * 再加 EP 内部会扣掉的表头（style-helper 用 calc(maxHeight - headerHeight)）。
+   * 用 calc 而非固定 px：窗口高度变化时表格跟着变，不会再出现固定 520 造成的空白。
+   *
+   * 这里刻意不去「减到刚好」：留一点余量，避免不同字体/缩放下行高变化导致
+   * 分页器被挤出视口（那会变成"看不到分页"，比留白更糟）。
+   */
+  const tableMaxHeight = computed(() => {
+    if (isHandheld.value) return undefined
+    // var 兜底写 100vh：万一布局还没算出 --art-full-height，calc 会整个失效，
+    // 表格就拿不到 max-height，退化成「横滑条落在页面底部、表头滚出视口」的老问题
+    // （t31 修过的那个）。有兜底至少能保证表格始终有高度约束。
+    return 'calc(var(--art-full-height, 100vh) - 180px)'
+  })
 
   /** 会籍顾问选项：轻量接口（服务端去重），不再全量拉取会员 */
   const consultantOptions = ref<string[]>([])
@@ -751,9 +805,37 @@
     load()
   }
 
+  /**
+   * 切换「每页显示数量」。
+   *
+   * 为什么不复用 current-page 的 watch：改 size 也会让 EP 自己回调
+   * current-change（页码被夹到新范围），两个入口都会触发 load，会出现重复请求。
+   * 这里统一收口 —— 先把 current 复位到第 1 页，再只发一次请求。
+   *
+   * 为什么回到第 1 页而不是保留原页码：换了页大小之后「第 3 页」对应的数据区间
+   * 已经完全不同（20 条的 P3 是第 41~60 条，50 条的 P3 是第 101~150 条），
+   * 保留页码会让用户以为"还在原地"其实已经跳到别处；回到第 1 页语义最清晰，
+   * 也是主流后台的通行做法。同时 current 从 N 变 1 会触发 watch —— 下面的
+   * suppressPageWatch 标志用来吃掉这次以免重复请求。
+   */
+  let suppressPageWatch = false
+
+  function onSizeChange() {
+    suppressPageWatch = true
+    page.value.current = 1
+    // 等 watch 的 flush 走完再放开，确保这次复位不会再发一次请求
+    nextTick(() => {
+      suppressPageWatch = false
+    })
+    load()
+  }
+
   watch(
     () => page.value.current,
-    () => load()
+    () => {
+      if (suppressPageWatch) return
+      load()
+    }
   )
 
   function resetFilters() {
