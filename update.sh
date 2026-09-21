@@ -22,6 +22,30 @@ if [ ! -d "$APP_ROOT" ]; then
   exit 1
 fi
 
+# ── 防呆：git 检出（开发仓库）内禁止执行在线更新 ─────────────────────
+# 触发形态（真实发生过 4 次，2026-09-21）：本地开发时后台「版本更新」按钮会执行
+# base_path('../update.sh')（SystemController::update），而本地站点根就是本仓库根 ——
+# 脚本随后把 GitHub/Gitee 上的发行包 rsync 覆盖到 backend/，未提交的改动被静默回退
+# （t41 新媒体业绩代码、install.php、本脚本自身都被换成包里那份），现场只留下一个
+# .update-backup/<时间戳>/ 目录，极易被误判为「什么都没发生」。
+# 生产站点是从发行包解出来的，不带 .git；因此「站点根或其父目录存在 .git」就是
+# 「这是开发检出、不是站点部署目录」的可靠判据。检查放在任何写操作之前（以上只读）。
+# 确实需要在检出内演练时：YIMAI_ALLOW_UPDATE_IN_REPO=1 ./update.sh
+if [ "${YIMAI_ALLOW_UPDATE_IN_REPO:-0}" != "1" ]; then
+  probe="$SITE_ROOT"
+  for _ in 1 2; do
+    if [ -e "$probe/.git" ]; then
+      echo "已中止：$SITE_ROOT 位于 git 检出内（发现 ${probe}/.git），这不是站点部署目录。"
+      echo "  在线更新会用发行包覆盖 backend/，检出内未提交的改动会丢失。"
+      echo "  若确认要在检出内演练，请显式执行：YIMAI_ALLOW_UPDATE_IN_REPO=1 bash update.sh"
+      exit 1
+    fi
+    parent="$(dirname "$probe")"
+    [ "$parent" = "$probe" ] && break
+    probe="$parent"
+  done
+fi
+
 rm -rf "$WORK_ROOT"
 mkdir -p "$WORK_ROOT"
 trap 'rm -rf "$WORK_ROOT"' EXIT
