@@ -3,7 +3,7 @@
     <!-- 账号定位与人设（保存到账号，多设备共用） -->
     <ElCard shadow="never" class="mb-4">
       <template #header>
-        <div class="flex-cb">
+        <div class="mk-card-head">
           <span class="font-500">账号定位与人设</span>
           <div class="flex-c gap-3">
             <span class="text-xs text-gray-400">品牌固定「一麦」· 城市固定「宁波」</span>
@@ -29,7 +29,7 @@
       </div>
       <ElRow :gutter="12">
         <ElCol :xs="24" :md="6">
-          <ElFormItem label="IP定位">
+          <ElFormItem :label-position="formLabelPosition" label="IP定位">
             <ElRadioGroup v-model="profile.ipType">
               <ElRadioButton value="个人IP">个人IP</ElRadioButton>
               <ElRadioButton value="门店IP">门店IP</ElRadioButton>
@@ -37,21 +37,21 @@
           </ElFormItem>
         </ElCol>
         <ElCol :xs="12" :md="5"
-          ><ElFormItem label="账号名"
+          ><ElFormItem :label-position="formLabelPosition" label="账号名"
             ><ElInput v-model="profile.accountName" placeholder="非必填" /></ElFormItem
         ></ElCol>
         <ElCol :xs="12" :md="5">
-          <ElFormItem label="身份角色">
+          <ElFormItem :label-position="formLabelPosition" label="身份角色">
             <ElSelect v-model="profile.role">
               <ElOption v-for="r in PERSONA_ROLES" :key="r" :label="r" :value="r" />
             </ElSelect>
           </ElFormItem>
         </ElCol>
         <ElCol :xs="8" :md="3"
-          ><ElFormItem label="同城属性"><ElSwitch v-model="profile.localFocus" /></ElFormItem
+          ><ElFormItem :label-position="formLabelPosition" label="同城属性"><ElSwitch v-model="profile.localFocus" /></ElFormItem
         ></ElCol>
         <ElCol :xs="24" :lg="12">
-          <ElFormItem label="专业">
+          <ElFormItem :label-position="formLabelPosition" label="专业">
             <ElSelect
               v-model="specialties"
               multiple
@@ -68,7 +68,7 @@
           </ElFormItem>
         </ElCol>
         <ElCol :xs="24" :md="16">
-          <ElFormItem label="客户画像">
+          <ElFormItem :label-position="formLabelPosition" label="客户画像">
             <ElSelect
               v-model="profile.audiences"
               multiple
@@ -85,7 +85,7 @@
           </ElFormItem>
         </ElCol>
         <ElCol :xs="24" :md="9"
-          ><ElFormItem label="表达风格"
+          ><ElFormItem :label-position="formLabelPosition" label="表达风格"
             ><ElSelect v-model="profile.style"
               ><ElOption
                 v-for="v in XHS_STYLES"
@@ -94,7 +94,7 @@
                 :value="v" /></ElSelect></ElFormItem
         ></ElCol>
         <ElCol :xs="24" :md="10"
-          ><ElFormItem label="转化方向"
+          ><ElFormItem :label-position="formLabelPosition" label="转化方向"
             ><ElSelect v-model="profile.conversion"
               ><ElOption
                 v-for="v in XHS_CONVERSIONS"
@@ -110,7 +110,7 @@
       <template #header><span class="font-500">本次笔记</span></template>
       <ElRow :gutter="12">
         <ElCol :xs="24" :md="6"
-          ><ElFormItem label="主题分类"
+          ><ElFormItem :label-position="formLabelPosition" label="主题分类"
             ><ElSelect v-model="category" @change="pickedTopic = ''"
               ><ElOption
                 v-for="(v, k) in XHS_CATEGORIES"
@@ -119,7 +119,7 @@
                 :value="k" /></ElSelect></ElFormItem
         ></ElCol>
         <ElCol :xs="24" :md="10">
-          <ElFormItem label="选题模板">
+          <ElFormItem :label-position="formLabelPosition" label="选题模板">
             <ElSelect
               v-model="pickedTopic"
               filterable
@@ -132,11 +132,11 @@
           </ElFormItem>
         </ElCol>
         <ElCol :xs="24" :md="8"
-          ><ElFormItem label="补充要点"
+          ><ElFormItem :label-position="formLabelPosition" label="补充要点"
             ><ElInput v-model="points" placeholder="想覆盖的信息点、活动信息（选填）" /></ElFormItem
         ></ElCol>
       </ElRow>
-      <div class="flex gap-2">
+      <div class="mk-btn-row">
         <ElButton type="primary" :loading="generating" @click="generate">生成笔记</ElButton>
         <ElButton @click="openHistory">历史生成记录</ElButton>
         <ElButton @click="favVisible = true">笔记库（{{ favorites.length }}）</ElButton>
@@ -146,7 +146,7 @@
     <!-- 生成结果：小红书笔记卡片 -->
     <ElCard v-if="hasResult || warning || generating" shadow="never" class="mb-4">
       <template #header>
-        <div class="flex-cb">
+        <div class="mk-card-head">
           <span class="font-500">生成结果</span>
           <div class="flex-c gap-3">
             <ElButton
@@ -222,7 +222,7 @@
             <p class="text-sm leading-6 text-g-700 whitespace-pre-wrap">{{ reply }}</p>
           </div>
         </template>
-        <div class="mt-3 flex gap-2">
+        <div class="mk-btn-row mt-3">
           <ElButton type="primary" plain @click="copyAll">复制整篇</ElButton>
           <ElButton plain @click="saveFavorite">收藏到笔记库</ElButton>
           <ElButton text @click="generate()">重新生成</ElButton>
@@ -232,7 +232,32 @@
 
     <!-- 笔记库（收藏） -->
     <ElDrawer v-model="favVisible" title="小红书笔记库" size="460px">
-      <div v-if="favorites.length">
+      <!-- 手持端：一条收藏一张卡（复用项目统一降级范式 MobileCard） -->
+      <div v-if="cardListMode" class="m-card-list">
+        <template v-if="favorites.length">
+          <MobileCard
+            v-for="f in favorites"
+            :key="f.id"
+            :title="f.title || '未命名笔记'"
+            :subtitle="f.createdAt"
+            :tags="f.tags.slice(0, 4).map((t) => ({ text: t }))"
+            :actions="[
+              { text: '载入编辑', type: 'primary', onClick: () => loadFavorite(f) },
+              {
+                text: '复制',
+                onClick: () => copyText(`${f.title}\n\n${f.content}\n\n${f.tags.join(' ')}`)
+              },
+              { text: '删除', type: 'danger', onClick: () => removeFavorite(f.id) }
+            ]"
+          >
+            <p class="mk-card-text">{{ f.content }}</p>
+          </MobileCard>
+        </template>
+        <div v-else class="m-card-list__empty">收藏的笔记会出现在这里</div>
+      </div>
+
+      <!-- 桌面端：保持原有紧凑列表，逐值不变 -->
+      <div v-else-if="favorites.length">
         <div
           v-for="f in favorites"
           :key="f.id"
@@ -260,13 +285,37 @@
           </div>
         </div>
       </div>
-      <ElEmpty v-else description="收藏的笔记会出现在这里" />
+      <ElEmpty v-else-if="!cardListMode" description="收藏的笔记会出现在这里" />
     </ElDrawer>
 
     <!-- 历史生成记录（按账号云端保存，最近300条） -->
     <ElDrawer v-model="historyVisible" title="历史生成笔记" size="460px">
       <div v-loading="historyLoading">
-        <div v-if="history.length">
+        <!-- 手持端：一条记录一张卡 -->
+        <div v-if="cardListMode" class="m-card-list">
+          <template v-if="history.length">
+            <MobileCard
+              v-for="h in history"
+              :key="h.id"
+              :title="h.title || '未命名笔记'"
+              :subtitle="h.createdAt"
+              :note="h.reply ? `💬 ${h.reply}` : ''"
+              note-label="首评"
+              :actions="[
+                { text: '载入编辑', type: 'primary', onClick: () => loadHistory(h) },
+                { text: '复制', onClick: () => copyText(h.content) },
+                { text: '删除', type: 'danger', onClick: () => removeHistory(h.id) }
+              ]"
+            >
+              <p class="mk-card-text">{{ h.content }}</p>
+            </MobileCard>
+          </template>
+          <div v-else-if="!historyLoading" class="m-card-list__empty">
+            每次生成的笔记都会自动记录在这里
+          </div>
+        </div>
+
+        <div v-else-if="history.length">
           <div
             v-for="h in history"
             :key="h.id"
@@ -323,10 +372,29 @@
     removeMarketingHistory
   } from '@/api/my'
   import { useAiConfigStore } from '@/store/modules/ai-config'
+  import { useDevice } from '@/hooks/core/useDevice'
   import { Delete } from '@element-plus/icons-vue'
   import { ElMessage, ElTag } from 'element-plus'
 
   defineOptions({ name: 'XhsTool' })
+
+  const { isMobile, isHandheld } = useDevice()
+
+  /**
+   * 表单 label 位置：手机端改到控件上方。
+   *
+   * 本文件所有 ElFormItem 都没有外层 ElForm（全文件 0 个 ElForm），
+   * 所以 label-position 只能写在 form-item 自己身上，无法靠 form 继承。
+   * 手机端 label 在左会把控件压得很窄（实测最窄 48px），改成 top 后拿回整行宽度；
+   * 桌面端保持原样（undefined = 不覆盖 EP 默认 right）。
+   */
+  const formLabelPosition = computed<'top' | undefined>(() => (isMobile.value ? 'top' : undefined))
+
+  /**
+   * 「笔记库 / 历史生成记录」这类**一条记录一张卡**的列表，手持端改用 MobileCard。
+   * 表单区不用卡片：那里是输入控件，塞进卡片只会把可用宽度再压窄（本轮要修的就是这个）。
+   */
+  const cardListMode = computed(() => isHandheld.value)
 
   const aiStore = useAiConfigStore()
   const { removeFavorite } = aiStore

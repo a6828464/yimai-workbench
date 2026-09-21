@@ -1,7 +1,7 @@
 <template>
   <ElCard shadow="never" class="mb-4">
     <template #header>
-      <div class="flex-cb">
+      <div class="mk-card-head">
         <span class="font-500">朋友圈防折叠</span>
         <ElTag size="small" type="info">同一条文案换号再发，避免被折叠</ElTag>
       </div>
@@ -10,7 +10,7 @@
       微信会把高度相似的朋友圈内容折叠成「一条相似内容」。把会被折叠的文案粘贴进来，AI
       会改写出一个意思不变、说法不同的版本：开头必换、超6成句子重写、不含连续10字相同。
     </div>
-    <ElFormItem label="会被折叠的文案">
+    <ElFormItem label="会被折叠的文案" :label-position="formLabelPosition">
       <ElInput
         v-model="source"
         type="textarea"
@@ -18,10 +18,10 @@
         placeholder="粘贴发朋友圈会被折叠的文案"
       />
     </ElFormItem>
-    <ElFormItem label="补充要求（可选）">
+    <ElFormItem label="补充要求（可选）" :label-position="formLabelPosition">
       <ElInput v-model="extra" placeholder="例：语气更口语一点 / 突出限时福利 / 换个场景开头" />
     </ElFormItem>
-    <div class="flex gap-2">
+    <div class="mk-btn-row">
       <ElButton type="primary" :loading="generating" :disabled="!source.trim()" @click="generate"
         >生成防折叠版本</ElButton
       >
@@ -66,11 +66,24 @@
 <script setup lang="ts">
   import { generateAntiFoldCopy } from '@/api/ai'
   import { ElMessage } from 'element-plus'
+  import { useDevice } from '@/hooks/core/useDevice'
 
   defineOptions({ name: 'AntiFoldTool' })
 
   /** 上方朋友圈生成结果，可一键带入 */
   defineProps<{ latestResult?: string }>()
+
+  const { isMobile } = useDevice()
+
+  /**
+   * 表单 label 位置：手机端改到控件上方。
+   *
+   * 这几个 ElFormItem 没有外层 ElForm，所以只能用 form-item 自己的 label-position
+   * （EP 的 form-item 支持该 prop，且无 form 时不会继承任何值）。
+   * 手机端 label 在左会把控件压到 48px 宽（实测「身份角色」label 68px + gap，
+   * 内容区只剩 48px），改成 top 后控件拿回整行宽度。桌面端保持原有的 left/默认。
+   */
+  const formLabelPosition = computed<'top' | undefined>(() => (isMobile.value ? 'top' : undefined))
 
   const source = ref('')
   const extra = ref('')
