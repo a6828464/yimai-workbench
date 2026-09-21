@@ -42,6 +42,16 @@
         <ElTabPane name="products" label="产品与价目"><Products /></ElTabPane>
         <ElTabPane name="coaches" label="推荐教练"><Coaches /></ElTabPane>
         <ElTabPane name="cases" label="学员案例"><Cases /></ElTabPane>
+        <!--
+          归属异常清单：仅超管（后端 /shares/orphans 用 requireSuper）。
+          为什么需要这个入口：归属写入只认账号 id、并把「同名歧义」挡在写之外（必要的安全约束），
+          代价是姓名对不上账号 / id 悬挂的历史行变成「无人在线可管」的记录 ——
+          若它 enabled=true，链接仍能被客户打开，而原主人既看不到也停不掉。
+          没有这个 UI 之前，超管只能手工调 API 才能处置这类活链接。
+        -->
+        <ElTabPane v-if="isSuper" name="orphans" label="归属异常">
+          <Orphans />
+        </ElTabPane>
       </ElTabs>
     </ElCard>
   </div>
@@ -52,7 +62,9 @@
   import Products from './modules/products.vue'
   import Coaches from './modules/coaches.vue'
   import Cases from './modules/cases.vue'
+  import Orphans from './modules/orphans.vue'
   import { useSalesStore } from '@/store/modules/sales'
+  import { useUserStore } from '@/store/modules/user'
   import { publishShare, disableShare, getCurrentShare } from '@/api/yimai'
   import { USE_BACKEND } from '@/api/backend'
   import { ElMessage } from 'element-plus'
@@ -61,6 +73,11 @@
 
   const sales = useSalesStore()
   const tab = ref('basic')
+
+  /** 超管判定：复用全站既有范式（roles 里含 R_SUPER，见 views/yimai/tasks/index.vue:228） */
+  const userStore = useUserStore()
+  const roles = computed(() => userStore.getUserInfo.roles ?? [])
+  const isSuper = computed(() => roles.value.includes('R_SUPER'))
   /** 开关请求进行中，避免连点造成「开了又停」的竞态 */
   const toggling = ref(false)
   /** 是否已成功读到服务端权威状态（false 表示界面上的开关只是本地值，不可信） */

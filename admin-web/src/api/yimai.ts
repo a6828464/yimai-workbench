@@ -2447,6 +2447,61 @@ export function getCurrentShare(type: string, ownerUserId?: number): Promise<Cur
   })
 }
 
+/**
+ * 归属孤儿行的处置原因（后端三档，互斥且按严重度排列）。
+ *
+ * 为什么会有这些行：归属写入路径只认 created_by_user_id 单键、且把「同名歧义」
+ * 挡在写之外（这是必要的安全方向）。代价是姓名对不上账号、或 id 悬挂的历史行
+ * 变成**无人在线可管**的记录 —— 若它 enabled=true，链接还照样对外可访问。
+ * 只能由超管在这里看见并处置，所以本入口不是「锦上添花」，是那条安全方向的必要配套。
+ */
+export type OrphanReason = '姓名查无此人' | '缺少归属 user_id' | '归属 user_id 悬挂'
+
+export interface OrphanShareRow {
+  id: number
+  type: string
+  token: string
+  created_by: string
+  created_by_user_id: number | null
+  reason: OrphanReason
+}
+
+export interface OrphanSharesResult {
+  records: OrphanShareRow[]
+  /** 按 id 归属所需的列是否已就绪（迁移未跑完时为 false） */
+  ownershipColumnsReady: boolean
+  /**
+   * 可用于「重新归属」的账号（仅启用中）。
+   *
+   * 由后端给出权威 `{id, name}`：/accounts 的 key 是 username 字符串、不暴露数字 id，
+   * 而归属写的是 `users.id` —— 前端从 username 抠数字会拼出错误的 id。
+   */
+  candidates: { id: number; name: string }[]
+}
+
+/** 孤儿分享清单（仅超管；后端 requireSuper，非超管 403） */
+export function listOrphanShares(): Promise<OrphanSharesResult> {
+  return apiGet<OrphanSharesResult>('/shares/orphans')
+}
+
+/**
+ * 处置一条孤儿分享（仅超管）。
+ *
+ * - `mode: 'disable'`：停用该行（无法确定归属时的稳妥处置，公开读随即 404）
+ * - `mode: 'reassign'`：重新归属给指定账号（把「无人在线可管」变回「本人可管」）
+ */
+export function repairOrphanShare(
+  id: number,
+  mode: 'disable' | 'reassign',
+  userId?: number
+): Promise<{ ok: boolean }> {
+  return apiPost<{ ok: boolean }>('/shares/orphans/repair', {
+    id,
+    mode,
+    ...(userId ? { userId } : {})
+  })
+}
+
 // ==================== 今日工作台汇总 ====================
 
 export interface TodaySummary {

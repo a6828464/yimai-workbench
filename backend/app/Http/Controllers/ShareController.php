@@ -124,36 +124,23 @@ final class ShareController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | 读可见范围 与 写选择器 —— 刻意分开
+    | 归属的作用域：只留一个写选择器
     |--------------------------------------------------------------------------
     |
     | 上一轮把「读可见范围」（超管不过滤）直接当「写选择器」用：超管 publish 取到的是
     | 全表最新一条（可能是他人行）并 update() 改写它，原主人既看不到也停不掉自己
     | 已发出去的链接；超管 disable 又不带目标 → 一次停用全库。
-    | 根因是**两个语义共用了一个查询**，所以这里从方法名上就分开：
-    |   - scopedReadQuery()  读：id OR 姓名并集（容忍 id 悬挂，宁可多看见不可漏看）
-    |   - ownWriteQuery()    写：只认 created_by_user_id 单键（同名不参与写选择）
+    |
+    | 当时的处置是把读写拆成两个方法。后续核对发现那个「读」方法（scopedReadQuery）
+    | 实际**零调用**：current/publish/disable 全都只认 `created_by_user_id` 单键，
+    | 已不存在独立的读可见范围查询。留着一个没人调的方法反而会让后来者以为读侧
+    | 还有另一条路径、进而照着它去改（t28-05），所以直接删掉；真要恢复读侧并集时，
+    | 归属口径的权威实现是 `staffOwnerFilter()` / `staffOwnsRow()`（helpers.php），
+    | 不必在这里再包一层。
+    |
+    | 现在唯一的选择器是：
+    |   - ownWriteQuery()  写：只认 created_by_user_id 单键（同名不参与选择）
     */
-
-    /**
-     * 读可见范围：本人记录（id 命中 OR 姓名/别名命中），超管不加条件。
-     *
-     * 复用既有归属口径 `staffOwnerFilter()`（与 leads/customers/tasks 一致）。
-     * **只用于读**（展示、可见性判断）。写路径一律走 ownWriteQuery()。
-     */
-    private static function scopedReadQuery(Request $r, string $type)
-    {
-        $q = PublishedShare::where('type', $type);
-        if (! userHasRole($r->user(), 'R_SUPER')) {
-            if (self::hasOwnerIdColumn()) {
-                $q->where(staffOwnerFilter($r->user(), 'created_by_user_id', 'created_by'));
-            } else {
-                $q->whereIn('created_by', staffNames($r->user()));
-            }
-        }
-
-        return $q;
-    }
 
     /**
      * 本人「可以写」的姓名集合：排除**同名歧义**的名字。
@@ -163,7 +150,8 @@ final class ShareController extends Controller
      * 替换内容、互相停用（t23-03 实测：B 发布后 A 的链接变成 B 的内容）。
      *
      * 这里只保留「没有任何**其他**账号用这个名字」的姓名，把同名歧义挡在写选择之外；
-     * 这类行读侧仍看得见，并会出现在孤儿/归属映射面板里等管理员处置。
+     * 这类行读侧仍看得见，并会出现在孤儿/归属映射面板里等管理员处置
+     * （见 orphans() / repairOrphan()：同名歧义行正是靠那个入口回收的）。
      */
     private static function unambiguousOwnNames(Request $r): array
     {
@@ -733,7 +721,32 @@ final class ShareController extends Controller
         return ok([
             'records' => self::orphanShares(),
             'ownershipColumnsReady' => self::ownershipColumnsReady(),
+            // 重新归属的可选账号（仅启用中）。
+            //
+            // 为什么由本接口一并给出、而不是复用 /accounts：/accounts 的 `key` 是
+            // **username**（字符串），并不暴露数字 id，而 repair 需要 `users.id`；
+            // 前端从 username 里「抠数字」拼 id 是错的（demo-super 抠不出东西、
+            // 带数字的用户名还会抠出别的号）。归属是安全相关字段，宁可在这里
+            // 给出权威的 {id, name}，也不让前端去猜。
+            'candidates' => self::assignableOwners(),
         ]);
+    }
+
+    /**
+     * 可被指派为分享归属的账号（仅启用中，按 id 升序）。
+     *
+     * 只列启用账号：把归属指给已停用账号等于换个形式继续「无人可管」。
+     *
+     * @return array<int, array{id: int, name: string}>
+     */
+    public static function assignableOwners(): array
+    {
+        return DB::table('users')
+            ->where('status', '!=', '停用')
+            ->orderBy('id')
+            ->get(['id', 'name'])
+            ->map(fn ($u) => ['id' => (int) $u->id, 'name' => (string) $u->name])
+            ->all();
     }
 
     /**
