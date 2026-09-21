@@ -48,3 +48,15 @@ docs/
 
 # Python 缓存（脚本抽出来后可本地跑）
 __pycache__/
+
+# 在线升级的本地回滚点（update.sh 改代码前生成的代码快照 tar）。
+# 属升级过程的本地中间产物，每台机器各不相同，不入库。
+# 注意：update.sh 的 SITE_ROOT 默认就是脚本所在目录，在仓库内直接跑 update.sh
+# 会用它 rsync 覆盖 backend/，回滚点也落在仓库里 —— 必须忽略，避免误提交。
+.update-backup/
+
+# AgentTeams 插件运行态（团队/任务/邮箱等本地产物）
+.agent-teams/
+
+# 误建的本地 SQLite 库文件（默认库是 MySQL；SQLite 仅测试用 :memory:）
+backend/yimai
