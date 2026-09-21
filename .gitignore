@@ -60,3 +60,14 @@ __pycache__/
 
 # 误建的本地 SQLite 库文件（默认库是 MySQL；SQLite 仅测试用 :memory:）
 backend/yimai
+
+# ── update.sh 在本仓库内执行时会解包覆盖 backend/ 留下的发行包产物 ──────────────
+# 事故记录（2026-09-21）：在仓库内执行 update.sh 后，发行包内容被 rsync 进 backend/，
+# 覆盖了尚未提交的工作区代码（t41 的业绩机制代码被删），并留下下列「源码仓库本不该有」
+# 的产物。已用 git checkout HEAD -- 恢复代码；这里补忽略以防再次误提交。
+# 真正的教训：**不要在仓库内直接跑 update.sh**（SITE_ROOT 默认为脚本所在目录）。
+backend/CHANGELOG.md
+backend/version.json
+backend/public/config.js
+backend/public/index.html
+backend/public/assets/
