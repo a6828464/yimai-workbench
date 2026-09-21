@@ -21,12 +21,12 @@ use Tests\TestCase;
  *
  * 现在映射与兜底都只在 `courseKindFrom()` 定义（helpers.php），本文件锁住两点：
  *  1. 缺失时各出口一致（跨出口一致性，缺陷本体）；
- *  2. 显式 `course_type` 的映射方向 = **1=group / 2=small（精品课，对客「私教小班」）
- *     / 3=private（私教课，对客「定制私教」）**。
- *     t30 时该方向「另有争议」故只锁现状（当时写的是 2=private/3=small）；
- *     **t35 已据用户第一手实地笔记裁决**（`随心瑜后台解读/notes.md:425-426`
- *     直接绑定数字↔内部名，另见《随心瑜后台完整解读》`:262-268` 的字段级佐证），
- *     方向已翻转并在此按新口径钉死——谁改回旧方向谁红。
+ *  2. 显式 `course_type` 的映射方向 = **1=group / 2=private（私教课，对客「定制私教」）
+ *     / 3=small（精品课，对客「私教小班」）**。
+ *     该方向被翻过两次：t35 依 `notes.md:426` 的 1/2/3 **顺序推断**误判为反向
+ *     （并配了重算迁移 `2026_09_21_000003`，已随 v3.2.0/v3.2.1 发布），后经用户
+ *     第一手确认翻回，由 `2026_09_21_000004` 重算纠正。完整证据链见
+ *     `courseKindFrom()` 注释——谁再翻转谁红。
  */
 class CourseKindFallbackTest extends TestCase
 {
@@ -65,37 +65,41 @@ class CourseKindFallbackTest extends TestCase
     }
 
     /**
-     * 显式 `course_type` 的映射方向（t35 已裁决，此处按新口径钉死）。
+     * 显式 `course_type` 的映射方向（用户第一手确认后钉死，勿再翻转）。
      *
-     * 1=团课（对客「精品团课」）/ 2=精品课（对客「私教小班」）→ 小班 /
-     * 3=私教课（对客「定制私教」）→ 私教。
+     * 1=团课（对客「精品团课」）/ 2=私教课（对客「定制私教」）→ 私教 /
+     * 3=精品课（对客「私教小班」）→ 小班。
      * 该断言同时走**两条路径**（同步写入 `bookingFact()` 与 `courseKindFrom()`），
      * 避免只锁其中一处。
      */
     public function test_explicit_course_type_mapping_is_the_adjudicated_direction(): void
     {
-        foreach (['1' => 'group', '2' => 'small', '3' => 'private'] as $code => $expected) {
+        foreach (['1' => 'group', '2' => 'private', '3' => 'small'] as $code => $expected) {
             $this->assertSame(
                 $expected,
                 $this->factWithoutCourseType('course/api/queryreversionprivate', ['course_type' => (string) $code])['course_kind'],
-                "course_type={$code} 的映射方向不对（应为 1=group/2=small/3=private；改回旧方向即为错误的私有约定）"
+                "course_type={$code} 的映射方向不对（应为 1=group/2=private/3=small）"
             );
             $this->assertSame($expected, \courseKindFrom((string) $code));
         }
     }
 
     /**
-     * 方向护栏：旧的反向映射（2=private / 3=small）必须**不再**成立。
+     * 方向护栏：t35 的误判映射（2=small / 3=private）必须**不再**成立。
      *
      * 单独立一条是为了让「谁把它改回去」以最直白的方式变红，
      * 而不是仅由上面那条的循环隐式覆盖。
+     *
+     * 背景：t35 依据 `notes.md:426` 的 1/2/3 顺序**推断**翻了方向，但同一次探索
+     * 记录的实测例子（核心床｜上肢线条雕刻 type=3 = 精品课）与三处独立来源都指向
+     * 本方向；用户已第一手确认。详见 `courseKindFrom()` 注释。
      */
-    public function test_legacy_reversed_mapping_is_gone(): void
+    public function test_misjudged_reversed_mapping_is_gone(): void
     {
-        $this->assertSame('small', \courseKindFrom('2'), '2=精品课（对客「私教小班」）→ 小班，不是私教');
-        $this->assertSame('private', \courseKindFrom('3'), '3=私教课（对客「定制私教」）→ 私教，不是小班');
-        $this->assertNotSame('private', \courseKindFrom('2'), '旧反向映射（2=private）已被 t35 裁决推翻，不得回潮');
-        $this->assertNotSame('small', \courseKindFrom('3'), '旧反向映射（3=small）已被 t35 裁决推翻，不得回潮');
+        $this->assertSame('private', \courseKindFrom('2'), '2=私教课（对客「定制私教」）→ 私教，不是小班');
+        $this->assertSame('small', \courseKindFrom('3'), '3=精品课（对客「私教小班」）→ 小班，不是私教');
+        $this->assertNotSame('small', \courseKindFrom('2'), 't35 误判映射（2=small）已被推翻，不得回潮');
+        $this->assertNotSame('private', \courseKindFrom('3'), 't35 误判映射（3=private）已被推翻，不得回潮');
     }
 
     /** 缺失（含空串/未设置）一律 group，且两种缺失写法结果相同 */
@@ -298,8 +302,8 @@ class CourseKindFallbackTest extends TestCase
 
     /**
      * 【t35 最重要的一条】授权语义回归：修正映射后，授课老师的「我的学员」
-     * **只含其真实私教学员**（`course_type=3`，对客「定制私教」），
-     * **绝不含小班学员**（`course_type=2`，对客「私教小班」）。
+     * **只含其真实私教学员**（`course_type=2`，对客「定制私教」），
+     * **绝不含小班学员**（`course_type=3`，对客「私教小班」）。
      *
      * 为什么这是本任务的核心安全面：`course_kind='private'` 是
      * `privateStudentKeys()` 的**按人隔离授权判据**，其返回值再被
@@ -325,18 +329,18 @@ class CourseKindFallbackTest extends TestCase
         ]);
 
         // 同一老师、同一门店、都是 signed，唯一差别是 course_type：
-        //   3=私教课（对客「定制私教」）→ 应进授权键
-        //   2=精品课（对客「私教小班」）→ 绝不可进授权键
+        //   2=私教课（对客「定制私教」）→ 应进授权键
+        //   3=精品课（对客「私教小班」）→ 绝不可进授权键
         // 注意必须带 status 描述符：bookingStatus() 只认「已签到/签到/已完成」→signed，
         // 否则落库为 unknown，而 privateStudentKeys() 只取 status='signed' 的行。
         $private = $this->factWithoutCourseType('course/api/queryreversionprivate', [
             'id' => '3501', 'm_id' => 'M3501', 'm_name' => '真私教学员',
-            'phone' => '13900003501', 'course_type' => '3', 'coach_name' => '定制私教老师',
+            'phone' => '13900003501', 'course_type' => '2', 'coach_name' => '定制私教老师',
             'status_desc' => '已签到',
         ]);
         $small = $this->factWithoutCourseType('course/api/queryreversionprivate', [
             'id' => '3502', 'm_id' => 'M3502', 'm_name' => '小班学员',
-            'phone' => '13900003502', 'course_type' => '2', 'coach_name' => '定制私教老师',
+            'phone' => '13900003502', 'course_type' => '3', 'coach_name' => '定制私教老师',
             'status_desc' => '已签到',
         ]);
 
@@ -344,8 +348,8 @@ class CourseKindFallbackTest extends TestCase
         KyBooking::create($small);
 
         // 落库口径先钉住（防止测试通过只是因为两条都算成了 group）
-        $this->assertSame('private', (string) KyBooking::where('member_id', 'M3501')->value('course_kind'), 'course_type=3 必须落 private');
-        $this->assertSame('small', (string) KyBooking::where('member_id', 'M3502')->value('course_kind'), 'course_type=2 必须落 small');
+        $this->assertSame('private', (string) KyBooking::where('member_id', 'M3501')->value('course_kind'), 'course_type=2 必须落 private');
+        $this->assertSame('small', (string) KyBooking::where('member_id', 'M3502')->value('course_kind'), 'course_type=3 必须落 small');
 
         Sanctum::actingAs($teacher);
         Cache::flush();
@@ -370,30 +374,30 @@ class CourseKindFallbackTest extends TestCase
         }
 
         // ② 绝不含小班学员 —— 这是越权面
-        $this->assertNotContains('ky:77:M3502', $keys['external_ids'], '小班学员（course_type=2）不得进入私教学员授权键：那是越权可见他人学员');
+        $this->assertNotContains('ky:77:M3502', $keys['external_ids'], '小班学员（course_type=3）不得进入私教学员授权键：那是越权可见他人学员');
         $this->assertCount(1, $keys['external_ids'], '授权键应恰好只含 1 名真实私教学员');
         $this->assertCount(1, $keys['phones'], '授权键手机号应恰好只含 1 名真实私教学员');
     }
 
     /**
-     * 同一格的**反向**护栏：旧映射下这两条断言恰好相反（小班学员被算成私教），
+     * 同一格的**反向**护栏：t35 误判映射下这两条断言恰好相反（小班学员被算成私教），
      * 因此本用例能真实捕捉「映射回潮」，不是同义反复。
      *
-     * 直接对 `courseKindFrom()` 断言两条课型的归属，并在注释里写明旧值，
+     * 直接对 `courseKindFrom()` 断言两条课型的归属，并在注释里写明误判值，
      * 便于后人一眼看出方向。
      */
     public function test_small_class_is_not_treated_as_private_student(): void
     {
-        // course_type=2 → small（旧：private ← 就是那个越权方向）
-        $this->assertSame('small', \courseKindFrom('2'));
-        // course_type=3 → private（旧：small ← 老师自己的学员反而看不见）
-        $this->assertSame('private', \courseKindFrom('3'));
+        // course_type=3 → small（t35 误判：private ← 就是那个越权方向）
+        $this->assertSame('small', \courseKindFrom('3'));
+        // course_type=2 → private（t35 误判：small ← 老师自己的学员反而看不见）
+        $this->assertSame('private', \courseKindFrom('2'));
 
-        // 只有 3 能产出 private：遍历全部显式值，private 的唯一来源是 '3'
+        // 只有 2 能产出 private：遍历全部显式值，private 的唯一来源是 '2'
         $privateSources = array_filter(
             ['1', '2', '3'],
             fn ($code) => \courseKindFrom($code) === 'private'
         );
-        $this->assertSame(['3'], array_values($privateSources), 'private 只能由 course_type=3 产出（授权判据的唯一来源）');
+        $this->assertSame(['2'], array_values($privateSources), 'private 只能由 course_type=2 产出（授权判据的唯一来源）');
     }
 }

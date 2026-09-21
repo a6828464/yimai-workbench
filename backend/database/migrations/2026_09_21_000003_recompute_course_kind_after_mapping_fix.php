@@ -4,7 +4,20 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 
 /**
- * 按修正后的 course_type 映射**重算回补** `ky_bookings.course_kind`。
+ * ⚠️ 本迁移的映射方向**已被推翻**（t35 误判），**不要**把它当口径参考！
+ *
+ * 现行正确口径：`2`=私教课（对客「定制私教」）→ `private`、`3`=精品课（对客
+ * 「私教小班」）→ `small`，只定义在 `app/Support/helpers.php::courseKindFrom()`，
+ * 完整证据链与 t35 误判复盘见该函数注释。
+ *
+ * 本文件保留原样（已在生产执行过，改写它对已建库无效），仅作历史记录；数据修正
+ * 由 `2026_09_21_000004_recompute_course_kind_after_mapping_correction` 完成。
+ *
+ * 下方为原始注释（其方向结论已失效，重算机制描述仍准确）：
+ *
+ * ---
+ *
+ * 按（当时以为已修正的）`course_type` 映射**重算回补** `ky_bookings.course_kind`。
  *
  * ## 为什么必须回补
  *
