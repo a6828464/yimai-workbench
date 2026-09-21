@@ -1542,9 +1542,34 @@ function rules(): array
         'cultivationPrivate' => 8,
         'cultivationSmall' => 12,
         'cultivationGroup' => 12,
+        // 新媒体线上运营业绩机制（**算钱**的口径，全部可调，勿在别处硬编码）：
+        //  mediaVisitReward  每个「时效内到店的线上新客」奖励金额（元/人），默认 20
+        //  mediaValidMonths  时效月数 n：留资月 + 之后 (n-1) 个自然月内到店/成交才算新媒体新客。
+        //                    默认 2 ⇒ 9.1 留资 → 10.31 前有效（留资月 + 下一个自然月）
+        'mediaVisitReward' => 20,
+        'mediaValidMonths' => 2,
     ];
 
     return array_merge($defaults, (array) ($s?->rules ?? []));
+}
+
+/**
+ * 新媒体业绩参数（归一化：防止在配置里写成 0/负数/空串把奖励或时效算塌）。
+ *
+ * @return array{visitReward: float, validMonths: int}
+ */
+function mediaPerformanceParams(): array
+{
+    $rules = rules();
+    $reward = $rules['mediaVisitReward'] ?? 20;
+    $months = $rules['mediaValidMonths'] ?? 2;
+
+    return [
+        // 负值无意义；0 允许（临时停发奖励的运营手段），非数字回落默认值
+        'visitReward' => is_numeric($reward) && (float) $reward >= 0 ? (float) $reward : 20.0,
+        // 时效至少 1 个月（0 会让所有到店都失效，属误配），非数字回落默认值
+        'validMonths' => is_numeric($months) && (int) $months >= 1 ? (int) $months : 2,
+    ];
 }
 
 function setRules(array $rules): void

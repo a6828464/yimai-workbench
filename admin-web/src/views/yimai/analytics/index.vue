@@ -28,6 +28,82 @@
     </ElRow>
 
     <ElRow :gutter="16" class="mb-4">
+      <ElCol :span="24" class="mb-4">
+        <ElCard shadow="never">
+          <template #header>
+            <div class="flex-cb">
+              <span class="font-500">新媒体线上运营业绩（当月）</span>
+              <ElTag size="small" effect="plain">时效内线上新客</ElTag>
+            </div>
+          </template>
+          <div v-if="!media" class="text-sm text-gray-400">暂无数据</div>
+          <template v-else>
+            <div class="grid grid-cols-3 gap-4 text-center">
+              <div>
+                <div class="text-2xl font-600 text-success">¥{{ media.visitRewardAmount }}</div>
+                <div class="text-xs text-gray-400 mt-1">新客到店奖励</div>
+                <div class="text-xs text-gray-400 mt-1">
+                  {{ media.breakdown.validVisitCount }} 人 × {{ media.params.visitReward }} 元
+                </div>
+              </div>
+              <div>
+                <div class="text-2xl font-600">{{ media.dealRate }}%</div>
+                <div class="text-xs text-gray-400 mt-1">线上新客成交率</div>
+                <div class="text-xs text-gray-400 mt-1">
+                  {{ media.breakdown.validDealCount }} ÷ {{ media.breakdown.validVisitCount }}（分子分母同源）
+                </div>
+              </div>
+              <div>
+                <div class="text-2xl font-600 text-danger">¥{{ media.commissionAmount }}</div>
+                <div class="text-xs text-gray-400 mt-1">核销提成</div>
+                <div class="text-xs text-gray-400 mt-1">
+                  成交率 × 时效内核销 ¥{{ media.breakdown.validRedeemAmount }}
+                </div>
+              </div>
+            </div>
+
+            <!-- 口径明细：运营要能自己把账对上（分母含上月留资本月到店的人是易错点） -->
+            <ElDescriptions :column="2" border size="small" class="mt-4">
+              <ElDescriptionsItem label="有效到店人数">
+                {{ media.breakdown.validVisitCount }} 人
+                <span class="text-gray-400">
+                  （其中上月留资本月到店 {{ media.breakdown.validVisitsFromPrevMonth }} 人，已计入成交率分母）
+                </span>
+              </ElDescriptionsItem>
+              <ElDescriptionsItem label="有效成交人数">
+                {{ media.breakdown.validDealCount }} 人
+                <span class="text-gray-400">
+                  （其中上月留资本月成交 {{ media.breakdown.validDealsFromPrevMonth }} 人）
+                </span>
+              </ElDescriptionsItem>
+              <ElDescriptionsItem label="时效内核销金额">
+                ¥{{ media.breakdown.validRedeemAmount }}
+              </ElDescriptionsItem>
+              <ElDescriptionsItem label="已排除核销金额">
+                ¥{{ media.breakdown.excludedRedeemAmount }}
+                <span class="text-gray-400">（线下渠道或超出时效）</span>
+              </ElDescriptionsItem>
+            </ElDescriptions>
+
+            <div class="mt-3 text-xs text-gray-500">
+              <div v-if="mediaRange.start">
+                取数区间：{{ mediaRange.start }} ~ {{ mediaRange.end }}（自然月至今，非上方近30天滚动窗口）
+              </div>
+              <div>口径：{{ media.params.rule }}；线下渠道不计入。</div>
+              <div>到店奖励 = {{ media.formula.visitReward }}</div>
+              <div>成交率 = {{ media.formula.dealRate }}</div>
+              <div>核销提成 = {{ media.formula.commission }}</div>
+              <div v-if="media.breakdown.unpairedVisitCount > 0" class="text-warning mt-1">
+                另有 {{ media.breakdown.unpairedVisitCount }} 条到店记录因留资日期缺失无法核对时效，未计入；
+                请检查数据完整性。
+              </div>
+            </div>
+          </template>
+        </ElCard>
+      </ElCol>
+    </ElRow>
+
+    <ElRow :gutter="16" class="mb-4">
       <ElCol :xs="24" :md="12" class="mb-4">
         <ElCard shadow="never">
           <template #header>
@@ -144,8 +220,14 @@
 <script setup lang="ts">
   import { apiGet } from '@/api/backend'
   import { toLocalDateString } from '@/utils'
+  import type { MediaPerformance } from '@/api/yimai'
 
   defineOptions({ name: 'YimaiAnalytics' })
+
+  /** 新媒体线上运营业绩（到店奖励 + 核销提成）；后端未返回时为 undefined，页面显示「暂无数据」而非编造 0 */
+  const media = ref<MediaPerformance | undefined>(undefined)
+  /** 业绩口径对应的取数区间（自然月 1 号至今），显示在卡片上以免与上方的近30天混淆 */
+  const mediaRange = ref<{ start: string; end: string }>({ start: '', end: '' })
 
   const d = ref<Record<string, number>>({
     totalCustomers: 0, totalMembers: 0, unassigned: 0,
@@ -187,12 +269,31 @@
     return { start: iso(start), end: iso(end) }
   }
 
+  /**
+   * 新媒体业绩必须按**自然月**取数，不能用上面那块「近30天」滚动窗口。
+   *
+   * 业务口径是「当月」：当月到店奖励、当月核销提成、当月有效成交率。
+   * 滚动 30 天会跨月，把上月的到店/核销也算进来 —— 实测同一份数据下
+   * 滚动窗口给 2 人到店 / ¥40，自然月给 1 人 / ¥20，**金额会对不上账**。
+   * 所以这里单独请求一次本月 1 号至今的区间。
+   */
+  function currentMonth(): { start: string; end: string } {
+    const now = new Date()
+    const iso = (dt: Date) => toLocalDateString(dt)
+    return { start: iso(new Date(now.getFullYear(), now.getMonth(), 1)), end: iso(now) }
+  }
+
   async function loadTrends() {
     const { start, end } = last30Days()
     trendLoading.value = true
     channelLoading.value = true
     try {
-      const t = await apiGet<{ daily: Record<string, unknown>[]; visit30: number; activeCustomers: number; attendanceSummary: { m1: number; m2: number; m3: number } }>('/analytics/trends', { start, end })
+      const t = await apiGet<{
+        daily: Record<string, unknown>[]
+        visit30: number
+        activeCustomers: number
+        attendanceSummary: { m1: number; m2: number; m3: number }
+      }>('/analytics/trends', { start, end })
       trendData.value = (t.daily ?? []).map((day) => {
         const rec = day as unknown as { date: string; 绿地店?: { leads: number }; 东部店?: { leads: number } }
         return {
@@ -203,6 +304,14 @@
       })
       attend.value = t.attendanceSummary ?? { m1: 0, m2: 0, m3: 0 }
       trends.value = { visit30: t.visit30 ?? 0, activeCustomers: t.activeCustomers ?? 0 }
+      // 新媒体业绩单独按自然月取（见 currentMonth() 注释：滚动窗口会跨月导致对不上账）
+      const cm = currentMonth()
+      const mediaRes = await apiGet<{ summary?: { mediaPerformance?: MediaPerformance } }>(
+        '/analytics/trends',
+        { start: cm.start, end: cm.end }
+      )
+      media.value = mediaRes.summary?.mediaPerformance
+      mediaRange.value = cm
       const c = await apiGet<{ rows: { channel: string; leads: number }[]; total: number }>('/analytics/channels', { start, end })
       channelRows.value = (c.rows ?? []).sort((a, b) => b.leads - a.leads)
     } catch (e) {

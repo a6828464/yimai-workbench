@@ -233,6 +233,324 @@ class AnalyticsTrendsTest extends TestCase
         $this->assertSame(50.0, (float) $summary['onlineLeadToVisitRate']);
     }
 
+    // ==================== 新媒体线上运营业绩机制（t41） ====================
+    //
+    // 口径（用户二次确认）：2 个月时效（留资月 + 下一个自然月）、到店奖励 20 元/人、
+    // 核销提成 = 有效成交率 × 时效内线上核销金额、线下渠道完全不算。
+    //
+    // ⚠️ 成交率分母含「上月留资、本月到店」的人（用户例子里的 +2）。用户口述曾写
+    // `7/10`，与他自己「到店 10+2」矛盾，二次确认用 **12**（分子分母同源）。
+
+    /** 造一条线上/线下留资 */
+    private function lead(string $name, string $phone, string $date, array $overrides = []): Lead
+    {
+        return Lead::create(array_merge([
+            'name' => $name,
+            'phone' => $phone,
+            'lead_date' => $date,
+            'venue' => '绿地店',
+            'status' => '已体验',
+            'source' => '美团',
+            'order_platform' => '美团',
+        ], $overrides));
+    }
+
+    /** 取某月的新媒体业绩块 */
+    private function mediaOf(string $month): array
+    {
+        return $this->getJson("/api/analytics/trends?start={$month}-01&end={$month}-31")
+            ->assertOk()->json('data.summary.mediaPerformance');
+    }
+
+    /**
+     * 【核心】必须能对上用户给的验算例子（算钱的功能，要能对账）。
+     *
+     * 10 月：留资 20 / 到店 10 / 成交 6；另有 9 月的 2 个客资在 10 月到店（其中 1 个成交）。
+     *   到店奖励 = (10 + 2) × 20 = 240 元
+     *   核销提成 = (6 + 1) ÷ (10 + 2) × 核销金额 = 7 ÷ 12 × 核销金额
+     *
+     * 本例核销金额设为 1200 元（便于心算）：240 奖励、7/12 ≈ 58.33%、提成 = 700 元。
+     */
+    public function test_media_performance_matches_users_worked_example(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-example', 'role' => 'R_SUPER']));
+
+        // 10 月：20 留资，其中 10 到店、6 成交。
+        // 核销金额 1200 元挂在**已到店的第 1 人**身上（不额外造第 11 个到店者，
+        // 否则到店数就不是用户例子里的 10 了 —— 这个坑我踩过一次，故写明）。
+        for ($i = 1; $i <= 20; $i++) {
+            $phone = '1391000'.str_pad((string) $i, 4, '0', STR_PAD_LEFT);
+            $visited = $i <= 10;
+            $dealt = $i <= 6;
+            $this->lead("十月客{$i}", $phone, '2025-10-05', [
+                'status' => $dealt ? '已成交' : ($visited ? '已体验' : '已约体验'),
+                'deal_at' => $dealt ? '2025-10-20 12:00:00' : null,
+                'deal_amount' => $dealt ? 5000 : null,
+                'redeemed_at' => $visited ? '2025-10-06 10:00:00' : null,
+                'redeem_amount' => $i === 1 ? 1200 : null,
+            ]);
+        }
+        // 9 月：2 个客资在 10 月到店，其中 1 个成交（仍在时效内：9 月留资 → 10.31 前有效）。
+        // 「本月到店」由核销事件日（redeemed_at）落在本月认定 —— 这正是 VisitMetrics
+        // 「上月买券、本月才到店」那条口径（lead_date 在区间外、redeemed_at 在区间内）。
+        foreach ([1, 2] as $i) {
+            $phone = '1392000'.str_pad((string) $i, 4, '0', STR_PAD_LEFT);
+            $dealt = $i === 1;
+            $this->lead("九月客{$i}", $phone, '2025-09-10', [
+                'status' => $dealt ? '已成交' : '已体验',
+                'deal_at' => $dealt ? '2025-10-08 12:00:00' : null,
+                'deal_amount' => $dealt ? 3000 : null,
+                'redeemed_at' => '2025-10-08 10:00:00',
+            ]);
+        }
+
+        $media = $this->mediaOf('2025-10');
+
+        // ---- 用户例子的两个中间值（显式钉住，供核对）----
+        $this->assertSame(12, $media['breakdown']['validVisitCount'], '有效到店应为 10 + 2 = 12');
+        $this->assertSame(2, $media['breakdown']['validVisitsFromPrevMonth'], '其中上月留资 2 人');
+        $this->assertSame(7, $media['breakdown']['validDealCount'], '有效成交应为 6 + 1 = 7');
+        $this->assertSame(1200.0, (float) $media['breakdown']['validRedeemAmount']);
+
+        $this->assertSame(240.0, (float) $media['visitRewardAmount'], '(10+2) × 20 = 240 元');
+        // 7 / 12 = 58.333…% —— 若误用分母 10 会得到 70（用户口述里写错过，这里钉死 12）
+        $this->assertSame(58.33, (float) $media['dealRate'], '7 ÷ 12 ≈ 58.33%（不是 7÷10=70）');
+        $this->assertSame(700.0, (float) $media['commissionAmount'], '7/12 × 1200 = 700 元');
+    }
+
+    /**
+     * 【边界①】留资月末最后一天 + 次月最后一天到店 = 有效（时效按**月**推移，不按天）。
+     */
+    public function test_media_validity_includes_last_day_of_next_month(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-b1', 'role' => 'R_SUPER']));
+
+        // 9.30 留资，10.31 到店（次月最后一天）→ 有效
+        $this->lead('月末边界', '13940000001', '2025-09-30', [
+            'status' => '已体验',
+            'redeemed_at' => '2025-10-31 23:00:00',
+        ]);
+
+        $media = $this->mediaOf('2025-10');
+        $this->assertSame(1, $media['breakdown']['validVisitCount'], '9.30 留资、10.31 到店应算有效（月末边界含端点）');
+        $this->assertSame(20.0, (float) $media['visitRewardAmount']);
+    }
+
+    /** 【边界②】次月最后一天之后 1 天（11.1）到店 = 无效。 */
+    public function test_media_validity_excludes_day_after_next_month(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-b2', 'role' => 'R_SUPER']));
+
+        // 9.30 留资，11.1 到店 → 越期（窗口末日是 10.31）
+        $this->lead('越期客', '13940000002', '2025-09-30', [
+            'status' => '已体验',
+            'redeemed_at' => '2025-11-01 09:00:00',
+        ]);
+
+        $this->assertSame(0, $this->mediaOf('2025-11')['breakdown']['validVisitCount'], '11.1 到店已越期，不计奖励');
+    }
+
+    /** 【边界③】留资当月内到店 = 有效。 */
+    public function test_media_validity_includes_same_month_visit(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-b3', 'role' => 'R_SUPER']));
+
+        $this->lead('同月客', '13940000003', '2025-10-02', [
+            'status' => '已体验',
+            'redeemed_at' => '2025-10-03 10:00:00',
+        ]);
+
+        $this->assertSame(1, $this->mediaOf('2025-10')['breakdown']['validVisitCount'], '当月留资、当月到店应算有效');
+    }
+
+    /**
+     * 【边界④】无法核对时效时的策略：**失败关闭**，并在明细里单列计数。
+     *
+     * ## 选失败关闭的理由
+     *
+     * 这是算钱的功能，宁可少算不漏算；且「找不到线上留资」的人本来就不是新媒体新客
+     * （`isOnlineLead()` 为假 ⇒ 压根不进 `onlineIdentities`），口径自洽。
+     *
+     * ## ⚠️ 「无法核对」的可达路径只有一条（实测确认，别写错测试）
+     *
+     * 我起初以为可达路径是「有到店、但没有对应留资」，**实测发现那条不可达**：
+     *  - 没有线上留资 ⇒ 不在 `onlineIdentities` 里 ⇒ 下面循环根本不遍历它（不算 unpaired）；
+     *  - 三个到店来源都必然带得出日期（预约按 `start_at` 取数、留资状态有 `redeemed_at`/`lead_date`、
+     *    体验卡在 `day === ''` 时就 continue 了）⇒ `visitDates` 不会缺。
+     *
+     * 真正可达的只有**脏数据**：线上来源的留资行 `lead_date` 为空串（schema 是 NOT NULL
+     * 但允许空串，已实测可插入）。所以本用例构造的是这一种 —— 它才是「无法核对」的真实来源。
+     * 保留这个计数是为了让运营能发现数据异常，而不是让金额静默变小。
+     */
+    public function test_media_unpaired_rows_are_excluded_and_counted(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-b4', 'role' => 'R_SUPER']));
+
+        // 脏数据：线上来源、已到店，但留资日为空串 ⇒ 无法判断时效 ⇒ 失败关闭
+        $this->lead('留资日缺失', '13950000001', '', [
+            'status' => '已体验',
+            'redeemed_at' => '2025-10-06 10:00:00',
+        ]);
+        // 对照：一条正常数据，确保不是整体算不出来
+        $this->lead('正常到店客', '13950000002', '2025-10-04', [
+            'status' => '已体验',
+            'redeemed_at' => '2025-10-05 10:00:00',
+        ]);
+
+        $media = $this->mediaOf('2025-10');
+        $this->assertSame(1, $media['breakdown']['validVisitCount'], '只有能核对时效的那 1 人有效');
+        $this->assertSame(1, $media['breakdown']['unpairedVisitCount'], '留资日缺失者必须单列，不能静默计入或静默消失');
+        $this->assertSame(20.0, (float) $media['visitRewardAmount'], '只按可核对的那 1 人发奖励');
+    }
+
+    /**
+     * 【线下渠道排除】线下留资即使到店并成交，也完全不进新媒体三项。
+     *
+     * 构造一个线下来源（自然到店）的到店+成交客资，断言它不影响任何一项金额与计数。
+     */
+    public function test_media_excludes_offline_channel_entirely(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-offline', 'role' => 'R_SUPER']));
+
+        // 线上 1 人到店（基准）
+        $this->lead('线上到店客', '13960000001', '2025-10-04', ['status' => '已体验', 'redeemed_at' => '2025-10-05 10:00:00']);
+        // 线下 1 人到店 + 成交 + 有核销金额：来源/order_platform 都不含线上关键词
+        $this->lead('线下到店成交客', '13960000002', '2025-10-04', [
+            'status' => '已成交',
+            'source' => '自然到店',
+            'order_platform' => '自然到店',
+            'deal_at' => '2025-10-06 10:00:00',
+            'deal_amount' => 9999,
+            'redeem_amount' => 8888,
+            'redeemed_at' => '2025-10-07 10:00:00',
+        ]);
+
+        $media = $this->mediaOf('2025-10');
+        $this->assertSame(1, $media['breakdown']['validVisitCount'], '线下到店不得计入（只有线上那 1 人）');
+        $this->assertSame(0, $media['breakdown']['validDealCount'], '线下成交不得计入');
+        $this->assertSame(0.0, (float) $media['breakdown']['validRedeemAmount'], '线下核销金额不得计入提成基数');
+        $this->assertSame(20.0, (float) $media['visitRewardAmount'], '只有线上那 1 人的 20 元');
+        $this->assertSame(8888.0, (float) $media['breakdown']['excludedRedeemAmount'], '线下被排除的核销额要能被运营看到');
+    }
+
+    /**
+     * 【越期核销】核销金额只算时效内的线上核销：老客（留资超出 2 个月）的核销不计入提成基数。
+     */
+    public function test_media_excludes_outdated_redeem_amount(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-redeem', 'role' => 'R_SUPER']));
+
+        $this->lead('时效内核销', '13970000001', '2025-10-02', [
+            'status' => '已体验', 'redeem_amount' => 500, 'redeemed_at' => '2025-10-10 10:00:00',
+        ]);
+        // 7 月留资（10 月核销已越期：窗口末日 8.31）→ 不得进提成基数
+        $this->lead('越期核销', '13970000002', '2025-07-01', [
+            'status' => '已体验', 'redeem_amount' => 4000, 'redeemed_at' => '2025-10-11 10:00:00',
+        ]);
+
+        $media = $this->mediaOf('2025-10');
+        $this->assertSame(500.0, (float) $media['breakdown']['validRedeemAmount'], '只算时效内的 500');
+        $this->assertSame(4000.0, (float) $media['breakdown']['excludedRedeemAmount'], '越期 4000 应被排除');
+    }
+
+    /** 【参数化】奖励单价与时效月数可调（rules 机制），且口径说明随参数变化。 */
+    public function test_media_params_are_configurable(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-params', 'role' => 'R_SUPER']));
+        setRules(['mediaVisitReward' => 35, 'mediaValidMonths' => 3]);
+
+        $this->lead('参数客', '13980000001', '2025-09-01', ['status' => '已体验', 'redeemed_at' => '2025-10-05 10:00:00']);
+
+        $media = $this->mediaOf('2025-10');
+        $this->assertSame(35.0, (float) $media['params']['visitReward'], '单价应取 rules 里的 35');
+        $this->assertSame(3, $media['params']['validMonths'], '时效应取 rules 里的 3');
+        $this->assertSame(35.0, (float) $media['visitRewardAmount'], '9.1 留资 → 3 个月时效覆盖 10 月，按 35 元/人');
+        $this->assertStringContainsString('3 个月', $media['params']['rule']);
+    }
+
+    /** 【配置健壮性】误配（0 月 / 负数单价 / 非数字）必须回落到安全默认值，不能把奖励算塌。 */
+    public function test_media_params_fall_back_on_invalid_config(): void
+    {
+        setRules(['mediaVisitReward' => -5, 'mediaValidMonths' => 0]);
+        $p = \mediaPerformanceParams();
+        $this->assertSame(20.0, $p['visitReward'], '负单价回落 20');
+        $this->assertSame(2, $p['validMonths'], '0 月会让所有到店失效，属误配，回落 2');
+
+        setRules(['mediaVisitReward' => 'abc', 'mediaValidMonths' => null]);
+        $p2 = \mediaPerformanceParams();
+        $this->assertSame(20.0, $p2['visitReward']);
+        $this->assertSame(2, $p2['validMonths']);
+    }
+
+    /** 【口径可核对】接口返回的明细必须能让人自己把账对上（含公式文案）。 */
+    public function test_media_breakdown_is_self_explanatory(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-detail', 'role' => 'R_SUPER']));
+        $this->lead('明细客', '13990000001', '2025-10-03', ['status' => '已体验', 'redeemed_at' => '2025-10-04 10:00:00']);
+
+        $media = $this->mediaOf('2025-10');
+        foreach (['validVisitCount', 'validVisitsFromPrevMonth', 'validDealCount', 'validDealsFromPrevMonth', 'validRedeemAmount', 'unpairedVisitCount'] as $k) {
+            $this->assertArrayHasKey($k, $media['breakdown'], "明细缺字段 {$k}");
+        }
+        foreach (['visitReward', 'dealRate', 'commission'] as $k) {
+            $this->assertArrayHasKey($k, $media['formula'], "口径说明缺 {$k}");
+        }
+        // 分母含上月留资的人数必须出现在公式文案里，运营才能自行核对（用户自己都记成了 /10）
+        $this->assertStringContainsString('÷ 有效到店人数', $media['formula']['dealRate']);
+        $this->assertStringContainsString('留资月', $media['params']['rule']);
+    }
+
+    /**
+     * 【多次留资的取舍】同一人有 **2 条线上留资**时，以**最早**那条起算时效。
+     *
+     * ## 为什么取最早
+     *
+     * 「新客」属性只成立一次：他 1 月就通过新媒体进来过，10 月再登记一次不叫新新客。
+     * 取最新会把老客反复登记当成新新客，**人为拉长时效窗口 = 放宽发钱**；
+     * 取最早是**更严**的一侧，符合「算钱宁可少算不漏算」。
+     * 本用例钉住这个方向：1 月 + 10 月两次线上留资、10 月到店 ⇒ 因窗口（1 月→2 月底）
+     * 已过而**不发**奖励。谁改成「取最新」，这里会红。
+     */
+    public function test_media_uses_earliest_online_lead_date_when_duplicated(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-dup', 'role' => 'R_SUPER']));
+
+        // 同号两条线上留资：1 月（最早）与 10 月（较新），10 月到店
+        $this->lead('多次留资客', '13911000001', '2025-01-05', ['status' => '已体验']);
+        $this->lead('多次留资客', '13911000001', '2025-10-05', [
+            'status' => '已体验',
+            'redeemed_at' => '2025-10-06 10:00:00',
+        ]);
+
+        $media = $this->mediaOf('2025-10');
+        $this->assertSame(0, $media['breakdown']['validVisitCount'], '以最早的 1 月留资起算 ⇒ 10 月到店已越期，不奖励');
+        $this->assertSame(0.0, (float) $media['visitRewardAmount']);
+    }
+
+    /**
+     * 【线下留资在前、线上留资在后】时效按**线上**那条起算，不按线下那条。
+     *
+     * 这是「取最早线上留资」而非「取最早任意留资」的关键差别：若误用线下那条
+     * （1 月）会把窗口提前到 2 月底，10 月的真实线上新客被**误杀**。
+     */
+    public function test_media_window_starts_from_online_lead_not_offline_one(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'media-mix', 'role' => 'R_SUPER']));
+
+        // 1 月线下留资（自然到店），10 月线上留资，10 月到店
+        $this->lead('先线下后线上', '13911000002', '2025-01-05', [
+            'status' => '已体验', 'source' => '自然到店', 'order_platform' => '自然到店',
+        ]);
+        $this->lead('先线下后线上', '13911000002', '2025-10-03', [
+            'status' => '已体验',
+            'redeemed_at' => '2025-10-04 10:00:00',
+        ]);
+
+        $media = $this->mediaOf('2025-10');
+        $this->assertSame(1, $media['breakdown']['validVisitCount'], '时效应从 10 月那条线上留资起算（窗口到 11.30）');
+        $this->assertSame(20.0, (float) $media['visitRewardAmount']);
+    }
+
     private function booking(
         string $key,
         string $venue,

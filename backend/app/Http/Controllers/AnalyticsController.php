@@ -242,19 +242,30 @@ final class AnalyticsController extends Controller
         // 结果是同一页面上老板与老师看到两个成交率。
         $identityOf = fn ($phone, string $fallback = '') => VisitMetrics::identityOf($phone, $fallback);
 
-        // 线上身份集合：不限区间（上月留资、本月到店也要能认出线上来源）
+        // 线上身份集合：不限区间（上月留资、本月到店也要能认出线上来源）。
+        // 同时记录每个身份的**最早「线上」留资日** —— 新媒体业绩要判「留资 → 到店/成交」
+        // 是否在时效内，必须有这份配对；取最早线上留资而非最早任意留资：新客看的是
+        // 「他通过新媒体进来的那一刻」（同一人先线下留资、后线上留资时，用线下那条会
+        // 把窗口提前、误杀本该计入的新媒体新客）。
         $onlineIdentities = [];
-        foreach ((clone $leadQ)->get(['phone', 'name', 'source', 'order_platform']) as $l) {
+        $onlineLeadDates = [];
+        foreach ((clone $leadQ)->get(['phone', 'name', 'source', 'order_platform', 'lead_date']) as $l) {
             $identity = $identityOf($l->phone, (string) $l->name);
-            if ($identity !== '' && isOnlineLead($l)) {
-                $onlineIdentities[$identity] = true;
+            if ($identity === '' || ! isOnlineLead($l)) {
+                continue;
+            }
+            $onlineIdentities[$identity] = true;
+            $day = (string) $l->lead_date;
+            if ($day !== '' && (! isset($onlineLeadDates[$identity]) || $day < $onlineLeadDates[$identity])) {
+                $onlineLeadDates[$identity] = $day;
             }
         }
 
-        $visit = VisitMetrics::visitSet($leadQ, $bookings, $start, $end);
+        $visit = VisitMetrics::visitPairs($leadQ, $bookings, $start, $end);
         $visitIdentities = $visit['identities'];
         // 各来源命中的身份（仅供接口给出构成核对，同一人可能命中多个来源，不是相加关系）
         $visitSources = $visit['sources'];
+        $visitDates = $visit['visitDates'];
         $onlineVisitIdentities = [];
         foreach ($visitIdentities as $identity => $_) {
             if (isset($onlineIdentities[$identity])) {
@@ -262,8 +273,11 @@ final class AnalyticsController extends Controller
             }
         }
 
-        $deal = VisitMetrics::dealSet($leadQ, $visitIdentities, $start, $end);
+        // dealPairs 与 dealSet 同一份实现，只是多给每人成交日期（时效配对用）；
+        // 这里只查一次库，避免同一批成交被扫两遍。
+        $deal = VisitMetrics::dealPairs($leadQ, $visitIdentities, $start, $end);
         $dealIdentities = $deal['identities'];
+        $dealDates = $deal['dealDates'];
         $onlineDealIdentities = [];
         foreach ($dealIdentities as $identity => $_) {
             if (isset($onlineIdentities[$identity])) {
@@ -302,6 +316,15 @@ final class AnalyticsController extends Controller
         $onlineVisitCount = count($onlineVisitIdentities);
         $onlineDealCount = count($onlineDealIdentities);
 
+        // 新媒体线上运营业绩（到店奖励 + 核销提成）—— 只算**2 个月时效内**的线上新客。
+        // 口径见 computeMediaPerformance() 的注释（含用户确认的分子分母同源要求）。
+        $media = $this->computeMediaPerformance(
+            $leadQ, $start, $end,
+            $onlineIdentities, $onlineLeadDates,
+            $onlineVisitIdentities, $visitDates,
+            $onlineDealIdentities, $dealDates
+        );
+
         // 到店人数的来源构成（仅供核对口径，不参与计算）：
         // 同一个人的身份可能同时命中多个来源，这里是各来源的去重人数，不是相加关系
         $visitBreakdown = [
@@ -313,8 +336,7 @@ final class AnalyticsController extends Controller
         ];
 
         // 预约/上课班次按私教 / 小班 / 团课拆分
-        $privateBooked = 0;
-        $smallBooked = 0;
+        $privateBooked = 0;        $smallBooked = 0;
         $groupBooked = 0;
         $privateClasses = 0;
         $smallClasses = 0;
@@ -384,6 +406,8 @@ final class AnalyticsController extends Controller
                 'onlineDealCount' => $onlineDealCount,
                 'onlineDealRate' => $onlineVisitCount > 0 ? round($onlineDealCount / $onlineVisitCount * 100, 1) : 0,
                 'onlineLeadToVisitRate' => $onlineLeadCount > 0 ? min(100, round($onlineVisitCount / $onlineLeadCount * 100, 1)) : 0,
+                // 新媒体线上运营业绩（到店奖励 + 核销提成，仅时效内线上新客）
+                'mediaPerformance' => $media,
             ],
             'visit30' => $visit30,
             'activeCustomers' => $activeCustomers,
@@ -394,6 +418,154 @@ final class AnalyticsController extends Controller
                 'm3' => $activeCustomers,
             ],
             'period' => ['start' => $start, 'end' => $end],
+        ];
+    }
+
+    /**
+     * 新媒体线上运营业绩：**时效内**线上新客的到店奖励 + 核销提成。
+     *
+     * ## 业务规则（用户确认，2026-09）
+     *
+     *  1. **2 个月时效**：留资月 + 下一个自然月内到店/成交才算新媒体新客。
+     *     例：9.1 留资 → 10.31 前到店或成交有效（`mediaValidMonths` 默认 2）。
+     *  2. **到店奖励** = 当月**时效内**到店的线上新客人数 × `mediaVisitReward`（默认 20 元/人）。
+     *     含两类人：本月留资本月到店的 + 上月留资本月到店的（只要仍在时效内）。
+     *  3. **核销提成** = 当月有效成交率 × 当月**时效内**线上核销金额，
+     *     其中有效成交率 = 当月有效成交人数 ÷ 当月有效到店人数。
+     *  4. **线下渠道完全不算**：三项都先经 `isOnlineLead()` 过滤。
+     *
+     * ## ⚠️ 分母为什么含「上月留资本月到店」的人（易记错，改动前务必读）
+     *
+     * 用户给的自验例子：10 月留资 20 / 到店 10 / 成交 6，另有 9 月的 2 个客资在 10 月到店
+     * （其中 1 个成交）：
+     *
+     *     到店奖励 = (10 + 2) × 20 = 240 元
+     *     核销提成 = (6 + 1) ÷ (10 + 2) × 核销金额 = 7 ÷ 12 × 核销金额
+     *
+     * 用户口述里曾写作 `7/10`，但他另一句话是「到店 10+2」—— **分子加了上月的 1 个成交、
+     * 分母却没加上月的 2 个到店**，自相矛盾。经**二次确认，分母用 12**（分子分母同源：
+     * 分子只能是「有效到店人里的成交」，分母就是同一批有效到店人）。
+     * 若有人改回 `/10`，`test_media_performance_matches_users_worked_example` 会红。
+     *
+     * ## 边界策略（失败关闭）
+     *
+     *  - 找不到（线上）留资日 ⇒ 不计奖励/不算有效（无法核对时效，宁可少算不漏算）；
+     *  - 到店/成交日期缺失 ⇒ 同上；这类计数在 `unpairedCount` 单列，供运营发现数据异常，
+     *    而不是让金额悄悄变小。
+     *
+     * @return array<string, mixed>
+     */
+    private function computeMediaPerformance(
+        $leadQ, string $start, string $end,
+        array $onlineIdentities, array $onlineLeadDates,
+        array $onlineVisitIdentities, array $visitDates,
+        array $onlineDealIdentities, array $dealDates
+    ): array {
+        $params = mediaPerformanceParams();
+        $validMonths = $params['validMonths'];
+        $reward = $params['visitReward'];
+
+        $within = fn (string $identity, array $eventDates) => VisitMetrics::isWithinValidity(
+            $onlineLeadDates[$identity] ?? null,
+            $eventDates[$identity] ?? null,
+            $validMonths
+        );
+
+        // ---- 有效到店（当月到店 ∩ 线上 ∩ 时效内）----
+        $validVisitIdentities = [];
+        $validVisitsFromPrevMonth = 0; // 其中：上月留资、本月到店（用户例子里的 +2 这类）
+        $unpairedVisitCount = 0;
+        $startMonth = substr($start, 0, 7);
+        foreach ($onlineVisitIdentities as $identity => $_) {
+            if (! isset($onlineLeadDates[$identity]) || ! isset($visitDates[$identity])) {
+                $unpairedVisitCount++; // 留资日或到店日缺失 ⇒ 无法核对时效
+                continue;
+            }
+            if (! $within($identity, $visitDates)) {
+                continue; // 越期，不算新媒体新客
+            }
+            $validVisitIdentities[$identity] = true;
+            if (substr($onlineLeadDates[$identity], 0, 7) !== $startMonth) {
+                $validVisitsFromPrevMonth++;
+            }
+        }
+        $validVisitCount = count($validVisitIdentities);
+
+        // ---- 有效成交（当月成交 ∩ 线上 ∩ 时效内 ∩ 有效到店人）----
+        $validDealIdentities = [];
+        $validDealsFromPrevMonth = 0;
+        $unpairedDealCount = 0;
+        foreach ($onlineDealIdentities as $identity => $_) {
+            if (! isset($onlineLeadDates[$identity]) || ! isset($dealDates[$identity])) {
+                $unpairedDealCount++;
+                continue;
+            }
+            if (! $within($identity, $dealDates)) {
+                continue;
+            }
+            $validDealIdentities[$identity] = true;
+            if (substr($onlineLeadDates[$identity], 0, 7) !== $startMonth) {
+                $validDealsFromPrevMonth++;
+            }
+        }
+        $validDealCount = count($validDealIdentities);
+
+        // ---- 时效内线上核销金额 ----
+        // 「当月核销」按核销事件日归期（redeemed_at，缺失回退留资日，与看板其它统计同口径），
+        // 再叠加时效：只有 2 个月窗口内的线上核销才算进提成基数。
+        $redeemRows = (clone $leadQ)->where('redeem_amount', '>', 0)
+            ->where(function ($q) use ($start, $end) {
+                $q->whereBetween('redeemed_at', [$start.' 00:00:00', $end.' 23:59:59'])
+                    ->orWhere(fn ($q2) => $q2->whereNull('redeemed_at')->whereBetween('lead_date', [$start, $end]));
+            })->get(['phone', 'name', 'source', 'order_platform', 'lead_date', 'redeemed_at', 'redeem_amount']);
+
+        $validRedeemAmount = 0.0;
+        $excludedRedeemAmount = 0.0;
+        foreach ($redeemRows as $row) {
+            $identity = VisitMetrics::identityOf($row->phone, (string) $row->name);
+            $eventDate = $row->redeemed_at?->toDateString() ?: (string) $row->lead_date;
+            $amount = (float) $row->redeem_amount;
+            // 线下来源与越期核销都不计；分别归入排除额，便于运营核对差额
+            if (! isset($onlineIdentities[$identity]) || ! $within($identity, [$identity => $eventDate])) {
+                $excludedRedeemAmount += $amount;
+                continue;
+            }
+            $validRedeemAmount += $amount;
+        }
+
+        $visitRewardAmount = round($validVisitCount * $reward, 2);
+        $dealRate = $validVisitCount > 0 ? $validDealCount / $validVisitCount : 0.0;
+        $commissionAmount = round($dealRate * $validRedeemAmount, 2);
+
+        return [
+            'enabled' => true,
+            'params' => [
+                'visitReward' => $reward,
+                'validMonths' => $validMonths,
+                'rule' => "留资月 + 下一个自然月内到店/成交有效（{$validMonths} 个月时效）",
+            ],
+            // 三项显示值
+            'visitRewardAmount' => $visitRewardAmount,
+            'dealRate' => round($dealRate * 100, 2),
+            'commissionAmount' => $commissionAmount,
+            // 构成明细（让运营能自己把账对上）
+            'breakdown' => [
+                'validVisitCount' => $validVisitCount,
+                'validVisitsFromPrevMonth' => $validVisitsFromPrevMonth,
+                'validDealCount' => $validDealCount,
+                'validDealsFromPrevMonth' => $validDealsFromPrevMonth,
+                'validRedeemAmount' => round($validRedeemAmount, 2),
+                'excludedRedeemAmount' => round($excludedRedeemAmount, 2),
+                // 无法核对时效的条数（留资日/到店日缺失）—— 单列以免金额静默变小
+                'unpairedVisitCount' => $unpairedVisitCount,
+                'unpairedDealCount' => $unpairedDealCount,
+            ],
+            // 口径说明：页面上要能自证，避免运营按记忆里的 /10 核对不上
+            'formula' => [
+                'visitReward' => "有效到店人数（{$validVisitCount}）× {$reward} 元",
+                'dealRate' => "有效成交人数（{$validDealCount}）÷ 有效到店人数（{$validVisitCount}）",
+                'commission' => "成交率（{$validDealCount}/{$validVisitCount}）× 时效内核销金额",
+            ],
         ];
     }
 

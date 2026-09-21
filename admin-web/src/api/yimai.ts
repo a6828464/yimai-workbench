@@ -1522,6 +1522,56 @@ export interface DashboardSummary {
   onlineDealRate: number
   /** 线上留资 → 到店转化率 */
   onlineLeadToVisitRate?: number
+  /** 新媒体线上运营业绩（2 个月时效内的到店奖励 + 核销提成） */
+  mediaPerformance?: MediaPerformance
+}
+
+/**
+ * 新媒体线上运营业绩。
+ *
+ * 口径（用户二次确认）：留资月 + 下一个自然月内到店/成交才算新媒体新客；
+ * 到店奖励 = 有效到店人数 × 单价；核销提成 = 有效成交率 × 时效内线上核销金额。
+ *
+ * ⚠️ 成交率分母含「上月留资、本月到店」的人（用户例子里的 +2，即
+ * `validVisitsFromPrevMonth`）。用户口述里写过 `/10`，与其「到店 10+2」矛盾，
+ * 经二次确认用 **12**。页面上必须显示口径明细，让运营能自行核对。
+ */
+export interface MediaPerformance {
+  enabled: boolean
+  /** 可调参数（运营可在规则设置里改） */
+  params: {
+    /** 到店奖励单价（元/人），默认 20 */
+    visitReward: number
+    /** 时效月数，默认 2 ⇒ 留资月 + 下一个自然月 */
+    validMonths: number
+    /** 时效规则的自然语言说明，供页面展示 */
+    rule: string
+  }
+  /** 当月到店奖励金额 = 有效到店人数 × 单价 */
+  visitRewardAmount: number
+  /** 当月有效成交率（百分数，如 58.33） */
+  dealRate: number
+  /** 当月核销提成 = 成交率 × 时效内线上核销金额 */
+  commissionAmount: number
+  /** 构成明细：让运营能把账对上 */
+  breakdown: {
+    validVisitCount: number
+    /** 其中：上月留资、本月到店（成交率分母里容易漏掉的那部分） */
+    validVisitsFromPrevMonth: number
+    validDealCount: number
+    validDealsFromPrevMonth: number
+    validRedeemAmount: number
+    /** 被排除的核销额（线下来源或越期），便于核对差额 */
+    excludedRedeemAmount: number
+    /** 无法核对时效的条数（留资日缺失等脏数据），单列以免金额静默变小 */
+    unpairedVisitCount: number
+    unpairedDealCount: number
+  }
+  formula: {
+    visitReward: string
+    dealRate: string
+    commission: string
+  }
 }
 
 export interface ChannelLeadItem {
@@ -1665,6 +1715,8 @@ export async function getDashboardSeries(
       onlineDealCount: s.onlineDealCount ?? 0,
       onlineDealRate: s.onlineDealRate ?? 0,
       onlineLeadToVisitRate: s.onlineLeadToVisitRate ?? 0,
+      // 新媒体业绩（到店奖励 + 核销提成）：后端给的是完整结构，缺失时不编造数字
+      mediaPerformance: (s as unknown as { mediaPerformance?: MediaPerformance }).mediaPerformance,
       registeredDealCount: s.registeredDealCount ?? 0,
       registeredDealAmount: s.registeredDealAmount ?? 0
     }
