@@ -39,11 +39,20 @@ COMPOSER_VENDOR_DIR="$WORK/vendor" composer install --no-dev --prefer-dist --no-
 
 echo "── 3/4 组装后端代码..."
 cd "$ROOT/backend"
-# ⚠️ `--exclude 'version.json'` 不能删：步骤 1.5 已在 $COMMON/backend/ 写入本版
-# 的 version.json（取自当前 git HEAD），而本地 backend/version.json 是**上一次发布
-# 留下的陈旧副本**（该文件在 .gitignore 里，不入库、也不会随提交更新）。不加这条排除，
-# rsync 会用陈旧副本覆盖刚写好的那份，导致「版本更新」页永远显示上一版的 commit —— 
-# 实测 v3.3.0 打包时该页会显示 v3.2.0 的 commit（8e7b63f），此前每次发布都如此。
+# ⚠️ `--exclude 'version.json'` 与 `--exclude 'CHANGELOG.md'` 都不能删：步骤 1.5 已把
+# **本版**的这两份写进 $COMMON/backend/（version.json 取自当前 git HEAD，CHANGELOG.md 取自
+# 仓库根），而 backend/ 下同名的那两份是**上一次发布留下的陈旧副本**（都被 .gitignore 忽略，
+# 不入库、不随提交更新）。不加排除，rsync 会用陈旧副本把它们盖回去，导致「版本更新」页
+# 永远显示上一版的 commit 与更新日志 —— 实测 v3.3.0 打包时该页显示的是 v3.2.0 的 commit
+# （8e7b63f）和 v3.2.0 的日志，此前每次发布都如此。
+# （CI 侧走 `git archive HEAD`，只含入库文件，因此不存在这个问题；这些排除只影响本地打包。）
+#
+# 其余排除项同理，都是「本地开发残留、绝不该进生产包」的文件：
+#   .phpunit.result.cache —— 测试缓存（实测随包发出 90KB）
+#   yimai                 —— 本地 SQLite 开发库（实测随包发出 610KB；本次核对内容为
+#                            仅含 migrations 47 行、无 PII，但本质上仍是本地库文件，
+#                            一旦哪天本地库有真实数据就会随包外发，必须排除）
+#   .DS_Store             —— macOS 目录元数据
 rsync -a \
   --exclude '.env' --exclude '.env.*' \
   --exclude 'vendor/' \
@@ -51,6 +60,10 @@ rsync -a \
   --exclude 'database/database.sqlite*' \
   --exclude 'bootstrap/cache/*.php' \
   --exclude 'version.json' \
+  --exclude 'CHANGELOG.md' \
+  --exclude '.phpunit.result.cache' \
+  --exclude 'yimai' \
+  --exclude '.DS_Store' \
   ./ "$COMMON/backend/"
 
 # Vue 产物与 Laravel 共用 public；仅覆盖前端入口和静态资源。
