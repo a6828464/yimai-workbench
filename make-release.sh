@@ -39,12 +39,18 @@ COMPOSER_VENDOR_DIR="$WORK/vendor" composer install --no-dev --prefer-dist --no-
 
 echo "── 3/4 组装后端代码..."
 cd "$ROOT/backend"
+# ⚠️ `--exclude 'version.json'` 不能删：步骤 1.5 已在 $COMMON/backend/ 写入本版
+# 的 version.json（取自当前 git HEAD），而本地 backend/version.json 是**上一次发布
+# 留下的陈旧副本**（该文件在 .gitignore 里，不入库、也不会随提交更新）。不加这条排除，
+# rsync 会用陈旧副本覆盖刚写好的那份，导致「版本更新」页永远显示上一版的 commit —— 
+# 实测 v3.3.0 打包时该页会显示 v3.2.0 的 commit（8e7b63f），此前每次发布都如此。
 rsync -a \
   --exclude '.env' --exclude '.env.*' \
   --exclude 'vendor/' \
   --exclude 'storage/' \
   --exclude 'database/database.sqlite*' \
   --exclude 'bootstrap/cache/*.php' \
+  --exclude 'version.json' \
   ./ "$COMMON/backend/"
 
 # Vue 产物与 Laravel 共用 public；仅覆盖前端入口和静态资源。
