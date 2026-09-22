@@ -1,19 +1,19 @@
 <template>
-  <div class="leads-page art-full-height">
-    <ElCard class="art-table-card">
-      <div class="mb-4 flex flex-wrap items-center gap-3">
+  <div class="list-page list-page--fill">
+    <ElCard>
+      <div class="filter-bar">
         <ElInput
           v-model="filters.name"
           placeholder="客户姓名"
           clearable
-          class="!w-36"
+          class="f-lg"
           @change="load"
         />
         <ElInput
           v-model="filters.phone"
           placeholder="联系方式/手机号/微信"
           clearable
-          class="!w-44"
+          class="f-2xl"
           @change="load"
         />
         <ElDatePicker
@@ -23,7 +23,7 @@
           start-placeholder="留资开始"
           end-placeholder="留资结束"
           range-separator="~"
-          class="!w-64"
+          class="f-date"
           @change="load"
         />
         <ElSelect
@@ -31,24 +31,18 @@
           v-model="filters.venue"
           placeholder="门店"
           clearable
-          class="!w-28"
+          class="f-sm"
           @change="load"
         >
           <ElOption label="绿地店" value="绿地店" />
           <ElOption label="东部店" value="东部店" />
         </ElSelect>
-        <ElSelect
-          v-model="filters.status"
-          placeholder="状态"
-          clearable
-          class="!w-28"
-          @change="load"
-        >
+        <ElSelect v-model="filters.status" placeholder="状态" clearable class="f-sm" @change="load">
           <ElOption v-for="s in STATUS_LIST" :key="s" :label="s" :value="s" />
         </ElSelect>
         <ElButton @click="reloadFromFirstPage">查询</ElButton>
         <ElButton @click="resetFilters">重置</ElButton>
-        <div class="flex-1" />
+        <div class="filter-bar__spacer" />
         <ElButton type="primary" v-ripple @click="openCreate">新增留资</ElButton>
       </div>
 
@@ -73,6 +67,7 @@
       -->
       <ElTable
         v-if="!isHandheld"
+        ref="tableRef"
         v-loading="loading"
         :data="filteredList"
         border
@@ -253,7 +248,7 @@
         <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无数据</div>
       </div>
 
-      <div class="mt-4 flex justify-end">
+      <div class="list-pager">
         <ElPagination
           v-model:current-page="page.current"
           v-model:page-size="page.size"
@@ -581,6 +576,7 @@
   import type { YimaiLead } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type {
     MobileCardAction,
     MobileCardMetric,
@@ -666,26 +662,10 @@
   const list = ref<YimaiLead[]>([])
   const total = ref(0)
 
-  /**
-   * 表格最大高度：跟随布局给出的可用内容高度，让表格把卡片填满（消除底部空白）。
-   *
-   * 减项 = 本页除表格外必须占用的高度（实测拆解，1440x900）：
-   *   筛选区 36 + 数据范围提示行 48 + 提示行下方间距 8
-   *   + 分页器 32 + 表格与分页器间距 16 + 卡片上下内边距 40
-   *   = 180
-   * 再加 EP 内部会扣掉的表头（style-helper 用 calc(maxHeight - headerHeight)）。
-   * 用 calc 而非固定 px：窗口高度变化时表格跟着变，不会再出现固定 520 造成的空白。
-   *
-   * 这里刻意不去「减到刚好」：留一点余量，避免不同字体/缩放下行高变化导致
-   * 分页器被挤出视口（那会变成"看不到分页"，比留白更糟）。
-   */
-  const tableMaxHeight = computed(() => {
-    if (isHandheld.value) return undefined
-    // var 兜底写 100vh：万一布局还没算出 --art-full-height，calc 会整个失效，
-    // 表格就拿不到 max-height，退化成「横滑条落在页面底部、表头滚出视口」的老问题
-    // （t31 修过的那个）。有兜底至少能保证表格始终有高度约束。
-    return 'calc(var(--art-full-height, 100vh) - 180px)'
-  })
+  // 表格高度自适应：减项（筛选条 / 提示行 / 分页器 / 卡片内边距）由 hook 运行时量出。
+  // 这里不再写 `calc(var(--art-full-height) - 180px)` —— 那个 180 只是本页当时的
+  // 实测值，筛选条加一个控件就又不准了，而且抄到别的页面必然是错的。
+  const { tableMaxHeight, tableRef } = useTableHeight()
 
   /** 会籍顾问选项：轻量接口（服务端去重），不再全量拉取会员 */
   const consultantOptions = ref<string[]>([])

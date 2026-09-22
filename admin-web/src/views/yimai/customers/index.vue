@@ -1,19 +1,19 @@
 <template>
-  <div class="customer-page art-full-height">
-    <ElCard class="art-table-card">
-      <div class="mb-4 flex flex-wrap items-center gap-3">
+  <div class="list-page list-page--fill">
+    <ElCard>
+      <div class="filter-bar">
         <ElInput
           v-model="searchForm.name"
           placeholder="客户姓名"
           clearable
-          class="!w-36"
+          class="f-lg"
           @change="handleSearch"
         />
         <ElInput
           v-model="searchForm.phone"
           placeholder="手机号 / 尾号"
           clearable
-          class="!w-40"
+          class="f-xl"
           @change="handleSearch"
         />
         <ElSelect
@@ -21,7 +21,7 @@
           v-model="searchForm.venue"
           placeholder="门店"
           clearable
-          class="!w-32"
+          class="f-md"
           @change="handleSearch"
         >
           <ElOption label="绿地店" value="绿地店" />
@@ -31,7 +31,7 @@
           v-model="searchForm.layer"
           placeholder="经营分层"
           clearable
-          class="!w-36"
+          class="f-lg"
           @change="handleSearch"
         >
           <ElOption v-for="(v, k) in LAYER_LABELS" :key="k" :label="`${k} ${v}`" :value="k" />
@@ -40,7 +40,7 @@
           v-model="searchForm.list"
           placeholder="运营清单"
           clearable
-          class="!w-32"
+          class="f-md"
           @change="handleSearch"
         >
           <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
@@ -49,7 +49,7 @@
           v-model="searchForm.haveCourse"
           placeholder="有课卡"
           clearable
-          class="!w-28"
+          class="f-sm"
           @change="handleSearch"
         >
           <ElOption label="有课卡" value="true" />
@@ -59,7 +59,7 @@
           v-model="searchForm.remainRange"
           placeholder="剩余课时"
           clearable
-          class="!w-32"
+          class="f-md"
           @change="handleSearch"
         >
           <ElOption label="≤ 5 节" value="5" />

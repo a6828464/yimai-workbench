@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <ElAlert
       title="新客培养：统计入会近 N 天的会员，跟踪其私教 / 小班 / 团课上课养成进度，帮助新会员建立练习习惯、了解身体需求，保障体验"
       type="info"
@@ -13,39 +13,46 @@
       <span v-if="!syncTime" class="text-warning">（该店尚未同步，暂无新客数据）</span>
     </div>
 
-    <!-- 筛选条 -->
-    <ElCard shadow="never" class="mb-3">
-      <div class="flex flex-wrap items-center gap-3">
-        <span class="text-sm">入会日期</span>
-        <ElDatePicker
-          v-model="dateRange"
-          type="daterange"
-          value-format="YYYY-MM-DD"
-          range-separator="至"
-          start-placeholder="开始"
-          end-placeholder="结束"
-          :clearable="false"
-        />
-        <ElButton link @click="setQuickRange(30)">近30天</ElButton>
-        <ElButton link @click="setQuickRange(90)">近90天</ElButton>
-        <ElButton link @click="setQuickRange(180)">近半年</ElButton>
-        <ElSelect v-if="canPickVenue" v-model="venue" clearable placeholder="全部门店" class="w-28">
-          <ElOption label="绿地店" value="绿地店" />
-          <ElOption label="东部店" value="东部店" />
-        </ElSelect>
-        <ElInput v-model="name" placeholder="会员姓名" clearable class="w-40" />
-        <ElButton type="primary" :loading="loading" @click="reload">查询</ElButton>
-        <ElButton @click="resetFilters">重置</ElButton>
-      </div>
-      <div class="mt-3">
-        <ElRadioGroup v-model="cardType">
-          <ElRadioButton label="" value="">全部课型</ElRadioButton>
-          <ElRadioButton label="private" value="private">私教</ElRadioButton>
-          <ElRadioButton label="small" value="small">小班</ElRadioButton>
-          <ElRadioButton label="group" value="group">团课</ElRadioButton>
-        </ElRadioGroup>
-      </div>
-    </ElCard>
+    <!--
+      筛选条
+      ----------
+      改造前这里是独立一个 ElCard，日期范围用 EP 默认宽（实测 286px），
+      三个快捷档是 ElButton link，课型选择另起一行 —— 整个筛选区比留资管理高出一倍，
+      就是用户反馈的「顶上的数据筛选框太大了」。
+
+      现在统一走 .filter-bar：一行 flex + 宽度档 + 与全站一致的按钮样式，
+      快捷档用 type="primary" plain（和留资/会员管理的按钮同一套视觉）。
+    -->
+    <div class="filter-bar">
+      <span class="text-sm text-gray-500">入会日期</span>
+      <ElDatePicker
+        v-model="dateRange"
+        type="daterange"
+        value-format="YYYY-MM-DD"
+        range-separator="至"
+        start-placeholder="开始"
+        end-placeholder="结束"
+        :clearable="false"
+        class="f-date"
+      />
+      <ElButton type="primary" plain size="small" @click="setQuickRange(30)">近30天</ElButton>
+      <ElButton type="primary" plain size="small" @click="setQuickRange(90)">近90天</ElButton>
+      <ElButton type="primary" plain size="small" @click="setQuickRange(180)">近半年</ElButton>
+      <ElSelect v-if="canPickVenue" v-model="venue" clearable placeholder="全部门店" class="f-sm">
+        <ElOption label="绿地店" value="绿地店" />
+        <ElOption label="东部店" value="东部店" />
+      </ElSelect>
+      <ElInput v-model="name" placeholder="会员姓名" clearable class="f-lg" />
+      <ElRadioGroup v-model="cardType" size="small">
+        <ElRadioButton label="" value="">全部课型</ElRadioButton>
+        <ElRadioButton label="private" value="private">私教</ElRadioButton>
+        <ElRadioButton label="small" value="small">小班</ElRadioButton>
+        <ElRadioButton label="group" value="group">团课</ElRadioButton>
+      </ElRadioGroup>
+      <div class="filter-bar__spacer" />
+      <ElButton type="primary" :loading="loading" @click="reload">查询</ElButton>
+      <ElButton @click="resetFilters">重置</ElButton>
+    </div>
 
     <!-- 概览：点卡片即筛选下方列表，再点一次取消 -->
     <ElRow :gutter="12" class="mb-3">
@@ -72,7 +79,15 @@
 
     <!-- 列表 -->
     <ElCard shadow="never">
-      <ElTable v-if="!isHandheld" v-loading="loading" :data="pagedList" border stripe>
+      <ElTable
+        v-if="!isHandheld"
+        ref="tableRef"
+        v-loading="loading"
+        :data="pagedList"
+        border
+        stripe
+        :max-height="tableMaxHeight"
+      >
         <ElTableColumn prop="name" label="会员" min-width="110" fixed="left">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
@@ -145,7 +160,7 @@
         </MobileCard>
         <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无数据</div>
       </div>
-      <div class="mt-4 flex justify-end">
+      <div class="list-pager">
         <ElPagination
           v-model:current-page="page.current"
           :page-size="page.size"
@@ -165,12 +180,16 @@
   import { useUserStore } from '@/store/modules/user'
   import { toLocalDateString } from '@/utils'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type { MobileCardMetric, MobileCardTag } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiNewMembers' })
 
   // 手持设备上用卡片列表代替宽表格（「上课养成」列宽 240px，手机上必被压扁）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：减项（筛选条 / 统计卡 / 分页器）由 hook 运行时量出
+  const { tableMaxHeight, tableRef } = useTableHeight()
 
   const HEALTH_META: Record<
     NewMemberCultivation['health'],

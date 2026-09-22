@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <ElRow :gutter="12">
       <!-- 左：账号总览 -->
       <ElCol :xs="24" :md="8" class="mb-3">

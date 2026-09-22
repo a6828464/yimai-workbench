@@ -1,20 +1,20 @@
 <template>
-  <div class="art-full-height">
-    <ElCard class="art-table-card">
-      <div class="mb-4 flex flex-wrap items-center gap-3">
+  <div class="list-page list-page--fill">
+    <ElCard>
+      <div class="filter-bar">
         <ElDatePicker
           v-model="filters.date"
           type="date"
           value-format="YYYY-MM-DD"
           placeholder="日志日期"
-          class="!w-40"
+          class="f-xl"
           @change="load"
         />
         <ElSelect
           v-model="filters.level"
           placeholder="日志级别"
           clearable
-          class="!w-32"
+          class="f-md"
           @change="load"
         >
           <ElOption v-for="level in LEVELS" :key="level" :label="level" :value="level" />
@@ -23,12 +23,12 @@
           v-model="filters.keyword"
           placeholder="搜索消息或上下文"
           clearable
-          class="!w-64"
+          class="f-date"
           @keyup.enter="load"
         />
         <ElButton type="primary" @click="load">查询</ElButton>
         <ElButton @click="resetFilters">重置</ElButton>
-        <div class="flex-1" />
+        <div class="filter-bar__spacer" />
         <ElButton @click="retentionVisible = true">保留策略</ElButton>
       </div>
 
@@ -41,7 +41,15 @@
         日志文件：{{ files.join('、') }}
       </div>
 
-      <ElTable v-if="!isHandheld" v-loading="loading" :data="records" border stripe max-height="520">
+      <ElTable
+        v-if="!isHandheld"
+        ref="tableRef"
+        v-loading="loading"
+        :data="records"
+        border
+        stripe
+        :max-height="tableMaxHeight"
+      >
         <ElTableColumn prop="time" label="时间" width="180" sortable />
         <ElTableColumn label="级别" width="100">
           <template #default="{ row }">
@@ -127,12 +135,16 @@
     type SystemLogRecord
   } from '@/api/system-records'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type { MobileCardTag } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiSystemLogs' })
 
   // 手持设备上用卡片列表代替宽表格（见下方 shownRecords / cardTags）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：减项由 hook 运行时量出，本页不写任何像素
+  const { tableMaxHeight, tableRef } = useTableHeight()
 
   /**
    * 卡片默认渲染条数上限

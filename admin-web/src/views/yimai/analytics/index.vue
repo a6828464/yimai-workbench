@@ -15,6 +15,26 @@
       :closable="false"
       class="mb-4"
     />
+
+    <!-- 同栏目内的「薪酬计算」入口。
+         该页仅超管可见（路由 meta.roles = SUPER，与经营看板同组），所以这里不需要再判角色；
+         但入口必须放在看板里 —— 用户原话是「经营看板里面给我加一个薪酬计算的栏目」，
+         只挂侧边菜单不算「在看板里」。 -->
+    <ElCard shadow="never" class="mb-4 payroll-entry">
+      <div class="payroll-entry__row">
+        <div class="payroll-entry__text">
+          <div class="payroll-entry__title">薪酬计算</div>
+          <div class="payroll-entry__desc">
+            老师课时数（课次口径，45/60 分钟可辨识）、课时费与身份标签设置、业绩表导入、考勤社保个税月度输入与工资计算
+          </div>
+        </div>
+        <ElButton type="primary" class="payroll-entry__btn" @click="goPayroll">
+          进入薪酬计算
+          <ArtSvgIcon icon="ri:arrow-right-line" class="ml-1" />
+        </ElButton>
+      </div>
+    </ElCard>
+
     <ElRow :gutter="16" class="mb-4">
       <ElCol v-for="m in metricList" :key="m.label" :xs="12" :sm="12" :md="6" class="mb-4">
         <ElCard shadow="never">
@@ -220,9 +240,17 @@
 <script setup lang="ts">
   import { apiGet } from '@/api/backend'
   import { toLocalDateString } from '@/utils'
+  import { useRouter } from 'vue-router'
   import type { MediaPerformance } from '@/api/yimai'
 
   defineOptions({ name: 'YimaiAnalytics' })
+
+  const router = useRouter()
+
+  /** 跳到同栏目下的「薪酬计算」页（仅超管，路由组已限） */
+  function goPayroll() {
+    router.push('/yimai/payroll')
+  }
 
   /** 新媒体线上运营业绩（到店奖励 + 核销提成）；后端未返回时为 undefined，页面显示「暂无数据」而非编造 0 */
   const media = ref<MediaPerformance | undefined>(undefined)
@@ -336,3 +364,46 @@
     await loadTrends()
   })
 </script>
+
+<style scoped lang="scss">
+  // 「薪酬计算」入口条：桌面端一行左右分列，手机端换行且按钮撑满
+  // （触控 >=44px 由 assets/styles/core/mobile.scss 的全局兜底保证，这里只管布局）
+  .payroll-entry {
+    &__row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    &__text {
+      min-width: 0;
+    }
+
+    &__title {
+      font-weight: 500;
+    }
+
+    &__desc {
+      margin-top: 4px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--art-gray-500);
+    }
+
+    &__btn {
+      flex: 0 0 auto;
+    }
+
+    @media (max-width: 768px) {
+      &__row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      &__btn {
+        width: 100%;
+      }
+    }
+  }
+</style>

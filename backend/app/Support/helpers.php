@@ -281,7 +281,10 @@ function businessNotifications(User $user): array
         $customerQ = scopeCustomersForUser(Customer::query(), $user)->whereIn('id', filteredIds('待续课'));
         $renewals = $customerQ->count();
         if ($renewals > 0) {
-            $items[] = ['key' => 'renewals-'.$renewals, 'category' => 'todo', 'level' => 'high', 'title' => "有 {$renewals} 位会员进入待续课", 'detail' => '请完成评估并明确下一步动作', 'path' => '/yimai/members'];
+            // D6：后端清单键仍是「待续课」（API 契约，改键会打断前端与缓存），
+            // 但**用户可见文案**统一为「待续费」——店长看的是「要不要催他续费」，
+            // 「待续课」在业务上容易被理解成「课还没上完」。
+            $items[] = ['key' => 'renewals-'.$renewals, 'category' => 'todo', 'level' => 'high', 'title' => "有 {$renewals} 位会员待续费", 'detail' => '请完成评估并明确下一步动作', 'path' => '/yimai/members'];
         }
     }
     if (userHasRole($user, 'R_SUPER') || userHasRole($user, 'R_MANAGER')) {
@@ -957,6 +960,39 @@ function privateStudentKeys(User $user): array
  * 且失败方向是「本人看不到数据（会被立刻上报）」而不是「别人看到不该看的数据（可能无人发现）」。
  * 修配置的路径很短：roles/role 任一列写对即刻恢复，不需要改代码。
  */
+/**
+ * 「前端客资/留资」的**唯一谓词**：`layer = 'P5'` 且**非 ky: 来源**。
+ *
+ * 为什么必须带 `ky:` 守卫：分层 `layer='P5'` 的业务含义是「**无卡项资产**」，
+ * 这是对的——同步会员的卡项全部过期时他确实没有资产，落 P5 并不算错。
+ * 错的是**消费方**把「P5」直接读成「留资」。`ky:` 前缀代表「来自 KeepYoga 同步」，
+ * 这类行无论有无资产都是**正式会员**，绝不能当成前端客资。
+ *
+ * 实测事故：R_MEDIA（新媒体）账号的可见范围是裸的 `where('layer','P5')`，
+ * 于是它能看到「卡项全部过期的会员」的姓名与手机号——那是越权，不是留资。
+ * 今日待办的 newLeads、followups 与留资查重的 kind 判定也有同一个误读。
+ *
+ * 凡是要把 P5 当「留资」用的地方都必须走这里，与 `/customers?type=lead` 逐字一致。
+ */
+function isLeadOnlyCustomer(Customer $c): bool
+{
+    return (string) $c->layer === 'P5'
+        && ! str_starts_with((string) $c->external_id, 'ky:');
+}
+
+/** 把「前端客资」谓词作用到查询上（与 isLeadOnlyCustomer 同义，供 query builder 用） */
+function scopeLeadOnlyCustomers($query)
+{
+    return $query->where('layer', 'P5')
+        ->where(fn ($w) => $w->whereNull('external_id')->orWhere('external_id', 'not like', 'ky:%'));
+}
+
+/** 「正式会员」谓词：非 P5，或虽落 P5 但来自 ky: 同步 */
+function scopeMemberCustomers($query)
+{
+    return $query->where(fn ($w) => $w->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%'));
+}
+
 function scopeCustomersForUser($query, User $user)
 {
     $roles = userRoles($user);
@@ -998,7 +1034,9 @@ function scopeCustomersForUser($query, User $user)
         });
     }
     if (in_array('R_MEDIA', $roles, true)) {
-        return $query->where('layer', 'P5');
+        // 新媒体只看前端客资——必须用「P5 且非 ky:」这个谓词，不能只看 layer。
+        // 裸 where('layer','P5') 会把「卡项全部过期的正式会员」一并发出去（越权）。
+        return scopeLeadOnlyCustomers($query);
     }
 
     // 兜底：一个角色都没识别出来（roles 漏写、或旧角色码已下架）——最小权限空集。
@@ -1335,14 +1373,32 @@ function renewalEvaluationContext(Customer $customer): array
     $expireDays = $customer->expire_date
         ? now()->startOfDay()->diffInDays($customer->expire_date, false)
         : null;
-    // 续费窗口与清单阈值同口径（客户管理可调），不再硬编码 10/30
-    $rules = rules();
-    $renewalThreshold = (int) ($rules['renewalThreshold'] ?? 10);
-    $renewalExpireDays = (int) ($rules['renewalExpireDays'] ?? 30);
-    $cardWindow = ($customer->remain_times !== null && $customer->remain_times <= $renewalThreshold)
-        || ($expireDays !== null && $expireDays >= 0 && $expireDays <= $renewalExpireDays) ? 10
-        : (($customer->remain_times !== null && $customer->remain_times <= $renewalThreshold * 2)
-            || ($expireDays !== null && $expireDays > $renewalExpireDays && $expireDays <= $renewalExpireDays * 2) ? 5 : 0);
+    // 续费窗口**必须**与清单同源：此前这里自己重算了一遍阈值（且没有 m3 门槛），
+    // 于是同一个会员能同时得到「在待续课清单里」与「续费窗口 0 分」两个相反结论（C4 口径分裂）。
+    // 现在直接取唯一判定入口 customerDecision() 的结论，三处（会员管理页签 / 今日待办 / 续费评估）
+    // 不可能再分歧。
+    $decision = customerDecision($customer);
+    $renewal = $decision['renewal'];
+    // 续费窗口分：在清单 → 紧急 10 / 观察 5。
+    // **不在清单但接近阈值 → 仍给 5**（保留 HEAD 的次级档语义）。
+    //
+    // 为什么必须保留次级档：HEAD 的 cardWindow 对「剩余量 ≤ 2×阈值」或
+    // 「到期日落在 (阈值, 2×阈值]」的会员给 5 分。t6 一度把它压成「不在清单一律 0」，
+    // 结果是一批**刚好在门槛外**的会员评估分整体下降一档（高机会 → 重点培育），
+    // 店长会把它读成「数据出错了」。判定口径变了不该顺带改变评分尺度。
+    $rulesForWindow = rules();
+    $thresholdForWindow = (int) ($rulesForWindow['renewalThreshold'] ?? 10);
+    $expireRuleForWindow = (int) ($rulesForWindow['renewalExpireDays'] ?? 30);
+    $nearMiss = false;
+    if (! $renewal['in']) {
+        $statsForWindow = (array) ($customer->card_stats ?? []);
+        $residueForWindow = array_key_exists('countResidue', $statsForWindow)
+            ? $statsForWindow['countResidue']
+            : $customer->remain_times;
+        $nearMiss = ($residueForWindow !== null && (int) $residueForWindow <= $thresholdForWindow * 2)
+            || ($expireDays !== null && $expireDays > $expireRuleForWindow && $expireDays <= $expireRuleForWindow * 2);
+    }
+    $cardWindow = $renewal['in'] ? ($renewal['urgent'] ? 10 : 5) : ($nearMiss ? 5 : 0);
     $latest = $customer->renewalEvaluations()->latest('evaluated_at')->first();
 
     return [
@@ -1354,6 +1410,13 @@ function renewalEvaluationContext(Customer $customer): array
         'attendM1' => $customer->attend_m1,
         'attendM2' => $customer->attend_m2,
         'attendM3' => $customer->attend_m3,
+        // 与清单同源的结论，供评估页直接展示「为什么他在/不在待续费清单」——
+        // 治本做法：让店长能自查口径，而不是靠猜。
+        'renewalIn' => $renewal['in'],
+        'renewalBucket' => $renewal['bucket'],
+        'renewalWhy' => $renewal['why'],
+        'renewalDegraded' => $renewal['degraded'],
+        'layer' => $decision['layer'],
         'latest' => $latest ? camel($latest) : null,
     ];
 }
@@ -1551,14 +1614,27 @@ function audit(Request $r, string $action, string $module, int|string $targetId,
     ]);
 }
 
+/**
+ * 清单阈值（只读）。
+ *
+ * **只读**是刻意的：`setting()` 是「带锁 firstOrCreate」的写路径，
+ * 而 rules() 被清单引擎、分层重算、迁移回填在**只读上下文**里调用。
+ * 若这里走 setting()，任何一次读取都会在库里凭空建出一个空的 AppSetting 行
+ * （迁移回填期间尤其严重：迁移先建出 id=1 的空行，此后用户保存的配置
+ * 若因并发或测试顺序落到 id=2，`oldest('id')` 就永远读不到——配置「保存了但不生效」）。
+ * 配置行的创建只应发生在真正要写配置的地方（setRules / 设置页保存）。
+ */
 function rules(): array
 {
-    $s = setting();
+    $s = AppSetting::oldest('id')->first();
     $defaults = [
         'renewalThreshold' => 10,
         'renewalCountPercent' => 20,
         'renewalExpireDays' => 30,
         'renewalExpirePercent' => 0,
+        // 已过期但仍有余额的卡，只回溯最近 N 天（决策 D4）：
+        // 陈年过期卡每天都挂在待续费清单里，会把清单训练成「不用看」。
+        'renewalExpiredBackfillDays' => 90,
         'vipAmountThreshold' => 30000,
         'declineMode' => 'strict',
         'predropMin' => 15,
@@ -1605,6 +1681,13 @@ function setRules(array $rules): void
     // 合并写入：只更新本次提交的键，保留其余（含养成阈值）不被冲掉
     $s->update(['rules' => array_merge((array) ($s->rules ?? []), $rules)]);
     invalidateBusinessCaches('member_lists');
+    // 阈值变了 → 经营分层也跟着变（P0 续费窗口直接用续费判定结论）。
+    // 分层失败绝不能把「改阈值」这个动作一起回滚，所以单独兜住。
+    try {
+        recalculateMemberLayers();
+    } catch (Throwable $e) {
+        Log::warning('改阈值后重算经营分层失败', ['error' => $e->getMessage()]);
+    }
 }
 
 /**
@@ -1641,93 +1724,620 @@ function filteredIds(string $list): array
  */
 function memberListIds(): array
 {
-    $rules = rules();
-    // 键 = 缓存版本 + 规则哈希 + customers 表指纹。
+    // 五清单只取 memberListCache() 的 lists 部分。
     //
-    // 指纹（MAX(updated_at) + COUNT(*)）是**自愈兜底**：清单依赖 card_stats / attend_* /
-    // last_visit 等列，正常路径（随心瑜同步、待复活开关）写完都会 invalidateBusinessCaches，
-    // 但只要有任意一条写入路径忘了失效，没有指纹就会一直发旧清单、且不会被任何人发现。
-    // 之前的问题是这条 SQL 没有可用索引、每次调用都全表扫（customer_lists 的每个请求
-    // 会调多次）—— 已为 customers.updated_at 补索引（2026_09_17_000003），
-    // MAX 走索引反向扫描、COUNT 走这条窄索引，成本降到可忽略。
+    // **不要再在这里重写一遍指纹与键**：此前 memberListIds() 与 memberListCache() 各有一份
+    // 键计算代码，加 MAX(id) 时只改了后者、前者仍是旧的两字段指纹 ——
+    // 于是同一次请求里两个函数会算出**不同的缓存键**，「清单」与「清单明细」
+    // 可能来自两次不同的扫描，正是我们在别处极力避免的同源分裂。
+    // 缓存键的构造必须只有一处（见 memberListCache 的注释说明指纹粒度限制）。
+    return memberListCache()['lists'];
+}
+
+/**
+ * 清单明细：与 memberListIds() **同一次扫描、同一份缓存**，因此不会出现
+ * 「徽标计数说 5 个、列表里 4 个」这种同源分裂。
+ *
+ * 返回：
+ *   - 待续费明细：id => [why[], bucket, urgent, revive, remain, expireDays, degraded, ...]
+ *   - 待开卡明细：id => [titles[], count]（未开卡卡项；D5：不新增第 6 个清单页签）
+ *   - 经营分层：  id => 'P0'..'P5'
+ */
+function memberListWatch(): array
+{
+    return memberListCache()['watch'];
+}
+
+/** 五清单 + 明细的唯一缓存入口 */
+function memberListCache(): array
+{
+    $rules = rules();
+    // 指纹 = MAX(updated_at) + MAX(id) + COUNT(*)。
+    //
+    // **粒度限制（务必知悉）**：`MAX(updated_at)` 在 MySQL 的 DATETIME 精度下可能同秒相同，
+    // 所以「同一秒内的多次写入」指纹不变、缓存不会换键——理论上会读到最多 120 秒的旧值。
+    // 之所以还留着它：它是「某条写入路径忘了调 invalidateBusinessCaches()」时的**自愈兜底**，
+    // 去掉会让清单永久发旧值（比慢 120 秒严重得多）。
+    // 加 MAX(id) 是为了让**新增**行立刻换键（id 单调递增，不受时间精度影响）；
+    // 同秒内的**更新**仍靠显式失效兜住，这条限制是已知且可接受的。
     $fingerprint = Customer::query()
-        ->selectRaw('MAX(updated_at) as mu, COUNT(*) as cnt')
+        ->selectRaw('MAX(updated_at) as mu, MAX(id) as mid, COUNT(*) as cnt')
         ->first();
     $key = 'member_lists:v'.businessCacheVersion('member_lists')
         .':'.md5(json_encode($rules))
-        .':'.($fingerprint?->mu ?? '0').':'.$fingerprint?->cnt;
+        .':'.($fingerprint?->mu ?? '0').':'.($fingerprint?->mid ?? '0').':'.$fingerprint?->cnt;
 
-    return Cache::remember($key, 120, fn () => computeMemberListIds($rules));
+    return Cache::remember($key, 120, fn () => computeMemberLists($rules));
 }
 
+/** 兼容旧调用：只取 ID 清单时请直接用 memberListIds() */
 function computeMemberListIds(array $rules): array
 {
-    $threshold = $rules['renewalThreshold'] ?? 10;
+    return computeMemberLists($rules)['lists'];
+}
+
+/**
+ * 经营分层定义（唯一口径来源，键固定 P0-P5）。
+ *
+ * 分层是**互斥的单值**，按「先算哪个」的优先级从高到低排列：一个会员只落一层。
+ * P5 的语义必须保持「无卡项资产 = 前端客资/留资」不变——`scopeCustomersForUser()`
+ * 的新媒体分支以及 `/customers?type=lead` 都依赖它，所以判定条件与那些授权条件
+ * **必须字面一致**（见 `scopeLeadOnlyCustomers()` / `scopeMemberCustomers()`）。
+ *
+ * **P5 的判据是「无资产」，不是「main_card 为空」**（t23 修正）：
+ * `main_card` 只是资产的**汇总证据之一**，且它在「有卡但上游没给卡标题」时是空串
+ * （`pick()` 返回 ''，而 '' 在排除表里）。只看它会把有真实资产的会员误判成客资 →
+ * 既从会员列表消失，又可能被新媒体读到 PII。现在 `customerDecision()` 用
+ * 「汇总字段 或 卡项明细（liveCount/liveTime/unknownResidue）」任一为证判定资产。
+ *
+ * 该放宽**不会**扩大 P5 授权面，依据是一条不变量：
+ *   `main_card === '—'` 只在 `$active` 为空时出现，而 `cards_list` 同样映射自 `$active`，
+ *   故 `main_card='—'` 必然蕴含 `cards_list` 为空 → 三项明细证据全空 → 仍判无资产。
+ * 即新增证据只可能把「确实有卡」的会员从 P5 拉出来，绝不会把真客资推进 P5。
+ * （回归 `test_asset_detection_falls_back_to_cards_list` / `test_real_lead_still_lands_p5` 锁这条不变量。）
+ *
+ * 顺带说明为什么 P0 只看「紧急」：P0 是「立刻要打电话」的池子，
+ * 观察态（近 30 天没来但有余额）的会员在 P1/P2 里更合适，塞进 P0 会让池子失去优先级意义。
+ */
+function layerDefinitions(): array
+{
+    return [
+        'P0' => ['label' => '续费窗口', 'desc' => '命中续费判定（课时尾段 / 临期 / 已过期但有余量）'],
+        'P1' => ['label' => '高资产低活跃', 'desc' => '停练超过 reviveDays 阈值、或人工标记待复活（有卡项资产）'],
+        'P2' => ['label' => '频次下降', 'desc' => '三个连续 30 天窗口出勤逐档下降（M1>M2>M3）'],
+        'P3' => ['label' => '过期有余额', 'desc' => '到期日已过、仍有余量，但**超出** renewalExpiredBackfillDays 回溯窗（未命中待续费）'],
+        'P4' => ['label' => '可升级', 'desc' => '有卡项资产、未命中以上任何一层'],
+        'P5' => ['label' => '新客转化', 'desc' => '无卡项资产（前端客资/留资）'],
+    ];
+}
+
+/**
+ * 单会员判定唯一入口：五清单、经营分层、续费评估三处共用同一份结论。
+ *
+ * 这是 C4「口径分裂」的治本修法——此前会员管理页签（`computeMemberListIds`）与
+ * 续费评估（`renewalEvaluationContext`）各自实现一套阈值判断，同一个会员能同时
+ * 得到「在待续课清单里」和「续费窗口 0 分」两个相反结论。现在只有一个实现。
+ *
+ * @return array{
+ *   hasAsset:bool, m1:int, m2:int, m3:int, lastVisitDays:?int, expireDays:?int,
+ *   revive:bool, preLoss:bool, declining:bool, vip:bool,
+ *   hasBalance:bool, expiredWithBalance:bool, layer:string,
+ *   renewal:array{in:bool, why:string[], bucket:string, urgent:bool, revive:bool, degraded:string[]}
+ * }
+ */
+function customerDecision(Customer $c, ?array $rules = null): array
+{
+    $rules ??= rules();
+    $threshold = (int) ($rules['renewalThreshold'] ?? 10);
     $countPercent = (int) ($rules['renewalCountPercent'] ?? 0);
     $expireDaysRule = (int) ($rules['renewalExpireDays'] ?? 30);
     $expirePercent = (int) ($rules['renewalExpirePercent'] ?? 0);
+    // 已过期但仍有余额的卡：只回溯最近 N 天（决策 D4）。再久远的过期卡属于
+    // 「陈年旧账」，每天出现在待续费清单里会训练店长忽略这个清单。
+    $backfillDays = (int) ($rules['renewalExpiredBackfillDays'] ?? 90);
     $vip = (float) ($rules['vipAmountThreshold'] ?? 30000);
-    $strict = ($rules['declineMode'] ?? 'strict') === 'strict';
+    $reviveDays = (int) ($rules['reviveDays'] ?? 30);
     $predropMin = (int) ($rules['predropMin'] ?? 15);
     $predropMax = (int) ($rules['predropMax'] ?? 30);
-    $reviveDays = (int) ($rules['reviveDays'] ?? 30);
-    $days = fn ($d) => $d ? (int) ((time() - strtotime($d)) / 86400) : null;
 
-    $lists = ['待续课' => [], '出勤降低' => [], 'VIP' => [], '预流失' => [], '待复活' => []];
+    $m1 = (int) $c->attend_m1;
+    $m2 = (int) $c->attend_m2;
+    $m3 = (int) $c->attend_m3;
+    $dd = $c->last_visit ? (int) ((time() - strtotime((string) $c->last_visit)) / 86400) : null;
+    $mainCard = $c->main_card;
+    $expireDays = $c->expire_date ? (int) now()->startOfDay()->diffInDays($c->expire_date, false) : null;
+    $paid = (float) ($c->card_paid_amount ?? 0);
+
+    $stats = (array) ($c->card_stats ?? []);
+    $countBound = (int) ($stats['countBound'] ?? 0);
+    $daysLeft = $stats['daysLeft'] ?? null;
+    $daysTotal = (int) ($stats['daysTotal'] ?? 0);
+    $cards = is_array($c->cards_list) ? $c->cards_list : [];
+
+    $why = [];
+    $whyCodes = [];
+    $degraded = [];
+    $bucket = '—';
+    $liveCount = $liveTime = [];
+    // 到期/过期类命中：**结构化标记**，供 $urgent 读取。
+    // 不能用「在 $why 文案里找『到期/过期』字样」来判定——$why 内嵌卡名，
+    // 一张叫「到期提醒卡」的卡即使 deadline 远在窗外，也会让会员被误判为紧急。
+    // 文案是给人看的，判定必须看标记。
+    $deadlineHit = false;
+
+    // ── 分类必须放在判定 $hasAsset **之前**：cards_list 也是资产证据（见下） ──
+    // 分类：用完的卡 / 未开卡 / 余额未知（C2 + C3 + C7）
+    //
+    // ⚠️ 这个循环是卡项状态的**唯一分派点**。下游任何「某类卡项存不存在」的判断
+    // 都必须由这里派生（计数/集合），**不得再逐类列举状态名** —— 见下面两处证据集的注释。
+    $unactivated = [];
+    $unknownResidue = [];
+    $exhaustedCount = false;
+    foreach ($cards as $card) {
+        if (! empty($card['unactivated'])) {
+            $unactivated[] = $card;
+
+            continue;
+        }
+        $isTime = array_key_exists('type', $card)
+            ? (string) $card['type'] === '2'
+            : (($card['unit'] ?? '节') === '天');
+        $residue = $card['residue'] ?? null;
+        if ($residue === null) {
+            // 「余额未知」≠「余额为 0」。上游没返回 residue_amount 时不能断言课时已用完，
+            // 更不能据此判紧急——那是在用缺失数据下结论。单独收集，走 degraded 显式告知。
+            $unknownResidue[] = $card;
+
+            continue;
+        }
+        if ((int) $residue <= 0) {
+            // 只有**确认** residue === 0（有数值）才算「课时已耗尽」
+            if (! $isTime) {
+                $exhaustedCount = true;
+            }
+
+            continue;
+        }
+        $isTime ? $liveTime[] = $card : $liveCount[] = $card;
+    }
+    if ($unknownResidue !== []) {
+        $titles = implode('、', array_slice(array_map(fn ($x) => (string) ($x['title'] ?? '卡项'), $unknownResidue), 0, 3));
+        $degraded[] = "「{$titles}」未返回剩余量，该卡不参与「课时耗尽/剩余量」判定（可能漏提醒）";
+    }
+
+    // ── 有无卡项资产：**单点派生**，不列举卡项状态 ──
+    //
+    // `cards_list` 非空 ⟺ 名下至少有一张有效卡（它映射自 KyMemberSyncService 的 `$active`），
+    // 所以「明细非空」本身就是「有资产」的充要证据。汇总字段 `main_card` 只作为**兜底**：
+    // 老数据/未同步行的 cards_list 为 NULL 而 main_card 有值，那些会员必须仍算有资产。
+    //
+    // ⚠️ 为什么不再逐类列举（这正是 t19-F1 → t24-F1 → t24-F2 连续三轮的根因）：
+    // 此处曾写作 `$hasAssetFromSummary || $liveCount !== [] || $liveTime !== [] || $unknownResidue !== []`。
+    // 那种写法要求**每次给分类循环加一种卡项状态，都要回来同步这份枚举**——
+    // t23 补了 liveCount/liveTime/unknownResidue，却漏了 unactivated，于是
+    // 「未开卡·有标题」→ hasAsset=true，而「未开卡·无标题」（main_card 为空串）→ hasAsset=false → 落 P5。
+    // 仅差一个 card_title 就让同一张未开卡卡项的结论翻转，且落 P5 会把它当成前端客资（PII 面）。
+    // 现在改为「明细非空 或 汇总有卡名」：**新增任何卡项状态都不需要再改这里**，
+    // 因为任何新状态都出现在 cards_list 里，cards_list 非空即已覆盖。
+    //
+    // 授权面不变（P5 只可能变窄，不会变宽）——依据是一条已验证的不变量：
+    //   `main_card === '—'` 只在 `$active` 为空时出现，而 cards_list 同样映射自 `$active`，
+    //   故 `main_card='—'` **必然蕴含** cards_list 为空 → 两个析取项都为 false → hasAsset 仍为 false。
+    // 即：本判定只可能在「确实有卡」时把会员从 P5 **拉出来**，绝不会把真客资推进 P5。
+    // 真客资（无卡、main_card='—'）依旧落 P5，`scopeLeadOnlyCustomers()` 的授权面不变。
+    $hasAssetFromSummary = $mainCard !== null && ! in_array($mainCard, ['', '—', '待同步卡项'], true);
+    $hasAsset = $cards !== [] || $hasAssetFromSummary;
+
+    // m1/m2/m3 是三个连续且等长的 30 天滚动窗口（再前30天 / 前30天 / 近30天）：
+    // 三档等长才使下面的「逐档下降」比较有意义。
+    $revive = (bool) $c->in_revive || ($dd !== null && $dd > $reviveDays && $hasAsset);
+    $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= $predropMin && $dd <= $predropMax));
+    // 「出勤降低」必须读配置里的 declineMode（用户可调），否则就是「可调但无效」的阈值。
+    // HEAD 原本就读它，t6 一度硬编码成 strict —— 那是回归，已改回。
+    // 分层 P2 仍固定用 strict（见下面 $decliningForLayer）：分层表达的是「趋势」，
+    // 不应该因为店长调了「清单阈值」而换层，两者是不同用途，故用两个变量。
+    $declineStrict = ($rules['declineMode'] ?? 'strict') === 'strict';
+    $declining = ! $revive && ! $preLoss
+        && ($declineStrict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3));
+
+    if (! $hasAsset) {
+        // 无卡项资产：不进任何续费判定（P5 前端客资/留资）
+        $bucket = '无资产';
+    } else {
+
+        if ($cards === []) {
+            // ── 老数据/未同步：无卡项明细，退回汇总口径，占比规则**明确降级** ──
+            // C9：此前这里的分支表达式 `(string) $c->remain_times !== null` 恒为真（死代码），
+            // 且占比类规则在 card_stats 为 NULL 时静默失效——用户调了阈值「没反应」却查不到原因。
+            // 现在把「哪条规则没生效」写进 degraded，由接口显式返回。
+            // 汇总口径优先取 card_stats.countResidue（同步写入），仅在完全没有快照时才用
+            // remain_times（更老的单主卡字段）。
+            $countResidue = array_key_exists('countResidue', $stats) ? $stats['countResidue'] : $c->remain_times;
+            if ($countPercent > 0 && $countBound <= 0) {
+                $degraded[] = '无卡项汇总快照，剩余占比规则未生效（请先执行一次同步）';
+            }
+            if ($expirePercent > 0 && ($daysLeft === null || $daysTotal <= 0)) {
+                $degraded[] = '无期限卡汇总快照，有效期占比规则未生效（请先执行一次同步）';
+            }
+            if ($countResidue !== null && $countResidue <= $threshold) {
+                $why[] = "次卡剩余合计 {$countResidue} 节 ≤ {$threshold}";
+            } elseif ($countPercent > 0 && $countBound > 0 && $countResidue !== null
+                && $countResidue / $countBound * 100 <= $countPercent) {
+                $why[] = '次卡剩余占比 '.round($countResidue / $countBound * 100, 1)."% ≤ {$countPercent}%（余 {$countResidue} 节）";
+            }
+        } else {
+            // ── 在用次卡：合计口径（4a）+ 逐卡尾段（4b）并存（决策 D2） ──
+            if ($liveCount !== []) {
+                $residueSum = array_sum(array_map(fn ($x) => (int) $x['residue'], $liveCount));
+                $boundSum = array_sum(array_map(fn ($x) => (int) ($x['bound'] ?? $x['residue']), $liveCount));
+                if ($residueSum <= $threshold) {
+                    $why[] = "在用次卡合计余 {$residueSum} 节 ≤ {$threshold}";
+                } elseif ($countPercent > 0 && $boundSum > 0 && $residueSum / $boundSum * 100 <= $countPercent) {
+                    $why[] = '在用次卡合计占比 '.round($residueSum / $boundSum * 100, 1)."% ≤ {$countPercent}%（余 {$residueSum} 节）";
+                }
+                // 逐卡：合计口径会掩盖「一张卡已到尾段」（合计 52 节，但其中一张只剩 2 节）
+                foreach ($liveCount as $card) {
+                    $cardResidue = (int) $card['residue'];
+                    $cardBound = (int) ($card['bound'] ?? $cardResidue);
+                    $title = (string) ($card['title'] ?? '卡项');
+                    if ($cardResidue <= $threshold) {
+                        $why[] = "单卡「{$title}」仅余 {$cardResidue} 节 ≤ {$threshold}（合计仍有 {$residueSum} 节）";
+
+                        break;
+                    }
+                    if ($countPercent > 0 && $cardBound > 0 && $cardResidue / $cardBound * 100 <= $countPercent) {
+                        $why[] = "单卡「{$title}」占比 ".round($cardResidue / $cardBound * 100, 1)."% ≤ {$countPercent}%（余 {$cardResidue} 节）";
+
+                        break;
+                    }
+                }
+            }
+            // 次卡课时已耗尽（无在用次卡，但**确认**有次卡 residue=0 在册）：
+            // 卡在、课没了，正是该续课的时候。
+            // 注意这里用 $exhaustedCount（只有 residue === 0 才算），
+            // 不用「有次卡但余额未知」——那是拿缺失数据下结论。
+            if ($liveCount === [] && $exhaustedCount) {
+                $why[] = '在用次卡课时已耗尽（无剩余课时）';
+                $whyCodes[] = 'count_exhausted';
+            }
+            // ── 待开卡：**确实只有未开卡卡项**时才算（C7） ──
+            //
+            // ⚠️ 这里刻意**不列举**卡项状态（不再写「没有 liveCount、没有 liveTime、
+            // 没有 unknownResidue、没有 exhaustedCount」）。那种写法要求每次给分类循环
+            // 新增一种状态都回来补一格，而**漏补不会报错、只会静默改变判定**：
+            // t19-F1 补了 unknownResidue、t24-F1 又发现漏了 exhaustedCount —— 同一处连续两轮漏项。
+            //
+            // 现在改为**计数断言**：「$cards 里每一项都进了 $unactivated」。
+            // 分类循环对每张卡必然二选一（进 $unactivated，或进其余某类），
+            // 所以 `count($unactivated) === count($cards)` ⟺ 除未开卡外没有任何其他卡项。
+            // **新增任何卡项状态都不需要改这里**：新状态必然不是 unactivated，
+            // 于是计数不再相等、自动退出待开卡分支。
+            //
+            // 实测漏判（修复前）：未开卡次卡 + 一张「已确认耗尽·到期+5天」的次卡
+            //   → 旧 guard 漏看 $exhaustedCount，判「待开卡」→ 下行的
+            //     `$in = $hasAsset && $why !== [] && $bucket !== '待开卡'` 把 why 里
+            //     **已经算出的**「在用次卡课时已耗尽」整个否决 → in=false/P4，
+            //     而「只有那张已耗尽次卡」时是 in=true/P0 —— 加一张未开卡卡项就把信号抹掉。
+            if ($unactivated !== [] && count($unactivated) === count($cards)) {
+                // D5：不新增第 6 个清单页签，只在 reason 里说明。
+                $bucket = '待开卡';
+            }
+        }
+
+        if ($bucket !== '待开卡') {
+            // ── 逐卡到期提醒（C3）：只看**还有余量**的卡，不再用全局最早 expire_date ──
+            foreach (array_merge($liveCount, $liveTime) as $card) {
+                $days = $card['deadline']
+                    ? (int) now()->startOfDay()->diffInDays($card['deadline'], false)
+                    : null;
+                if ($days === null) {
+                    continue;
+                }
+                $title = (string) ($card['title'] ?? '卡项');
+                $unit = (string) ($card['unit'] ?? '节');
+                if ($days >= 0 && $days <= $expireDaysRule) {
+                    $why[] = "「{$title}」{$days} 天后到期（仍余 {$card['residue']}{$unit}）";
+                    $whyCodes[] = 'deadline_near';
+                    $deadlineHit = true;
+                } elseif ($days < 0 && $days >= -$backfillDays) {
+                    // C8：已过期但仍有余额——卡里的课还能上（或需补偿），此前完全漏判
+                    $why[] = "「{$title}」已过期 ".abs($days)." 天，仍余 {$card['residue']}{$unit}";
+                    $whyCodes[] = 'deadline_expired';
+                    $deadlineHit = true;
+                }
+            }
+            // ── 余额未知的**期限卡**：不能静默。
+            // 期限卡的价值在于「有效期」，即使上游没给剩余天数，只要 deadline 在窗外，
+            // 仍应按到期日单独判——这正是 R6 指出的漏提醒路径。
+            foreach ($unknownResidue as $card) {
+                if (! (array_key_exists('type', $card) ? (string) $card['type'] === '2' : ($card['unit'] ?? '节') === '天')) {
+                    continue; // 次卡余额未知：已进 degraded，不猜
+                }
+                $days = $card['deadline']
+                    ? (int) now()->startOfDay()->diffInDays($card['deadline'], false)
+                    : null;
+                if ($days === null) {
+                    continue;
+                }
+                $title = (string) ($card['title'] ?? '卡项');
+                if ($days >= 0 && $days <= $expireDaysRule) {
+                    $why[] = "「{$title}」{$days} 天后到期（该卡未返回剩余量，按到期日判定）";
+                    $whyCodes[] = 'deadline_near';
+                    $deadlineHit = true;
+                } elseif ($days < 0 && $days >= -$backfillDays) {
+                    $why[] = "「{$title}」已过期 ".abs($days).' 天（该卡未返回剩余量，按到期日判定）';
+                    $whyCodes[] = 'deadline_expired';
+                    $deadlineHit = true;
+                }
+            }
+            // 汇总口径的到期日（无卡项明细时的唯一依据；有明细时作为补充）
+            if ($cards === [] && $expireDays !== null) {
+                if ($expireDays >= 0 && $expireDays <= $expireDaysRule) {
+                    $why[] = "到期日临近（{$expireDays} 天后）";
+                    $whyCodes[] = 'deadline_near';
+                    $deadlineHit = true;
+                } elseif ($expireDays < 0 && $expireDays >= -$backfillDays) {
+                    $why[] = '到期日已过 '.abs($expireDays).' 天';
+                    $whyCodes[] = 'deadline_expired';
+                    $deadlineHit = true;
+                }
+            }
+            // ── 有效期占比（汇总口径，保持 daysLeft/daysTotal 的「在用期限卡合计」语义） ──
+            if ($expirePercent > 0 && $daysLeft !== null && $daysTotal > 0
+                && $daysLeft / $daysTotal * 100 <= $expirePercent) {
+                $why[] = '在用期限卡有效期仅剩 '.round($daysLeft / $daysTotal * 100, 1).'%';
+                $whyCodes[] = 'validity_percent';
+            }
+        }
+    }
+
+    $in = $hasAsset && $why !== [] && $bucket !== '待开卡';
+    // 出勤不再是门槛，只决定紧急度（C4）。
+    // 「到期/过期」类命中即使近 30 天没来也必须紧急——卡马上要作废，等会员自己回来就来不及了。
+    // 这里读**结构化标记** $deadlineHit，不做文案匹配：$why 里内嵌卡名，
+    // 一张叫「到期提醒卡」的卡会把 str_contains 命中，让观察态误升为紧急态。
+    $urgent = $in && ($m3 > 0 || $deadlineHit);
+    if ($in) {
+        $bucket = $urgent ? '待续费·紧急' : '待续费·观察';
+    } elseif ($bucket !== '待开卡' && $bucket !== '无资产') {
+        $bucket = '—';
+    }
+
+    // 有余额（用于 P3 过期有余额、以及 C8 的「过期但还有课」判断）
+    $hasBalance = ($liveCount !== [] || $liveTime !== [])
+        || (int) ($c->remain_times ?? 0) > 0
+        || ($daysLeft !== null && (int) $daysLeft > 0);
+    $expiredWithBalance = $hasAsset && $expireDays !== null && $expireDays < 0 && $hasBalance;
+
+    // 分层优先级：P0 → P1 → P2 → P3 → P4，先命中先落层（互斥单值）。
+    //
+    // P0 放最前是**必须**的：真实数据里「待续费」与「待复活」重叠率 100%
+    // （见诊断文档 C5），若把待复活放在 P0 之前，待续费窗口池会被整池搬空——
+    // 那正是「P0 恒为空」的另一种成因。重叠会员的展示优先级由 watch 里的
+    // primary/coLists 表达（D3：不隐藏，只分主次），不由分层表达。
+    //
+    // P2 用**独立常量 strict**（M1>M2>M3），不跟随 declineMode：
+    // declineMode 是「出勤降低」**清单**的可调阈值（店长改它期望清单变化），
+    // 而分层表达的是长期趋势，不应因为店长调清单阈值而整层换位。
+    // 两者用途不同，所以是两个变量：$declining（清单，读配置）/ $decliningForLayer（分层，固定 strict）。
+    $decliningForLayer = ! $revive && ! $preLoss && ($m1 > $m2 && $m2 > $m3);
+    $layer = ! $hasAsset ? 'P5'
+        : ($in ? 'P0'
+            : ($revive ? 'P1'
+                : ($decliningForLayer ? 'P2'
+                    : ($expiredWithBalance ? 'P3' : 'P4'))));
+
+    return [
+        'hasAsset' => $hasAsset,
+        'm1' => $m1, 'm2' => $m2, 'm3' => $m3,
+        'lastVisitDays' => $dd,
+        'expireDays' => $expireDays,
+        'revive' => $revive,
+        'preLoss' => $preLoss,
+        'declining' => $declining,
+        'vip' => $paid >= $vip,
+        'hasBalance' => $hasBalance,
+        'expiredWithBalance' => $expiredWithBalance,
+        'layer' => $layer,
+        'renewal' => [
+            'in' => $in,
+            'why' => $why,
+            // 结构化命中类型（deadline_near / deadline_expired / count_exhausted / validity_percent…）。
+            // $urgent 只读这些标记，不做文案匹配；前端也可按 code 分类展示，不必解析中文。
+            'whyCodes' => $whyCodes,
+            'deadlineHit' => $deadlineHit,
+            'bucket' => $bucket,
+            'urgent' => $urgent,
+            'revive' => $revive,
+            'degraded' => $degraded,
+        ],
+    ];
+}
+
+/** 单会员经营分层（P0-P5），口径见 layerDefinitions() */
+function customerLayerFor(Customer $c, ?array $rules = null): string
+{
+    return customerDecision($c, $rules)['layer'];
+}
+
+/**
+ * 按 id 重算**单个**会员的经营分层并落库，返回是否发生变化。
+ *
+ * 这是「派生列必须在写入判定输入后重算」的**单一 owner**：任何改动过
+ * `in_revive` / `last_visit` / `card_stats` / `cards_list` / `attend_m*` 等
+ * 判定输入列的写入方，都应该调它（或调全量版 recalculateMemberLayers()），
+ * 而不是各自记得手动写 layer。
+ *
+ * 之所以要有这个函数：t6 只在「同步」与「改阈值」两处触发了重算，
+ * 漏掉了 `PATCH /customers/{id}` 写 `in_revive` 这条路径——店长点「标记待复活」后，
+ * 分层不会跟着变，`layer` 与 `customerLayerFor()` 当场不一致，
+ * 而经营池分层页面读的正是 `layer` 列。派生列与判定函数分叉是最难查的一类 bug：
+ * 页面上显示 P4、详情页算出来 P1，两边都「看起来对」。
+ *
+ * 与全量版共用同一口径（customerDecision），且同样不碰 updated_at。
+ */
+function recomputeLayerFor(int $id): bool
+{
+    if (! Schema::hasTable('customers') || ! Schema::hasColumn('customers', 'layer')) {
+        return false;
+    }
+    $c = Customer::query()
+        ->select([
+            'id', 'layer', 'main_card', 'remain_times', 'expire_date', 'last_visit',
+            'attend_m1', 'attend_m2', 'attend_m3', 'in_revive', 'card_paid_amount',
+            'card_stats', 'cards_list',
+        ])
+        ->find($id);
+    if (! $c) {
+        return false;
+    }
+    $target = customerDecision($c)['layer'];
+    if ((string) $c->layer === $target) {
+        return false;
+    }
+    // query builder：不触发 Eloquent 的 updated_at 自动维护（见 recalculateMemberLayers 注释）
+    DB::table('customers')->where('id', $id)->update(['layer' => $target]);
+
+    return true;
+}
+
+/**
+ * 重算全部会员的经营分层并落库，返回实际改动的行数。
+ *
+ * 三个必须守住的约束：
+ *  1. **不碰 `updated_at`**。五清单缓存的键含 `MAX(updated_at)`（见 memberListIds），
+ *     本函数在每次同步后都会跑，若写 updated_at 会每轮击穿清单缓存。
+ *     所以用 query builder 的 update（不触发 Eloquent 时间戳），而非 $customer->save()。
+ *  2. **幂等且廉价**：先算目标分层、与现值比对，只更新真正变化的行；无变化时零写入。
+ *  3. **绝不因分层失败而回滚同步**：调用方是同步主流程，分层只是派生数据。
+ *     本函数自身不做事务，调用方按需 try/catch。
+ *
+ * P5 的语义必须保持「无资产 = 前端客资」不变（授权条件依赖它），
+ * 所以无资产的会员会被写成 P5，而不是「跳过不动」——否则一次误判留在 P4 就再也不会被纠正。
+ */
+function recalculateMemberLayers(): int
+{
+    if (! Schema::hasTable('customers') || ! Schema::hasColumn('customers', 'layer')) {
+        return 0;
+    }
+
+    $rules = rules();
+    $changed = 0;
 
     Customer::query()
-        ->select(['id', 'main_card', 'remain_times', 'expire_date', 'last_visit', 'attend_m1', 'attend_m2', 'attend_m3', 'in_revive', 'card_paid_amount', 'card_stats'])
-        ->chunkById(500, function ($customers) use (&$lists, $threshold, $countPercent, $expireDaysRule, $expirePercent, $vip, $strict, $predropMin, $predropMax, $reviveDays, $days) {
+        ->select([
+            'id', 'layer', 'main_card', 'remain_times', 'expire_date', 'last_visit',
+            'attend_m1', 'attend_m2', 'attend_m3', 'in_revive', 'card_paid_amount',
+            'card_stats', 'cards_list',
+        ])
+        ->chunkById(500, function ($customers) use (&$changed, $rules) {
+            $byLayer = [];
             foreach ($customers as $c) {
-                $m1 = $c->attend_m1;
-                $m2 = $c->attend_m2;
-                $m3 = $c->attend_m3;
-                $dd = $days($c->last_visit);
-                $hasAsset = $c->main_card !== null && ! in_array($c->main_card, ['', '—', '待同步卡项'], true);
-                $expireDays = $c->expire_date ? now()->startOfDay()->diffInDays($c->expire_date, false) : null;
-                $revive = (bool) $c->in_revive || ($dd !== null && $dd > $reviveDays && $hasAsset);
-                // m1/m2/m3 是三个连续且等长的 30 天滚动窗口（再前30天 / 前30天 / 近30天）：
-                // 三档等长才使下面的「逐档下降」比较有意义。
-                $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= $predropMin && $dd <= $predropMax));
-                $declining = ! $revive && ! $preLoss && ($strict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3));
-
-                $stats = (array) ($c->card_stats ?? []);
-                $countResidue = array_key_exists('countResidue', $stats)
-                    ? $stats['countResidue']
-                    : (($c->main_card !== null && (string) $c->remain_times !== null && $c->remain_times !== null) ? $c->remain_times : null);
-                $countBound = (int) ($stats['countBound'] ?? 0);
-                $daysLeft = $stats['daysLeft'] ?? null;
-                $daysTotal = (int) ($stats['daysTotal'] ?? 0);
-                $renewalHit = false;
-                // 待续课要求「最近一个月有出勤」：m3 = 近 30 天（含今天），
-                // 而非自然月的「上月」——否则本月恢复训练、上月停练的会员会被漏掉
-                if ($countResidue !== null && $m3 > 0) {
-                    $renewalHit = $countResidue <= $threshold
-                        || ($countPercent > 0 && $countBound > 0 && $countResidue / $countBound * 100 <= $countPercent);
+                $target = customerDecision($c, $rules)['layer'];
+                if ((string) $c->layer !== $target) {
+                    $byLayer[$target][] = $c->id;
                 }
-                $renewalHit = $renewalHit
-                    || ($expireDays !== null && $expireDays >= 0 && $expireDays <= $expireDaysRule)
-                    || ($expirePercent > 0 && $daysLeft !== null && $daysTotal > 0 && $daysLeft / $daysTotal * 100 <= $expirePercent);
+            }
+            foreach ($byLayer as $layer => $ids) {
+                foreach (array_chunk($ids, 500) as $batch) {
+                    // query builder：不触发 Eloquent 的 updated_at 自动维护
+                    DB::table('customers')->whereIn('id', $batch)->update(['layer' => $layer]);
+                    $changed += count($batch);
+                }
+            }
+        });
 
-                if ($hasAsset && $renewalHit) {
+    return $changed;
+}
+
+/**
+ * 五清单 + 明细的唯一计算实现。
+ *
+ * @return array{lists:array<string,int[]>, watch:array<string,array>}
+ */
+function computeMemberLists(array $rules): array
+{
+    $lists = ['待续课' => [], '出勤降低' => [], 'VIP' => [], '预流失' => [], '待复活' => []];
+    $watch = ['待续费' => [], '待开卡' => [], '经营分层' => []];
+
+    Customer::query()
+        ->select([
+            'id', 'main_card', 'remain_times', 'expire_date', 'last_visit',
+            'attend_m1', 'attend_m2', 'attend_m3', 'in_revive', 'card_paid_amount',
+            'card_stats', 'cards_list',
+        ])
+        ->chunkById(500, function ($customers) use (&$lists, &$watch, $rules) {
+            foreach ($customers as $c) {
+                $d = customerDecision($c, $rules);
+                $renewal = $d['renewal'];
+
+                if ($renewal['in']) {
                     $lists['待续课'][] = $c->id;
+                    $watch['待续费'][$c->id] = [
+                        'why' => $renewal['why'],
+                        // 结构化命中类型，与 why 文案并存：文案给人看，code 给程序用
+                        'whyCodes' => $renewal['whyCodes'],
+                        'deadlineHit' => $renewal['deadlineHit'],
+                        'bucket' => $renewal['bucket'],
+                        'urgent' => $renewal['urgent'],
+                        // D3：待复活**不隐藏**会员，只标注，供前端分主次展示
+                        'revive' => $renewal['revive'],
+                        'remain' => $c->remain_times,
+                        'expireDays' => $d['expireDays'],
+                        'attendM3' => $d['m3'],
+                        'degraded' => $renewal['degraded'],
+                    ];
+                } elseif ($renewal['bucket'] === '待开卡') {
+                    // D5：不新增页签，但要让「有卡未开」可见，否则这类会员会静默消失。
+                    // why/whyCodes 与 watch['待续费'] 同源取 decision 的真实结论：
+                    // 硬编码一句固定文案会让「为什么他在这个池子里」失去可追溯性，
+                    // 而 degraded（如「未返回剩余量」）正是用户排查「阈值调了没反应」的唯一线索。
+                    // 只有当 decision 确实没给出任何 why 时才回退到默认文案。
+                    $watch['待开卡'][$c->id] = [
+                        'why' => $renewal['why'] !== []
+                            ? $renewal['why']
+                            : ['有未开卡卡项，尚未开始消耗课时'],
+                        'whyCodes' => $renewal['whyCodes'],
+                        'degraded' => $renewal['degraded'],
+                    ];
                 }
-                if ($declining) {
+                $watch['经营分层'][$c->id] = $d['layer'];
+
+                if ($d['declining']) {
                     $lists['出勤降低'][] = $c->id;
                 }
-                if ((float) ($c->card_paid_amount ?? 0) >= $vip) {
+                if ($d['vip']) {
                     $lists['VIP'][] = $c->id;
                 }
-                if ($preLoss) {
+                if ($d['preLoss']) {
                     $lists['预流失'][] = $c->id;
                 }
-                if ($revive) {
+                if ($d['revive']) {
                     $lists['待复活'][] = $c->id;
                 }
             }
         });
 
-    return $lists;
+    // 跨清单共属标记：同一会员既在待续费又在待复活时，前端需要知道「哪个是主标签」。
+    // 放在扫描之后统一算，避免在循环里回头查清单。
+    $coMembership = [];
+    foreach ($lists as $key => $ids) {
+        if ($key === '待续课') {
+            continue;
+        }
+        foreach ($ids as $id) {
+            $coMembership[$id][] = $key;
+        }
+    }
+    foreach ($watch['待续费'] as $id => $payload) {
+        $co = $coMembership[$id] ?? [];
+        $watch['待续费'][$id]['coLists'] = $co;
+        // 主标签：待复活态先唤醒，否则按紧急度
+        $watch['待续费'][$id]['primary'] = $payload['revive'] ? '待复活'
+            : ($payload['urgent'] ? '待续费·紧急' : '待续费·观察');
+    }
+
+    return ['lists' => $lists, 'watch' => $watch];
 }
 
 /** 生日是否为今天（忽略年份，2/29 生日在平年按 3/1 庆祝） */

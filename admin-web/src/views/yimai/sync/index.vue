@@ -1,5 +1,5 @@
 <template>
-  <div class="sync-page art-full-height !h-auto">
+  <div class="list-page">
     <!-- 连接状态 -->
     <ElCard shadow="never" class="mb-4">
       <div class="flex flex-wrap items-center gap-4">
@@ -12,7 +12,7 @@
         </div>
         <ElTag size="small" effect="plain">品牌 108193 · 一麦瑜伽</ElTag>
         <ElTag v-if="sessionAt" size="small" type="success">会话 {{ sessionAt }}</ElTag>
-        <div class="flex-1" />
+        <div class="filter-bar__spacer" />
         <ElButton size="small" @click="openKyConfig">登录账号设置</ElButton>
         <ElButton type="primary" :loading="connecting" @click="connect">{{
           connected ? '刷新会话' : '建立连接'
@@ -188,9 +188,10 @@
           </div>
           <ElTable
             v-if="!isHandheld"
+            ref="sampleTableRef"
             :data="members"
             size="small"
-            max-height="240"
+            :max-height="sampleTableMaxHeight"
             v-loading="memberLoading"
             border
           >
@@ -247,7 +248,6 @@
         :data="data"
         :columns="columns"
         :pagination="pagination"
-        max-height="520"
         @pagination:size-change="handleSizeChange"
         @pagination:current-change="handleCurrentChange"
       />
@@ -268,7 +268,7 @@
         <div v-if="!loading && !data.length" class="m-card-list__empty">暂无同步批次</div>
       </div>
 
-      <div v-if="isHandheld" class="mt-4 flex justify-end">
+      <div v-if="isHandheld" class="list-pager">
         <ElPagination
           :current-page="pagination.current"
           :page-size="pagination.size"
@@ -282,11 +282,12 @@
     <ElDialog v-model="artifactDialog.visible" title="历史导入表格" width="820px">
       <ElTable
         v-if="!isHandheld"
+        ref="artifactTableRef"
         v-loading="artifactDialog.loading"
         :data="artifactDialog.rows"
         border
         stripe
-        max-height="520"
+        :max-height="artifactTableMaxHeight"
       >
         <ElTableColumn prop="displayName" label="表格名称" min-width="280" show-overflow-tooltip />
         <ElTableColumn label="范围" width="150">
@@ -342,6 +343,7 @@
   import { toLocalDateString } from '@/utils'
   import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type {
     MobileCardAction,
     MobileCardMetric,
@@ -352,6 +354,14 @@
 
   // 手持设备上用卡片列表代替宽表格（见下方 syncCardRows / memberCardTags）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应。
+  //
+  // 三张表各自持一个 ref —— hook 靠「表格到 .list-page 顶部的距离」算减项，
+  // 共用同一个 ref 会让后渲染的表覆盖先渲染的测量结果。
+  // 上面「历史同步批次」用的是 ArtTable，它内部已经接了同一个 hook，这里不用再传。
+  const { tableMaxHeight: sampleTableMaxHeight, tableRef: sampleTableRef } = useTableHeight()
+  const { tableMaxHeight: artifactTableMaxHeight, tableRef: artifactTableRef } = useTableHeight()
 
   const yimaiStore = useYimaiStore()
 

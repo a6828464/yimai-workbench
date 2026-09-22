@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <YimaiTodayTodo variant="full" :initial-group="initialGroup" />
   </div>
 </template>

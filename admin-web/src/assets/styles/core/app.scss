@@ -1,8 +1,22 @@
 // 全局样式
+//
+// 断点变量与 mixin（handheld-only / mobile-only 等）必须显式 @use：
+// 本文件是被 index.scss `@use` 的 partial，不会继承 vite.config.ts 里
+// scss.additionalData 的注入（那个只作用于 Vite 直接处理的入口样式）。
+@use '@styles/core/breakpoint.scss' as *;
+
 // 顶部进度条颜色
 #nprogress .bar {
   z-index: 2400;
   background-color: color-mix(in srgb, var(--theme-color) 70%, white);
+}
+
+// 统一页面范式的尺寸变量（见文件末尾「统一页面范式」一节）
+:root {
+  // 页面根容器内边距：与改造前 `p-4` 的 16px 一致，保证桌面端零视觉回归
+  --list-page-pad: 16px;
+  // 手持设备收紧一档：390px 屏上 16px×2 的内边距会吃掉 8% 的可用宽度
+  --list-page-pad-mobile: 12px;
 }
 
 #nprogress .peg {
@@ -199,6 +213,286 @@
 
   @media (max-width: 640px) {
     height: auto;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 统一页面范式（全站唯一 owner）
+// ---------------------------------------------------------------------------
+//
+// 为什么要有这一段
+// ----------------
+// 改造前全站页面根 class 有四种写法（实测）：
+//   `p-4` / `xxx-page art-full-height` / `sync-page art-full-height !h-auto` /
+//   `about-page mx-auto max-w-980 pt-8 pb-12 px-4`
+//
+// 其中只有 `art-full-height` 系带高度约束（`height: var(--art-full-height)`），
+// 而 `p-4` 系没有 —— 这正是 `calc(var(--art-full-height) - Npx)` 只在部分页面
+// 生效的根因：没有高度约束时 `--art-full-height` 跟本页表格无关，减出来的是错的。
+//
+// 所以统一范式必须先统一「谁提供高度约束」，而不是逐页复制 calc 字符串。
+// 现在收敛为两个 class，由本文件独占定义，页面只负责挂 class、不再自带内边距：
+//
+//   .list-page          所有页面的根容器：统一内边距、统一纵向 flex
+//   .list-page--fill    需要「固定视口高度 + 内部滚动」的页面（列表页）加这个修饰符
+//
+// 表格高度由 `hooks/core/useTableHeight.ts` 量 `.list-page` 得到，两者是配套的：
+// 页面换掉 `.list-page` 就会让 hook 找不到测量基准，所以不要在页面里另写容器。
+.list-page {
+  display: flex;
+  flex-direction: column;
+  padding: var(--list-page-pad);
+  box-sizing: border-box;
+
+  // 列表页：固定为「当前视口下内容区高度」，表格把这块高度用满（消除底部空白）
+  &--fill {
+    height: var(--art-full-height);
+
+    // ⚠️ 这里必须是 0，不要继承 `.list-page` 的 16px。
+    //
+    // 改造前这些页面（`.art-full-height` 系）的内边距就是 0，统一成 16px 之后
+    // 每边各缩 16px、合计损失 32px 可用宽度：留资管理的筛选条单行临界宽度约 1120px，
+    // 因此在 1430~1469px 视口下换行（1440/1460 都在窗口内），筛选条从 1 行变 2 行、
+    // 表格白矮 48px。
+    //
+    // 卡片自带 border + `.el-card__body` 的 20px 内边距，视觉留白已经够；
+    // 只有「随内容自然流」的页面才需要页面级内边距（见下面的 :not 分支），
+    // 所以按容器类型分档，而不是逐页去掉 padding。
+    padding: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  // 统一卡片容器：页面直接子级的 ElCard 一律用同一套外观与撑满规则，
+  // 页面不再需要自己写 `art-table-card` / `flex: 1` / `margin-top`。
+  > .el-card {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    margin-top: 0;
+    border-radius: calc(var(--custom-radius) / 2 + 2px) !important;
+
+    > .el-card__body {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+  }
+
+  // 内容页（没有 --fill）：卡片按内容高度自然排列，不撑满
+  &:not(.list-page--fill) > .el-card {
+    flex: 0 0 auto;
+
+    > .el-card__body {
+      overflow: visible;
+    }
+  }
+}
+
+// 手持设备：一律放开高度约束，让整页自然滚动。
+// 列表页此时已降级为 MobileCard 卡片列表，固定高度只会造成「卡片列表里再套一层滚动」。
+@include handheld-only {
+  .list-page {
+    padding: var(--list-page-pad-mobile);
+
+    &--fill {
+      height: auto;
+      min-height: var(--art-full-height);
+      overflow: visible;
+    }
+
+    > .el-card {
+      flex: 0 0 auto;
+
+      > .el-card__body {
+        overflow: visible;
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 统一筛选条
+// ---------------------------------------------------------------------------
+//
+// 改造前「新客培养顶部筛选框太大」的直接原因：筛选条没有宽度档，
+// 日期范围用 EP 默认宽（实测 286px @390 屏）独占一行，其余控件各写各的宽度，
+// 整体比留资管理高出一倍（新客培养筛选区 268px vs 留资 268px 里含提示行）。
+//
+// 现在筛选条独占一个 class，控件宽度也由这里统一给档位 —— 页面只挑档位，
+// 不写像素、不写 Tailwind 宽度，新增控件自动获得同一档默认宽度。
+//
+// 档位刻意**与改造前各页已经在用的 Tailwind 宽度一一对齐**，这样迁移是
+// 「把散落的 !w-28 / !w-32 换成 f-sm / f-md」，桌面端像素级零变化：
+//
+//   | 档位    | 宽度  | 等价 Tailwind | 用途                             |
+//   | ------- | ----- | ------------- | -------------------------------- |
+//   | f-xs    | 96px  | w-24          | 极短枚举（级别 / 状态）           |
+//   | f-sm    | 112px | w-28          | 门店 / 状态 / 短枚举              |
+//   | f-md    | 128px | w-32          | **默认档**：类型 / 归属           |
+//   | f-lg    | 144px | w-36          | 姓名 / 关键词                     |
+//   | f-xl    | 160px | w-40          | 手机号 / 日期（单日）             |
+//   | f-2xl   | 176px | w-44          | 联系方式 / 长关键词               |
+//   | f-date  | 256px | w-64          | 日期范围（daterange）             |
+//
+// 桌面端一行放不下时自动换行；手持设备统一整行铺满
+// （手指点得准，也不会挤成一条）。
+.filter-bar {
+  --filter-ctl-w: 128px;
+
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+
+  // 控件宽度唯一出口：不带档位就是 f-md（128px）
+  :is(.el-input, .el-select, .el-date-editor, .el-input-number, .el-cascader) {
+    width: var(--filter-ctl-w);
+  }
+
+  // 日期范围控件同时带 `.el-input__wrapper` 类，而 EP 给 `.el-input__wrapper`
+  // 设了 `flex-grow: 1` —— 在 flex 容器里它会把 width 顶开（实测 256px 被拉成 543px，
+  // 也就是用户反馈的「筛选框太大」）。所以这里要显式压掉 flex 增长。
+  .el-date-editor.el-input__wrapper,
+  .el-date-editor--daterange,
+  .el-date-editor--datetimerange {
+    flex-grow: 0;
+    flex-shrink: 0;
+    width: var(--filter-ctl-w);
+  }
+
+  // 档位修饰符：挂在控件自身或包裹元素上都生效
+  .f-xs {
+    --filter-ctl-w: 96px;
+  }
+
+  .f-sm {
+    --filter-ctl-w: 112px;
+  }
+
+  .f-md {
+    --filter-ctl-w: 128px;
+  }
+
+  .f-lg {
+    --filter-ctl-w: 144px;
+  }
+
+  .f-xl {
+    --filter-ctl-w: 160px;
+  }
+
+  .f-2xl {
+    --filter-ctl-w: 176px;
+  }
+
+  .f-date {
+    --filter-ctl-w: 256px;
+  }
+
+  // 把后面的内容推到右侧（如「新增」「保留策略」按钮）
+  &__spacer {
+    flex: 1 1 auto;
+  }
+
+  // 筛选条内的按钮不参与宽度档，按内容宽
+  .el-button {
+    width: auto;
+  }
+
+  @include handheld-only {
+    gap: 10px;
+
+    // 手持设备：控件整行铺满，避免 96~160px 的小控件在 390px 屏上点不准
+    :is(.el-input, .el-select, .el-date-editor, .el-input-number, .el-cascader) {
+      width: 100%;
+    }
+
+    // 日期范围铺满后 EP 自带的定宽要让位
+    .el-date-editor--daterange,
+    .el-date-editor--datetimerange {
+      width: 100% !important;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 统一空态与分页
+// ---------------------------------------------------------------------------
+//
+// 空态：全站统一走 `.list-empty`（卡片列表 / 表格 #empty 插槽），
+// 文案可以按场景写具体（「暂无本地备份，点击上方…」比「暂无数据」有用），
+// 但视觉由这里独占。
+.list-empty,
+.m-card-list__empty {
+  padding: 40px 0;
+  font-size: 13px;
+  color: var(--art-gray-500);
+  text-align: center;
+}
+
+// 表格内置空态（未使用 #empty 插槽时 EP 渲染的 .el-table__empty-text）
+.el-table__empty-text {
+  font-size: 13px;
+  color: var(--art-gray-500);
+}
+
+// ElEmpty：统一插图尺寸与文字。
+//
+// 改造前各页 `:image-size` 分别写了 50 / 60 / 70 / 120（默认），同一个系统里
+// 空态插图大小不一。这里用 CSS 统一到 64px，页面不再需要传 image-size
+// （传了也会被这里的 !important 归一到同一档，避免又出现分叉）。
+.el-empty {
+  --el-empty-image-size: 64px;
+
+  padding: 32px 0;
+
+  .el-empty__image {
+    width: 64px !important;
+    height: 64px !important;
+  }
+
+  .el-empty__description {
+    margin-top: 8px;
+
+    p {
+      font-size: 13px;
+      color: var(--art-gray-500);
+    }
+  }
+}
+
+// 分页器：统一右对齐 + 与表格统一的间距。
+// 桌面端右对齐（与「总数」在同一视觉轴上），手持设备居中（窄屏右对齐会贴边）。
+//
+// 间距取 12px 而不是 16px：表格行高 72px，1440/1460 视口下表体是 573px，
+// 差 3px 放不下第 8 行（8×72 = 576px）。回收这 4px 后表体 577px，第 8 行正好回来，
+// 与 HEAD 的 8 行基线持平（HEAD 表体 582px、末行余量 6px，本方案 4px，同样放得下）。
+// 分页器自身的垂直位置不变 —— 它由卡片底部锚定：表格长高多少、间距就等量少多少，
+// 所以「回收间距」不会把分页器推出卡片。间距仍 > 0，视觉上不与表格粘连。
+$pager-gap: 12px;
+
+.list-pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: $pager-gap;
+
+  @include handheld-only {
+    justify-content: center;
+  }
+}
+
+// ArtTable 自带的分页容器（.pagination）：与 .list-pager 同一套对齐与间距，
+// 这样「裸 ElTable + list-pager」和「ArtTable」两种写法的分页看起来完全一致。
+// 必须共用同一个变量 —— 只改一处会让两种写法重新分叉。
+.art-table .pagination {
+  margin-top: $pager-gap;
+
+  @include handheld-only {
+    justify-content: center;
   }
 }
 

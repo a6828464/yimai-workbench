@@ -1,18 +1,18 @@
 <template>
-  <div class="approval-page art-full-height">
-    <ElCard class="art-table-card">
-      <div class="mb-4 flex flex-wrap items-center gap-3">
+  <div class="list-page list-page--fill">
+    <ElCard>
+      <div class="filter-bar">
         <ElSelect
           v-model="searchForm.status"
           placeholder="审批状态"
           clearable
-          class="!w-40"
+          class="f-xl"
           @change="handleSearch"
         >
           <ElOption v-for="s in STATUSES" :key="s" :label="s" :value="s" />
         </ElSelect>
         <ElButton @click="handleReset">重置</ElButton>
-        <div class="flex-1" />
+        <div class="filter-bar__spacer" />
         <ElButton type="primary" plain @click="openCreate">发起价格审批</ElButton>
       </div>
 
@@ -82,7 +82,7 @@
               :min="0"
               :step="100"
               controls-position="right"
-              class="!w-36"
+              class="f-lg"
               placeholder="标准价"
             />
             <span class="text-gray-400">→</span>
@@ -91,7 +91,7 @@
               :min="0"
               :step="100"
               controls-position="right"
-              class="!w-36"
+              class="f-lg"
               placeholder="申请价"
             />
           </div>

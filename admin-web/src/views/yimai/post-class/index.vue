@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <ElCard shadow="never" class="mb-4">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
@@ -73,9 +73,11 @@
           <!-- ① 上过课：待填写课后分析（手持设备换成下方卡片列表） -->
           <ElTable
             v-if="!isHandheld && sourceTab === 'class'"
+            ref="candidateTableRef"
             :data="filteredCandidates"
             v-loading="loading"
             size="default"
+            :max-height="candidateTableMaxHeight"
           >
             <ElTableColumn prop="date" label="日期" width="105" />
             <ElTableColumn prop="time" label="时间" width="70" />
@@ -138,9 +140,11 @@
           <!-- ② 留资管理里分配给他的 -->
           <ElTable
             v-else-if="!isHandheld && sourceTab === 'lead'"
+            ref="leadTableRef"
             :data="myLeads"
             v-loading="loading"
             size="default"
+            :max-height="leadTableMaxHeight"
           >
             <ElTableColumn prop="studentName" label="客户" width="110" />
             <ElTableColumn label="手机号" width="120">
@@ -179,7 +183,14 @@
           </ElTable>
 
           <!-- ③ 约课系统里会籍顾问归属他的会员 -->
-          <ElTable v-else-if="!isHandheld" :data="myMembers" v-loading="loading" size="default">
+          <ElTable
+            v-else-if="!isHandheld"
+            ref="memberTableRef"
+            :data="myMembers"
+            v-loading="loading"
+            size="default"
+            :max-height="memberTableMaxHeight"
+          >
             <ElTableColumn prop="studentName" label="会员" width="120" />
             <ElTableColumn label="手机号" width="120">
               <template #default="{ row }">
@@ -273,7 +284,14 @@
             <ElCheckbox v-model="filter.onlyRedFlag" label="只看红线" @change="loadReviews" />
           </div>
 
-          <ElTable v-if="!isHandheld" :data="reviews" v-loading="loading" size="default">
+          <ElTable
+            v-if="!isHandheld"
+            ref="reviewTableRef"
+            :data="reviews"
+            v-loading="loading"
+            size="default"
+            :max-height="reviewTableMaxHeight"
+          >
             <ElTableColumn prop="classAt" label="上课时间" width="150" />
             <ElTableColumn prop="studentName" label="学员" width="100" />
             <ElTableColumn prop="studentType" label="类型" width="90" />
@@ -462,6 +480,7 @@
   import type { PostClassCatalog, PostClassCandidate, PostClassReviewRow } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type {
     MobileCardAction,
     MobileCardMetric,
@@ -472,6 +491,13 @@
 
   // 手持设备上用卡片列表代替宽表格，明细见下方 pendingCardRows / reviewCardRows
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：本页 4 张表（待填写 3 个来源 + 已分析），各持一个 ref。
+  // 共用同一个 ref 会让后渲染的表覆盖先渲染的测量结果。
+  const { tableMaxHeight: candidateTableMaxHeight, tableRef: candidateTableRef } = useTableHeight()
+  const { tableMaxHeight: leadTableMaxHeight, tableRef: leadTableRef } = useTableHeight()
+  const { tableMaxHeight: memberTableMaxHeight, tableRef: memberTableRef } = useTableHeight()
+  const { tableMaxHeight: reviewTableMaxHeight, tableRef: reviewTableRef } = useTableHeight()
 
   // 服务老师（会籍顾问）对本页只读：看自己名下会员的课后分析与顾问衔接，填写由授课老师完成
   const userStore = useUserStore()

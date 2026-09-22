@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <!-- 控制栏 -->
     <div class="mb-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-500">我的工作台</span>
@@ -80,7 +80,14 @@
               <span class="text-xs text-gray-400">来自随心瑜排课事实</span>
             </div>
           </template>
-          <ElTable v-if="!isHandheld" :data="todayClasses" size="default" v-loading="loading">
+          <ElTable
+            v-if="!isHandheld"
+            ref="classTableRef"
+            :data="todayClasses"
+            size="default"
+            v-loading="loading"
+            :max-height="classTableMaxHeight"
+          >
             <ElTableColumn prop="time" label="时间" width="90" />
             <ElTableColumn prop="memberName" label="学员" width="120" />
             <ElTableColumn prop="course" label="课程" min-width="150" show-overflow-tooltip />
@@ -145,7 +152,14 @@
               >
             </div>
           </template>
-          <ElTable v-if="!isHandheld" :data="myLeads" size="default" v-loading="loading">
+          <ElTable
+            v-if="!isHandheld"
+            ref="leadTableRef"
+            :data="myLeads"
+            size="default"
+            v-loading="loading"
+            :max-height="leadTableMaxHeight"
+          >
             <ElTableColumn prop="name" label="客户" width="110" />
             <ElTableColumn prop="venue" label="门店" width="90" />
             <ElTableColumn prop="demand" label="需求" min-width="120" show-overflow-tooltip />
@@ -199,6 +213,7 @@
   import type { YimaiLead, TeacherOverview, TeacherTodayClass } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type {
     MobileCardAction,
     MobileCardMetric,
@@ -221,6 +236,10 @@
 
   // 手持设备上用卡片列表代替两张宽表格（卡片字段见下方「移动端卡片」）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：今日排课 / 待跟进客资各一张表
+  const { tableMaxHeight: classTableMaxHeight, tableRef: classTableRef } = useTableHeight()
+  const { tableMaxHeight: leadTableMaxHeight, tableRef: leadTableRef } = useTableHeight()
   const router = useRouter()
 
   const userStore = useUserStore()

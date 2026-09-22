@@ -1,6 +1,6 @@
 <template>
-  <div class="member-page art-full-height">
-    <ElCard class="art-table-card !h-auto">
+  <div class="list-page list-page--fill">
+    <ElCard>
       <!-- Tab 导航 -->
       <ElTabs v-model="activeTab" class="mb-3">
         <ElTabPane v-for="t in TABS" :key="t.key" :name="t.key">
@@ -24,19 +24,19 @@
       </div>
 
       <!-- 筛选：总览与其他清单页签均生效 -->
-      <div class="mb-3 flex flex-wrap items-center gap-3">
+      <div class="filter-bar">
         <ElInput
           v-model="searchForm.name"
           placeholder="会员姓名"
           clearable
-          class="!w-36"
+          class="f-lg"
           @change="reloadFromFirstPage"
         />
         <ElInput
           v-model="searchForm.phone"
           placeholder="手机号 / 尾号"
           clearable
-          class="!w-40"
+          class="f-xl"
           @change="reloadFromFirstPage"
         />
         <ElSelect
@@ -44,7 +44,7 @@
           v-model="searchForm.venue"
           placeholder="门店"
           clearable
-          class="!w-28"
+          class="f-sm"
           @change="reloadFromFirstPage"
         >
           <ElOption label="绿地店" value="绿地店" />
@@ -55,7 +55,7 @@
           v-model="searchForm.list"
           placeholder="运营清单"
           clearable
-          class="!w-36"
+          class="f-lg"
           @change="reloadFromFirstPage"
         >
           <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
@@ -64,7 +64,7 @@
           v-model="searchForm.consultant"
           placeholder="会籍顾问"
           clearable
-          class="!w-36"
+          class="f-lg"
           @change="reloadFromFirstPage"
         >
           <ElOption value="待分配" label="待分配" />
@@ -74,7 +74,7 @@
           v-model="searchForm.evaluationStatus"
           placeholder="评估状态"
           clearable
-          class="!w-32"
+          class="f-md"
           @change="reloadFromFirstPage"
         >
           <ElOption
@@ -93,7 +93,34 @@
         >
       </ArtTableHeader>
 
-      <ElTable v-if="!isHandheld" v-loading="loading" :data="list" border stripe max-height="520">
+      <!--
+        降级说明（后端 degraded）：非空表示**有判定规则没能生效**。
+        实测开发库最常见的一条是「无卡项汇总快照，剩余占比规则未生效（请先执行一次同步）」
+        —— 即 renewalCountPercent / renewalExpirePercent 两个阈值在卡项快照为 NULL 时静默失效。
+        用户此前抱怨「调了阈值没反应」，这条是他唯一能自查的线索，所以常驻放在列表上方，
+        不藏进 tooltip。
+      -->
+      <ElAlert
+        v-if="degradedNotices.length"
+        class="mb-3"
+        type="warning"
+        :closable="false"
+        title="部分判定规则当前未生效，下面这些人可能被漏判"
+      >
+        <ul class="reason-degraded-list">
+          <li v-for="(m, i) in degradedNotices" :key="i">{{ m }}</li>
+        </ul>
+      </ElAlert>
+
+      <ElTable
+        v-if="!isHandheld"
+        ref="tableRef"
+        v-loading="loading"
+        :data="list"
+        border
+        stripe
+        :max-height="tableMaxHeight"
+      >
         <ElTableColumn label="会员" min-width="130" fixed="left">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
@@ -132,17 +159,91 @@
           </template>
         </ElTableColumn>
 
-        <ElTableColumn label="清单归属" min-width="170">
+        <ElTableColumn label="清单归属" min-width="190">
           <template #default="{ row }">
-            <div class="flex flex-wrap gap-1">
+            <div class="flex flex-wrap items-center gap-1">
+              <!--
+                主标签：在待续费清单里时用后端 primary（可能是「待复活」，因为
+                待复活态要先唤醒再谈续费），否则回退到清单键名。
+              -->
+              <ElTag v-if="reasonOf(row)" size="small" effect="dark" :type="primaryType(row)">{{
+                primaryLabel(row)
+              }}</ElTag>
+              <!-- 同时所属的其它清单：与主标签并列展示，用户能看出「他同时属于两处」 -->
               <ElTag
-                v-for="l in memberLists(row)"
+                v-for="l in secondaryLists(row)"
+                :key="l"
+                size="small"
+                effect="plain"
+                :type="listType(l)"
+                >{{ l }}</ElTag
+              >
+              <!-- 没有判定理由时（不在待续费清单）退回原来的清单标签渲染 -->
+              <ElTag
+                v-for="l in reasonOf(row) ? [] : memberLists(row)"
                 :key="l"
                 size="small"
                 effect="dark"
                 :type="listType(l)"
                 >{{ l }}</ElTag
               >
+
+              <!--
+                判定理由入口：点开看「为什么他在这个清单里」。
+                用 popover 而不是 tooltip —— 理由可能有多条 + 降级说明，需要可停留、可滚动。
+              -->
+              <ElPopover
+                v-if="reasonOf(row)"
+                placement="right"
+                :width="330"
+                trigger="click"
+                popper-class="renewal-reason-popover"
+              >
+                <template #reference>
+                  <span class="reason-trigger" :class="{ 'is-degraded': degradedOf(row).length }">
+                    <ArtSvgIcon icon="ri:question-line" />
+                    <span class="reason-trigger__text">判定依据</span>
+                  </span>
+                </template>
+                <div class="reason-body">
+                  <div class="reason-body__head">
+                    <span class="font-600">{{ row.name }}</span>
+                    <ElTag size="small" effect="dark" :type="primaryType(row)">
+                      {{ reasonOf(row)?.bucket || primaryLabel(row) }}
+                    </ElTag>
+                  </div>
+
+                  <div class="reason-body__section">为什么在待续费清单</div>
+                  <ul class="reason-body__list">
+                    <li v-for="(w, i) in reasonOf(row)?.why ?? []" :key="i">{{ w }}</li>
+                  </ul>
+
+                  <template v-if="secondaryLists(row).length">
+                    <div class="reason-body__section">同时所属清单</div>
+                    <div class="flex flex-wrap gap-1">
+                      <ElTag
+                        v-for="l in secondaryLists(row)"
+                        :key="l"
+                        size="small"
+                        effect="plain"
+                        :type="listType(l)"
+                        >{{ l }}</ElTag
+                      >
+                    </div>
+                  </template>
+
+                  <!-- 降级说明：与 why 分开呈现，避免用户把「规则没生效」误读成判定理由 -->
+                  <template v-if="degradedOf(row).length">
+                    <div class="reason-body__section reason-body__section--warn">
+                      以下规则当前未生效（可能漏判）
+                    </div>
+                    <ul class="reason-body__list reason-body__list--warn">
+                      <li v-for="(d, i) in degradedOf(row)" :key="i">{{ d }}</li>
+                    </ul>
+                  </template>
+                </div>
+              </ElPopover>
+
               <span v-if="!memberLists(row).length" class="text-xs text-gray-300">—</span>
             </div>
           </template>
@@ -364,11 +465,36 @@
           :note-label="item.note?.label"
           :note-danger="item.note?.danger"
           :actions="item.actions"
-        />
+        >
+          <!--
+            判定理由在手机上**直接展开**，不学桌面用 popover：
+            手机没有 hover，点开浮层又多一次交互，而且这些文案正是用户要核对的东西。
+            理由/降级说明都是短句，直接铺开比藏起来更合适。
+          -->
+          <div v-if="item.reason" class="m-reason">
+            <div class="m-reason__row">
+              <span class="m-reason__label">判定依据</span>
+              <ElTag size="small" effect="dark" :type="item.reason.primaryType">
+                {{ item.reason.bucket }}
+              </ElTag>
+            </div>
+            <ul class="m-reason__list">
+              <li v-for="(w, i) in item.reason.why" :key="i">{{ w }}</li>
+            </ul>
+            <div v-if="item.reason.degraded.length" class="m-reason__degraded">
+              <div class="m-reason__label m-reason__label--warn"
+                >以下规则当前未生效（可能漏判）</div
+              >
+              <ul class="m-reason__list m-reason__list--warn">
+                <li v-for="(d, i) in item.reason.degraded" :key="i">{{ d }}</li>
+              </ul>
+            </div>
+          </div>
+        </MobileCard>
         <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无数据</div>
       </div>
 
-      <div class="mt-4 flex justify-end">
+      <div class="list-pager">
         <ElPagination
           v-model:current-page="page.current"
           v-model:page-size="page.size"
@@ -623,12 +749,27 @@
             >时间卡剩余天数 ÷ 有效期天数 ≤ 该值；0=关闭</span
           ></ElFormItem
         >
-        <ElAlert
-          class="mb-3"
-          type="info"
-          :closable="false"
-          title="待续费判定为多卡口径：按全部有效卡汇总，已用完/已过期的卡不会单独触发提醒"
-        />
+        <ElAlert class="mb-3" type="info" :closable="false">
+          <template #title>待续费判定：合计与逐卡两个口径同时生效，任一命中即进清单</template>
+          <template #default>
+            <div class="text-xs leading-5">
+              <div>
+                · <strong>合计口径</strong>：全部在用卡的剩余课时/有效期占比低于阈值即命中；
+              </div>
+              <div>
+                · <strong>逐卡口径</strong>：任一单卡进入尾段（剩余课时或有效期占比低于阈值）也命中
+                —— 合计还有几十节、但其中一张卡只剩几节，同样该续；
+              </div>
+              <div>
+                · <strong>已过期但仍有余额</strong>的卡，在配置的回溯窗内同样触发提醒；
+                已用完、未开卡的卡项不参与判定。
+              </div>
+              <div class="mt-1 text-gray-500">
+                近 30 天未到店只影响「紧急 / 观察」分档，不再是进清单的门槛。
+              </div>
+            </div>
+          </template>
+        </ElAlert>
         <ElFormItem label="VIP阈值(元)"
           ><ElInputNumber
             v-model="rulesForm.vipAmountThreshold"
@@ -691,7 +832,6 @@
     getMemberRules,
     setMemberRules,
     refreshMemberRules,
-    computeMemberLists,
     updateMemberFields,
     birthdayOffset,
     isBirthdayToday,
@@ -710,10 +850,13 @@
     MemberListKey,
     RenewalEvaluationAnswers,
     RenewalEvaluationContext,
+    RenewalReason,
     CustomerCardItem
   } from '@/api/yimai'
+  import { USE_BACKEND, apiGet } from '@/api/backend'
   import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type {
     MobileCardAction,
     MobileCardMetric,
@@ -726,6 +869,9 @@
 
   // 手持设备上用卡片列表代替宽表格（见下方 cardMetrics / cardNote / cardTags）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：减项由 hook 运行时量出，本页不写任何像素
+  const { tableMaxHeight, tableRef } = useTableHeight()
 
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
@@ -790,6 +936,29 @@
   const total = ref(0)
   /** 五清单徽标计数：服务端一次扫描后返回 */
   const listCounts = ref<Record<string, number>>({})
+
+  /**
+   * 会员 id → 所属清单集合（**后端权威口径**）。
+   *
+   * 改造前这里是 `computeMemberLists(row)` —— `api/yimai.ts` 里的前端镜像。
+   * 后端修好新口径（去 m3 门槛、逐卡尾段、90 天过期窗）后镜像没跟上，
+   * 于是会员管理页的标签与「今日待办 → 待续费」、页签徽标三处对不上。
+   *
+   * 现在改为向服务端取 `list=` 过滤结果的 id：口径只有后端一份，
+   * 前端不再算第二遍（也就不用维护镜像）。
+   */
+  const memberListIds = ref<Record<number, MemberListKey[]>>({})
+
+  /**
+   * 会员 id → 待续费判定理由（**后端权威口径**，前端只消费不重算）。
+   *
+   * 用户最初的诉求是「设置了判定因素但筛选不够精准」——只看一个「待续费」标签
+   * 无法判断系统为什么这么判。后端已算出 why/bucket/degraded/coLists/primary，
+   * 这里接上就能让「精准」变成用户可自行核对的事。
+   *
+   * 后端只返回**在待续费清单里**的会员，其余 id 取不到值（按 undefined 处理）。
+   */
+  const renewalReasons = ref<Record<number, RenewalReason>>({})
   // 出勤三列的口径与日期范围由后端给出（三个连续 30 天滚动窗口），
   // 避免前端再算一遍导致口径漂移
   const attendanceMonths = ref<{
@@ -838,8 +1007,15 @@
       })
       list.value = res.records ?? []
       attendanceMonths.value = res.attendanceMonths ?? attendanceMonths.value
+      // 判定理由随列表返回（只含待续费清单里的会员）。
+      // 这里**整体替换**而不是合并：翻页/切页签后旧页的理由必须失效，
+      // 否则会把上一页的解释挂到当前页的人身上。
+      renewalReasons.value = res.renewalReasons ?? {}
       total.value = res.total ?? list.value.length
-      if (!keepPage) loadListCounts()
+      if (!keepPage) {
+        loadListCounts()
+        loadMemberListIds()
+      }
     } catch (e) {
       console.error('[members.load]', e)
       ElMessage.error('会员列表加载失败，请稍后重试')
@@ -850,9 +1026,69 @@
 
   async function loadListCounts() {
     try {
-      listCounts.value = await queryMemberListCounts()
+      // 必须带 `type: 'member'`：本页页签列表走 `/customers?type=member`
+      // （排除 layer=P5 的未成交客资）。徽标不带 type 就会按「全部客户」算，
+      // 于是出现「徽标 4、点进去 3 行」——徽标数与行数必须同源（t16/t17）。
+      listCounts.value = await queryMemberListCounts('member')
     } catch {
       /* 徽标计数失败不阻塞列表，保留上次值 */
+    }
+  }
+
+  /**
+   * 某清单的会员 id 集合（**直接取后端权威口径**，不在前端重算）。
+   *
+   * 为什么不在 `api/yimai.ts` 里加这个函数：那是「数据层」，而这里只服务于本页
+   * 的标签渲染，是页面自己的取数逻辑；放页面里也让「本页标签口径 = 后端清单口径」
+   * 这件事在一处看得见。`api/yimai.ts` 的 `computeMemberLists()` 是 mock 分支用的
+   * 前端镜像（仍含 m3>0 门槛、无逐卡尾段、无 90 天过期窗），**本页不再调用它**。
+   *
+   * 只取 id（后端 size 上限 5000，超一页继续拉），不带卡片明细。
+   */
+  async function fetchMemberListIds(list: MemberListKey): Promise<number[]> {
+    if (!USE_BACKEND) return []
+    const PAGE = 5000
+    const ids: number[] = []
+    for (let current = 1; current <= 20; current += 1) {
+      const d = await apiGet<{ records: { id: number }[] }>('/customers', {
+        list,
+        current,
+        size: PAGE
+      })
+      const page = d.records ?? []
+      ids.push(...page.map((r) => r.id))
+      if (page.length < PAGE) break
+    }
+
+    return ids
+  }
+
+  /**
+   * 拉取五清单的会员 id 归属（后端口径），供表格标签与卡片 tags 使用。
+   *
+   * 五个清单并行请求，任一失败只影响那一个清单的标签，不阻塞列表。
+   */
+  async function loadMemberListIds() {
+    try {
+      const results = await Promise.all(
+        LIST_KEYS.map(async (key) => {
+          try {
+            return [key, await fetchMemberListIds(key)] as const
+          } catch {
+            return [key, [] as number[]] as const
+          }
+        })
+      )
+      const map: Record<number, MemberListKey[]> = {}
+      for (const [key, ids] of results) {
+        for (const id of ids) {
+          if (!map[id]) map[id] = []
+          map[id].push(key)
+        }
+      }
+      memberListIds.value = map
+    } catch {
+      /* 归属失败不阻塞列表：标签退化为空，不会显示错的口径 */
     }
   }
 
@@ -874,9 +1110,88 @@
     }
   }
 
+  /**
+   * 该会员所属的清单（**读后端归属，不在前端重算**）。
+   *
+   * 顺序按 LIST_KEYS 固定，保证同一会员每次渲染标签顺序一致。
+   */
   function memberLists(row: YimaiCustomer): MemberListKey[] {
-    return computeMemberLists(row)
+    return memberListIds.value[row.id] ?? []
   }
+
+  // ---------- 待续费判定理由（只消费后端字段） ----------
+
+  /** 该会员的待续费判定理由；不在待续费清单里时为 undefined */
+  function reasonOf(row: YimaiCustomer): RenewalReason | undefined {
+    return renewalReasons.value[row.id]
+  }
+
+  /**
+   * 主标签文案。
+   *
+   * 后端 `primary` 的语义是「哪个标签放主位」：
+   * - `待复活` —— 该会员处于待复活态，先唤醒再谈续费（D3：不隐藏、只分主次）
+   * - `待续费·紧急` / `待续费·观察` —— 按紧急度
+   *
+   * 注意 `primary` 只在**待续费清单**的明细里给出，所以这里的兜底是「待续课」
+   * （页签/清单键名），而不是 `primary` 本身。
+   */
+  function primaryLabel(row: YimaiCustomer): string {
+    return reasonOf(row)?.primary || '待续课'
+  }
+
+  /** 主标签的语义色：待复活走 info，紧急走 danger，观察走 warning */
+  function primaryType(row: YimaiCustomer): 'danger' | 'warning' | 'info' {
+    const p = primaryLabel(row)
+    if (p === '待复活') return 'info'
+    if (p.includes('紧急')) return 'danger'
+    if (p.includes('观察')) return 'warning'
+    return 'danger'
+  }
+
+  /**
+   * 除主标签外，该会员同时所属的其它清单。
+   *
+   * 真实数据里待续费与待复活重叠率 100%（诊断 C5），只渲染一个标签会让用户
+   * 看不出「他同时属于两处」。D3 决策是不隐藏人，两个都显示、由用户判断主次。
+   *
+   * 两个坑（都是实测踩出来的）：
+   * 1. `coLists` 可能**包含 primary 本身**（例：primary=「待复活」、coLists=["待复活"]），
+   *    直接 v-for 会把同一个标签渲染两遍。这里按文案去重。
+   * 2. `coLists` 是「除待续课外」的其它清单（后端构造时 `if ($key === '待续课') continue`），
+   *    而 primary 若是「待复活」，页面上就只剩待复活一个标签，「同时属于两处」又看不见了。
+   *    但此人**必然在待续费清单里**（否则后端不会返回 renewalReasons），
+   *    所以主标签不是待续费档位时，补一个「待续课」把它所属的另一处显式说出来。
+   */
+  function secondaryLists(row: YimaiCustomer): string[] {
+    const r = reasonOf(row)
+    if (!r) return []
+    const primary = primaryLabel(row)
+    const out = (r.coLists ?? []).filter((l) => l !== primary)
+    // 主标签不是待续费档位（即让给了待复活）时，补上待续课 —— 用页签同一套词汇
+    if (!primary.includes('待续费')) out.push('待续课')
+    return [...new Set(out)]
+  }
+
+  /** 降级说明：非空即表示有规则没能生效（如卡项快照为 NULL 时占比阈值静默失效） */
+  function degradedOf(row: YimaiCustomer): string[] {
+    return reasonOf(row)?.degraded ?? []
+  }
+
+  /**
+   * 当前页出现过的降级说明（去重）。
+   *
+   * 后端是同一条降级会挂在每个受影响的人身上（例如快照为 NULL 时整页都会带
+   * 「无卡项汇总快照…」）。逐行展示会变成刷屏，所以聚合成一条页面级提示；
+   * 单行 popover 里仍保留各自的 degraded，便于逐个核对。
+   */
+  const degradedNotices = computed(() => {
+    const set = new Set<string>()
+    for (const row of list.value) {
+      for (const d of degradedOf(row)) set.add(d)
+    }
+    return [...set]
+  })
 
   function declining(row: YimaiCustomer): boolean {
     return memberLists(row).includes('出勤降低')
@@ -936,8 +1251,17 @@
       tags.push({ text: '待分配', type: 'danger', effect: 'plain' })
     }
 
-    for (const l of memberLists(row)) {
-      tags.push({ text: l, type: listType(l), effect: 'dark' })
+    // 清单标签：与桌面表格同一套主次规则 —— 主标签用后端 primary，
+    // 其余 coLists 以 plain 次要标签并列，手机上同样能看出「他同时属于两处」。
+    if (reasonOf(row)) {
+      tags.push({ text: primaryLabel(row), type: primaryType(row), effect: 'dark' })
+      for (const l of secondaryLists(row)) {
+        tags.push({ text: l, type: listType(l), effect: 'plain' })
+      }
+    } else {
+      for (const l of memberLists(row)) {
+        tags.push({ text: l, type: listType(l), effect: 'dark' })
+      }
     }
 
     return tags
@@ -1074,15 +1398,28 @@
 
   /** 预计算一次，避免模板里对每行重复调用四个函数 */
   const cardRows = computed(() =>
-    list.value.map((row) => ({
-      id: row.id,
-      title: row.name,
-      subtitle: `${row.phone || `尾号${row.phoneTail}`}${row.source ? ` · ${row.source}` : ''}`,
-      tags: cardTags(row),
-      metrics: cardMetrics(row),
-      note: cardNote(row),
-      actions: cardActions(row)
-    }))
+    list.value.map((row) => {
+      const reason = reasonOf(row)
+      return {
+        id: row.id,
+        title: row.name,
+        subtitle: `${row.phone || `尾号${row.phoneTail}`}${row.source ? ` · ${row.source}` : ''}`,
+        tags: cardTags(row),
+        metrics: cardMetrics(row),
+        note: cardNote(row),
+        actions: cardActions(row),
+        // 判定理由：手机端直接展开渲染（见模板里的 m-reason 区块）。
+        // 这里预先算好 bucket 文案与语义色，避免模板里再调函数。
+        reason: reason
+          ? {
+              why: reason.why ?? [],
+              bucket: reason.bucket || primaryLabel(row),
+              primaryType: primaryType(row),
+              degraded: reason.degraded ?? []
+            }
+          : null
+      }
+    })
   )
 
   // ---------- 续课计划 ----------
@@ -1328,3 +1665,122 @@
     load(false)
   })
 </script>
+
+<style lang="scss" scoped>
+  /*
+    待续费判定理由的呈现样式。
+
+    「判定依据」入口刻意做成小号文字链接而不是图标按钮：
+    它是解释性入口、不是主操作，做成按钮会和右侧「续费评估 / 续课计划」抢注意力。
+    但命中降级时变橙色并加粗 —— 那时它是用户排查问题的唯一入口，必须被看见。
+  */
+  .reason-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--art-gray-600, #909399);
+    cursor: pointer;
+    border-bottom: 1px dashed currentcolor;
+
+    &:hover {
+      color: var(--el-color-primary);
+    }
+
+    &.is-degraded {
+      font-weight: 600;
+      color: var(--el-color-warning);
+    }
+
+    &__text {
+      white-space: nowrap;
+    }
+  }
+
+  .reason-body {
+    font-size: 13px;
+    line-height: 1.6;
+
+    &__head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    &__section {
+      margin: 8px 0 4px;
+      font-size: 12px;
+      color: var(--art-gray-500, #a8abb2);
+
+      &--warn {
+        color: var(--el-color-warning);
+      }
+    }
+
+    &__list {
+      margin: 0;
+      padding-left: 18px;
+
+      li {
+        list-style: disc;
+      }
+
+      &--warn li::marker {
+        color: var(--el-color-warning);
+      }
+    }
+  }
+
+  .reason-degraded-list {
+    margin: 0;
+    padding-left: 18px;
+
+    li {
+      list-style: disc;
+    }
+  }
+
+  /* 手机卡片内的判定理由区块 */
+  .m-reason {
+    margin-top: 10px;
+    padding-top: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    border-top: 1px dashed var(--el-border-color-lighter);
+
+    &__row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+
+    &__label {
+      font-size: 12px;
+      color: var(--art-gray-500, #a8abb2);
+
+      &--warn {
+        color: var(--el-color-warning);
+      }
+    }
+
+    &__list {
+      margin: 0;
+      padding-left: 18px;
+
+      li {
+        list-style: disc;
+      }
+
+      &--warn li::marker {
+        color: var(--el-color-warning);
+      }
+    }
+
+    &__degraded {
+      margin-top: 8px;
+    }
+  }
+</style>

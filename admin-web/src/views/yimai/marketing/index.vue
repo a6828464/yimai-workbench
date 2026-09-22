@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4 mk-marketing">
+  <div class="list-page mk-marketing">
     <!--
       横幅：`:title` 已经会渲染 bannerText，slot 里**不能再放一遍**
       —— 之前 slot 里又写了 `{{ bannerText }}`，同一句话在「标题」和「描述」里各渲染一次。
@@ -118,9 +118,9 @@
   }
 
   @include handheld-only {
-    // 用 `.mk-marketing.p-4`（0,2,0）压过 tailwind 的 `.p-4`（0,1,0），
+    // 用 `.mk-marketing.list-page`（0,2,0）压过 tailwind 的 `.p-4`（0,1,0），
     // 否则源码顺序会决定胜负、结果不可靠
-    .mk-marketing.p-4 {
+    .mk-marketing.list-page {
       padding: 8px;
     }
 

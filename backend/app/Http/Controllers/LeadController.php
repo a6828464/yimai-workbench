@@ -115,7 +115,10 @@ class LeadController extends Controller
 
         $matches = [];
         foreach (Customer::whereIn('phone', $forms)->get() as $c) {
-            $layer = $c->layer === 'P5' ? '留资' : '会员';
+            // kind 用「前端客资」谓词（P5 且非 ky: 来源），不能只看 layer：
+            // 卡项全部过期的**正式会员**也落 P5，直接按 layer 判会把会员标成「留资」，
+            // 于是录入时提示「这个人已是留资」，实际上他早就是会员了。
+            $layer = isLeadOnlyCustomer($c) ? '留资' : '会员';
             $matches[] = ['kind' => $layer, 'name' => $c->name, 'venue' => $c->venue, 'detail' => trim((string) $c->main_card) !== '' && $c->main_card !== '—' ? $c->main_card : '尚未购卡'];
         }
         foreach (Lead::whereIn('phone', $forms)->orderByDesc('id')->get() as $l) {

@@ -56,15 +56,42 @@ class AttendanceWindowsTest extends TestCase
         $this->assertContains($c->id, memberListIds()['待续课'] ?? []);
     }
 
-    public function test_renewal_excludes_members_with_no_attendance_in_last_30_days(): void
+    /**
+     * 近 30 天没出勤、但课时已到尾段 → **仍然进清单**，只是标记为「观察」。
+     *
+     * v3.3.0 口径变更（决策 D1）：出勤不再是进不进清单的**门槛**，只决定**紧急度**。
+     * 旧口径要求 M3 > 0，后果是「上月休假、本月没来、课时只剩 3 节」的会员
+     * 既不进待续费、又因为没到 predrop 窗口而不进预流失 —— 从两个清单里同时消失，
+     * 而他的课时正在静静到期。宁可多列一个待确认的观察态，也不能漏掉有余额的人。
+     */
+    public function test_renewal_includes_members_with_no_recent_attendance_as_observation(): void
     {
-        // 近 30 天没来（只在 30~60 天前来过）→ 不判待续课，交给预流失那条规则
         $c = $this->customer('近30天没来', ['attend_m1' => 0, 'attend_m2' => 4, 'attend_m3' => 0], [
             'countResidue' => 3, 'countBound' => 30, 'daysLeft' => null, 'daysTotal' => null,
         ]);
 
         $lists = memberListIds();
-        $this->assertNotContains($c->id, $lists['待续课'] ?? []);
+        $this->assertContains($c->id, $lists['待续课'] ?? []);
+
+        // 出勤不再是门槛，但必须体现在紧急度上：无近期出勤 → 观察态而非紧急态
+        $watch = memberListWatch()['待续费'][$c->id] ?? null;
+        $this->assertNotNull($watch, '进清单的会员必须带明细，否则前端无法解释「为什么他在清单里」');
+        $this->assertSame('待续费·观察', $watch['bucket']);
+        $this->assertFalse($watch['urgent']);
+    }
+
+    /**
+     * 反向回归（决策 D1 的边界）：去掉门槛**不等于**凡是没出勤的都进清单。
+     * 无余额（countResidue 为 null/0 且无到期日）且近 30 天无出勤 → 不进。
+     * 这条锁住「放开门槛」没有被误实现成「无条件进清单」。
+     */
+    public function test_renewal_still_excludes_members_without_balance_or_recent_attendance(): void
+    {
+        $c = $this->customer('没余额也没出勤', ['attend_m1' => 0, 'attend_m2' => 4, 'attend_m3' => 0], [
+            'countResidue' => null, 'countBound' => 0, 'daysLeft' => null, 'daysTotal' => null,
+        ], ['remain_times' => null, 'expire_date' => null]);
+
+        $this->assertNotContains($c->id, memberListIds()['待续课'] ?? []);
     }
 
     public function test_declining_uses_three_equal_windows(): void

@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <!-- 控制栏 -->
     <div class="mb-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-500">运营数据</span>
@@ -109,7 +109,28 @@
       <ElCol :span="24" class="mb-4">
         <ElCard shadow="never">
           <template #header><span class="font-500">留资转化漏斗</span></template>
-          <ElTable :data="funnelRows" :show-header="false" size="large">
+          <!--
+            手持设备：漏斗改成纵向条目。
+            这张表三列固定宽合计 580px，390px 屏上只有 294px 可见 ——
+            EP 会给它横向滚动，但漏斗是「一眼看完」的图形，要横滑就失去意义了。
+            纵向条目在窄屏反而更清楚：阶段名 + 进度条 + 数值从上到下读。
+          -->
+          <div v-if="isHandheld" class="mk-funnel">
+            <div v-for="row in funnelRows" :key="row.stage" class="mk-funnel__row">
+              <div class="mk-funnel__head">
+                <span class="mk-funnel__stage">{{ row.stage }}</span>
+                <span class="mk-funnel__value">
+                  <span class="font-500">{{ row.value }}</span> 人
+                  <span v-if="row.rateText" class="ml-2 text-xs text-gray-400">{{
+                    row.rateText
+                  }}</span>
+                </span>
+              </div>
+              <ElProgress :percentage="row.percent" :stroke-width="12" :format="() => ''" />
+            </div>
+          </div>
+
+          <ElTable v-else :data="funnelRows" :show-header="false" size="large">
             <ElTableColumn prop="stage" label="阶段" width="160" />
             <ElTableColumn label="数量" width="220">
               <template #default="{ row }">
@@ -147,8 +168,12 @@
   import type { LineDataItem } from '@/types/component/chart'
   import DateRangeControl from './date-range-control.vue'
   import { useUserStore } from '@/store/modules/user'
+  import { useDevice } from '@/hooks/core/useDevice'
 
   defineOptions({ name: 'MediaDashboard' })
+
+  // 宽表格（漏斗）在手机上换纵向条目
+  const { isHandheld } = useDevice()
 
   const loading = ref(true)
   const dashboardError = ref('')
@@ -345,3 +370,36 @@
 
   onMounted(reload)
 </script>
+
+<style lang="scss" scoped>
+  // 手持设备的转化漏斗（替代 580px 宽的横向滚动表格）
+  .mk-funnel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+
+    &__row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    &__head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    &__stage {
+      font-size: 13px;
+      color: var(--el-text-color-regular);
+    }
+
+    &__value {
+      flex: none;
+      font-size: 13px;
+      color: var(--el-text-color-primary);
+    }
+  }
+</style>

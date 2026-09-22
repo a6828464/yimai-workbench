@@ -1,6 +1,6 @@
 <template>
   <component :is="dashboardComponent" v-if="dashboardComponent" />
-  <div v-else class="p-4">
+  <div v-else class="list-page">
     <ElEmpty description="当前账号无可用工作台" />
   </div>
 </template>

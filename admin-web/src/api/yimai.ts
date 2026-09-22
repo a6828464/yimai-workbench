@@ -601,20 +601,92 @@ export async function queryCustomerOptions(): Promise<{ consultants: string[] }>
   return Promise.resolve({ consultants: [...set].sort((x, y) => x.localeCompare(y, 'zh')) })
 }
 
-/** 五清单徽标计数（服务端一次扫描 + 角色范围求交集） */
-export async function queryMemberListCounts(): Promise<Record<string, number>> {
+/**
+ * 客户「类型」过滤（mock 分支），与后端 `CustomerController::applyTypeFilter()` **逐字对应**：
+ *
+ * - `member`：非 P5 分层 **或** 虽落 P5 但来自 KeepYoga 同步。
+ *   后半条是必需的：同步会员的卡项全部过期时会被判成「无资产」→ 落 P5，
+ *   但他在业务上仍是会员，不能从会员列表里消失。所以这里是 `||` 而不是 `&&`。
+ * - `lead`：落 P5 **且** 不是同步会员。
+ *
+ * 抽成一处是刻意的：**徽标计数与列表查询必须共用同一个判定**。
+ * 两边各写一份就会重演「徽标显示 4、点进去只有 3 行」那类口径分裂
+ * （t16/t17 修的正是这个缺陷）。
+ *
+ * ⚠️ 改这里必须同步改后端 `CustomerController::applyTypeFilter()`（那边的唯一定义处）。
+ */
+function mockCustomerTypeMatches(c: YimaiCustomer, type?: string): boolean {
+  const isKy = (c.externalId ?? '').startsWith('ky:')
+  if (type === 'member') return c.layer !== 'P5' || isKy
+  if (type === 'lead') return c.layer === 'P5' && !isKy
+  return true
+}
+
+/**
+ * 五清单徽标计数（服务端一次扫描 + 角色范围求交集）。
+ *
+ * @param type 客户类型过滤，与 `/customers` 同义（会员管理页传 `'member'`）。
+ *   **不传时不带该 query 参数，行为与改动前逐字一致**（向后兼容）。
+ */
+export async function queryMemberListCounts(type?: string): Promise<Record<string, number>> {
   if (USE_BACKEND) {
-    const d = await apiGet<{ counts: Record<string, number> }>('/customers/list-counts')
+    // type 透传给后端 `list-counts`：它在服务端复用与 `/customers` 同一套
+    // scopedCustomerQuery()，这样「徽标数 = 页签行数」由同一处保证。
+    const d = await apiGet<{ counts: Record<string, number> }>(
+      '/customers/list-counts',
+      type ? { type } : undefined
+    )
     return d.counts ?? {}
   }
   const a = actor()
   let pool = allCustomers().filter((c) => inScope(c.venue, a.scopeVenue))
   if (a.isTeacher) pool = pool.filter((c) => c.owner === a.userName || c.consultant === a.userName)
+  pool = pool.filter((c) => mockCustomerTypeMatches(c, type))
   const out: Record<string, number> = {}
   for (const key of ['待续课', '出勤降低', 'VIP', '预流失', '待复活'] as MemberListKey[]) {
     out[key] = pool.filter((c) => computeMemberLists(c).includes(key)).length
   }
   return Promise.resolve(out)
+}
+
+/**
+ * 「为什么这个人在待续费清单里」—— 由后端 `memberListWatch()['待续费']` 生成。
+ *
+ * 前端**只消费、不重算**：判定口径的唯一实现是后端 `customerDecision()`，
+ * 前端重算必然滞后（这正是 t8/t16/t17 修掉的那类口径分裂）。
+ *
+ * ⚠️ `whyCodes` 与 `why` **不是一一对应**：后端只对部分分支压码
+ * （如 `deadline_near` / `count_exhausted`），其余 `why` 无对应 code。
+ * 所以不要把 `whyCodes[i]` 和 `why[i]` 配对渲染，否则会错位。
+ */
+export interface RenewalReason {
+  /** 判定理由文案（人话），逐条展示即可 */
+  why: string[]
+  /** 理由分类码，仅部分条目有；用于聚合统计，不要按索引与 why 配对 */
+  whyCodes?: string[]
+  /** 是否命中到期日类规则（后端 `$deadlineHit`，不再靠文案匹配） */
+  deadlineHit?: boolean
+  /** 判定档位：`待续费·紧急` / `待续费·观察` */
+  bucket?: string
+  /** 是否紧急（= bucket 为紧急） */
+  urgent?: boolean
+  /** 是否处于待复活态（后端据此把主标签让给「待复活」） */
+  revive?: boolean
+  /** 剩余课时（合计口径） */
+  remain?: number | null
+  /** 距到期天数，负数表示已过期 */
+  expireDays?: number | null
+  /** 近 30 天出勤次数 */
+  attendM3?: number
+  /**
+   * 降级说明：**非空表示有规则没能生效**（如卡项快照为 NULL 时占比类阈值静默失效）。
+   * 这是用户判断「阈值调了为什么没反应」的唯一线索，必须展示。
+   */
+  degraded: string[]
+  /** 同时所属的其它清单（不含本清单） */
+  coLists: string[]
+  /** 主清单/主档位，决定哪个标签是主标签 */
+  primary: string
 }
 
 export function queryCustomers(
@@ -636,6 +708,11 @@ export function queryCustomers(
   total: number
   current: number
   size: number
+  /**
+   * 待续费判定理由，键为会员 id（**只包含在待续费清单里的会员**）。
+   * 未在清单里的会员不会出现在这个 map 里，取值时按 `undefined` 处理。
+   */
+  renewalReasons?: Record<number, RenewalReason>
   /** 出勤三列的口径标签与日期范围（三个连续 30 天滚动窗口） */
   attendanceMonths?: {
     m1: string
@@ -650,6 +727,7 @@ export function queryCustomers(
     return apiGet<{
       records: YimaiCustomer[]
       total: number
+      renewalReasons?: Record<number, RenewalReason>
       attendanceMonths?: {
         m1: string
         m2: string
@@ -682,10 +760,11 @@ export function queryCustomers(
   if (a.isMedia) list = list.filter((c) => c.layer === 'P5')
   if (a.isTeacher) {
     list = list.filter((c) => c.owner === a.userName || c.consultant === a.userName)
-    if (params.type === 'member') list = list.filter((c) => c.layer !== 'P5')
   }
-  if (params.type === 'member') list = list.filter((c) => c.layer !== 'P5' && c.mainCard !== '—')
-  if (params.type === 'lead') list = list.filter((c) => c.layer === 'P5')
+  // 与徽标计数共用同一个判定（mockCustomerTypeMatches），不要再在这里写第三份。
+  // 这里曾经写成 `layer !== 'P5' && mainCard !== '—'`，与后端 `|| external_id like 'ky:%'`
+  // 语义不同 —— 两处不一致就会重演「徽标 4、点进去 3 行」。
+  list = list.filter((c) => mockCustomerTypeMatches(c, params.type))
   if (params.list)
     list = list.filter((c) => computeMemberLists(c).includes(params.list as MemberListKey))
   if (params.name) list = list.filter((c) => c.name.includes(String(params.name)))

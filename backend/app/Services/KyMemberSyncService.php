@@ -10,8 +10,10 @@ use App\Models\SyncJob;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
+use Throwable;
 
 class KyMemberSyncService
 {
@@ -222,7 +224,10 @@ class KyMemberSyncService
                 $customer = $existingByExternalId->get($externalId);
                 if (! $customer) {
                     Customer::create($changes + [
-                        'layer' => 'P4', 'status' => '待完善', 'owner' => $consultant ?: '未分配',
+                        // 占位分层：新行尚未重算分层，先给 P5（=「无资产」的等价分层）。
+                        // 紧接着由 recalculateMemberLayers() 按真实卡项写入 P0-P4，
+                        // 所以这里绝不能写死 P4 —— 那正是「所有同步会员恒为 P4」的成因。
+                        'layer' => 'P5', 'status' => '待完善', 'owner' => $consultant ?: '未分配',
                         'owner_user_id' => $staffIds[$consultant] ?? null,
                         'next_action' => '分配负责人并完善会员档案', 'external_id' => $externalId,
                     ]);
@@ -236,9 +241,11 @@ class KyMemberSyncService
                     $changes['last_visit'] = $customer->last_visit;
                 }
 
-                if ($customer->layer === 'P5' && $customer->main_card === '待同步卡项') {
+                // 「待同步卡项」是首次建档的占位主卡，本次同步已拿到真实卡项 → 解除占位。
+                // 分层不再在这里写死，交给 recalculateMemberLayers() 统一算。
+                if ($customer->main_card === '待同步卡项') {
                     $changes += [
-                        'layer' => 'P4', 'status' => '待完善', 'owner' => $consultant ?: '未分配',
+                        'status' => '待完善', 'owner' => $consultant ?: '未分配',
                         'owner_user_id' => $staffIds[$consultant] ?? null,
                         'next_action' => '分配负责人并完善会员档案',
                     ];
@@ -283,10 +290,25 @@ class KyMemberSyncService
         $artifacts = $artifactWriter?->finalize() ?? [];
         // 客户/预约/卡项事实已更新：立即失效五清单与经营看板缓存
         invalidateBusinessCaches();
+        // 分层是**派生数据**：卡项/出勤刚被本次同步改写，P0-P4 必须跟着重算，
+        // 否则「经营池分层恒为空」的缺陷会在每次同步后复现。
+        // 它绝不能反过来把一次成功的同步拖失败——所以单独兜住异常，只记日志。
+        $layersChanged = 0;
+        try {
+            $layersChanged = recalculateMemberLayers();
+        } catch (Throwable $e) {
+            Log::warning('同步后重算经营分层失败', ['venue' => $venue, 'error' => $e->getMessage()]);
+        }
+        // 分层写的是 layer 列（不经 Eloquent，不动 updated_at），但清单缓存里的
+        // 「经营分层」明细已变，再失效一次让下次读取立刻反映新分层。
+        if ($layersChanged > 0) {
+            invalidateBusinessCaches('member_lists');
+        }
 
         return [
             'created' => $created, 'updated' => $updated, 'unchanged' => $unchanged,
             'skipped' => $skipped, 'total' => count($members),
+            'layersChanged' => $layersChanged,
             'cards' => count($cards), 'bookings' => $bookingCount,
             'leagueBookings' => $leagueBookingCount,
             'privateBookings' => $privateBookingCount,
@@ -355,8 +377,12 @@ class KyMemberSyncService
 
         // 全部有效卡汇总（不再只看主卡）：
         // - 次卡剩余节数 = 所有有效次卡(含未开卡)的 residue_amount 合计，一张用完的卡不再污染整体判定
-        // - 绑定总量 = 剩余 + 已用(usage_total)，供「剩余占比」阈值
-        // - 最早到期日 = 所有有效卡的最早 deadline（次卡/时间卡都可能有到期日）
+        // - 绑定总量 = **仅仍有余额的卡**的 剩余 + 已用(usage_total)，供「剩余占比」阈值。
+        //   已用完的历史卡若仍计入分母，会把占比压低（20/300 = 6.7% 假命中），
+        //   而它对应的分子早已是 0 —— 分母只统计「还没用完的卡」，占比才代表真实消耗进度。
+        // - 最早到期日 = **仅仍有可用余量的卡**的最早 deadline。用完的旧卡即使即将到期也不该
+        //   触发续费提醒（那张卡已经没课可上了，催的是「新卡」而不是「这张卡」）；
+        //   这是 expire_date 被旧卡拉早、导致整店误报的直接原因。
         // - 时间卡剩余天数/有效期天数合计，供「有效期占比」阈值
         $countResidue = 0.0;
         $countBound = 0.0;
@@ -367,22 +393,40 @@ class KyMemberSyncService
         $earliestDeadline = null;
         foreach ($active as $card) {
             $type = (string) ($card['type'] ?? '');
-            if ($type === '1' && is_numeric($card['residue_amount'] ?? null)) {
+            $hasResidueValue = is_numeric($card['residue_amount'] ?? null);
+            // 次卡的 residue_amount = 剩余节数；期限卡的 residue_amount = 剩余天数。
+            $residue = $hasResidueValue ? max(0.0, self::toNum($card['residue_amount'])) : null;
+            // 「仍有可用余额」= 取到了数值且 > 0。取不到数值（上游没返回 residue_amount）时
+            // **不贡献到期日**：宁可漏提醒也不能凭未知余额催续费——本次修复的正是
+            // 「用完的卡把 expire_date 拉早」这一类误报，未知值不该再制造同类误报。
+            // 判定层（helpers 的 customerDecision）会把这些卡收进 $unknownResidue：
+            // 次卡余额未知 → 进 degraded 显式告知；期限卡余额未知 → 仍按 deadline 判到期。
+            // 注意 cards_list 里保留 residue=null 正是为了让下游能区分「0」与「未知」，
+            // 不要在这里把 null 归一成 0（那会让「余额未知」被当成「已用完」）。
+            $usable = $residue !== null && $residue > 0;
+            // 未开卡（status=7）：仍计入剩余库存（remain_times / countResidue 是「还剩多少」的展示口径，
+            // 卡确实在会员名下），但不参与续费判定所需的到期日与有效期占比——
+            // 未开卡的卡一天都没开始跑，算进来会同时污染分子与分母。
+            // 这与「不新增第 6 个清单页签」的决定一致：待开卡只在 reason 里说明。
+            $unactivated = (string) ($card['status'] ?? '') === '7';
+            if ($type === '1' && $hasResidueValue) {
                 $hasCountCard = true;
-                $residue = max(0.0, self::toNum($card['residue_amount']));
                 $countResidue += $residue;
-                $countBound += $residue + max(0.0, self::toNum($card['usage_total'] ?? 0));
+                // 分母与分子同源：都来自「全部有效次卡（含未开卡）」，否则占比会在两个口径间跳变
+                if ($residue > 0) {
+                    $countBound += $residue + max(0.0, self::toNum($card['usage_total'] ?? 0));
+                }
             }
-            if ($type === '2' && is_numeric($card['residue_amount'] ?? null)) {
+            if ($type === '2' && $hasResidueValue && ! $unactivated) {
                 $hasTimeCard = true;
-                $daysLeft += max(0.0, self::toNum($card['residue_amount']));
+                $daysLeft += $residue;
                 $expiry = self::toNum($card['expiry_days'] ?? 0);
                 if ($expiry > 0) {
                     $daysTotal += $expiry;
                 }
             }
             $deadline = self::date($card['deadline'] ?? null);
-            if ($deadline !== null && ($earliestDeadline === null || $deadline < $earliestDeadline)) {
+            if ($deadline !== null && $usable && ! $unactivated && ($earliestDeadline === null || $deadline < $earliestDeadline)) {
                 $earliestDeadline = $deadline;
             }
         }
@@ -443,21 +487,29 @@ class KyMemberSyncService
             // 有效卡项明细：供会员管理「剩余课时」列逐卡展示（含未开卡标记）
             'cards_list' => array_values(array_map(function (array $card) {
                 $type = (string) ($card['type'] ?? '');
-                $residue = is_numeric($card['residue_amount'] ?? null)
-                    ? max(0.0, self::toNum($card['residue_amount']))
+                $hasResidueValue = is_numeric($card['residue_amount'] ?? null);
+                $residue = $hasResidueValue ? max(0.0, self::toNum($card['residue_amount'])) : null;
+                $residueInt = $residue !== null ? (int) floor($residue) : null;
+                $unactivated = (string) ($card['status'] ?? '') === '7';
+                $bound = $type === '1'
+                    ? (int) floor(max(0.0, self::toNum($card['residue_amount'] ?? 0)) + max(0.0, self::toNum($card['usage_total'] ?? 0)))
                     : null;
 
                 return [
                     'title' => self::pick($card, ['card_title', 'card_name']),
                     // 1=次卡(节) 2=期限卡(天)
                     'unit' => $type === '2' ? '天' : '节',
-                    'residue' => $residue !== null ? (int) floor($residue) : null,
-                    'bound' => $type === '1'
-                        ? (int) floor(max(0.0, self::toNum($card['residue_amount'] ?? 0)) + max(0.0, self::toNum($card['usage_total'] ?? 0)))
-                        : null,
+                    'residue' => $residueInt,
+                    'bound' => $bound,
                     'deadline' => self::date($card['deadline'] ?? null),
                     'status' => self::pick($card, ['status_format', 'status']),
-                    'unactivated' => (string) ($card['status'] ?? '') === '7',
+                    'unactivated' => $unactivated,
+                    // 判定层需要的两个补充字段（§5.4 方案 A）：
+                    // - type:      原始卡类型，判定层据此区分次卡/期限卡，不必从 unit 反推
+                    // - validDays: 期限卡有效期总天数，供逐卡「有效期占比」
+                    //   （此前只有汇总的 daysTotal，缺 expiry_days 的卡会进分子不进分母）
+                    'type' => $type,
+                    'validDays' => (int) floor(max(0.0, self::toNum($card['expiry_days'] ?? 0))),
                 ];
             }, $active)),
         ];

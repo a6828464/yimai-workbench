@@ -103,7 +103,10 @@ final class TodayController extends Controller
         $snap = $setting?->snapshot;
 
         return ok([
-            'newLeads' => $scopedCustomers->where('layer', 'P5')->count() + $leads->where('status', '新留资')->count(),
+            // 新客资口径 = 「前端客资」谓词（P5 且非 ky: 来源）+ 未跟进的留资记录。
+            // 不能直接数 layer='P5'：卡项全部过期的**正式会员**也会落 P5，
+            // 那会把会员误报成新客资，让店长去「跟进」一个已经在册的会员。
+            'newLeads' => $scopedCustomers->filter(fn ($c) => isLeadOnlyCustomer($c))->count() + $leads->where('status', '新留资')->count(),
             'pendingFollowup' => $scopedCustomers->where('next_action_time', '!=', '')->where('next_action_time', '<=', $tomorrow.' 23:59:59')->count(),
             'expiringMembers' => $expiringMembers,
             'riskCount' => $overdueTasks + $scopedCustomers->where('owner', '未分配')->count() + $leads->where('status', '新留资')->count(),
@@ -327,7 +330,14 @@ final class TodayController extends Controller
         if (userHasRole($u, 'R_MEDIA')) {
             return ok([]);
         }
-        $q = scopeCustomersForUser(Customer::query(), $u)->whereIn('layer', ['P0', 'P1', 'P5']);
+        // P5 在这里的用途是「把前端客资也纳入待跟进」，所以必须排除 ky: 来源：
+        // 卡项全部过期的正式会员同样落 P5，若一并收进来，
+        // 店长的「待跟进」列表会被在册会员占位，而真正的留资反而排在后面（limit 6）。
+        $q = scopeCustomersForUser(Customer::query(), $u)
+            ->where(function ($w) {
+                $w->whereIn('layer', ['P0', 'P1'])
+                    ->orWhere(fn ($inner) => scopeLeadOnlyCustomers($inner));
+            });
 
         return ok($q->orderBy('id')->limit(6)->get()->map(function ($c) {
             $arr = camel($c);

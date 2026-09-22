@@ -1,6 +1,6 @@
 <template>
-  <div class="p-4">
-    <ElCard shadow="never">
+  <div class="list-page list-page--fill">
+    <ElCard>
       <template #header>
         <div class="flex-cb">
           <span class="font-500">账号与角色</span>
@@ -13,7 +13,15 @@
 
       <!-- 手持设备：改用卡片列表。宽表格的「操作」列 fixed=right 宽 300px，
            390px 视口里左右固定列就吃满了可见宽度，中间的数据列会被挤成零宽 -->
-      <ElTable v-if="!isHandheld" :data="accounts" border stripe v-loading="loading" max-height="520">
+      <ElTable
+        v-if="!isHandheld"
+        ref="tableRef"
+        :data="accounts"
+        border
+        stripe
+        v-loading="loading"
+        :max-height="tableMaxHeight"
+      >
         <ElTableColumn prop="userName" label="姓名" width="120" />
         <ElTableColumn prop="key" label="登录名" width="130">
           <template #default="{ row }">
@@ -295,6 +303,7 @@
   } from '@/api/auth'
   import type { AccountRow } from '@/api/auth'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type { MobileCardAction, MobileCardMetric, MobileCardTag } from '@/components/business/mobile-card/types'
   import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 
@@ -302,6 +311,9 @@
 
   // 手持设备上用卡片列表代替宽表格（见下方 cardRows）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：减项由 hook 运行时量出，本页不写任何像素
+  const { tableMaxHeight, tableRef } = useTableHeight()
 
   const ROLE_OPTIONS: Record<string, string> = {
     R_MANAGER: '店长',

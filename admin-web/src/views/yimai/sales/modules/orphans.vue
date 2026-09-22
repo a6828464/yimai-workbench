@@ -28,7 +28,15 @@
 
     <ElAlert v-if="error" type="error" show-icon :closable="false" class="mb-3" :title="error" />
 
-    <ElTable v-loading="loading" :data="records" size="small" border>
+    <ElTable
+      v-if="!isHandheld"
+      ref="tableRef"
+      v-loading="loading"
+      :data="records"
+      size="small"
+      border
+      :max-height="tableMaxHeight"
+    >
       <ElTableColumn prop="token" label="分享码" min-width="180">
         <template #default="{ row }">
           <span class="font-mono text-xs break-all">{{ row.token }}</span>
@@ -57,9 +65,29 @@
         </template>
       </ElTableColumn>
       <template #empty>
-        <span class="text-gray-400">暂无归属异常的分享记录</span>
+        <div class="list-empty">暂无归属异常的分享记录</div>
       </template>
     </ElTable>
+
+    <!--
+      手持设备：卡片列表。
+      表格最小宽 680px（分享码 180 + 归属姓名 120 + 原因 150 + 处置 230），
+      390px 视口里只剩横向滚动，处置按钮还挂在 fixed=right 列上跟着横滑，很难点中。
+    -->
+    <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+      <MobileCard
+        v-for="item in cardRows"
+        :key="item.id"
+        :title="item.title"
+        :subtitle="item.subtitle"
+        :tags="item.tags"
+        :metrics="item.metrics"
+        :actions="item.actions"
+      />
+      <div v-if="!loading && !cardRows.length" class="m-card-list__empty">
+        暂无归属异常的分享记录
+      </div>
+    </div>
 
     <ElDialog v-model="reassignDlg.visible" title="重新归属分享" width="440px">
       <div class="text-sm leading-6">
@@ -96,10 +124,24 @@
 </template>
 
 <script setup lang="ts">
+  import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
+  import MobileCard from '@/components/business/mobile-card/index.vue'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
   import { listOrphanShares, repairOrphanShare, type OrphanShareRow, type OrphanReason } from '@/api/yimai'
   import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 
   defineOptions({ name: 'SalesOrphans' })
+
+  // 宽表格在手机上换成卡片列表
+  const { isHandheld } = useDevice()
+
+  // 表格高度自适应（本页在谈单工具页签内，根容器是谈单工具页）
+  const { tableMaxHeight, tableRef } = useTableHeight()
 
   const records = ref<OrphanShareRow[]>([])
   const ownershipColumnsReady = ref(true)
@@ -121,6 +163,36 @@
     userId: undefined as number | undefined,
     saving: false
   })
+
+  /**
+   * 手持设备卡片数据。
+   *
+   * 卡片上放的是「谁、什么原因、要做什么」——表格里的分享码在 390px 屏上
+   * 折成两行也没什么用，压成一行小字放 subtitle 即可。
+   */
+  const cardRows = computed(() =>
+    records.value.map((row) => {
+      const tags: MobileCardTag[] = [
+        { text: row.reason, type: reasonTagType(row.reason), effect: 'dark' },
+        { text: row.type, effect: 'plain' }
+      ]
+      const metrics: MobileCardMetric[] = [
+        { label: '归属账号', value: row.created_by_user_id ? `#${row.created_by_user_id}` : '无' }
+      ]
+      const actions: MobileCardAction[] = [
+        { text: '重新归属', type: 'primary', onClick: () => openReassign(row) },
+        { text: '停用', type: 'danger', onClick: () => disable(row) }
+      ]
+      return {
+        id: row.id,
+        title: row.created_by || '（归属姓名为空）',
+        subtitle: row.token,
+        tags,
+        metrics,
+        actions
+      }
+    })
+  )
 
   /** 三档原因用不同颜色：悬挂 id 最需要人工判断，其次查无此人，再次仅缺 id */
   function reasonTagType(reason: OrphanReason): 'danger' | 'warning' | 'info' {

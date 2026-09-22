@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <!-- 控制栏 -->
     <div class="mb-4 flex flex-wrap items-center gap-3">
       <span class="text-sm font-500">经营数据</span>
@@ -170,7 +170,15 @@
         {{ contractVenue.unknown }} 条未计入；以下名单为已识别字段的未签合同。
       </ElAlert>
       <ElEmpty v-if="!contractVenue?.items.length" description="暂无可识别的未签合同" />
-      <ElTable v-else :data="contractVenue.items" border stripe size="small" max-height="460">
+      <ElTable
+        v-else
+        ref="contractTableRef"
+        :data="contractVenue.items"
+        border
+        stripe
+        size="small"
+        :max-height="contractTableMaxHeight"
+      >
         <ElTableColumn prop="memberName" label="会员姓名" min-width="110" />
         <ElTableColumn label="签约时间/合同" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">{{ row.name }}</template>
@@ -296,11 +304,15 @@
     KyVenueOverview
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import DateRangeControl from './date-range-control.vue'
   import { User, Ticket, ShoppingBag, Wallet, Coin } from '@element-plus/icons-vue'
   import type { LineDataItem } from '@/types/component/chart'
 
   defineOptions({ name: 'ManagerDashboard' })
+
+  // 弹窗内表格高度自适应：按视口高度收，避免长名单把弹窗撑出屏幕
+  const { tableMaxHeight: contractTableMaxHeight, tableRef: contractTableRef } = useTableHeight()
 
   const userStore = useUserStore()
 

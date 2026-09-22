@@ -1,12 +1,12 @@
 <template>
-  <div class="task-page art-full-height">
-    <ElCard class="art-table-card">
-      <div class="mb-4 flex flex-wrap items-center gap-3">
+  <div class="list-page list-page--fill">
+    <ElCard>
+      <div class="filter-bar">
         <ElSelect
           v-model="searchForm.status"
           placeholder="任务状态"
           clearable
-          class="!w-36"
+          class="f-lg"
           @change="handleSearch"
         >
           <ElOption v-for="s in STATUSES" :key="s" :label="s" :value="s" />
@@ -16,7 +16,7 @@
           v-model="searchForm.venue"
           placeholder="门店"
           clearable
-          class="!w-32"
+          class="f-md"
           @change="handleSearch"
         >
           <ElOption label="绿地店" value="绿地店" />
@@ -97,7 +97,7 @@
           />
         </ElFormItem>
         <ElFormItem label="优先级">
-          <ElSelect v-model="taskForm.priority" class="!w-28">
+          <ElSelect v-model="taskForm.priority" class="f-sm">
             <ElOption label="高" value="高" />
             <ElOption label="中" value="中" />
             <ElOption label="低" value="低" />

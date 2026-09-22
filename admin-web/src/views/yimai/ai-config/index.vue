@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <ElRow :gutter="16">
       <ElCol :xs="24" :lg="14" class="mb-4">
         <ElCard shadow="never">

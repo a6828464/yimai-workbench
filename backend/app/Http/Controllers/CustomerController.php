@@ -10,6 +10,10 @@ use App\Models\KyBooking;
 use App\Models\Lead;
 use App\Models\RenewalEvaluation;
 use App\Models\Task;
+// 必须显式导入：本文件命名空间是 App\Http\Controllers，
+// 不导入时 `User` 会被解析成 App\Http\Controllers\User（不存在），
+// 于是类型提示在运行时抛 TypeError —— 且只在带 type 的调用路径上才炸。
+use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -17,44 +21,110 @@ use Illuminate\Support\Facades\DB;
 
 class CustomerController extends Controller
 {
+    /**
+     * `/customers` 列表可见范围的**唯一定义处**：角色范围 + 新媒体收窄 + type 过滤。
+     *
+     * 这三个条件是「徽标数 = 页签行数」的全部前提，少任何一个都会让两者分裂：
+     *  - 角色范围 `scopeCustomersForUser()`
+     *  - 新媒体收窄 `layer='P5'`（注意：`scopeCustomersForUser()` 对 R_MEDIA 之外的角色
+     *    会提前 return，所以「R_MANAGER+R_MEDIA」这类多角色账号不会在那边被收窄，
+     *    必须在这里补。本仓库的 TaskVisibilityScopeTest 明确覆盖了这种多角色组合）
+     *  - `type` 过滤（会员 / 前端客资互斥）
+     *
+     * list-counts 此前只做了第一条，于是徽标按「全部客户」算、页签按「仅会员」算：
+     * 实测预流失徽标显示 4、点进去只有 3 行，多的那条是 layer=P5 的留资客资。
+     * 所以这里抽成一处，index / options / list-counts 三处共用 —— 复制粘贴就是制造第二套口径。
+     */
+    private function scopedCustomerQuery(User $u, ?string $type)
+    {
+        $q = scopeCustomersForUser(Customer::query(), $u);
+        if (userHasRole($u, 'R_MEDIA')) {
+            // 与 scopeCustomersForUser() 的 R_MEDIA 分支同一个谓词，不能写成裸 where('layer','P5')：
+            // 卡项全部过期的正式会员也落 P5，裸谓词会把会员的姓名/手机号发给新媒体（越权）。
+            scopeLeadOnlyCustomers($q);
+        }
+        $this->applyTypeFilter($q, $type);
+
+        return $q;
+    }
+
+    /**
+     * 「会员 / 前端客资」两个集合的**唯一定义处**。
+     *
+     * 条件体本身委托给 helpers 的 scopeMemberCustomers() / scopeLeadOnlyCustomers()：
+     * 这两个谓词同时被 R_MEDIA 的授权范围、今日待办的 newLeads、留资查重的 kind 判定使用，
+     * 在这里再抄一遍条件就等于重新制造「同一个谓词多处定义」的老问题
+     * （t11 的 R2 finding 正是这么来的）。
+     *
+     * $type 为 null / 其它值时不加任何条件（向后兼容：老调用方不带 type 时行为不变）。
+     */
+    private function applyTypeFilter($q, $type): void
+    {
+        if ($type === 'member') {
+            scopeMemberCustomers($q);
+        } elseif ($type === 'lead') {
+            scopeLeadOnlyCustomers($q);
+        }
+    }
+
     /** GET /customers/options：轻量选项接口，会籍顾问下拉（取代前端 size:5000 全量拉取后去重） */
     public function options(Request $r)
     {
         $u = $r->user();
-        $q = scopeCustomersForUser(Customer::query(), $u);
-        if (userHasRole($u, 'R_MEDIA')) {
-            $q->where('layer', 'P5');
-        }
-        $q->where(fn ($w) => $w->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%'));
+        $q = $this->scopedCustomerQuery($u, 'member');
         $consultants = $q->whereNotNull('consultant')->where('consultant', '!=', '')
             ->distinct()->orderBy('consultant')->pluck('consultant');
 
         return ok(['consultants' => $consultants]);
     }
 
-    /** GET /customers/list-counts：五清单徽标计数，一次清单扫描 + 角色范围求交集（取代前端全量拉取后逐行重算 5 遍） */
+    /**
+     * GET /customers/list-counts：五清单徽标计数，一次清单扫描 + 角色范围求交集
+     * （取代前端全量拉取后逐行重算 5 遍）。
+     *
+     * 带 `type` 时用与 `/customers` **完全相同**的 scopedCustomerQuery()，
+     * 保证「徽标数 = 页签行数」。
+     *
+     * 不带 `type` 时保留改动前的原始语义（仅角色范围求交集、不叠加任何 type/新媒体收窄），
+     * 逐字向后兼容老调用方。
+     */
     public function listCounts(Request $r)
     {
         $u = $r->user();
+        $type = $r->query('type');
         $lists = memberListIds();
-        if (! userHasRole($u, 'R_SUPER')) {
+        // 注意：必须把数组当参数传进来。箭头函数是**定义时按值捕获**的，
+        // 写成 fn () => ...$lists... 会永远数到原始清单，下面的交集结果被静默忽略。
+        $toCounts = fn (array $l) => array_map(fn ($v) => is_array($v) ? count($v) : (int) $v, $l);
+
+        if ($type === null) {
+            // ── 兼容路径：与改动前逐字一致 ──
+            if (userHasRole($u, 'R_SUPER')) {
+                return ok(['counts' => $toCounts($lists)]);
+            }
             $scopedSet = array_flip(scopeCustomersForUser(Customer::query(), $u)->pluck('id')->all());
             foreach ($lists as $key => $ids) {
-                $lists[$key] = count(array_filter($ids, fn ($id) => isset($scopedSet[$id])));
+                $lists[$key] = count(array_filter((array) $ids, fn ($id) => isset($scopedSet[$id])));
             }
+
+            return ok(['counts' => $toCounts($lists)]);
         }
 
-        return ok(['counts' => array_map(fn ($v) => is_array($v) ? count($v) : (int) $v, $lists)]);
+        // ── 与 /customers 同源路径 ──
+        $scopedSet = array_flip($this->scopedCustomerQuery($u, $type)->pluck('id')->all());
+        foreach ($lists as $key => $ids) {
+            $lists[$key] = count(array_filter((array) $ids, fn ($id) => isset($scopedSet[$id])));
+        }
+
+        return ok(['counts' => $toCounts($lists)]);
     }
 
     /** GET /customers */
     public function index(Request $r)
     {
         $u = $r->user();
-        $q = scopeCustomersForUser(Customer::query(), $u);
-        if (userHasRole($u, 'R_MEDIA')) {
-            $q->where('layer', 'P5');
-        }
+        // 可见范围（角色 + 新媒体 + type）与 list-counts / options 同源，见 scopedCustomerQuery()
+        $q = $this->scopedCustomerQuery($u, $r->query('type'));
         if ($n = trim((string) $r->query('name', ''))) {
             $q->where('name', 'like', "%{$n}%");
         }
@@ -89,12 +159,8 @@ class CustomerController extends Controller
         if ($src = $r->query('source')) {
             $q->where('source', 'like', "%{$src}%");
         }
-        if ($r->query('type') === 'member') {
-            $q->where(fn ($w) => $w->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%'));
-        }
-        if ($r->query('type') === 'lead') {
-            $q->where('layer', 'P5')->where(fn ($w) => $w->whereNull('external_id')->orWhere('external_id', 'not like', 'ky:%'));
-        }
+        // 会员 / 客资过滤与 list-counts、options 同源（见 applyTypeFilter）
+        $this->applyTypeFilter($q, $r->query('type'));
         if ($r->query('haveCourse') === 'true') {
             $q->whereNotNull('main_card')->where('main_card', '!=', '—');
         }
@@ -130,6 +196,10 @@ class CustomerController extends Controller
             'total' => $total,
             'current' => $current,
             'size' => $size,
+            // 待续费清单附带「为什么他在清单里」：合计/逐卡两个口径并存（D2），
+            // 且同一会员可能同时在待复活（真实数据重叠率 100%，D3 不隐藏、只分主次）。
+            // 没有这段解释，店长看到「合计还有 52 节却被提醒续费」只会认为系统算错。
+            'renewalReasons' => $this->renewalReasons($rows),
             'attendanceMonths' => [
                 'm1' => '再前30天',
                 'm2' => '前30天',
@@ -140,6 +210,26 @@ class CustomerController extends Controller
                 'm3Range' => $windows[2][0]->format('n/j').'–'.$windows[2][1]->format('n/j'),
             ],
         ]);
+    }
+
+    /**
+     * 待续费「命中理由」：只对**本次返回的行**取明细，不额外扫全表。
+     * memberListWatch() 与清单计数同一次缓存扫描，所以理由与「他在不在清单里」永远自洽。
+     *
+     * @return array<int,array> id => {why[], bucket, urgent, revive, primary, coLists, degraded}
+     */
+    private function renewalReasons($rows): array
+    {
+        $watch = memberListWatch()['待续费'] ?? [];
+        $out = [];
+        foreach ($rows as $row) {
+            $id = $row['id'] ?? null;
+            if ($id !== null && isset($watch[$id])) {
+                $out[$id] = $watch[$id];
+            }
+        }
+
+        return $out;
     }
 
     /** PATCH /customers/{id} */
@@ -179,6 +269,13 @@ class CustomerController extends Controller
         $c->update($patch);
         if (array_key_exists('in_revive', $patch)) {
             invalidateBusinessCaches('member_lists');
+            // in_revive 是续费判定的输入之一（$revive → 分层 P1），所以写入后必须重算派生列 layer，
+            // 否则「标记待复活」之后 layer 与 customerLayerFor() 当场分叉：
+            // 经营池分层页读 layer 列、详情页算 customerLayerFor()，同一会员两个答案。
+            // 单一 owner 见 helpers 的 recomputeLayerFor()。
+            if (recomputeLayerFor($id)) {
+                $c->refresh();
+            }
         }
         audit($r, $r->input('_action', '修改'), '会员管理', $id, "{$c->name}（{$c->venue}）", $c->venue, '工作流字段更新');
 
@@ -464,6 +561,9 @@ class CustomerController extends Controller
             'renewalCountPercent' => 'nullable|integer|min:0|max:100',
             'renewalExpireDays' => 'nullable|integer|min:1|max:365',
             'renewalExpirePercent' => 'nullable|integer|min:0|max:100',
+            // 已过期但仍有余额的卡的回溯天数（决策 D4）：上限 3650 ≈ 10 年，
+            // 允许店长按自己的历史数据跨度调整；0 = 完全不看已过期卡。
+            'renewalExpiredBackfillDays' => 'nullable|integer|min:0|max:3650',
             'vipAmountThreshold' => 'required|integer|min:1000|max:1000000',
             'declineMode' => 'required|in:strict,recent',
             'predropMin' => 'required|integer|min:1|max:180',
@@ -477,6 +577,7 @@ class CustomerController extends Controller
         $data['renewalCountPercent'] = (int) ($data['renewalCountPercent'] ?? 20);
         $data['renewalExpireDays'] = (int) ($data['renewalExpireDays'] ?? 30);
         $data['renewalExpirePercent'] = (int) ($data['renewalExpirePercent'] ?? 0);
+        $data['renewalExpiredBackfillDays'] = (int) ($data['renewalExpiredBackfillDays'] ?? 90);
         setRules($data);
         audit($r, '修改', '会员管理', 0, '清单规则阈值', '双店', json_encode($data, JSON_UNESCAPED_UNICODE));
 

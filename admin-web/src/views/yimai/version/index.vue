@@ -1,5 +1,5 @@
 <template>
-  <div class="mx-auto pt-5 mb-5 space-y-5">
+  <div class="list-page version-page mx-auto max-w-980">
     <!--
       升级后需要门店配合的动作项：常驻显示在页面顶部。
       为什么常驻而不只在更新日志里：版本更新页只有超管能进，而真正要动手的是各门店店长；

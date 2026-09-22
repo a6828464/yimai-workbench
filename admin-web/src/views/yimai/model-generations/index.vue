@@ -1,13 +1,13 @@
 <template>
-  <div class="art-full-height">
-    <ElCard class="art-table-card">
-      <div class="mb-4 flex flex-wrap items-center gap-3">
+  <div class="list-page list-page--fill">
+    <ElCard>
+      <div class="filter-bar">
         <ElSelect
           v-model="filters.operatorId"
           placeholder="操作人"
           clearable
           filterable
-          class="!w-36"
+          class="f-lg"
           @change="search"
         >
           <ElOption
@@ -24,14 +24,14 @@
           start-placeholder="开始日期"
           end-placeholder="结束日期"
           range-separator="~"
-          class="!w-64"
+          class="f-date"
           @change="search"
         />
         <ElSelect
           v-model="filters.featureType"
           placeholder="功能类型"
           clearable
-          class="!w-36"
+          class="f-lg"
           @change="search"
         >
           <ElOption v-for="item in featureTypes" :key="item" :label="item" :value="item" />
@@ -40,14 +40,14 @@
           v-model="filters.status"
           placeholder="状态"
           clearable
-          class="!w-28"
+          class="f-sm"
           @change="search"
         >
           <ElOption v-for="item in statuses" :key="item" :label="statusLabel(item)" :value="item" />
         </ElSelect>
         <ElButton type="primary" @click="search">查询</ElButton>
         <ElButton @click="resetFilters">重置</ElButton>
-        <div class="flex-1" />
+        <div class="filter-bar__spacer" />
         <ElButton @click="retentionVisible = true">保留策略</ElButton>
       </div>
 
@@ -60,7 +60,15 @@
       </ArtTableHeader>
 
       <!-- 手持设备：改用卡片列表。9 列表格在 390px 上固定列吃满可见宽度 -->
-      <ElTable v-if="!isHandheld" v-loading="loading" :data="records" border stripe max-height="520">
+      <ElTable
+        v-if="!isHandheld"
+        ref="tableRef"
+        v-loading="loading"
+        :data="records"
+        border
+        stripe
+        :max-height="tableMaxHeight"
+      >
         <ElTableColumn prop="createdAt" label="生成时间" width="170" sortable />
         <ElTableColumn label="操作人" width="150">
           <template #default="{ row }">
@@ -116,7 +124,7 @@
         <div v-if="!loading && !cardRows.length" class="m-card-list__empty">暂无生成记录</div>
       </div>
 
-      <div class="mt-4 flex justify-end">
+      <div class="list-pager">
         <ElPagination
           :current-page="page.current"
           :page-size="page.size"
@@ -166,12 +174,16 @@
     type RetentionSettings
   } from '@/api/system-records'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type { MobileCardMetric, MobileCardTag } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiModelGenerations' })
 
   // 手持设备上用卡片列表代替宽表格（见下方 cardRows）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：减项由 hook 运行时量出，本页不写任何像素
+  const { tableMaxHeight, tableRef } = useTableHeight()
 
   const RETENTION_OPTIONS = [
     { label: '保留 30 天', value: 30 },

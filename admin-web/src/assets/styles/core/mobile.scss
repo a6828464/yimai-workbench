@@ -157,7 +157,127 @@
     line-height: 1.5;
   }
 
-  // 4b. 只有图标的关闭类按钮：抽屉右上角关闭、MessageBox 关闭。
+  // 4a. ElRadioButton / ElCheckboxButton 的选中态。
+  //
+  //     实测：新客培养的课型切换 78x42、今日待办的来源切换 88x36、课后分析的
+  //     等级按钮 92x42 —— 全部低于 44px。
+  //
+  //     ⚠️ 两个坑：
+  //     1. 命中区是外层 `<label class="el-radio-button">`，不是内部的
+  //        `.el-radio-button__inner`。只把 inner 撑高，label 仍按行高算，
+  //        量出来还是 42px（实测踩过）。所以 min-height 必须给在 label 上。
+  //     2. 不能只写 `.el-radio-button--small`：新客培养用的是默认尺寸
+  //        （`.el-radio-button--default`），只包 small 的话规则整片落空 ——
+  //        与 el-input-number 当年踩过的坑是同一个。所以按「所有尺寸」写。
+  .el-radio-button,
+  .el-checkbox-button {
+    display: inline-flex;
+    min-height: $touch-target-min;
+  }
+
+  .el-radio-button__inner,
+  .el-checkbox-button__inner {
+    min-height: $touch-target-min;
+    // 垂直居中：min-height 撑高后文字默认贴顶，视觉上会偏
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  // 4b. 裸 ElCheckbox / ElRadio（不是 *Button 变体）。
+  //
+  //     上面 §4a 只写了 `.el-radio-button` / `.el-checkbox-button`，漏了不带 Button 的裸用法。
+  //     实测裸用法在手机端只有 32px 高：开通新账号弹窗 7 个角色/门店勾选框
+  //     （52x32 / 80x32 / 66x32）、会员管理评估弹窗的风险项（152x32 / 206x32 / 271x32）
+  //     全部低于 44px。共 68 处，且官方门禁的选择器里没有 checkbox/radio，
+  //     所以这批缺口「永远门禁通过」—— 这就是它一直没被发现的原因。
+  //
+  //     ⚠️ 与 §4 同一个坑的第二次出现：必须用**裸选择器**，不能写 `--default` 变体名。
+  //     实测 `<label class="el-checkbox el-checkbox--default">`、`<label class="el-radio">`，
+  //     以及 `<label class="el-radio-button is-active el-radio-button--small">` ——
+  //     三者互不包含（已实测 `.el-radio-button.el-radio` 不存在），所以要分开写两组。
+  //
+  //     命中区确认：`.el-checkbox` / `.el-radio` 本身就是 `<label>`，整块可点，
+  //     所以 min-height 给在它自己身上即可（不是给内部的 `__input` 或 `__label` ——
+  //     实测内部 `.el-checkbox__input` 16px、`.el-checkbox__label` 14px）。
+  //     EP 已给这两个元素 `display: inline-flex; align-items: center`，
+  //     撑高后文字自动居中，无需再补。
+  .el-checkbox,
+  .el-radio {
+    min-height: $touch-target-min;
+  }
+
+  // 4c. ElSelect 的触控区。
+  //
+  //     `.el-pagination` 内含的 select 已有 §2 的规则，但那只覆盖分页器里那一个。
+  //
+  //     实测缺口在「人员归属映射」弹窗的表格里：select 是 159x24 / 182x24。
+  //     ⚠️ 注意缺的是**高度**（24px），宽度 159/182 本来就是够的 ——
+  //     契约把它描述成「窄宽」问题，实测不符，根因在高度这一侧。
+  //
+  //     24px 的来源查清了：那个 select 是 `<div class="el-select el-select--small">`，
+  //     EP 给 `--small` 变体设了 `min-height: 24px`（权重 0,2,0）。
+  //     el-ui.scss:98 本来有一条 `.el-select--default .el-select__wrapper { min-height: …
+  //     !important }`，但它**只写 `--default`** —— small 变体整片落空，就停在了 24px。
+  //
+  //     ⚠️⚠️ 这是本文件第三次出现同一个坑（§3 的 el-input-number 按变体写、
+  //     §4 的 radio/checkbox-button 按变体写、现在这里是第三次）：
+  //     **按变体名写选择器，只要有业务代码用了别的变体，规则就整片落空。**
+  //     所以这里把各尺寸变体全部列出，并对 min-height 加 `!important` ——
+  //     必须加，因为 EP 自己的 `--small` 规则权重 (0,2,0) 高于裸 `.el-select__wrapper` (0,1,0)，
+  //     不加 !important 会继续被 24px 压住（实测过）。
+  //     `.el-select__wrapper` 裸选择器保留在列表首位，兜住 EP 未来新增的变体名。
+  .el-select__wrapper,
+  .el-select--default .el-select__wrapper,
+  .el-select--small .el-select__wrapper,
+  .el-select--large .el-select__wrapper {
+    // 弹窗内表格里的 select（小尺寸）会随之把行撑高，这是预期：44px 才点得中。
+    min-height: $touch-target-min !important;
+    // min-width 是「窄宽」保险：筛选条上的 select 宽度由 .filter-bar 分档给，
+    // 但弹窗里可能放一个很窄的 select，下限 44px 保证它至少是个能点中的方块。
+    min-width: $touch-target-min;
+  }
+
+  // 4d. ElSwitch：默认 40x32，低于 44。开关本身有 40px 宽，宽度够但高度不够。
+  //
+  //     switch 的命中区是外层 .el-switch，把它抬到 44px 高即可，
+  //     内部 .el-switch__core 的视觉尺寸保持不变（否则开关会变得笨重）。
+  //     宽度也补到 44：EP 的开关核心就是 40px 宽，差这 4px 会让「≥44」的
+  //     触控标准在宽度维度上不达标（实测数据备份页 40x44）。
+  .el-switch {
+    min-width: $touch-target-min;
+    min-height: $touch-target-min;
+    align-items: center;
+  }
+
+  // 4e. ElTag 的关闭图标：`.el-tag__close` 实测只有 14x14，是**真的可点**的
+  //     （EP 给它挂了 handleClose，`withModifiers(handleClose, ['stop'])`），
+  //     营销工具的「受众标签」用的就是可关闭 tag —— 手机上点不中就删不掉。
+  //
+  //     只放大可关闭 tag（`.is-closable` 精确匹配，不给纯展示 tag 凭空加高）。
+  .el-tag.is-closable {
+    min-height: $touch-target-min;
+
+    .el-tag__close {
+      // 图标本身 14px，用 min-width/min-height 把命中区撑到 44x44
+      // （图标字形仍由 font-size 控制，视觉尺寸不变）
+      position: relative;
+      min-width: $touch-target-min;
+      min-height: $touch-target-min;
+
+      &::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+      }
+    }
+  }
+
+  // 4f. 只有图标的关闭类按钮：抽屉右上角关闭、MessageBox 关闭。
+  //
+  //     （本段原编号为 4b，与上面 4a~4e 的触控兜底小节重号，本轮统一为 4f。）
   //
   //     el-drawer__close-btn 是个纯图标 <button>，EP 没给宽高，实测只有 20x20：
   //     抽屉在手机上占满屏，关闭按钮是用户唯一出口，点不中就只能靠 Esc/滑动，很容易卡住。

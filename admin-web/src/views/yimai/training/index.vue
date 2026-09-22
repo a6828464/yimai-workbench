@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <ElAlert
       title="计划由AI生成草稿，必须有权限的老师确认后才可分享给会员；高风险情况需先经医疗专业评估"
       type="info"
@@ -16,7 +16,15 @@
         </div>
       </template>
 
-      <ElTable v-if="!isHandheld" :data="plans" border stripe v-loading="loading">
+      <ElTable
+        v-if="!isHandheld"
+        ref="tableRef"
+        :data="plans"
+        border
+        stripe
+        v-loading="loading"
+        :max-height="tableMaxHeight"
+      >
         <ElTableColumn label="会员 / 目标" min-width="180">
           <template #default="{ row }">
             <div class="font-500">{{ row.memberName }}</div>
@@ -346,6 +354,7 @@
   import { USE_BACKEND } from '@/api/backend'
   import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type {
     MobileCardAction,
     MobileCardMetric,
@@ -357,6 +366,9 @@
 
   // 手持设备上用卡片列表代替宽表格（操作列固定 200px，手机上会吃掉大半屏）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：减项由 hook 运行时量出
+  const { tableMaxHeight, tableRef } = useTableHeight()
 
   const route = useRoute()
   const trainingStore = useTrainingStore()

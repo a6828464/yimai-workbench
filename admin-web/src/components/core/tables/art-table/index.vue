@@ -3,7 +3,7 @@
 <!-- 扩展功能：分页组件、渲染自定义列、loading、表格全局边框、斑马纹、表格尺寸、表头背景配置 -->
 <!-- 获取 ref：默认暴露了 elTableRef 外部通过 ref.value.elTableRef 可以调用 el-table 方法 -->
 <template>
-  <div class="art-table" :class="{ 'is-empty': isEmpty }" :style="containerHeight">
+  <div class="art-table" :class="{ 'is-empty': isEmpty }" :style="containerStyle">
     <ElTable ref="elTableRef" v-loading="!!loading" v-bind="mergedTableProps">
       <template v-for="col in columns" :key="col.prop || col.type">
         <!-- 渲染全局序号列 -->
@@ -72,23 +72,22 @@
 </template>
 
 <script setup lang="ts">
-  import { ref, computed, nextTick, watchEffect, getCurrentInstance, useAttrs } from 'vue'
+  import { ref, computed, nextTick, getCurrentInstance, useAttrs } from 'vue'
   import type { ElTable, TableProps } from 'element-plus'
   import { storeToRefs } from 'pinia'
   import { ColumnOption } from '@/types'
   import { useTableStore } from '@/store/modules/table'
   import { useCommon } from '@/hooks/core/useCommon'
   import { useTableHeight } from '@/hooks/core/useTableHeight'
-  import { useResizeObserver, useWindowSize } from '@vueuse/core'
+  import { useDevice } from '@/hooks/core/useDevice'
 
   defineOptions({ name: 'ArtTable' })
 
-  const { width } = useWindowSize()
   const elTableRef = ref<InstanceType<typeof ElTable> | null>(null)
   const paginationRef = ref<HTMLElement>()
-  const tableHeaderRef = ref<HTMLElement>()
   const tableStore = useTableStore()
   const { isBorder, isZebra, tableSize, isFullScreen, isHeaderBackground } = storeToRefs(tableStore)
+  const { isHandheld, isCompact } = useDevice()
 
   /** 分页配置接口 */
   interface PaginationConfig {
@@ -157,9 +156,9 @@
   }
 
   const layout = computed(() => {
-    if (width.value < 768) {
+    if (isHandheld.value) {
       return LAYOUT.MOBILE
-    } else if (width.value < 1024) {
+    } else if (isCompact.value) {
       return LAYOUT.IPAD
     } else {
       return LAYOUT.DESKTOP
@@ -174,7 +173,7 @@
     layout: layout.value,
     hideOnSinglePage: false,
     size: 'default',
-    pagerCount: width.value > 1200 ? 7 : 5
+    pagerCount: isCompact.value ? 5 : 7
   }
 
   // 合并分页配置
@@ -192,53 +191,59 @@
   // 数据是否为空
   const isEmpty = computed(() => props.data?.length === 0)
 
-  const paginationHeight = ref(0)
-  const tableHeaderHeight = ref(0)
-
-  // 使用 useResizeObserver 监听分页器高度变化
-  useResizeObserver(paginationRef, (entries) => {
-    const entry = entries[0]
-    if (entry) {
-      // 使用 requestAnimationFrame 避免 ResizeObserver loop 警告
-      requestAnimationFrame(() => {
-        paginationHeight.value = entry.contentRect.height
-      })
-    }
-  })
-
-  // 使用 useResizeObserver 监听表格头部高度变化
-  useResizeObserver(tableHeaderRef, (entries) => {
-    const entry = entries[0]
-    if (entry) {
-      // 使用 requestAnimationFrame 避免 ResizeObserver loop 警告
-      requestAnimationFrame(() => {
-        tableHeaderHeight.value = entry.contentRect.height
-      })
-    }
-  })
-
-  // 分页器与表格之间的间距常量（计算属性，响应 showTableHeader 变化）
-  const PAGINATION_SPACING = computed(() => (props.showTableHeader ? 6 : 15))
-
   // 使用表格高度计算 Hook
-  const { containerHeight } = useTableHeight({
-    showTableHeader: computed(() => props.showTableHeader),
-    paginationHeight,
-    tableHeaderHeight,
-    paginationSpacing: PAGINATION_SPACING
+  //
+  // 高度来源收敛到 hooks/core/useTableHeight.ts 一处：
+  // 它量「本表格到页面根容器（.list-page）顶部」的占位，再扣掉表格下方的兄弟元素，
+  // 得到本表可用的 max-height。这里不再自己维护 showTableHeader / 分页器高度的
+  // 加法 —— 那种写法要求调用方把每一块占位都算准，漏一块表格就会盖住分页器。
+  const { tableMaxHeight } = useTableHeight({
+    // 直接复用 elTableRef：模板上只能挂一个 ref，而 hook 的 resolveElement
+    // 已经会从组件实例取 $el，所以不需要再合成一个 setter。
+    tableRef: elTableRef,
+    // 全屏模式下由 .el-full-screen 容器接管高度，不再叠加 max-height
+    disabled: computed(() => isFullScreen.value)
   })
 
-  // 表格高度逻辑
+  /**
+   * 表格高度。
+   *
+   * 改造前这里默认返回 `'100%'`（占满 .art-table 容器），于是表格把卡片的全部高度吃掉，
+   * 卡片里跟在表格后面的分页器被挤到卡片可视区之外 —— 实测客户经营池分页器 bottom=969、
+   * 卡片可视底 884，必须再滚一屏才能翻页。
+   *
+   * 现在默认交给 `max-height`（由 useTableHeight 量出可用高度）：
+   * 数据少时表格就是内容高度（不出现大片空白），数据多时到可用高度为止并内部滚动，
+   * 分页器始终留在可视区内。
+   *
+   * 只有三种情况仍然显式给 `height`：
+   * 1. 全屏：由 .el-full-screen 接管
+   * 2. 空数据：需要一块固定高度的区域把空态居中（否则空表塌成 0 高）
+   * 3. 调用方显式传了 height
+   */
   const height = computed(() => {
-    // 全屏模式下占满全屏
     if (isFullScreen.value) return '100%'
-    // 空数据且非加载状态时固定高度
-    if (isEmpty.value && !props.loading) return props.emptyHeight
-    // 使用传入的高度
     if (props.height) return props.height
-    // 默认占满容器高度
-    return '100%'
+    if (isEmpty.value && !props.loading) return props.emptyHeight
+    return undefined
   })
+
+  /**
+   * 外层 .art-table 的高度。
+   *
+   * ⚠️ 不能写 `height: 100%`。`.art-table` 是 `.el-card__body` 的直接子级，
+   * 而 card body 有 20px 上下内边距 —— `height: 100%` 拿到的是 **content box 高度**
+   * （791px），再叠上 `margin-top: 10px` 就是 801px，比可视区还高，
+   * 于是分页器被顶出卡片可视区（实测 customers 分页器 bottom=894 > 可视底 868，
+   * 必须再滚一屏才能翻页）。
+   *
+   * 改成 `height: auto`：外层跟着内容走（表格 max-height + 分页器），
+   * 表格该多高由 useTableHeight 的 max-height 决定，两者不互相打架。
+   * 全屏模式下才需要撑满，那时由 .el-full-screen 容器给高度。
+   */
+  const containerStyle = computed(() =>
+    isFullScreen.value ? { height: '100%' } : { height: 'auto' }
+  )
 
   // 表头背景颜色样式
   const headerCellStyle = computed(() => ({
@@ -259,6 +264,9 @@
     ...attrs,
     ...props,
     height: height.value,
+    // 自适应高度：由 useTableHeight 量出，页面无需传 max-height。
+    // 显式传入 max-height 时以调用方为准（弹窗内的短表要按自己的规则收）。
+    maxHeight: props.maxHeight ?? tableMaxHeight.value,
     stripe: stripe.value,
     border: border.value,
     size: size.value,
@@ -322,40 +330,9 @@
     (e: 'pagination:current-change', val: number): void
   }>()
 
-  // 查找并绑定表格头部元素 - 使用 VueUse 优化
-  const findTableHeader = () => {
-    if (!props.showTableHeader) {
-      tableHeaderRef.value = undefined
-      return
-    }
-
-    const tableHeader = document.getElementById('art-table-header')
-    if (tableHeader) {
-      tableHeaderRef.value = tableHeader
-    } else {
-      // 如果找不到表格头部，设置为 undefined，useElementSize 会返回 0
-      tableHeaderRef.value = undefined
-    }
-  }
-
-  watchEffect(
-    () => {
-      // 访问响应式数据以建立依赖追踪
-      void props.data?.length // 追踪数据变化
-      const shouldShow = props.showTableHeader
-
-      // 只有在需要显示表格头部时才查找
-      if (shouldShow) {
-        nextTick(() => {
-          findTableHeader()
-        })
-      } else {
-        // 不显示时清空引用
-        tableHeaderRef.value = undefined
-      }
-    },
-    { flush: 'post' }
-  )
+  // 表格高度由 useTableHeight 通过 ResizeObserver 自行观测（含表格父链），
+  // 这里不再手工查找 #art-table-header / 分页器元素 —— 那种写法只能覆盖
+  // 「表头 + 分页器」两块占位，页面里多一行提示就会漏算。
 
   defineExpose({
     scrollToTop,
@@ -365,4 +342,32 @@
 
 <style lang="scss" scoped>
   @use './style';
+
+  // ---------------------------------------------------------------------------
+  // 覆盖 ./style 里的高度规则（t8 表格高度统一）
+  //
+  // 原 `./style` 写的是 `.art-table { height: 100% }` + `.el-table { height: 100% }`。
+  // 这套规则有个必现缺陷：`.art-table` 是 `.el-card__body` 的直接子级，而 card body
+  // 有 20px 上下内边距 —— `height: 100%` 拿到的是 **content box 高度**（791px），
+  // 再叠上 `margin-top: 10px` 就是 801px，比可视区还高，于是分页器被顶出卡片可视区
+  // （实测客户经营池：分页器 bottom=969 > 卡片可视底 884，必须再滚一屏才能翻页）。
+  //
+  // 覆盖放在这里（而不是改 ./style）的原因：`@use` 的规则与下面同权重，
+  // 后写的胜出，所以这里能覆盖掉；同时把「表格高度归属」收敛到组件自身，
+  // 与 `containerStyle` / `useTableHeight` 一起读得明白。
+  // ---------------------------------------------------------------------------
+  .art-table {
+    // 外层高度由 containerStyle 决定（默认 auto，全屏才 100%）
+    height: auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+
+    :deep(.el-table) {
+      // 表格不 flex-grow：它的高度由 max-height（useTableHeight 量出）决定。
+      // 若让它 flex: 1，表格会把分页器挤出卡片可视区。
+      flex: 0 0 auto;
+      min-height: 0;
+    }
+  }
 </style>

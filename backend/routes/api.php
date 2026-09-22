@@ -13,6 +13,7 @@ use App\Http\Controllers\KyController;
 use App\Http\Controllers\LeadController;
 use App\Http\Controllers\MarketingController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\PayrollController;
 use App\Http\Controllers\PostClassReviewController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PublicShareController;
@@ -192,6 +193,21 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/system/retention', [SystemController::class, 'retentionUpdate']);
     Route::get('/system/changelog', [SystemController::class, 'changelog']);
     Route::post('/system/update', [SystemController::class, 'update']);
+
+    // ---------- 薪酬计算（仅超管：控制器内每个端点首行 requireSuper，与 BackupController 同模式） ----------
+    // 身份标签枚举的唯一下发点；前端必须从这里取，禁止在 payroll/ 下再写一份硬编码列表
+    Route::get('/payroll/roles', [PayrollController::class, 'roles']);
+    Route::get('/payroll/hours', [PayrollController::class, 'hours']);
+    Route::get('/payroll/calculate', [PayrollController::class, 'calculate']);
+    // copy-from-previous 必须注册在同前缀的其它动词之前，避免路径被参数化规则吃掉
+    Route::post('/payroll/monthly-inputs/copy-from-previous', [PayrollController::class, 'monthlyInputsCopyFromPrevious']);
+    Route::get('/payroll/monthly-inputs', [PayrollController::class, 'monthlyInputsShow']);
+    Route::put('/payroll/monthly-inputs', [PayrollController::class, 'monthlyInputsUpdate']);
+    Route::get('/payroll/profiles', [PayrollController::class, 'profiles']);
+    Route::put('/payroll/profiles/{userId}', [PayrollController::class, 'updateProfile']);
+    Route::get('/payroll/performance', [PayrollController::class, 'performanceIndex']);
+    Route::post('/payroll/performance/preview', [PayrollController::class, 'performancePreview']);
+    Route::post('/payroll/performance/commit', [PayrollController::class, 'performanceCommit']);
 });
 
 // ---------- 公开接口（免登录，H5 分享页用） ----------

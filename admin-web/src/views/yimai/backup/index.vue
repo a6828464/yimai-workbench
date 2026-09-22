@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <!-- 状态总览 -->
     <ElCard shadow="never" class="mb-4">
       <template #header>
@@ -247,7 +247,13 @@
       </template>
       <ElTabs v-model="scope">
         <ElTabPane label="本地备份" name="local">
-          <ElTable v-if="!isHandheld" :data="currentFiles" size="small" max-height="420">
+          <ElTable
+            v-if="!isHandheld"
+            ref="localTableRef"
+            :data="currentFiles"
+            size="small"
+            :max-height="localTableMaxHeight"
+          >
             <ElTableColumn prop="name" label="文件名" min-width="260" show-overflow-tooltip />
             <ElTableColumn label="大小" width="100">
               <template #default="{ row }">{{ humanSize(row.size) }}</template>
@@ -275,7 +281,7 @@
               </template>
             </ElTableColumn>
             <template #empty>
-              <ElEmpty description="暂无本地备份，点击上方「立即备份」生成" :image-size="60" />
+              <div class="list-empty">暂无本地备份，点击上方「立即备份」生成</div>
             </template>
           </ElTable>
 
@@ -298,7 +304,13 @@
           </div>
         </ElTabPane>
         <ElTabPane :label="`远端备份（${remoteFiles.length}）`" name="remote">
-          <ElTable v-if="!isHandheld" :data="currentFiles" size="small" max-height="420">
+          <ElTable
+            v-if="!isHandheld"
+            ref="remoteTableRef"
+            :data="currentFiles"
+            size="small"
+            :max-height="remoteTableMaxHeight"
+          >
             <ElTableColumn prop="name" label="文件名" min-width="260" show-overflow-tooltip />
             <ElTableColumn label="大小" width="100">
               <template #default="{ row }">{{ humanSize(row.size) }}</template>
@@ -326,14 +338,13 @@
               </template>
             </ElTableColumn>
             <template #empty>
-              <ElEmpty
-                :description="
+              <div class="list-empty">
+                {{
                   status.remoteConfigured
                     ? '点击右上角「刷新远端列表」查看远端备份'
                     : '未配置远端存储（WebDAV / S3）'
-                "
-                :image-size="60"
-              />
+                }}
+              </div>
             </template>
           </ElTable>
 
@@ -378,6 +389,7 @@
   import type { BackupConfig, BackupFileInfo, BackupStatus } from '@/api/yimai'
   import { USE_BACKEND } from '@/api/backend'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type { MobileCardAction } from '@/components/business/mobile-card/types'
   import { ElMessage, ElMessageBox } from 'element-plus'
 
@@ -385,6 +397,10 @@
 
   // 手持设备上用卡片列表代替宽表格（见下方 fileCardActions）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：本地 / 远端两个页签各一张表，各持一个 ref
+  const { tableMaxHeight: localTableMaxHeight, tableRef: localTableRef } = useTableHeight()
+  const { tableMaxHeight: remoteTableMaxHeight, tableRef: remoteTableRef } = useTableHeight()
 
   const defaultForm = (): BackupConfig => ({
     enabled: false,

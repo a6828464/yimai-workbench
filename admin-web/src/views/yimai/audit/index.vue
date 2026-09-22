@@ -1,13 +1,13 @@
 <template>
-  <div class="audit-page art-full-height">
-    <ElCard class="art-table-card">
-      <div class="mb-4 flex flex-wrap items-center gap-3">
+  <div class="list-page list-page--fill">
+    <ElCard>
+      <div class="filter-bar">
         <ElSelect
           v-model="filters.operator"
           placeholder="操作人"
           clearable
           filterable
-          class="!w-36"
+          class="f-lg"
           @change="search"
         >
           <ElOption v-for="item in metadata.operators" :key="item" :label="item" :value="item" />
@@ -16,7 +16,7 @@
           v-model="filters.module"
           placeholder="模块"
           clearable
-          class="!w-40"
+          class="f-xl"
           @change="search"
         >
           <ElOption v-for="item in metadata.modules" :key="item" :label="item" :value="item" />
@@ -25,7 +25,7 @@
           v-model="filters.action"
           placeholder="动作"
           clearable
-          class="!w-32"
+          class="f-md"
           @change="search"
         >
           <ElOption v-for="item in metadata.actions" :key="item" :label="item" :value="item" />
@@ -37,12 +37,12 @@
           start-placeholder="开始日期"
           end-placeholder="结束日期"
           range-separator="~"
-          class="!w-64"
+          class="f-date"
           @change="search"
         />
         <ElButton type="primary" @click="search">查询</ElButton>
         <ElButton @click="resetFilters">重置</ElButton>
-        <div class="flex-1" />
+        <div class="filter-bar__spacer" />
         <ElButton @click="retentionVisible = true">保留策略</ElButton>
       </div>
 
@@ -56,7 +56,15 @@
 
       <!-- 手持设备：改用卡片列表。9 列表格在 390px 上只剩左右固定列，中间全被挤掉；
            日志类列表的核心是「谁、什么时候、对什么做了什么」，卡片按这个顺序排 -->
-      <ElTable v-if="!isHandheld" v-loading="loading" :data="list" border stripe max-height="520">
+      <ElTable
+        v-if="!isHandheld"
+        ref="tableRef"
+        v-loading="loading"
+        :data="list"
+        border
+        stripe
+        :max-height="tableMaxHeight"
+      >
         <ElTableColumn prop="time" label="时间" width="170" sortable />
         <ElTableColumn label="操作人" width="150">
           <template #default="{ row }">
@@ -98,7 +106,7 @@
         <div v-if="!loading && !list.length" class="m-card-list__empty">暂无操作日志</div>
       </div>
 
-      <div class="mt-4 flex justify-end">
+      <div class="list-pager">
         <ElPagination
           :current-page="page.current"
           :page-size="page.size"
@@ -166,12 +174,16 @@
   } from '@/api/system-records'
   import type { YimaiAuditLog } from '@/store/modules/yimai'
   import { useDevice } from '@/hooks/core/useDevice'
+  import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type { MobileCardTag } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiAudit' })
 
   // 手持设备上用卡片列表代替宽表格（见下方 cardTags）
   const { isHandheld } = useDevice()
+
+  // 表格高度自适应：减项由 hook 运行时量出，本页不写任何像素
+  const { tableMaxHeight, tableRef } = useTableHeight()
 
   const RETENTION_OPTIONS = [
     { label: '保留 90 天', value: 90 },

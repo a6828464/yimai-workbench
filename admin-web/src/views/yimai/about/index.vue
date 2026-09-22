@@ -1,5 +1,5 @@
 <template>
-  <div class="about-page mx-auto max-w-980 pt-8 pb-12 px-4">
+  <div class="list-page about-page mx-auto max-w-980">
     <!-- 封面 -->
     <div class="rounded-2xl p-8 text-white mb-6" style="background: linear-gradient(135deg, #2f7d5d, #1d5c43)">
       <div class="flex items-center gap-3 mb-3">

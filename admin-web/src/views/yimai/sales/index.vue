@@ -1,5 +1,5 @@
 <template>
-  <div class="p-4">
+  <div class="list-page">
     <!-- 分享控制 -->
     <ElCard shadow="never" class="mb-4">
       <div class="flex flex-wrap items-center gap-4">

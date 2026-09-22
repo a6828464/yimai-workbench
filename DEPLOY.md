@@ -146,3 +146,5 @@ Gitee Release 自动发布需要在 GitHub 仓库配置 Actions Secret：`GITEE_
 | 定时同步没执行 | 服务器 crontab 缺少 `schedule:run`（见「七、日常更新」调度器说明）；缺它时手工同步仍可用，「系统日志 → 运行日志」也不会出现定时留痕 |
 | 页面刷新 404 | 前端伪静态未配 try_files index.html |
 | 接口 500 | 看 `backend/storage/logs/` 当天日志；多为权限或 .env 配置问题 |
+| 「薪酬计算」页打开是空的 / 薪酬档案 0 人 | 未配 `PAYROLL_MASTER_XLSX`（说明见 `backend/.env.example`）。该变量填**仓库外**人员主档 xlsx 的绝对路径，配好后执行 `php artisan db:seed --class=PayrollProfileSeeder`，成功时输出「现有 55 人」。**注意：该文件缺失时 seeder 只打一条 warning 就跳过，不报错也不阻断部署**，所以漏配不会自己暴露 —— 部署后请主动确认薪酬档案数为 55 |
+| 薪酬业绩表导入提示「服务器 PHP 缺少 zip 扩展」 | 在宝塔「PHP 设置 → 安装扩展」启用 `php_zip` 后重试。安装包方式升级只跑 `composer dump-autoload`，不跑 `composer install`，扩展不会自动补齐 |
