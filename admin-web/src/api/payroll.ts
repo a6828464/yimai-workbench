@@ -186,6 +186,14 @@ export interface PayrollProfileRow {
   status: string
   alert: string
   accountStatus: string
+  /**
+   * 待完善：档案已建但身份标签/单价未经确认，**不参与工资计算**。
+   *
+   * 「字段留空」在计算侧不等于「不参与计算」—— 空身份标签会被当成全职老师
+   * 按实际课时发底薪奖励，所以待完善的档案整行跳过，只在计算页的
+   * 「无法计算的项目」里列出。保存（身份标签合法）后自动解除。
+   */
+  pendingReview: boolean
   note: string
   aliases: string[]
 }
@@ -225,6 +233,8 @@ export interface PayrollProfileUpdate {
   status?: string
   alert?: string
   accountStatus?: string
+  /** 待完善标记：一般不必手动传（身份标签合法时保存即自动解除） */
+  pendingReview?: boolean
   note?: string
   aliases?: string[]
 }
@@ -264,6 +274,60 @@ export function assertSameProfile(expected: PayrollProfileRow, actual: PayrollPr
       `保存返回的档案与目标不一致（期望 #${expected.id}「${expected.name}」，实际 #${actual.id}「${actual.name}」），已中止以免改错人，请刷新后重试`
     )
   }
+}
+
+// ---------------------------------------------------------------------------
+// 新增建档 / 系统已知信息预填（POST /payroll/profiles、POST /payroll/profiles/prefill）
+// ---------------------------------------------------------------------------
+
+/**
+ * 新增一条薪酬档案（建档）。
+ *
+ * 后端建出来的一定是 `pendingReview = true`：此时身份标签与单价都还没确认，
+ * 而「字段留空」在计算侧**不等于**「不参与计算」—— 空身份标签会被 `role` 列的
+ * 默认值当成「全职老师」，按实际课时发 200~1000 元底薪奖励（不看档案金额）。
+ * 所以待完善的档案整行不参与计算，只在「薪酬计算」页的「无法计算的项目」里列出。
+ */
+export function createPayrollProfile(body: {
+  name: string
+  venue: string
+  role?: string
+  status?: string
+  note?: string
+  aliases?: string[]
+}): Promise<{ profile: PayrollProfileRow }> {
+  return apiPost<{ profile: PayrollProfileRow }>('/payroll/profiles', body as Record<string, unknown>)
+}
+
+/** 预填扫描结果里的一个人（来源说明他为什么进候选名单） */
+export interface PayrollPrefillCandidate {
+  name: string
+  venue: string
+  /** bookings = 上过课 / users = 有账号 / leads = 留资里登记的上课老师 */
+  sources: string[]
+  counts: Record<string, number>
+}
+
+export interface PayrollPrefillResult {
+  dryRun: boolean
+  created: number
+  willCreate: PayrollPrefillCandidate[]
+  skipped: { name: string; venue: string; reason: string }[]
+}
+
+/**
+ * 从系统已知信息批量预填建档。
+ *
+ * 只把系统里**真实出现过的人**扫出来（上过课的老师 / 有账号的员工 /
+ * 留资里登记的上课老师），姓名与门店填好，身份标签留空、金额一律 0 并标待完善。
+ *
+ * 命中既有档案（含**别名**命中的，如「苏米」→罗柳柳）一律跳过：
+ * 给别名再建一条会让一个名字对应两个档案，解析器判定歧义后本人会从课时统计里消失。
+ *
+ * `dryRun = true` 只看清单不落库，供界面先给用户确认。
+ */
+export function prefillPayrollProfiles(dryRun = false): Promise<PayrollPrefillResult> {
+  return apiPost<PayrollPrefillResult>('/payroll/profiles/prefill', { dryRun })
 }
 
 // ---------------------------------------------------------------------------

@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\KyBooking;
+use App\Models\Lead;
 use App\Models\PayrollMonthlyInput;
 use App\Models\PayrollProfile;
+use App\Models\User;
 use App\Support\PayrollMoney;
 use App\Support\PayrollRoles;
+use App\Services\PayrollNameResolver;
 use App\Services\PayrollPerformanceImportService;
 use App\Services\PayrollService;
 use Illuminate\Http\Exceptions\HttpResponseException;
@@ -140,6 +144,8 @@ class PayrollController extends Controller
             'alert' => 'nullable|string|max:200',
             'accountStatus' => 'nullable|string|max:60',
             'note' => 'nullable|string|max:200',
+            // 待完善：true=不参与计算；false/不传且身份标签合法时自动解除
+            'pendingReview' => 'nullable|boolean',
             'aliases' => 'nullable|array|max:60',
             'aliases.*' => 'string|max:60',
         ]);
@@ -194,6 +200,18 @@ class PayrollController extends Controller
                 'note' => $data['note'] ?? null,
             ], fn ($v) => $v !== null));
             $profile->dual_base_salary = $dual;
+            // 「保存」即「已确认」：用户在界面上看过并补齐了身份标签与单价，
+            // 这次保存就是他确认的动作。显式传 null 时保持原值（避免老前端
+            // 不带该字段的请求把已确认的档案又打回待完善）。
+            if (array_key_exists('pendingReview', $data)) {
+                $profile->pending_review = (bool) $data['pendingReview'];
+            } elseif ((bool) $profile->pending_review) {
+                // 身份标签已确认（枚举合法）才允许自动解除待完善；
+                // 留空保存不放行 —— 那等于没有确认过算法分叉点
+                if ($role !== '' && PayrollRoles::isValidRole($role)) {
+                    $profile->pending_review = false;
+                }
+            }
             $profile->save();
 
             if (array_key_exists('aliases', $data)) {
@@ -216,6 +234,254 @@ class PayrollController extends Controller
         );
 
         return ok(['profile' => $after, 'changed' => $before !== $after]);
+    }
+
+    /**
+     * POST /api/payroll/profiles
+     *
+     * 新增建档。此前**只有 PUT 没有 POST** —— 档案全部由人员主档 seeder 导入，
+     * 界面既没有「新增」按钮也没有对应端点，于是主档之外的人（新入职、兼职）
+     * 根本无从建档。用户反馈「我没有找到新增建档的选项」即此。
+     *
+     * 新建的档案一律 `pending_review = true`：此时身份标签与单价都还没确认，
+     * 而「字段留空」在计算侧不等于「不参与计算」（见 `PayrollService::calculate()`
+     * 的待完善闸门），所以必须显式标成待完善，否则会被按默认身份标签算出一笔工资。
+     */
+    public function storeProfile(Request $r)
+    {
+        requireSuper($r);
+
+        $data = $r->validate([
+            'name' => 'required|string|max:60',
+            'venue' => 'required|string|max:16',
+            'role' => 'nullable|string|max:32',
+            // 展示层岗位（如「{门店}全职老师」）不得回写存储层，这里只收存储层枚举
+            'status' => 'nullable|string|max:16',
+            'note' => 'nullable|string|max:200',
+            'aliases' => 'nullable|array|max:60',
+            'aliases.*' => 'string|max:60',
+        ]);
+
+        $name = trim($data['name']);
+        $venue = trim($data['venue']);
+        if (! PayrollRoles::isValidVenue($venue)) {
+            $this->fail(422, 'INVALID_VENUE', "门店「{$venue}」不是 东部店/绿地店");
+        }
+
+        // 同名同店已存在 ⇒ 拒绝，避免同一人两条档案各算一份工资
+        $exists = PayrollProfile::where('name', $name)->where('venue', $venue)->exists();
+        if ($exists) {
+            $this->fail(422, 'PROFILE_EXISTS', "「{$name}」在{$venue}已有薪酬档案，请直接编辑该档案");
+        }
+
+        $role = PayrollRoles::normalizeRole($data['role'] ?? '');
+        if ($role !== '' && ! PayrollRoles::isValidRole($role)) {
+            $this->fail(422, 'ROLE_NOT_ALLOWED', "身份标签「{$role}」不在枚举内");
+        }
+
+        $profile = DB::transaction(function () use ($name, $venue, $role, $data) {
+            $p = new PayrollProfile;
+            $p->name = $name;
+            $p->venue = $venue;
+            // 身份标签未选时不写默认值，留空串；空串在计算侧由 pending_review 拦下
+            $p->role = $role;
+            $p->status = $data['status'] ?? '有效';
+            $p->note = $data['note'] ?? '';
+            $p->pending_review = true;
+            // 账号：只做「同名唯一」自动绑定，对不上留空（不猜）
+            $hits = User::where('name', $name)->limit(2)->pluck('id');
+            if ($hits->count() === 1) {
+                $p->user_id = (int) $hits->first();
+            }
+            $p->save();
+
+            if (! empty($data['aliases'])) {
+                $this->syncAliases($p, (array) $data['aliases']);
+            }
+
+            return $p;
+        });
+
+        $after = $profile->fresh()->toApiArray();
+        audit($r, '新增薪酬档案', '薪酬计算', $profile->id, $profile->name, $profile->venue, '新增建档（待完善）');
+
+        return ok(['profile' => $after]);
+    }
+
+    /**
+     * POST /api/payroll/profiles/prefill
+     *
+     * 「系统已知信息自动预填」：把系统里**确实存在的人**扫出来建档，已知的字段填好，
+     * 未知的（身份标签、底薪、课时费）**留空并标待完善**，由用户在界面上补齐。
+     *
+     * ## 为什么需要它
+     *
+     * 薪酬档案此前只能由人员主档 xlsx 导入，而那是**仓库外的高敏文件**
+     * （`PAYROLL_MASTER_XLSX`）。没配这个文件的部署（含测试服务器）档案表是空的，
+     * 手工一条条建 50+ 人不现实，于是「课时费与身份标签」页永远空着。
+     *
+     * ## 数据来源：只取系统里真实出现过的老师
+     *
+     * 三个来源并集，都是**系统自己的事实**，不是猜的：
+     *
+     * | 来源 | 字段 | 提供了什么 |
+     * |---|---|---|
+     * | `ky_bookings` | `teacher_name` + `venue` | 真正上过课的人及其门店（最可靠） |
+     * | `users` | `name` + `venue` | 有登录账号的员工 |
+     * | `leads` | `trial_teacher` + `venue` | 留资里登记的上课老师 |
+     *
+     * **不编造任何金额**：底薪/绩效/各课型单价一律留 0 且标待完善，
+     * 身份标签留空 —— 这三项都必须由用户确认，因为它们是算钱的输入。
+     *
+     * ## 为什么别名不自动填
+     *
+     * 别名（苏米→罗柳柳）只有人员主档里才有权威对应关系。系统里的
+     * `teacher_name` 本身就是别名（如「苏米」），把它当**本名**建档会让
+     * 「苏米」既做本名又做别名，反而污染解析（`PayrollNameResolver` 一个名字
+     * 只能对一个人）。所以这里把**看起来是别名/无法确认的姓名原样作为档案名**
+     * 建出来、并在备注里标注来源，由用户改成真名后自行登记别名。
+     *
+     * ## 🔴 为什么必须先用 PayrollNameResolver 判重（否则会砸掉现有的姓名解析）
+     *
+     * 系统里出现的 `teacher_name` **多半是别名而不是本名**：实测
+     * 冰璐→钱冰璐、芷晴/张芷晴→张情、苏米→罗柳柳、娟子→徐秀娟、婷婷→谭婷婷
+     * 全都已经能解析到既有档案。若按「姓名+门店」判重就建新档，
+     * 一个名字会对应**两个**档案，`PayrollNameResolver` 立刻判定为歧义 →
+     * `resolve()` 返回 null → **这个人从课时统计里整个消失**（原来明明是好的）。
+     *
+     * 所以判重必须问解析器「这个名字现在解析得到谁」，而不是只比字面。
+     * 命中既有档案的一律跳过（并在 `skipped` 里说明命中了谁），
+     * 用户若要给某人加别名，去编辑那条既有档案即可。
+     *
+     * `dryRun` 只返回将要建档的清单，不落库（界面先给用户看一眼再确认）。
+     */
+    public function prefillProfiles(Request $r)
+    {
+        requireSuper($r);
+        $dryRun = (bool) $r->input('dryRun', false);
+
+        // ---- 1. 真正上过课的人：teacher_name + venue（最可靠的一手事实） ----
+        $fromBookings = KyBooking::query()
+            ->whereNotNull('teacher_name')
+            ->where('teacher_name', '!=', '')
+            ->where('venue', '!=', '')
+            ->select('teacher_name', 'venue', DB::raw('count(*) as classes'))
+            ->groupBy('teacher_name', 'venue')
+            ->get();
+
+        // ---- 2. 有登录账号的员工 ----
+        $fromUsers = User::query()
+            ->whereNotNull('name')
+            ->where('name', '!=', '')
+            ->get(['name', 'venue']);
+
+        // ---- 3. 留资里登记的上课老师（含尚未产生课次的新老师） ----
+        $fromLeads = Lead::query()
+            ->whereNotNull('trial_teacher')
+            ->where('trial_teacher', '!=', '')
+            ->where('venue', '!=', '')
+            ->select('trial_teacher', 'venue', DB::raw('count(*) as leads'))
+            ->groupBy('trial_teacher', 'venue')
+            ->get();
+
+        // 汇总：姓名+门店 为键（同一人在两店都上过课 ⇒ 建两行，与档案自带
+        // venue 的语义一致：venue 是「工资所属门店」，跨店授课是两店各算）
+        $candidates = [];
+        $note = function (array &$c, string $source, int $n): void {
+            $c['sources'][$source] = ($c['sources'][$source] ?? 0) + $n;
+        };
+        foreach ($fromBookings as $b) {
+            $key = trim((string) $b->teacher_name).'|'.trim((string) $b->venue);
+            $candidates[$key] ??= ['name' => trim((string) $b->teacher_name), 'venue' => trim((string) $b->venue), 'sources' => []];
+            $note($candidates[$key], 'bookings', (int) $b->classes);
+        }
+        foreach ($fromUsers as $u) {
+            $name = trim((string) $u->name);
+            $venue = trim((string) $u->venue);
+            if ($name === '' || $venue === '') {
+                continue;
+            }
+            $key = $name.'|'.$venue;
+            $candidates[$key] ??= ['name' => $name, 'venue' => $venue, 'sources' => []];
+            $note($candidates[$key], 'users', 1);
+        }
+        foreach ($fromLeads as $l) {
+            $name = trim((string) $l->trial_teacher);
+            $venue = trim((string) $l->venue);
+            $key = $name.'|'.$venue;
+            $candidates[$key] ??= ['name' => $name, 'venue' => $venue, 'sources' => []];
+            $note($candidates[$key], 'leads', (int) $l->leads);
+        }
+
+        // 去掉门店非法的（'东部店'/'绿地店' 之外的一律不建，避免造出无法计算的行）
+        $candidates = array_filter($candidates, fn ($c) => PayrollRoles::isValidVenue($c['venue']));
+
+        // 去掉已建档的。**用解析器判重而不是比字面**（见方法注释：按字面判重会
+        // 给别名再建一条档案，使该名字变成歧义 → 本人从课时统计里整个消失）
+        $resolver = app(PayrollNameResolver::class);
+
+        $toCreate = [];
+        $skipped = [];
+        foreach ($candidates as $key => $c) {
+            $hit = $resolver->resolve($c['name']);
+            if ($hit !== null) {
+                $skipped[] = [
+                    'name' => $c['name'],
+                    'venue' => $c['venue'],
+                    'reason' => $c['name'] === $hit->name
+                        ? "已建档（#{$hit->id} {$hit->name}）"
+                        : "「{$c['name']}」是别名，已指向既有档案 #{$hit->id} {$hit->name}",
+                ];
+                continue;
+            }
+            $toCreate[] = [
+                'name' => $c['name'],
+                'venue' => $c['venue'],
+                'sources' => array_keys($c['sources']),
+                'counts' => $c['sources'],
+            ];
+        }
+
+        usort($toCreate, fn ($a, $b) => [$a['venue'], $a['name']] <=> [$b['venue'], $b['name']]);
+
+        if ($dryRun) {
+            return ok([
+                'dryRun' => true,
+                'willCreate' => $toCreate,
+                'skipped' => $skipped,
+                'created' => 0,
+            ]);
+        }
+
+        $created = 0;
+        DB::transaction(function () use ($toCreate, &$created) {
+            foreach ($toCreate as $c) {
+                $p = new PayrollProfile;
+                $p->name = $c['name'];
+                $p->venue = $c['venue'];
+                // 身份标签留空串：**不猜**。由待完善闸门保证它不参与计算
+                $p->role = '';
+                $p->status = '有效';
+                $p->pending_review = true;
+                $p->note = '系统预填（来源：'.implode('/', $c['sources']).'）。'
+                    .'身份标签与课时费待确认；若该姓名是别名（如「苏米」），请改成本名并登记别名';
+                $hits = User::where('name', $c['name'])->limit(2)->pluck('id');
+                if ($hits->count() === 1) {
+                    $p->user_id = (int) $hits->first();
+                }
+                $p->save();
+                $created++;
+            }
+        });
+
+        audit($r, '批量预填薪酬档案', '薪酬计算', 0, '预填建档', '', "新增 {$created} 条待完善档案");
+
+        return ok([
+            'dryRun' => false,
+            'created' => $created,
+            'willCreate' => $toCreate,
+            'skipped' => $skipped,
+        ]);
     }
 
     // ------------------------------------------------------------------

@@ -27,9 +27,24 @@ class PayrollProfile extends Model
         'store_commission_rate' => 'decimal:4',
         'commission_fixed_rate' => 'decimal:4',
         'dual_base_salary' => 'boolean',
+        // 待完善：关键字段（身份标签/单价）未经确认，禁止参与工资计算（见建列迁移说明）
+        'pending_review' => 'boolean',
         // 姓名别名：JSON 数组（如 ["苏米"]）。本名恒可解析，无需登记
         'aliases' => 'array',
     ];
+
+    /**
+     * 该档案是否可用于工资计算。
+     *
+     * `pending_review` 为真时**整行不得参与计算** —— 「字段留空」在现有实现里
+     * 不等于「不参与计算」：`role` 列有 `default('全职老师')`，而
+     * `allowsBaseReward('全职老师')` 会按实际课时发 200~1000 元底薪奖励
+     * （**不看档案金额**），猜错身份标签就是把钱算错人。
+     */
+    public function isCalculable(): bool
+    {
+        return ! (bool) $this->pending_review;
+    }
 
     public function user()
     {
@@ -136,6 +151,8 @@ class PayrollProfile extends Model
             'status' => $this->status,
             'alert' => (string) $this->alert,
             'accountStatus' => (string) $this->account_status,
+            // 待完善：前端要据此打「待完善」标记并提示「不参与计算」
+            'pendingReview' => (bool) $this->pending_review,
             'note' => (string) $this->note,
             'aliases' => array_values((array) ($this->aliases ?? [])),
         ];

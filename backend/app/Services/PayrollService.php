@@ -262,6 +262,22 @@ class PayrollService
         // 跨店授课的老师（所属门店是绿地店、本月却在东部店上课）**必须出现在东部店的工资表里**，
         // 否则她那部分课时费凭空消失。只按所属门店过滤会让跨店人员的非本店课时静默丢账。
         $allProfiles = PayrollProfile::query()->orderBy('id')->get()->keyBy('id');
+
+        // ---- 待完善档案：整行不参与计算，并进入 unavailable 显式告知 ----
+        //
+        // 「字段留空」在现有实现里**不等于**「不参与计算」：`role` 列有
+        // `default('全职老师')`，而 `allowsBaseReward('全职老师')` 会按**实际课时**
+        // 发 200~1000 元底薪奖励（完全不看档案金额），`allowsHourlyIncentive('')`
+        // 也为真 ⇒ 业绩过档还会算私教激励。所以身份标签未知的人一旦进入计算，
+        // 就会被静默当成全职老师算出一笔看似合理的工资。
+        //
+        // 失败方向取「不算」而非「按默认算」：不算会被立刻发现（清单里有人、
+        // 总额对不上）；按默认算则可能多发或少发工资且无人察觉。
+        $pendingProfiles = $allProfiles->filter(fn (PayrollProfile $p) => ! $p->isCalculable());
+        if ($pendingProfiles->isNotEmpty()) {
+            $allProfiles = $allProfiles->reject(fn (PayrollProfile $p) => ! $p->isCalculable());
+        }
+
         $hoursData = $this->hours($month, $venue);
         $hoursByProfile = [];
         foreach ($hoursData['rows'] as $r) {
@@ -329,6 +345,21 @@ class PayrollService
             'item' => '299 活动卡对应的老师奖励',
             'reason' => '生产引擎只规定「299 活动卡不计个人提点与门店提成」，奖励金额与归属由当月专项输入单独接入（无公式）；请用「补贴调整」人工录入',
         ];
+
+        // 待完善档案：显式列出，不静默少人
+        if ($pendingProfiles->isNotEmpty()) {
+            $names = $pendingProfiles
+                ->filter(fn (PayrollProfile $p) => $venue === null || $p->venue === $venue)
+                ->pluck('name')->values()->all();
+            if ($names !== []) {
+                $unavailable[] = [
+                    'item' => '待完善档案人员的全部工资项目（'.count($names).' 人）',
+                    'reason' => '以下人员的薪酬档案尚未确认身份标签，**整行未参与本次计算**：'.implode('、', $names)
+                        .'。身份标签决定底薪/绩效/课时费/提成/底薪奖励/门店提成六项算法，填错会把钱算错人；'
+                        .'请在「课时费与身份标签」补齐并保存（保存后即视为已确认）',
+                ];
+            }
+        }
 
         $rows = [];
         $attendanceDefaultNames = [];

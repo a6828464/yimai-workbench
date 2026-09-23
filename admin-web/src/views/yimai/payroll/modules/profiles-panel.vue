@@ -29,9 +29,33 @@
               <ElOption v-for="r in roles" :key="r.value" :label="r.label" :value="r.value" />
             </ElSelect>
             <ElButton size="small" @click="load">刷新</ElButton>
+            <!-- 建档入口。此前**只有 PUT 没有 POST**、界面上也没有任何新增按钮，
+                 主档（高敏 xlsx，仓库外）之外的老师根本无从建档 -->
+            <ElButton size="small" type="primary" @click="openCreate">
+              <i class="ri-add-line" /> 新增建档
+            </ElButton>
+            <ElButton size="small" :loading="prefilling" @click="runPrefill(true)">
+              从系统已知信息预填
+            </ElButton>
           </div>
         </div>
       </template>
+
+      <!-- 待完善档案：显式提示，并说明为什么不参与计算 -->
+      <ElAlert
+        v-if="pendingCount > 0"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="mb-3"
+      >
+        <template #title>有 {{ pendingCount }} 条「待完善」档案，暂不参与工资计算</template>
+        <div class="text-xs mt-1">
+          身份标签决定底薪 / 绩效 / 课时费 / 提成 / 底薪奖励 / 门店提成六项算法，
+          填错会把钱算错人。所以这些档案<b>整行跳过计算</b>，只在「薪酬计算」页的
+          「无法计算的项目」里列出。补齐身份标签后点保存即视为已确认。
+        </div>
+      </ElAlert>
 
       <!-- 桌面端：表格列完整，不丢字段 -->
       <ElTable
@@ -49,6 +73,9 @@
             <ElTag v-if="row.dualBaseSalary" size="small" type="warning" effect="plain" class="ml-1">
               双底薪
             </ElTag>
+            <ElTag v-if="row.pendingReview" size="small" type="danger" effect="plain" class="ml-1">
+              待完善
+            </ElTag>
           </template>
         </ElTableColumn>
         <ElTableColumn label="所属门店" width="92">
@@ -56,7 +83,8 @@
         </ElTableColumn>
         <ElTableColumn label="身份标签" width="130">
           <template #default="{ row }">
-            <ElTooltip :content="ruleSummary(row.role)" placement="top" :show-after="300">
+            <ElTag v-if="!row.role" size="small" type="danger" effect="plain">未设置</ElTag>
+            <ElTooltip v-else :content="ruleSummary(row.role)" placement="top" :show-after="300">
               <ElTag size="small" effect="plain">{{ roleLabel(row.role) }}</ElTag>
             </ElTooltip>
           </template>
@@ -142,6 +170,20 @@
     >
       <ElForm v-if="editing" label-width="118px" label-position="right">
         <ElAlert
+          v-if="editing.pendingReview"
+          type="warning"
+          show-icon
+          :closable="false"
+          class="mb-3"
+          title="这条档案尚未确认，暂不参与工资计算"
+        >
+          <div class="text-xs">
+            请确认<b>身份标签</b>后保存 —— 身份标签决定六项算法，是算钱的分叉点。
+            保存（身份标签合法）即视为已确认，之后本档案才会进入工资计算。
+          </div>
+        </ElAlert>
+
+        <ElAlert
           v-if="currentRoleRule"
           type="info"
           show-icon
@@ -154,12 +196,13 @@
           </div>
         </ElAlert>
 
-        <ElFormItem label="身份标签">
+        <ElFormItem label="身份标签" :required="true">
           <ElSelect v-model="form.role" style="width: 100%" @change="onRoleChange">
             <ElOption v-for="r in roles" :key="r.value" :label="r.label" :value="r.value" />
           </ElSelect>
           <div class="form-hint">
-            身份标签决定底薪 / 绩效 / 课时费 / 提成 / 底薪奖励 / 门店提成六项算法，改动会直接影响工资
+            身份标签决定底薪 / 绩效 / 课时费 / 提成 / 底薪奖励 / 门店提成六项算法，改动会直接影响工资。
+            <b>必填</b>：后端不接受空身份标签（空标签会被默认成「全职老师」，按实际课时发底薪奖励）。
           </div>
         </ElFormItem>
 
@@ -273,6 +316,110 @@
         <ElButton type="primary" :loading="saving" @click="save">保存</ElButton>
       </template>
     </ElDialog>
+
+    <!-- 新增建档：只收「已知的」身份信息；金额一律留空，保存后到编辑弹窗里补 -->
+    <ElDialog
+      v-model="createVisible"
+      title="新增建档"
+      :width="isHandheld ? '94%' : '520px'"
+      destroy-on-close
+    >
+      <ElAlert type="info" show-icon :closable="false" class="mb-3">
+        <template #title>新档案会标为「待完善」，不参与工资计算</template>
+        <div class="text-xs mt-1">
+          身份标签决定六项算法（底薪 / 绩效 / 课时费 / 提成 / 底薪奖励 / 门店提成），
+          填错会把钱算错人。所以新档案先不参与计算 —— 建好后在列表里点「编辑」补齐
+          身份标签与课时费，保存即视为已确认。
+        </div>
+      </ElAlert>
+
+      <ElForm label-width="88px" label-position="right">
+        <ElFormItem label="姓名" required>
+          <ElInput v-model="createForm.name" placeholder="真实姓名（别名请到编辑弹窗登记）" />
+        </ElFormItem>
+        <ElFormItem label="所属门店" required>
+          <ElSelect v-model="createForm.venue" style="width: 100%">
+            <ElOption v-for="v in venues" :key="v" :label="v" :value="v" />
+          </ElSelect>
+          <div class="form-hint">工资所属门店（可与账号绑定门店不同）</div>
+        </ElFormItem>
+        <ElFormItem label="身份标签">
+          <ElSelect v-model="createForm.role" clearable placeholder="不确定就留空，稍后补" style="width: 100%">
+            <ElOption v-for="r in roles" :key="r.value" :label="r.label" :value="r.value" />
+          </ElSelect>
+          <div class="form-hint">留空 = 待完善，不会参与计算；确定后填上即视为已确认</div>
+        </ElFormItem>
+        <ElFormItem label="备注">
+          <ElInput v-model="createForm.note" maxlength="200" show-word-limit type="textarea" :rows="2" />
+        </ElFormItem>
+      </ElForm>
+
+      <template #footer>
+        <ElButton @click="createVisible = false">取消</ElButton>
+        <ElButton type="primary" :loading="creating" @click="submitCreate">建立档案</ElButton>
+      </template>
+    </ElDialog>
+
+    <!-- 预填预览：先给用户看清单再落库（建档是写操作，不能悄悄发生） -->
+    <ElDialog
+      v-model="prefillVisible"
+      title="从系统已知信息预填建档"
+      :width="isHandheld ? '94%' : '680px'"
+      top="6vh"
+      destroy-on-close
+    >
+      <div v-if="prefillResult">
+        <ElAlert type="info" show-icon :closable="false" class="mb-3">
+          <template #title>
+            扫描到 {{ prefillResult.willCreate.length }} 位尚未建档的人员
+          </template>
+          <div class="text-xs mt-1">
+            来源＝系统里真实出现过的人：<b>上过课的老师</b>（随心瑜预约）、
+            <b>有登录账号的员工</b>、<b>留资里登记的上课老师</b>。
+            姓名与门店会填好；<b>身份标签留空、底薪与课时费一律留 0 并标「待完善」</b>，
+            由你补齐 —— 金额是算钱的输入，系统绝不替你猜。
+          </div>
+        </ElAlert>
+
+        <ElTable :data="prefillResult.willCreate" border stripe size="small" max-height="300">
+          <ElTableColumn prop="name" label="姓名" width="140" />
+          <ElTableColumn prop="venue" label="门店" width="100" />
+          <ElTableColumn label="来源" min-width="220">
+            <template #default="{ row }">
+              <ElTag v-for="s in row.sources" :key="s" size="small" effect="plain" class="mr-1">
+                {{ sourceLabel(s) }}{{ row.counts?.[s] ? ` ${row.counts[s]}` : '' }}
+              </ElTag>
+            </template>
+          </ElTableColumn>
+        </ElTable>
+
+        <div v-if="prefillResult.skipped.length" class="mt-3">
+          <div class="text-xs font-500 mb-1">已跳过 {{ prefillResult.skipped.length }} 项（不会重复建档）</div>
+          <div v-for="(s, i) in prefillResult.skipped" :key="i" class="text-xs text-gray-500">
+            {{ s.venue }} {{ s.name }} —— {{ s.reason }}
+          </div>
+        </div>
+
+        <ElEmpty
+          v-if="!prefillResult.willCreate.length"
+          description="系统里出现过的人都已经建档"
+          :image-size="60"
+        />
+      </div>
+      <div v-else v-loading="prefilling" class="min-h-[120px]" />
+
+      <template #footer>
+        <ElButton @click="prefillVisible = false">取消</ElButton>
+        <ElButton
+          type="primary"
+          :disabled="!prefillResult?.willCreate.length"
+          :loading="prefilling"
+          @click="runPrefill(false)"
+        >
+          确认建立 {{ prefillResult?.willCreate.length ?? 0 }} 条档案
+        </ElButton>
+      </template>
+    </ElDialog>
   </div>
 </template>
 
@@ -280,9 +427,12 @@
   import { computed, ref, watch } from 'vue'
   import {
     assertSameProfile,
+    createPayrollProfile,
     fetchPayrollProfiles,
     payrollErrorMessage,
+    prefillPayrollProfiles,
     updatePayrollProfile,
+    type PayrollPrefillResult,
     type PayrollProfileRow,
     type PayrollProfileUpdate,
     type PayrollRoleOption,
@@ -443,6 +593,11 @@
   async function save() {
     const row = editing.value
     if (!row) return
+    // 与后端 ROLE_NOT_ALLOWED 一致：空身份标签会被拒。提前拦住，省一次失败往返
+    if (!form.value.role) {
+      emit('error', '请先选择身份标签（决定六项算法，不能留空）')
+      return
+    }
     saving.value = true
     try {
       const body: PayrollProfileUpdate = {
@@ -485,10 +640,118 @@
     }
   }
 
-  // ---------- 手机端卡片 ----------
+  // ---------- 新增建档 ----------
 
+  const createVisible = ref(false)
+  const creating = ref(false)
+  const createForm = ref<{ name: string; venue: string; role: string; note: string }>({
+    name: '',
+    venue: '',
+    role: '',
+    note: ''
+  })
+
+  /** 待完善条数：用于顶部提示「这些档案不参与计算」 */
+  const pendingCount = computed(() => rows.value.filter((r) => r.pendingReview).length)
+
+  function openCreate() {
+    createForm.value = {
+      name: '',
+      venue: props.venue || venues.value[0] || '',
+      role: '',
+      note: ''
+    }
+    createVisible.value = true
+  }
+
+  async function submitCreate() {
+    const f = createForm.value
+    if (!f.name.trim()) {
+      emit('error', '请填写姓名')
+      return
+    }
+    if (!f.venue) {
+      emit('error', '请选择所属门店')
+      return
+    }
+    creating.value = true
+    try {
+      const res = await createPayrollProfile({
+        name: f.name.trim(),
+        venue: f.venue,
+        // 空身份标签不提交：后端会归一化成空串并保持「待完善」
+        ...(f.role ? { role: f.role } : {}),
+        ...(f.note ? { note: f.note } : {})
+      })
+      createVisible.value = false
+      await load()
+      emit(
+        'success',
+        `已建立「${res.profile.name}」的档案（待完善，暂不参与计算；请点「编辑」补齐身份标签与课时费）`
+      )
+    } catch (e) {
+      emit('error', payrollErrorMessage(e, '建档失败'))
+    } finally {
+      creating.value = false
+    }
+  }
+
+  // ---------- 从系统已知信息预填 ----------
+
+  const prefillVisible = ref(false)
+  const prefilling = ref(false)
+  const prefillResult = ref<PayrollPrefillResult | null>(null)
+
+  function sourceLabel(src: string): string {
+    const map: Record<string, string> = {
+      bookings: '上过课',
+      users: '有账号',
+      leads: '留资登记'
+    }
+    return map[src] ?? src
+  }
+
+  /**
+   * `dryRun = true`：只扫清单给用户看（不写库）。
+   * `dryRun = false`：确认后落库，并把清单换成本次结果。
+   */
+  async function runPrefill(dryRun: boolean) {
+    prefilling.value = true
+    if (dryRun) {
+      prefillResult.value = null
+      prefillVisible.value = true
+    }
+    try {
+      const res = await prefillPayrollProfiles(dryRun)
+      if (dryRun) {
+        prefillResult.value = res
+        if (!res.willCreate.length) {
+          emit('success', '系统里出现过的人都已经建档，无需预填')
+        }
+      } else {
+        prefillVisible.value = false
+        await load()
+        emit(
+          'success',
+          `已预填 ${res.created} 条档案（全部标为「待完善」，不参与计算）。请逐条补齐身份标签与课时费。`
+        )
+      }
+    } catch (e) {
+      if (dryRun) prefillVisible.value = false
+      emit('error', payrollErrorMessage(e, dryRun ? '预填扫描失败' : '预填建档失败'))
+    } finally {
+      prefilling.value = false
+    }
+  }
+
+  // ---------- 手机端卡片 ----------
   function profileTags(row: PayrollProfileRow): MobileCardTag[] {
-    const tags: MobileCardTag[] = [{ text: row.roleLabel || row.role, effect: 'plain' }]
+    const tags: MobileCardTag[] = [
+      row.role
+        ? { text: row.roleLabel || row.role, effect: 'plain' }
+        : { text: '身份标签未设置', type: 'danger', effect: 'plain' }
+    ]
+    if (row.pendingReview) tags.push({ text: '待完善', type: 'danger', effect: 'dark' })
     if (row.dualBaseSalary) tags.push({ text: '双底薪', type: 'warning', effect: 'dark' })
     return tags
   }

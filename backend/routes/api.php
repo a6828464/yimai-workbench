@@ -204,6 +204,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/payroll/monthly-inputs', [PayrollController::class, 'monthlyInputsShow']);
     Route::put('/payroll/monthly-inputs', [PayrollController::class, 'monthlyInputsUpdate']);
     Route::get('/payroll/profiles', [PayrollController::class, 'profiles']);
+    // 新增建档 + 系统已知信息预填。prefill 必须注册在 {userId} 之前，
+    // 否则会被参数化规则当成 userId 吃掉（与上面 copy-from-previous 同一个坑）
+    Route::post('/payroll/profiles/prefill', [PayrollController::class, 'prefillProfiles']);
+    Route::post('/payroll/profiles', [PayrollController::class, 'storeProfile']);
     Route::put('/payroll/profiles/{userId}', [PayrollController::class, 'updateProfile']);
     Route::get('/payroll/performance', [PayrollController::class, 'performanceIndex']);
     Route::post('/payroll/performance/preview', [PayrollController::class, 'performancePreview']);

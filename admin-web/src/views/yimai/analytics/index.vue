@@ -16,10 +16,15 @@
       class="mb-4"
     />
 
-    <!-- 同栏目内的「薪酬计算」入口。
+    <!-- 同栏目内的「薪酬计算」入口 + 概括（含两店分别数据）。
          该页仅超管可见（路由 meta.roles = SUPER，与经营看板同组），所以这里不需要再判角色；
          但入口必须放在看板里 —— 用户原话是「经营看板里面给我加一个薪酬计算的栏目」，
-         只挂侧边菜单不算「在看板里」。 -->
+         只挂侧边菜单不算「在看板里」。
+
+         ⚠️ 两店相加 ≠ 合并合计：跨店授课的老师会同时出现在两店的工资表里
+         （所属门店一处、实际授课门店一处），这是引擎的规定（S1:161-164），
+         不这样就会出现「她在那家店的课时费凭空消失」。所以「合并」一列走的是
+         各自所属门店口径，与两店列**不是加法关系**，界面上必须写清楚。 -->
     <ElCard shadow="never" class="mb-4 payroll-entry">
       <div class="payroll-entry__row">
         <div class="payroll-entry__text">
@@ -33,6 +38,50 @@
           <ArtSvgIcon icon="ri:arrow-right-line" class="ml-1" />
         </ElButton>
       </div>
+
+      <div v-if="payrollError" class="mt-3 text-sm text-orange-500">{{ payrollError }}</div>
+      <template v-else>
+        <div class="payroll-summary mt-4">
+          <div class="payroll-summary__head">
+            <span class="font-500">{{ payrollMonth }} 工资概括</span>
+            <div class="flex items-center gap-2">
+              <ElTag v-if="payrollBlocked" size="small" type="danger" effect="dark">
+                结果不可用于交付
+              </ElTag>
+              <span v-if="payrollPendingCount > 0" class="text-xs text-warning">
+                {{ payrollPendingCount }} 人待完善，未计入
+              </span>
+              <span class="text-xs text-gray-400">数据来自薪酬计算（月度输入未填时按默认值，明细见该页）</span>
+            </div>
+          </div>
+
+          <ElTable :data="payrollRows" border stripe size="small">
+            <ElTableColumn prop="venue" label="门店" width="110" />
+            <ElTableColumn prop="headcount" label="人数" align="right" width="80" />
+            <ElTableColumn label="总课时" align="right" width="90">
+              <template #default="{ row }">{{ row.hours }} 节</template>
+            </ElTableColumn>
+            <ElTableColumn label="应发合计" align="right">
+              <template #default="{ row }">¥{{ money(row.gross) }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="社保合计" align="right">
+              <template #default="{ row }">¥{{ money(row.socialSecurity) }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="个税合计" align="right">
+              <template #default="{ row }">¥{{ money(row.tax) }}</template>
+            </ElTableColumn>
+            <ElTableColumn label="实发合计" align="right">
+              <template #default="{ row }">
+                <span class="font-600">¥{{ money(row.net) }}</span>
+              </template>
+            </ElTableColumn>
+          </ElTable>
+          <div class="mt-2 text-xs text-gray-400">
+            「合并」按各自所属门店口径统计（同一人只算一次）；两家门店列各自含跨店授课的课时，
+            所以<b>两店相加不等于合并</b> —— 跨店老师在两店的工资表里各出现一次，这是规定口径，不是重复计算。
+          </div>
+        </div>
+      </template>
     </ElCard>
 
     <ElRow :gutter="16" class="mb-4">
@@ -239,6 +288,7 @@
 
 <script setup lang="ts">
   import { apiGet } from '@/api/backend'
+  import { fetchPayrollCalculate } from '@/api/payroll'
   import { toLocalDateString } from '@/utils'
   import { useRouter } from 'vue-router'
   import type { MediaPerformance } from '@/api/yimai'
@@ -250,6 +300,96 @@
   /** 跳到同栏目下的「薪酬计算」页（仅超管，路由组已限） */
   function goPayroll() {
     router.push('/yimai/payroll')
+  }
+
+  // ---------- 薪酬概括（含两店分别数据） ----------
+  //
+  // 口径说明（重要）：合并视图与单店视图**不是加法关系**。
+  // PayrollService::calculate 的候选集合含「跨店授课的老师」（所属门店一处、
+  // 本月实际在另一家店上课）—— 引擎规定这类人必须出现在**两家店**的工资表里，
+  // 否则她那部分课时费凭空消失（S1:161-164）。所以：
+  //   · 两店列各自含跨店课时，相加 > 合并；
+  //   · 合并列按各自所属门店口径统计，同一人只算一次。
+  // 界面上必须写清这一点，否则用户会以为系统重复计算了。
+  const payrollMonth = ref('')
+  const payrollRows = ref<
+    {
+      venue: string
+      headcount: number
+      hours: number
+      gross: number
+      socialSecurity: number
+      tax: number
+      net: number
+    }[]
+  >([])
+  const payrollError = ref('')
+  const payrollBlocked = ref(false)
+  const payrollPendingCount = ref(0)
+
+  async function loadPayrollSummary() {
+    const now = new Date()
+    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+    payrollMonth.value = month
+    payrollError.value = ''
+    try {
+      // 三个视图并发：合并 + 两店。任一个失败不影响另外两个（分店视图仍可看）
+      const [all, green, east] = await Promise.allSettled([
+        fetchPayrollCalculate(month, null),
+        fetchPayrollCalculate(month, '绿地店'),
+        fetchPayrollCalculate(month, '东部店')
+      ])
+
+      const rows: typeof payrollRows.value = []
+      const pick = (
+        venue: string,
+        r: PromiseSettledResult<Awaited<ReturnType<typeof fetchPayrollCalculate>>>
+      ) => {
+        if (r.status !== 'fulfilled') return
+        const t = r.value.storeTotal
+        rows.push({
+          venue,
+          headcount: t.headcount,
+          hours: t.hours,
+          gross: t.gross,
+          socialSecurity: t.socialSecurity,
+          tax: t.tax,
+          net: t.net
+        })
+      }
+      pick('合并（按所属门店）', all)
+      pick('绿地店', green)
+      pick('东部店', east)
+      payrollRows.value = rows
+
+      if (all.status === 'fulfilled') {
+        payrollBlocked.value = (all.value.blocked ?? []).length > 0
+        // 「待完善」人数：这些人整行不参与计算，必须在概括里显式提示，
+        // 否则用户会以为工资算全了（实际少人）
+        payrollPendingCount.value = (all.value.unavailable ?? []).some((u) =>
+          u.item.includes('待完善')
+        )
+          ? Number(/（(\d+) 人）/.exec(
+              (all.value.unavailable ?? []).find((u) => u.item.includes('待完善'))?.item ?? ''
+            )?.[1] ?? 0)
+          : 0
+      }
+
+      const failed = [all, green, east].filter((r) => r.status === 'rejected').length
+      if (failed === 3) {
+        payrollError.value = '薪酬数据加载失败，请稍后重试'
+      } else if (failed > 0) {
+        payrollError.value = '部分门店薪酬数据读取失败，已显示其余部分'
+      }
+    } catch (e) {
+      payrollRows.value = []
+      payrollError.value = '薪酬数据加载失败，请稍后重试'
+    }
+  }
+
+  /** 金额千分位（与薪酬页一致，避免两处格式不同让人对不上账） */
+  function money(v: number | undefined): string {
+    return Number(v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   }
 
   /** 新媒体线上运营业绩（到店奖励 + 核销提成）；后端未返回时为 undefined，页面显示「暂无数据」而非编造 0 */
@@ -362,6 +502,8 @@
       analyticsError.value = status === 401 || status === 403 ? '' : '看板数据加载失败，请稍后重试'
     }
     await loadTrends()
+    // 薪酬概括与看板其它数据并行拉取（薪酬计算较重，不阻塞上面的图表）
+    await loadPayrollSummary()
   })
 </script>
 
@@ -403,6 +545,29 @@
 
       &__btn {
         width: 100%;
+      }
+    }
+  }
+
+  // 薪酬概括：桌面端表头左右分列，手机端换行；表格在窄屏横向滚动而不挤压列
+  .payroll-summary {
+    &__head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    :deep(.el-table) {
+      font-size: 12px;
+    }
+
+    @media (max-width: 768px) {
+      &__head {
+        flex-direction: column;
+        align-items: flex-start;
       }
     }
   }

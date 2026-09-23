@@ -92,6 +92,38 @@
       <YimaiKpiCard v-for="k in mediaKpis" :key="k.label" v-bind="k" />
     </div>
 
+    <!-- 分店拆分：上方是「当前视图」的合计，这里把两店分开列。
+         用户原话：「新媒体数据目前只有一个总和，再给我拆分出东部店和绿地店的数据」。
+         只在双店视图显示 —— 单店视图下再拆一次会与上方合计重复。 -->
+    <ElCard v-if="venueScope === '双店'" shadow="never" class="mb-4">
+      <template #header>
+        <div class="flex-cb">
+          <span class="font-500">新媒体数据 · 分店拆分</span>
+          <ElTag size="small" effect="plain">仅新媒体登记来源</ElTag>
+        </div>
+      </template>
+      <div v-if="mediaSplitError" class="text-sm text-orange-500">{{ mediaSplitError }}</div>
+      <ElTable v-else :data="mediaSplitRows" border stripe size="small">
+        <ElTableColumn prop="venue" label="门店" width="96" />
+        <ElTableColumn prop="leads" label="留资人数" align="right" />
+        <ElTableColumn prop="visits" label="到店人数" align="right" />
+        <ElTableColumn prop="deals" label="成交人数" align="right" />
+        <ElTableColumn label="线上成交率" align="right">
+          <template #default="{ row }">{{ row.visits > 0 ? `${row.dealRate}%` : '—' }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="到店奖励" align="right">
+          <template #default="{ row }">¥{{ row.visitRewardAmount }}</template>
+        </ElTableColumn>
+        <ElTableColumn label="核销提成" align="right">
+          <template #default="{ row }">¥{{ row.commissionAmount }}</template>
+        </ElTableColumn>
+      </ElTable>
+      <div class="mt-2 text-xs text-gray-400">
+        两店相加 = 上方合计（同一人在两店各有留资时分别计入各自门店，不跨店去重）。
+        成交率分母是「线上到店」而非「线上留资」；到店奖励与核销提成只算 2 个月时效内的线上新客。
+      </div>
+    </ElCard>
+
     <ElRow :gutter="16">
       <ElCol :xs="24" :lg="14" class="mb-4">
         <ElCard shadow="never">
@@ -614,6 +646,62 @@
     }
   ])
 
+  // ---- 新媒体数据 · 分店拆分 ----
+  //
+  // 上方 mediaKpis 显示的是「当前视图」的合计（双店时是两店相加）。这里把两店各自
+  // 的数字单独拉一遍，让运营能看出「这个总和是哪家店贡献的」。
+  //
+  // 为什么复用 getDashboardSeries 而不是新写一个接口：该接口本来就支持 venue 参数，
+  // 且后端 computeMediaPerformance 已按 applyVenueScope 收窄了留资/到店/成交/核销
+  // 四路数据 —— 也就是说**同一套口径**再算一次即可。另写一份聚合就会出现第二套口径
+  // （实测两店相加等于合计，可自校验）。
+  const mediaSplitRows = ref<
+    {
+      venue: string
+      leads: number
+      visits: number
+      deals: number
+      dealRate: number
+      visitRewardAmount: number
+      commissionAmount: number
+    }[]
+  >([])
+  const mediaSplitError = ref('')
+
+  async function loadMediaSplit() {
+    if (venueScope.value !== '双店') {
+      mediaSplitRows.value = []
+      mediaSplitError.value = ''
+      return
+    }
+    const venues = ['绿地店', '东部店'] as const
+    const results = await Promise.allSettled(
+      venues.map((v) => getDashboardSeries(range.value[0], range.value[1], v))
+    )
+    const rows: typeof mediaSplitRows.value = []
+    const errors: string[] = []
+    results.forEach((r, i) => {
+      const venue = venues[i]
+      if (r.status !== 'fulfilled') {
+        errors.push(`${venue}读取失败`)
+        return
+      }
+      const s = r.value.summary
+      const m = s?.mediaPerformance
+      rows.push({
+        venue,
+        leads: Number(s?.onlineLeadCount ?? 0),
+        visits: Number(s?.onlineVisitCount ?? 0),
+        deals: Number(s?.onlineDealCount ?? 0),
+        dealRate: Number(s?.onlineDealRate ?? 0),
+        visitRewardAmount: Number(m?.visitRewardAmount ?? 0),
+        commissionAmount: Number(m?.commissionAmount ?? 0)
+      })
+    })
+    mediaSplitRows.value = rows
+    mediaSplitError.value = errors.join('；')
+  }
+
   const contractVenues = ref<Awaited<ReturnType<typeof getPendingContracts>>['venues']>({})
   const contractsFetchedAt = ref('')
   const contractError = ref('')
@@ -744,6 +832,9 @@
         }
         comparisonError.value = comparisonErrors.join('；')
       }
+      // 新媒体分店拆分：走自己的请求（口径与上方一致，见 loadMediaSplit 注释）。
+      // 放在 finally 之前，保证 loading 覆盖到它结束。
+      await loadMediaSplit()
     } finally {
       loading.value = false
     }
