@@ -195,6 +195,8 @@ class PayrollProfileCreateTest extends TestCase
         $gate = collect($r['unavailable'])->first(fn ($u) => str_contains($u['item'], '待完善'));
         $this->assertNotNull($gate, '待完善人员必须出现在 unavailable 里');
         $this->assertStringContainsString('待完善老师', $gate['reason']);
+        // 同时结构化下发姓名（前端据此显示「N 人未计入」，不去正则解析那句话术）
+        $this->assertContains('待完善老师', $r['pendingNames']);
 
         $this->assertTrue($pending->fresh()->pending_review);
         $this->assertFalse($ok->fresh()->pending_review);

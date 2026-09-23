@@ -346,17 +346,22 @@ class PayrollService
             'reason' => '生产引擎只规定「299 活动卡不计个人提点与门店提成」，奖励金额与归属由当月专项输入单独接入（无公式）；请用「补贴调整」人工录入',
         ];
 
-        // 待完善档案：显式列出，不静默少人
+        // 待完善档案：显式列出，不静默少人。
+        // `names` 一并结构化下发（前端用它显示「N 人待完善，未计入」），
+        // 免得前端去正则解析上面那句人话（那种耦合一改文案就断）。
+        $pendingInScope = [];
         if ($pendingProfiles->isNotEmpty()) {
             $names = $pendingProfiles
                 ->filter(fn (PayrollProfile $p) => $venue === null || $p->venue === $venue)
                 ->pluck('name')->values()->all();
+            $pendingInScope = $names;
             if ($names !== []) {
                 $unavailable[] = [
                     'item' => '待完善档案人员的全部工资项目（'.count($names).' 人）',
                     'reason' => '以下人员的薪酬档案尚未确认身份标签，**整行未参与本次计算**：'.implode('、', $names)
                         .'。身份标签决定底薪/绩效/课时费/提成/底薪奖励/门店提成六项算法，填错会把钱算错人；'
                         .'请在「课时费与身份标签」补齐并保存（保存后即视为已确认）',
+                    'names' => $names,
                 ];
             }
         }
@@ -644,6 +649,8 @@ class PayrollService
             'warnings' => $warnings,
             'unavailable' => $unavailable,
             'blocked' => $blocked,
+            // 待完善（未参与计算）的人员姓名：结构化下发，供前端显示「N 人未计入」
+            'pendingNames' => $pendingInScope,
         ];
     }
 

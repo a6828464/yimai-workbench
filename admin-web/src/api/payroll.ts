@@ -698,6 +698,13 @@ export interface PayrollCalcResult {
   unavailable: PayrollCalcUnavailable[]
   /** 非空时该店结果**不可用于交付** */
   blocked: { code: string; message: string }[]
+  /**
+   * 待完善（未参与计算）的人员姓名。
+   *
+   * 这些人的档案尚未确认身份标签，**整行未参与本次计算** —— 界面必须显式提示，
+   * 否则用户会以为工资已经算全（实际少人）。同时 `unavailable` 里也有一条说明。
+   */
+  pendingNames?: string[]
 }
 
 export function fetchPayrollCalculate(

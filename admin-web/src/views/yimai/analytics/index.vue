@@ -365,14 +365,9 @@
       if (all.status === 'fulfilled') {
         payrollBlocked.value = (all.value.blocked ?? []).length > 0
         // 「待完善」人数：这些人整行不参与计算，必须在概括里显式提示，
-        // 否则用户会以为工资算全了（实际少人）
-        payrollPendingCount.value = (all.value.unavailable ?? []).some((u) =>
-          u.item.includes('待完善')
-        )
-          ? Number(/（(\d+) 人）/.exec(
-              (all.value.unavailable ?? []).find((u) => u.item.includes('待完善'))?.item ?? ''
-            )?.[1] ?? 0)
-          : 0
+        // 否则用户会以为工资算全了（实际少人）。
+        // 用后端结构化下发的 pendingNames，不去正则解析那句人话（改文案就断）。
+        payrollPendingCount.value = (all.value.pendingNames ?? []).length
       }
 
       const failed = [all, green, east].filter((r) => r.status === 'rejected').length
