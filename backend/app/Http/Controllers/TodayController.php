@@ -651,7 +651,11 @@ final class TodayController extends Controller
                 }
                 $cardDate = substr((string) ($card['time'] ?? ''), 0, 10);
                 if ($cardDate === $today->format('Y-m-d')) {
-                    $trialKey = 'trial:lead-'.$l->id.'-'.($card['session'] ?? '');
+                    // session 由 Lead 模型的 trialCards 访问器保证存在（缺则按数组位置补），
+                    // 所以这里直接取整 —— 不要再写 `?? ''` 那种兜底：key 少一节会拼成
+                    // `trial:lead-6-`，todoAction 里 $session 解析为 0，卡片回写被整段跳过。
+                    $session = (int) $card['session'];
+                    $trialKey = 'trial:lead-'.$l->id.'-'.$session;
                     $trials[] = [
                         'key' => $trialKey,
                         'time' => mb_substr((string) ($card['time'] ?? ''), 11, 5) ?: (string) ($card['time'] ?? ''),
@@ -665,7 +669,7 @@ final class TodayController extends Controller
                         'status' => (string) $l->status,
                         // 携带留资定位，处理时回写留资状态机与体验课卡片（见 todoAction 业务流转 3）
                         'leadId' => (int) $l->id,
-                        'session' => (int) ($card['session'] ?? 0),
+                        'session' => $session,
                     ] + $doneInfo($trialKey);
                 }
             }
@@ -863,9 +867,13 @@ final class TodayController extends Controller
                         }
                         // 卡片结果标记：仅明确到节的留资体验课回写（已接待=已上课、爽约=已爽约）
                         if ($session > 0 && in_array($d['action'], ['已接待', '爽约'], true)) {
+                            // $cards 走 Lead 的 trialCards 访问器，每张都带 session（缺则按位置补），
+                            // 所以这里按 session 精确匹配即可 —— 原来那句 `?? ($i + 1)` 与待办 key
+                            // 生成侧的 `?? ''` 口径相反，已随访问器落地一并删除（同一缺陷的两个矛盾兜底）。
+                            // 顺带：回写会把补好的 session 一起落库，历史卡片渐进自愈。
                             $cards = (array) ($lead->trial_cards ?? []);
                             foreach ($cards as $i => $card) {
-                                if ((int) ($card['session'] ?? ($i + 1)) === $session) {
+                                if ((int) $card['session'] === $session) {
                                     if ($d['action'] === '爽约') {
                                         $cards[$i]['noShow'] = true;
                                     } else {
