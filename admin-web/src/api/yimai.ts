@@ -36,8 +36,24 @@ export async function refreshMemberRules(): Promise<MemberRules> {
   return rulesCache
 }
 
-/** 卓越店长训练营五张运营清单 */
-export type MemberListKey = '待续课' | '出勤降低' | 'VIP' | '预流失' | '待复活'
+/**
+ * 卓越店长训练营运营清单键。
+ *
+ * ⚠️ 这是前端**唯一的清单联合类型**，必须与后端 `memberListIds()` 的键逐字一致
+ * （`members/index.vue` 的 `LIST_KEYS` / `TAB_KEY_TO_LIST` 均派生自它）。
+ *
+ * - 前五张为既有清单。
+ * - `炸弹会员`：正式会员 + 持有次卡且有余额 + 该卡已过期**超过 6 个月**
+ *   （钱收了、课没上、卡过期很久）。同样由后端 `computeMemberLists()` 统一产出，
+ *   前端**只消费 id**，不在此处重算。
+ */
+export type MemberListKey =
+  | '待续课'
+  | '出勤降低'
+  | 'VIP'
+  | '预流失'
+  | '待复活'
+  | '炸弹会员'
 
 /** 新客培养：单个课型维度的上课统计 */
 export interface CultivationCategory {
@@ -207,8 +223,42 @@ export function computeMemberLists(c: YimaiCustomer): MemberListKey[] {
   if ((c.cardPaidAmount ?? 0) >= (rules.vipAmountThreshold ?? 30000)) out.push('VIP')
   if (preLoss) out.push('预流失')
   if (revive) out.push('待复活')
+  if (isBombMember(c)) out.push('炸弹会员')
 
   return out
+}
+
+/**
+ * 【mock-only · 非权威】炸弹会员判定，仅供 `USE_BACKEND === false` 的本地 mock 分支。
+ *
+ * ⚠️ **权威判定在后端**：`helpers.php::customerDecision()` 的 `$bomb` +
+ * `computeMemberLists()` 的 `lists['炸弹会员']`。真实后端模式下
+ * （`USE_BACKEND === true`，即线上/测试服）前端**从不调用本函数**，
+ * 只消费 `memberListIds` / `queryMemberListCounts` 返回的 id 与计数。
+ *
+ * 这里的实现刻意保持「够用但不等价」：mock 的 `YimaiCustomer` 里
+ * **没有** `card_stats.expiredCards` 这个由同步服务写入的保留区字段
+ * （过期卡的 residue/deadline 只在后端保留区里），所以本分支只能基于
+ * mock 自身能看到的字段做一个近似判断，**不得**被当作口径来源引用。
+ * 这也是为什么它必须带 mock-only 标记：避免后人误以为前端有第二份权威实现。
+ */
+function isBombMember(c: YimaiCustomer): boolean {
+  // mock 数据里 `cardStats.expiredCards` 若存在则按其判定；不存在则判否
+  // （宁可漏判，也不要在 mock 里造一个与后端不同的口径）
+  const expired = c.cardStats?.expiredCards
+  if (!expired || expired.length === 0) return false
+
+  const SIX_MONTHS_DAYS = 183
+  const cutoff = Date.now() - SIX_MONTHS_DAYS * 86400000
+
+  return expired.some((card) => {
+    if (card.type !== '1') return false
+    if (!(Number(card.residue ?? 0) > 0)) return false
+    if (!card.deadline) return false
+
+    // 严格「超过」6 个月：deadline 必须**早于**「今天 − 183 天」
+    return new Date(card.deadline).getTime() < cutoff
+  })
 }
 
 function lastVisitDays(date: string | null): number | null {
@@ -279,6 +329,27 @@ export interface YimaiCustomer extends StoreCustomer {
     countBound: number
     daysLeft: number | null
     daysTotal: number
+    /**
+     * 已耗次数推导不出的在用次卡张数（同步写入）。
+     * >0 时后端会把「占比按仅剩余节数保守计算」写进 `renewal.degraded`，
+     * 界面据此提示；**不要**在前端据此重算分母。
+     */
+    countBoundUnderivable?: number
+    /**
+     * 过期卡保留区（同步写入，**不属于** `cardsList`）。
+     *
+     * 用户已拍定「过期卡不纳入待续费」，故过期卡不进 `cardsList`（判定层输入）；
+     * 但「过期卡数据必须保留可查」，故落到这里，供「炸弹会员」清单使用。
+     * 前端**只读**：判定口径在后端 `helpers.php`。
+     */
+    expiredCards?: {
+      title: string
+      residue: number
+      deadline: string | null
+      status: string
+      /** '1'=次卡(节) '2'=期限卡(天) */
+      type: string
+    }[]
   } | null
   /** 有效卡项明细（同步写入）：供剩余课时列逐卡展示 */
   cardsList?: CustomerCardItem[] | null
@@ -643,7 +714,14 @@ export async function queryMemberListCounts(type?: string): Promise<Record<strin
   if (a.isTeacher) pool = pool.filter((c) => c.owner === a.userName || c.consultant === a.userName)
   pool = pool.filter((c) => mockCustomerTypeMatches(c, type))
   const out: Record<string, number> = {}
-  for (const key of ['待续课', '出勤降低', 'VIP', '预流失', '待复活'] as MemberListKey[]) {
+  for (const key of [
+    '待续课',
+    '出勤降低',
+    'VIP',
+    '预流失',
+    '待复活',
+    '炸弹会员'
+  ] as MemberListKey[]) {
     out[key] = pool.filter((c) => computeMemberLists(c).includes(key)).length
   }
   return Promise.resolve(out)
@@ -1860,6 +1938,81 @@ export async function getDashboardSeries(
     registeredDealAmount: sum((p) => p.amount)
   }
   return { daily, summary }
+}
+
+/**
+ * 新媒体分店拆分的**一行**。字段与工作台 `today/modules/boss-dashboard.vue` 的
+ * 「新媒体数据 · 分店拆分」逐项对应 —— 两页展示的是同一套口径的数字，
+ * 所以类型也收在这里，避免两页各写一份字段映射、改一处漏一处。
+ */
+export interface MediaSplitRow {
+  venue: '绿地店' | '东部店'
+  /** 留资人数（仅新媒体登记来源） */
+  leads: number
+  /** 到店人数（线上成交率的分母） */
+  visits: number
+  /** 成交人数 */
+  deals: number
+  /** 该店自己的线上成交率（百分数），**取自该店响应内的字段** */
+  dealRate: number
+  visitRewardAmount: number
+  commissionAmount: number
+}
+
+/** 「两店相加 vs 合计」的对账结果：逐项列出差额，供页面显式暴露而不是静默 */
+export interface MediaSplitSumCheck {
+  metric: string
+  /** 上方合计口径的值 */
+  total: number
+  /** 两店相加 */
+  sum: number
+  ok: boolean
+}
+
+/**
+ * 把一次**已按门店收窄**的 `/analytics/trends` 响应映射成分店拆分的一行。
+ *
+ * 纯映射：不做任何二次计算、不复用别的页面的公式，成交率直接用该响应自己的
+ * `onlineDealRate` —— 所以每个门店只需要**一次**请求，不必为了成交率再发一个重请求。
+ */
+export function mediaSplitRowFrom(
+  venue: '绿地店' | '东部店',
+  summary: DashboardSummary | undefined
+): MediaSplitRow {
+  const m = summary?.mediaPerformance
+  return {
+    venue,
+    leads: Number(summary?.onlineLeadCount ?? 0),
+    visits: Number(summary?.onlineVisitCount ?? 0),
+    deals: Number(summary?.onlineDealCount ?? 0),
+    dealRate: Number(summary?.onlineDealRate ?? 0),
+    visitRewardAmount: Number(m?.visitRewardAmount ?? 0),
+    commissionAmount: Number(m?.commissionAmount ?? 0)
+  }
+}
+
+/**
+ * 自校验：分店拆分三项可加指标的「两店相加」是否等于「合计」。
+ *
+ * 为什么只**核对并暴露**、不拿它去改写数字：后端的到店/成交是**按人去重**的
+ * （见 AnalyticsController 的 `$onlineVisitIdentities`），同一个人在两家店都留过资时
+ * 会在两店各计一次 —— 那时两店相加**合理地**大于合计。把差额压成合计数反而是错的，
+ * 所以这里如实算出差额交给页面显示。
+ */
+export function checkMediaSplitSums(
+  total: DashboardSummary | undefined,
+  rows: MediaSplitRow[]
+): MediaSplitSumCheck[] {
+  const metrics: [string, number | undefined, (r: MediaSplitRow) => number][] = [
+    ['留资人数', total?.onlineLeadCount, (r) => r.leads],
+    ['到店人数', total?.onlineVisitCount, (r) => r.visits],
+    ['成交人数', total?.onlineDealCount, (r) => r.deals]
+  ]
+  return metrics.map(([metric, t, pick]) => {
+    const totalNum = Number(t ?? 0)
+    const sum = rows.reduce((s, r) => s + pick(r), 0)
+    return { metric, total: totalNum, sum, ok: sum === totalNum }
+  })
 }
 
 export async function getChannelBreakdown(

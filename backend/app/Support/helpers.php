@@ -18,6 +18,7 @@ use App\Models\StaffAlias;
 use App\Models\Task;
 use App\Models\User;
 use App\Services\KyMemberSyncService;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -1853,6 +1854,10 @@ function customerDecision(Customer $c, ?array $rules = null): array
     $daysLeft = $stats['daysLeft'] ?? null;
     $daysTotal = (int) ($stats['daysTotal'] ?? 0);
     $cards = is_array($c->cards_list) ? $c->cards_list : [];
+    // 过期卡保留区（card_stats.expiredCards，由 KyMemberSyncService 写入）。
+    // ⚠️ 它**只服务于「炸弹会员」清单**，绝不参与待续费判定：
+    // 待续费的分类循环只读 $cards（= cards_list），而保留区的卡**不在** cards_list 里。
+    $expiredCards = is_array($stats['expiredCards'] ?? null) ? $stats['expiredCards'] : [];
 
     $why = [];
     $whyCodes = [];
@@ -1903,6 +1908,12 @@ function customerDecision(Customer $c, ?array $rules = null): array
     if ($unknownResidue !== []) {
         $titles = implode('、', array_slice(array_map(fn ($x) => (string) ($x['title'] ?? '卡项'), $unknownResidue), 0, 3));
         $degraded[] = "「{$titles}」未返回剩余量，该卡不参与「课时耗尽/剩余量」判定（可能漏提醒）";
+    }
+    // 已耗次数推导不出的卡：分母只含剩余节数 → 占比**偏高**（少报尾段，不会误报）。
+    // 这是显式降级：用户调了「次卡剩余占比」却看不到命中时，必须能查到原因，
+    // 否则又是一次「阈值可调但无效」。**不允许**为此凭空补一个已耗次数。
+    if ((int) ($stats['countBoundUnderivable'] ?? 0) > 0) {
+        $degraded[] = '部分次卡未返回单次折算价与已耗次数，剩余占比按「仅剩余节数」保守计算（可能少报尾段）';
     }
 
     // ── 有无卡项资产：**单点派生**，不列举卡项状态 ──
@@ -2109,6 +2120,37 @@ function customerDecision(Customer $c, ?array $rules = null): array
         || ($daysLeft !== null && (int) $daysLeft > 0);
     $expiredWithBalance = $hasAsset && $expireDays !== null && $expireDays < 0 && $hasBalance;
 
+    // ── 炸弹会员（用户新增需求 2026-09-24）────────────────────────────────
+    // 口径（四条必须同时成立）：
+    //   1. 正式会员 —— 由**查询侧**的 scopeMemberCustomers() 保证（见 computeMemberLists），
+    //      本函数只看卡项，不重复判「是不是客资」：那是授权面的事，两处各判一次必然分叉。
+    //   2. 持有次卡（type=1，排除 is_taste / 体验·员工·测试）
+    //   3. 该卡有余额（residue > 0）
+    //   4. 已过期且超过 6 个月（deadline < 今天 − 183 天）
+    //
+    // 为什么「卡有余额 + 已过期」不会同时进待续费：过期卡（status≠4/5/7）不参与
+    // ACTIVE_CARD_STATUSES，因此不在 cards_list、不参与任何续费分支；
+    // 它们**只**出现在 card_stats.expiredCards 保留区里，专供本判定消费。
+    //
+    // deadline 是 Unix 时间戳 —— 由 KyMemberSyncService::date() 统一转成了 Y-m-d，
+    // 这里再解析成日期（**不要**直接当字符串比大小）。
+    $bombDays = (int) ($rules['bombExpiredDays'] ?? 183);
+    $bombCards = [];
+    $bombSections = 0;
+    foreach ($expiredCards as $card) {
+        $deadline = $card['deadline'] ?? null;
+        if (! is_string($deadline) || $deadline === '') {
+            continue;
+        }
+        $days = (int) now()->startOfDay()->diffInDays(CarbonImmutable::parse($deadline), false);
+        if ($days >= -$bombDays) {
+            continue;   // 未过期，或过期未满 6 个月
+        }
+        $bombCards[] = $card + ['daysExpired' => abs($days)];
+        $bombSections += (int) ($card['residue'] ?? 0);
+    }
+    $bomb = $bombCards !== [];
+
     // 分层优先级：P0 → P1 → P2 → P3 → P4，先命中先落层（互斥单值）。
     //
     // P0 放最前是**必须**的：真实数据里「待续费」与「待复活」重叠率 100%
@@ -2138,6 +2180,8 @@ function customerDecision(Customer $c, ?array $rules = null): array
         'vip' => $paid >= $vip,
         'hasBalance' => $hasBalance,
         'expiredWithBalance' => $expiredWithBalance,
+        // 炸弹会员：正式会员 + 次卡有余额 + 已过期超 6 个月（口径见上方 $bombCards 注释）
+        'bomb' => ['in' => $bomb, 'sections' => $bombSections, 'cards' => $bombCards],
         'layer' => $layer,
         'renewal' => [
             'in' => $in,
@@ -2257,8 +2301,17 @@ function recalculateMemberLayers(): int
  */
 function computeMemberLists(array $rules): array
 {
-    $lists = ['待续课' => [], '出勤降低' => [], 'VIP' => [], '预流失' => [], '待复活' => []];
-    $watch = ['待续费' => [], '待开卡' => [], '经营分层' => []];
+    $lists = ['待续课' => [], '出勤降低' => [], 'VIP' => [], '预流失' => [], '待复活' => [], '炸弹会员' => []];
+    $watch = ['待续费' => [], '待开卡' => [], '经营分层' => [], '炸弹会员' => []];
+
+    // 「正式会员」集合 = **既有谓词** scopeMemberCustomers()（不得另写一份等价条件：
+    // 该谓词的 `layer != 'P5' OR external_id like 'ky:%'` 双条件正是为了兜住
+    // 「卡项全部过期的正式会员也会落 P5」——只写 layer != 'P5' 会把这些人当客资漏掉）。
+    // 一次性取 id 集合（本函数整体已缓存 120s），循环内 O(1) 查表。
+    $memberIds = [];
+    foreach (scopeMemberCustomers(Customer::query())->select('id')->pluck('id') as $id) {
+        $memberIds[(int) $id] = true;
+    }
 
     Customer::query()
         ->select([
@@ -2266,7 +2319,7 @@ function computeMemberLists(array $rules): array
             'attend_m1', 'attend_m2', 'attend_m3', 'in_revive', 'card_paid_amount',
             'card_stats', 'cards_list',
         ])
-        ->chunkById(500, function ($customers) use (&$lists, &$watch, $rules) {
+        ->chunkById(500, function ($customers) use (&$lists, &$watch, $rules, $memberIds) {
             foreach ($customers as $c) {
                 $d = customerDecision($c, $rules);
                 $renewal = $d['renewal'];
@@ -2314,6 +2367,25 @@ function computeMemberLists(array $rules): array
                 }
                 if ($d['revive']) {
                     $lists['待复活'][] = $c->id;
+                }
+                // ── 炸弹会员（正式会员 + 次卡有余额 + 过期超 6 个月）──
+                // 卡项四条口径由 customerDecision 的 $bomb 给出；「正式会员」这一条
+                // 必须由 scopeMemberCustomers() 判（见函数开头 $memberIds 注释）。
+                // 两者**同时**成立才入清单：卡项条件判「是不是炸弹」，会员条件判「要不要提醒他」。
+                if ($d['bomb']['in'] && isset($memberIds[(int) $c->id])) {
+                    $lists['炸弹会员'][] = $c->id;
+                    $titles = implode('、', array_slice(array_map(
+                        fn ($x) => (string) ($x['title'] ?? '卡项'),
+                        $d['bomb']['cards']
+                    ), 0, 3));
+                    $watch['炸弹会员'][$c->id] = [
+                        'why' => ['「'.$titles.'」已过期超 6 个月，仍余 '.$d['bomb']['sections'].' 节未消课'],
+                        'whyCodes' => ['bomb_expired'],
+                        'sections' => $d['bomb']['sections'],
+                        'cardCount' => count($d['bomb']['cards']),
+                        'earliestExpiredDays' => max(array_map(fn ($x) => (int) $x['daysExpired'], $d['bomb']['cards'])),
+                        'cards' => $d['bomb']['cards'],
+                    ];
                 }
             }
         });

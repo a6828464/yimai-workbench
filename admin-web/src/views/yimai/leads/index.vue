@@ -107,14 +107,24 @@
             <span v-else class="text-gray-300">—</span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="成交金额" width="100" align="right">
+        <ElTableColumn label="成交金额" width="118" align="right">
           <template #default="{ row }">
-            <span
-              v-if="row.dealAmount !== null && row.dealAmount !== undefined"
-              class="font-600 text-green-700"
-              >¥{{ row.dealAmount.toLocaleString() }}</span
+            <div>
+              <span
+                v-if="row.dealAmount !== null && row.dealAmount !== undefined"
+                class="font-600 text-green-700"
+                >¥{{ row.dealAmount.toLocaleString() }}</span
+              >
+              <span v-else class="text-gray-300">—</span>
+            </div>
+            <!-- 成交时间 + 成交周期（留资→成交的固定天数，非「至今」）；无成交时间显示占位符 -->
+            <div
+              class="deal-at-caption"
+              :class="{ 'is-empty': !row.dealAt }"
+              :data-test="`deal-at-${row.id}`"
             >
-            <span v-else class="text-gray-300">—</span>
+              {{ dealAtCaption(row) }}
+            </div>
           </template>
         </ElTableColumn>
         <ElTableColumn prop="status" label="状态" width="90">
@@ -384,12 +394,12 @@
           </ElCol>
         </ElRow>
         <ElRow :gutter="12">
-          <ElCol :span="12">
+          <ElCol :span="8">
             <ElFormItem label="成交卡项"
               ><ElInput v-model="dialog.form.dealCard" placeholder="成交时填写"
             /></ElFormItem>
           </ElCol>
-          <ElCol :span="12">
+          <ElCol :span="8">
             <ElFormItem label="成交金额"
               ><ElInputNumber
                 v-model="dialog.form.dealAmount"
@@ -400,6 +410,20 @@
                 class="!w-full"
                 placeholder="成交时填写"
             /></ElFormItem>
+          </ElCol>
+          <ElCol :span="8">
+            <!-- 成交时间：可清空，留空不影响录入（成交金额可单独填）。补录历史成交日期就填这里 -->
+            <ElFormItem label="成交时间">
+              <ElDatePicker
+                v-model="dialog.form.dealAt"
+                type="date"
+                value-format="YYYY-MM-DD"
+                clearable
+                class="!w-full"
+                data-test="lead-deal-at"
+                placeholder="未成交可留空"
+              />
+            </ElFormItem>
           </ElCol>
         </ElRow>
 
@@ -699,6 +723,8 @@
       grade: '' as YimaiLead['grade'],
       dealCard: '',
       dealAmount: null as number | null,
+      /** 成交时间（YYYY-MM-DD）。空 = 未填，展示层显示占位符，不影响储存与其它字段 */
+      dealAt: null as string | null,
       redeemAmount: null as number | null,
       trialCards: [] as NonNullable<YimaiLead['trialCards']>,
       remark: ''
@@ -837,6 +863,10 @@
       ...emptyForm(),
       ...row,
       status: row.status,
+      // 成交时间回填前先归一到上海民用日：后端给的是 UTC ISO，而日期控件按
+      // value-format="YYYY-MM-DD" 解析 —— 直接喂 ISO 串会解析失败、日期框空白，
+      // 保存时还会把用户没动过的成交时间清掉。
+      dealAt: shanghaiCivilDate(row.dealAt) || null,
       trialCards: Array.isArray(row.trialCards)
         ? row.trialCards.map((c) => ({ ...c, cancelled: Boolean(c.cancelled) }))
         : []
@@ -950,6 +980,67 @@
     return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   }
 
+  /**
+   * 取「上海民用日」（YYYY-MM-DD）。
+   *
+   * 为什么必须有这个换算：`dealAt` 由后端按 **UTC ISO** 序列化
+   * （`2026-08-27T18:46:34.000000Z`），而库里存的是上海墙上时间 `2026-08-28 02:46:34`。
+   * 直接截字符串前 10 位（或按浏览器本地时区 getDate()）都会得到 **08-27 —— 差一天**，
+   * 于是「成交时间」显示错日、距留资天数也跟着少 1。这里统一按 Asia/Shanghai 归位，
+   * 与库内口径一致。已是纯 `YYYY-MM-DD` 的（日期控件回填值）原样返回，不做二次时区平移。
+   */
+  function shanghaiCivilDate(value: string | null | undefined): string {
+    if (!value) return ''
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return ''
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(d)
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
+    return `${get('year')}-${get('month')}-${get('day')}`
+  }
+
+  /** 自然日差（忽略时间部分）：'YYYY-MM-DD' → 'YYYY-MM-DD'。任一缺失/不合法返回 null（展示层落占位符，不出 NaN） */
+  function civilDayDiff(
+    from: string | null | undefined,
+    to: string | null | undefined
+  ): number | null {
+    const a = shanghaiCivilDate(from)
+    const b = shanghaiCivilDate(to)
+    if (!a || !b) return null
+    const [ay, am, ad] = a.split('-').map(Number)
+    const [by, bm, bd] = b.split('-').map(Number)
+    if ([ay, am, ad, by, bm, bd].some((n) => Number.isNaN(n))) return null
+    const start = Date.UTC(ay, am - 1, ad)
+    const end = Date.UTC(by, bm - 1, bd)
+    return Math.round((end - start) / 86400000)
+  }
+
+  /**
+   * 成交周期正文：`2026-08-28 · 距留资 1 天`；无成交时间返回 ''。
+   *
+   * 口径（用户确认）：天数是**留资 → 成交的成交周期**，是固定值 —— 不是「至今」，
+   * 所以不会随时间漂移。缺 `dealAt` 时**只回 ''**：不编造日期、也不拿留资当天顶替。
+   */
+  function dealCycleText(row: YimaiLead): string {
+    const dealDate = shanghaiCivilDate(row.dealAt)
+    if (!dealDate) return ''
+    const days = civilDayDiff(row.leadDate, row.dealAt)
+    // 缺 leadDate 或日期不合法 → 天数不可知，只显示成交日期，绝不显示 NaN / 负数
+    if (days === null || days < 0) return dealDate
+    return `${dealDate} · 距留资 ${days} 天`
+  }
+
+  /** 成交金额列下方小字：`成交 2026-08-28 · 距留资 1 天`；无成交时间时 `成交 —`（占位符） */
+  function dealAtCaption(row: YimaiLead): string {
+    const text = dealCycleText(row)
+    return text ? `成交 ${text}` : '成交 —'
+  }
+
   function deadlineClass(row: YimaiLead, days: number): string {
     const base = firstTrialTime(row)
     if (!base) return ''
@@ -1048,6 +1139,10 @@
     if (row.dealAmount !== null && row.dealAmount !== undefined) {
       metrics.push({ label: '成交金额', value: `¥${row.dealAmount.toLocaleString()}` })
     }
+    // 有成交时间就带上成交周期（与桌面端成交金额列下方小字同源同一函数，不另算一套）
+    if (shanghaiCivilDate(row.dealAt)) {
+      metrics.push({ label: '成交时间', value: dealCycleText(row) })
+    }
     return metrics
   }
 
@@ -1132,6 +1227,26 @@
 </script>
 
 <style scoped lang="scss">
+  // 成交金额列下方的小字：成交时间 + 成交周期（留资→成交的天数）
+  //
+  // 必须允许折行：`成交 2026-08-28 · 距留资 1 天` 整串实测 157px，而本列内容区只有
+  // 117px（列宽 118 - 左右各 12 内边距），且整张表 16 列已压满容器、**没有横向滚动**
+  // （body-wrapper scrollWidth == clientWidth == 1287），所以写 nowrap 会被永久裁掉
+  // 尾部的「距留资 N 天」——实测截图里只剩「成交 2026-08-28 · 距」。折两行可读且不动列宽。
+  .deal-at-caption {
+    margin-top: 2px;
+    font-size: 11px;
+    line-height: 15px;
+    color: var(--el-text-color-secondary);
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+
+    // 未成交 / 未补录：占位符，弱化到最轻的灰
+    &.is-empty {
+      color: var(--el-text-color-placeholder);
+    }
+  }
+
   .followup-cell {
     display: flex;
     flex-direction: column;

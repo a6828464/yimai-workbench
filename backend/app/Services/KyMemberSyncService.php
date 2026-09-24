@@ -17,6 +17,24 @@ use Throwable;
 
 class KyMemberSyncService
 {
+    /**
+     * 「参与续费判定」的有效卡状态白名单。
+     *
+     * ⚠️ 用户决策（2026-09-24）：「过期卡不纳入待续费」。
+     * 线上 status 真实取值（`ky_cards_live_20260924.json` 全量 2954 张实测）：
+     *   6=过期(1896) 5=正常(897) 7=未开卡(131) 4=请假(14) 29=退卡(10) 39=停卡(6)
+     * 因此 `6` **有意不在此白名单内**：过期卡的 deadline/residue 不进入
+     * `remain_times` / `expire_date` / `countResidue` / `countBound` / `cards_list`，
+     * 于是它无法通过任何一条分支进入「待续费」。
+     *
+     * ⚠️ 但过期卡数据**必须保留可查**（新增「炸弹会员」清单的判定输入）：
+     * 见 `summarizeCards()` 末尾写入 `card_stats.expiredCards` 的那段。
+     * 「保留」与「不入待续费」是两条互不干扰的路径 —— 保留走 `card_stats`，
+     * 判定走 `$active`（本白名单）。不要把过期卡塞进 `cards_list`：
+     * `cards_list` 是判定层的分类输入，塞进去会立刻让过期卡经由 C8 分支
+     * （`$days < 0 && $days >= -$backfillDays`，`helpers.php:2042`）进入待续费，
+     * 直接违反用户决策。
+     */
     private const ACTIVE_CARD_STATUSES = ['4', '5', '7'];
 
     private const MAX_SYNC_SECONDS = 6600;
@@ -386,6 +404,7 @@ class KyMemberSyncService
         // - 时间卡剩余天数/有效期天数合计，供「有效期占比」阈值
         $countResidue = 0.0;
         $countBound = 0.0;
+        $underivable = 0;
         $hasCountCard = false;
         $daysLeft = 0.0;
         $daysTotal = 0.0;
@@ -414,7 +433,18 @@ class KyMemberSyncService
                 $countResidue += $residue;
                 // 分母与分子同源：都来自「全部有效次卡（含未开卡）」，否则占比会在两个口径间跳变
                 if ($residue > 0) {
-                    $countBound += $residue + max(0.0, self::toNum($card['usage_total'] ?? 0));
+                    // 分母 = 剩余节数 + **已耗次数**（不是已耗金额！单位错曾造出 29/495.63=5.9% 的假尾段）
+                    $consumed = self::consumedCount($card);
+                    if ($consumed === null) {
+                        // 推导不出已耗次数：**不猜**。分子照常累加（剩余节数是确定值），
+                        // 分母只含剩余节数 —— 这只会让占比**偏高**（少报尾段），
+                        // 绝不会凭空造出「分母被金额撑大 ⇒ 假装尾段」的假命中；
+                        // 同时记入 $underivable，由 card_stats.countBoundUnderivable 显式上报。
+                        $underivable++;
+                        $countBound += $residue;
+                    } else {
+                        $countBound += $residue + $consumed;
+                    }
                 }
             }
             if ($type === '2' && $hasResidueValue && ! $unactivated) {
@@ -440,10 +470,13 @@ class KyMemberSyncService
             if ((string) ($card['status'] ?? '') === '29' || (string) ($card['is_taste'] ?? '0') === '1') {
                 continue;
             }
-            // 累计购买私教课量 = 该次卡当前绑定节数(剩余) + 已用节数。
+            // 累计购买私教课量 = 该次卡当前绑定节数(剩余) + 已耗**次数**。
             // 注意：initial_amount 为「N次」字符串且含义为赠送次数，不可作为累计购买口径。
+            // ⚠️ 这里此前误用 usage_total（金额），与 countBound 是同一个量级错误：
+            // 一张 30 节卡会被算成「累计购买 495 节」。
             if ((string) ($card['type'] ?? '') === '1') {
-                $bound = self::toNum($card['residue_amount'] ?? 0) + self::toNum($card['usage_total'] ?? 0);
+                $consumed = self::consumedCount($card);
+                $bound = self::toNum($card['residue_amount'] ?? 0) + ($consumed ?? 0);
                 if ($bound > 0) {
                     $totalPurchased += (int) floor($bound);
                 }
@@ -483,6 +516,50 @@ class KyMemberSyncService
                 'countBound' => (int) floor($countBound),
                 'daysLeft' => $hasTimeCard ? (int) floor($daysLeft) : null,
                 'daysTotal' => $hasTimeCard ? (int) floor($daysTotal) : null,
+                // 已耗次数推导不出的在用次卡张数：>0 时判定层必须显式降级告知，
+                // 不得让「分母只剩剩余节数」这件事静默发生（见 helpers 的 degraded）。
+                'countBoundUnderivable' => $underivable,
+                // ── 过期卡保留区（用户决策 2026-09-24：「过期卡不纳入待续费」但「数据必须保留可查」）──
+                //
+                // 为什么不放进 cards_list：cards_list 是判定层的**分类输入**，塞进去会
+                // 立刻让过期卡经由 C8 分支进入待续费，违反用户决策。
+                // 为什么不放进 ky_cards 事实表：那张表只存 title/deal_price/status/sold_at 等，
+                // 没有余额与到期日列，且本期不新增迁移（见任务 out-of-scope）。
+                // 所以保留区落在 **card_stats**（已是 json 列，无迁移、向后兼容）：
+                // 「炸弹会员」清单（正式会员 + 次卡有余额 + 过期 > 6 个月）靠它才算得出来。
+                //
+                // 只保留**算得出沉睡量**的卡：type=1（次卡，单位=节）、有数值且 >0 的 residue、
+                // 有 deadline。时间卡/储值卡（type≠1）的 residue 是「天」，混进来会把
+                // 「沉睡 2509 节」算成别的单位。
+                'expiredCards' => array_values(array_map(function (array $card) {
+                    return [
+                        'title' => self::pick($card, ['card_title', 'card_name']),
+                        'residue' => (int) floor(max(0.0, self::toNum($card['residue_amount'] ?? 0))),
+                        'deadline' => self::date($card['deadline'] ?? null),
+                        'status' => (string) ($card['status'] ?? ''),
+                        // 卡类型（1=次卡/节，2=期限卡/天）：口径要求保留「含卡类型」；
+                        // 且下游「炸弹会员」只认 type=1 —— 缺了这个字段，
+                        // 「为什么排除了时间卡」在数据侧就无从复核（只看到「有余额」）。
+                        'type' => (string) ($card['type'] ?? ''),
+                    ];
+                }, array_values(array_filter($cards, function (array $card) {
+                    // 已在白名单里的卡由 cards_list 表达，不进保留区（避免两处各存一份而分叉）
+                    if (in_array((string) ($card['status'] ?? ''), self::ACTIVE_CARD_STATUSES, true)) {
+                        return false;
+                    }
+                    if ((string) ($card['is_taste'] ?? '0') === '1') {
+                        return false;
+                    }
+                    if (preg_match('/(体验|员工|测试)/u', self::pick($card, ['card_title', 'card_name']))) {
+                        return false;
+                    }
+                    if ((string) ($card['type'] ?? '') !== '1') {
+                        return false;
+                    }
+
+                    return self::toNum($card['residue_amount'] ?? 0) > 0
+                        && self::date($card['deadline'] ?? null) !== null;
+                })))),
             ],
             // 有效卡项明细：供会员管理「剩余课时」列逐卡展示（含未开卡标记）
             'cards_list' => array_values(array_map(function (array $card) {
@@ -491,8 +568,12 @@ class KyMemberSyncService
                 $residue = $hasResidueValue ? max(0.0, self::toNum($card['residue_amount'])) : null;
                 $residueInt = $residue !== null ? (int) floor($residue) : null;
                 $unactivated = (string) ($card['status'] ?? '') === '7';
+                // 逐卡「绑定总量」= 剩余节数 + 已耗**次数**（与 countBound 同源表达式）。
+                // 推导不出已耗次数时退化为「剩余节数」：占比因此偏高（少报尾段），
+                // 绝不会因金额混入而假装成尾段。
+                $consumed = $type === '1' ? self::consumedCount($card) : null;
                 $bound = $type === '1'
-                    ? (int) floor(max(0.0, self::toNum($card['residue_amount'] ?? 0)) + max(0.0, self::toNum($card['usage_total'] ?? 0)))
+                    ? (int) floor(max(0.0, self::toNum($card['residue_amount'] ?? 0)) + max(0, $consumed ?? 0))
                     : null;
 
                 return [
@@ -513,6 +594,77 @@ class KyMemberSyncService
                 ];
             }, $active)),
         ];
+    }
+
+    /**
+     * 已耗**次数**（次卡的权威推导规则）。
+     *
+     * ══════════════════════════════════════════════════════════════════════════
+     * 为什么需要它：`usage_total` 是**金额**（元），不是次数。
+     * 旧实现把它直接加到 `residue_amount`（节）上：
+     *   王素红「定制私教30节」residue=29、usage_total=466.63 ⇒ bound=29+466.63=495.63
+     *   ⇒ 29/495.63 = 5.85% ⇒ 被误判「待续费·紧急」（界面上的 5.9%）
+     *   正确：已耗 = 466.63/466.6333 = 1 次 ⇒ bound=30 ⇒ 29/30 = 96.7% ⇒ 不该提醒。
+     *
+     * ══════════════════════════════════════════════════════════════════════════
+     * 权威规则（优先级 + 理由，可复现）：
+     *
+     *   1. **`usage_total / curr_unit_cash_value`**（金额 ÷ 单次折算价 = 已耗次数）
+     *   2. 回退 **`consume_amount_format`**（形如 `"1次"` 的文本）
+     *   3. 两者都用不了 → 返回 **null**（显式降级，见 `$underivable` / `countBoundUnderivable`）
+     *
+     * 为何金额优先？——**两个独立判别实验**（脚本见
+     * `docs/口径/会员卡项判定与待续费口径.md` 的「判别实验」一节，数据用本机冻结样本
+     * `ky_cards_live_20260924.json`，2954 张卡）：
+     *
+     *  **实验 A｜独立基准：成交价 ÷ 单次折算价 = 购买总次数**
+     *  （`deal_price / curr_unit_cash_value` 恰为整数且 ≥ 剩余节数的卡 = 331 张，作为基准）：
+     *     金额口径与基准一致 **264/331 = 79.8%**
+     *     文本口径与基准一致 **131/331 = 39.6%**
+     *    ⇒ 分歧样本里金额口径对 149、文本口径只对 16 —— 金额路径压倒性更准。
+     *
+     *  **实验 B｜两来源在可比卡上的互斥性**（captain 基线，已复现）：
+     *  `status ∈ {4,5,7}` 且 `curr_unit_cash_value > 0` 且文本可解析的次卡 = **431 张**，
+     *  两来源一致仅 **179 张**、不一致 **252 张** ⇒ **二者不可互替**，
+     *  正是本函数必须钉死单一权威规则、而不能「哪个能用用哪个」的依据。
+     *
+     * 为何 `round` 而非 `floor`：`usage_total` 是二进位浮点累加值（如 466.63），
+     * 除以单价后接近整数但常有极小误差；`floor(0.9999) = 0` 会把「已消耗 1 次」抹成 0，
+     * 使分母退化成「剩余节数」、占比恒为 100%。实验 A 实测 `round` 一致率 79.8%
+     * （`floor` 仅 59.2%，`ceil` 77.3%），故取 `round`。
+     *
+     * 为何不用 `initial_amount` / `amount` 当总次数：599 张在用次卡里 **380 张**
+     * `residue_amount > initial_amount`（例：`residue=29, initial_amount="1次"`），
+     * 它是「赠送次数/当前绑定节数」语义，用它做分母会造出 >100% 的荒谬占比。
+     *
+     * ⚠️ 不要为了「让数字好看」把 gap 平摊或取两来源的最大/最小：
+     * 那会把两个都不可靠的口径混成一个第三口径，且没有任何独立基准支持它。
+     *
+     * @return int|null 已耗次数；推导不出时返回 null（调用方必须显式降级，不得猜）
+     */
+    private static function consumedCount(array $card): ?int
+    {
+        // 1) 金额 ÷ 单次折算价 —— 权威来源
+        $unit = self::toNum($card['curr_unit_cash_value'] ?? 0);
+        if ($unit > 0) {
+            $consumed = self::toNum($card['usage_total'] ?? 0) / $unit;
+
+            // 负值/非有限值一律视为不可用（上游异常给出脏数据时不猜）
+            if (is_finite($consumed) && $consumed >= 0) {
+                return (int) round($consumed);
+            }
+        }
+
+        // 2) 回退：consume_amount_format 的「N次」文本
+        $raw = (string) ($card['consume_amount_format'] ?? '');
+        if (preg_match('/(-?\d+(?:\.\d+)?)\s*次/u', $raw, $m)) {
+            $value = (float) $m[1];
+
+            return $value >= 0 ? (int) round($value) : null;
+        }
+
+        // 3) 推导不出 —— 显式降级，交由上层的 underivable 计数上报
+        return null;
     }
 
     /** 提取字段中的首个数值（兼容 "110"、"0.00"、"36节" 等格式） */

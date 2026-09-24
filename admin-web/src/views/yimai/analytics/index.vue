@@ -100,9 +100,18 @@
       <ElCol :span="24" class="mb-4">
         <ElCard shadow="never">
           <template #header>
-            <div class="flex-cb">
+            <div class="flex-cb media-head">
               <span class="font-500">新媒体线上运营业绩（当月）</span>
-              <ElTag size="small" effect="plain">时效内线上新客</ElTag>
+              <div class="flex items-center gap-2 flex-wrap">
+                <ElTag size="small" effect="plain">时效内线上新客</ElTag>
+                <!-- 门店视图：只作用于新媒体这两块（上方合计 + 下方拆分），本页其它图表不受影响。
+                     「双店合计」是默认态，与本页改动前完全一致（不传 venue）。 -->
+                <ElRadioGroup v-model="mediaVenue" @change="loadMedia">
+                  <ElRadioButton value="双店">双店合计</ElRadioButton>
+                  <ElRadioButton value="绿地店">绿地店</ElRadioButton>
+                  <ElRadioButton value="东部店">东部店</ElRadioButton>
+                </ElRadioGroup>
+              </div>
             </div>
           </template>
           <div v-if="!media" class="text-sm text-gray-400">暂无数据</div>
@@ -165,6 +174,74 @@
               <div v-if="media.breakdown.unpairedVisitCount > 0" class="text-warning mt-1">
                 另有 {{ media.breakdown.unpairedVisitCount }} 条到店记录因留资日期缺失无法核对时效，未计入；
                 请检查数据完整性。
+              </div>
+            </div>
+          </template>
+        </ElCard>
+      </ElCol>
+    </ElRow>
+
+    <!-- 新媒体数据 · 分店拆分。
+         用户反馈：「新媒体数据：目前只有一个总和，再给我拆分出东部店和绿地店的数据」。
+
+         仅在「双店」视图显示：单店视图下上方那块合计**本身就是这一家店**，
+         再拆一次等于把同一行数字抄第二遍（纯噪声）。
+
+         口径：与工作台 today/modules/boss-dashboard.vue 的「新媒体数据 · 分店拆分」
+         **完全同源** —— 都是复用既有 /analytics/trends 的 venue 参数按店各取一次，
+         不另写聚合（另写一份就会出现第二套口径）。两页只有**取数窗口**不同，
+         这是刻意的：本页新媒体块走自然月 currentMonth()（见该函数注释），
+         工作台走它自己的滚动区间。拆分沿用**本页**窗口，否则两页对不上账。 -->
+    <ElRow v-if="isDualStore" :gutter="16" class="mb-4 media-split">
+      <ElCol :span="24" class="mb-4">
+        <ElCard shadow="never" data-test="media-split">
+          <template #header>
+            <div class="flex-cb">
+              <span class="font-500">新媒体数据 · 分店拆分</span>
+              <ElTag size="small" effect="plain">仅新媒体登记来源</ElTag>
+            </div>
+          </template>
+          <div v-if="mediaSplitError" class="text-sm text-orange-500">{{ mediaSplitError }}</div>
+          <template v-else>
+            <ElTable :data="mediaSplitRows" border stripe size="small">
+              <ElTableColumn prop="venue" label="门店" width="96" />
+              <ElTableColumn prop="leads" label="留资人数" align="right" />
+              <ElTableColumn prop="visits" label="到店人数" align="right" />
+              <ElTableColumn prop="deals" label="成交人数" align="right" />
+              <ElTableColumn label="线上成交率" align="right">
+                <!-- 分母为 0 时显示「—」而不是 0%：没有到店客人时成交率不是一个数 -->
+                <template #default="{ row }">
+                  {{ row.visits > 0 ? `${row.dealRate}%` : '—' }}
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="到店奖励" align="right">
+                <template #default="{ row }">¥{{ money(row.visitRewardAmount) }}</template>
+              </ElTableColumn>
+              <ElTableColumn label="核销提成" align="right">
+                <template #default="{ row }">¥{{ money(row.commissionAmount) }}</template>
+              </ElTableColumn>
+            </ElTable>
+
+            <!-- 对账：逐项给出「两店相加 vs 合计」。到店/成交按人去重，
+                 同一人两店都留资时相加会合理地大于合计 —— 如实显示差额而不是把它藏起来 -->
+            <div class="mt-2 text-xs text-gray-400">
+              <template v-if="mediaSplitRange.start">
+                取数区间：{{ mediaSplitRange.start }} ~
+                {{ mediaSplitRange.end }}（自然月至今，与本页上方新媒体块同一窗口）
+              </template>
+              <div v-for="c in mediaSplitChecks" :key="c.metric">
+                {{ c.metric }}：{{ c.sum }}（两店相加）
+                <span :class="c.ok ? '' : 'text-warning'">
+                  {{ c.ok ? '=' : '≠' }} {{ c.total }}（上方合计）
+                </span>
+                <span v-if="!c.ok" class="text-warning">
+                  —— 该客人两家店都有记录，各自门店分别计入，不跨店去重
+                </span>
+              </div>
+              <div>
+                成交率的分母是「线上到店」而非「线上留资」；到店奖励与核销提成只算 2
+                个月时效内的线上新客（{{ media?.params.validMonths ?? 2 }} 个月，单价
+                {{ media?.params.visitReward ?? 20 }} 元/人）。
               </div>
             </div>
           </template>
@@ -289,9 +366,10 @@
 <script setup lang="ts">
   import { apiGet } from '@/api/backend'
   import { fetchPayrollCalculate } from '@/api/payroll'
+  import { getDashboardSeries, mediaSplitRowFrom, checkMediaSplitSums } from '@/api/yimai'
   import { toLocalDateString } from '@/utils'
   import { useRouter } from 'vue-router'
-  import type { MediaPerformance } from '@/api/yimai'
+  import type { MediaPerformance, MediaSplitRow, DashboardSummary } from '@/api/yimai'
 
   defineOptions({ name: 'YimaiAnalytics' })
 
@@ -392,6 +470,108 @@
   /** 业绩口径对应的取数区间（自然月 1 号至今），显示在卡片上以免与上方的近30天混淆 */
   const mediaRange = ref<{ start: string; end: string }>({ start: '', end: '' })
 
+  // ---------- 新媒体数据 · 分店拆分 ----------
+  //
+  // 门店视图只作用于上方「新媒体线上运营业绩（当月）」合计 + 下方拆分表；
+  // 本页其它图表（留资走势 / 来源分布 / 活跃度）走各自既有口径，不受这里影响。
+  const mediaVenue = ref<'双店' | '绿地店' | '东部店'>('双店')
+  /** 只在「双店合计」视图才拆 —— 单店视图下合计本身就是那一家店，再拆是同一行抄两遍 */
+  const isDualStore = computed(() => mediaVenue.value === '双店')
+  const mediaSplitRows = ref<MediaSplitRow[]>([])
+  const mediaSplitError = ref('')
+  const mediaSplitRange = ref<{ start: string; end: string }>({ start: '', end: '' })
+
+  /**
+   * 逐项对账「两店相加 vs 合计」。合计值取**本页已经取回的那一份** summary，
+   * 不为对账多发一次请求。
+   *
+   * 没有合计（本次请求失败，或单店视图/缺一店故不作结论）时返回空数组 ——
+   * 否则会拿 undefined 当 0，显示成「两店相加 ≠ 0（上方合计）」这种误导性结论。
+   */
+  const mediaSplitChecks = computed(() =>
+    mediaSplitScopeSummary.value
+      ? checkMediaSplitSums(mediaSplitScopeSummary.value, mediaSplitRows.value)
+      : []
+  )
+  /** 「双店合计」视图下那次请求的 summary，供对账用（不额外请求） */
+  const mediaSplitScopeSummary = ref<DashboardSummary | undefined>(undefined)
+
+  const MEDIA_SPLIT_VENUES = ['绿地店', '东部店'] as const
+
+  /**
+   * 取新媒体业绩 + （双店时）分店拆分。
+   *
+   * 口径与工作台 today/modules/boss-dashboard.vue 的 `loadMediaSplit()` 同源：
+   * 拆分的每一行都来自**既有** getDashboardSeries(start, end, venue) —— 即后端
+   * /analytics/trends 的 venue 参数，由 applyVenueScope 收窄留资/到店/成交/核销四路。
+   * 不新写聚合、不新写公式：`mediaSplitRowFrom()` 只是字段映射。
+   *
+   * 窗口固定用本页的 currentMonth()（自然月至今），**不是**工作台的滚动区间 ——
+   * 两页各自的窗口是刻意的（见 currentMonth() 注释），换了就两页对不上账。
+   *
+   * 并发数：双店视图 3 个请求（合计 + 两店），单店视图 1 个。成交率直接取各店响应
+   * 自带的 onlineDealRate，**不额外发第 4 个重请求**。
+   */
+  async function loadMedia(): Promise<void> {
+    const cm = currentMonth()
+    mediaRange.value = cm
+    mediaSplitRange.value = cm
+    mediaSplitError.value = ''
+
+    const scope = mediaVenue.value
+    const isDual = scope === '双店'
+    // 单店视图下清空，避免残留上一次双店的对账结论
+    mediaSplitRows.value = []
+    mediaSplitScopeSummary.value = undefined
+
+    const [total, ...perVenue] = await Promise.allSettled([
+      getDashboardSeries(cm.start, cm.end, scope),
+      ...(isDual ? MEDIA_SPLIT_VENUES.map((v) => getDashboardSeries(cm.start, cm.end, v)) : [])
+    ])
+
+    if (total.status === 'fulfilled') {
+      media.value = total.value.summary?.mediaPerformance
+      // 对账基准只在双店视图有意义（单店视图的合计就是那一家店，相减恒为 0）
+      if (isDual) mediaSplitScopeSummary.value = total.value.summary
+    } else {
+      media.value = undefined
+    }
+
+    if (!isDual) return
+
+    const rows: MediaSplitRow[] = []
+    const errors: string[] = []
+    perVenue.forEach((r, i) => {
+      const venue = MEDIA_SPLIT_VENUES[i]
+      if (r.status !== 'fulfilled') {
+        errors.push(`${venue}读取失败`)
+        return
+      }
+      // 纯字段映射：这一行的数字全部来自该店自己的响应，没有第二套公式
+      rows.push(mediaSplitRowFrom(venue, r.value.summary))
+    })
+    mediaSplitRows.value = rows
+    mediaSplitError.value = errors.join('；')
+
+    // 失败时不给「两店相加」下结论（缺一店的相加必然不等于合计，会误导）
+    if (errors.length > 0) {
+      mediaSplitScopeSummary.value = undefined
+    }
+
+    // 自校验：可加三项两店相加必须等于合计。窗口本身没数据时（全为 0）跳过，
+    // 那只说明这月还没有新媒体留资，不是口径出错。
+    if (mediaSplitScopeSummary.value && rows.length === MEDIA_SPLIT_VENUES.length) {
+      const checks = checkMediaSplitSums(mediaSplitScopeSummary.value, rows)
+      const mismatched = checks.filter((c) => !c.ok && (c.total > 0 || c.sum > 0))
+      if (import.meta.env.DEV && mismatched.length > 0) {
+        console.warn(
+          '[analytics] 新媒体分店拆分与合计不一致，请核对两店归属：',
+          mismatched.map((c) => `${c.metric} 合计${c.total} vs 两店相加${c.sum}`)
+        )
+      }
+    }
+  }
+
   const d = ref<Record<string, number>>({
     totalCustomers: 0, totalMembers: 0, unassigned: 0,
     assignRate: 0, closureRate: 0, renewalTasks: 0, renewalRate: 0,
@@ -467,14 +647,8 @@
       })
       attend.value = t.attendanceSummary ?? { m1: 0, m2: 0, m3: 0 }
       trends.value = { visit30: t.visit30 ?? 0, activeCustomers: t.activeCustomers ?? 0 }
-      // 新媒体业绩单独按自然月取（见 currentMonth() 注释：滚动窗口会跨月导致对不上账）
-      const cm = currentMonth()
-      const mediaRes = await apiGet<{ summary?: { mediaPerformance?: MediaPerformance } }>(
-        '/analytics/trends',
-        { start: cm.start, end: cm.end }
-      )
-      media.value = mediaRes.summary?.mediaPerformance
-      mediaRange.value = cm
+      // 新媒体业绩 + 分店拆分单独按自然月取（见 currentMonth() 注释：滚动窗口会跨月导致对不上账）
+      await loadMedia()
       const c = await apiGet<{ rows: { channel: string; leads: number }[]; total: number }>('/analytics/channels', { start, end })
       channelRows.value = (c.rows ?? []).sort((a, b) => b.leads - a.leads)
     } catch (e) {
@@ -541,6 +715,19 @@
       &__btn {
         width: 100%;
       }
+    }
+  }
+
+  // 新媒体块表头：桌面端标题与门店切换左右分列，窄屏换行（触控尺寸由全局 mobile.scss 兜底）
+  .media-head {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  // 分店拆分：表格在窄屏横向滚动而不挤压列（与薪酬概括一致）
+  .media-split {
+    :deep(.el-table) {
+      font-size: 12px;
     }
   }
 

@@ -57,11 +57,20 @@ class MemberLayerTest extends TestCase
         ], $extra));
     }
 
+    /**
+     * 上游卡项原始行。`$usage` 语义是「已耗**次数**」（调用点按次数传值）。
+     * 上游 `usage_total` 是**金额**，故补 `curr_unit_cash_value = 1`
+     * 使 `usage_total / 1 == $usage`：保持夹具语义，同时让分母走真实金额口径，
+     * 而不是退化成「推导不出 → 分母只剩剩余节数」的降级路径
+     * （否则本文件涉及占比的断言会空转，绿得没有意义）。
+     */
     private function card(string $title, string $status, string $type, int $residue, int $usage, ?string $deadline): array
     {
         return array_filter([
             'card_title' => $title, 'status' => $status, 'type' => $type,
-            'residue_amount' => $residue, 'usage_total' => $usage, 'deadline' => $deadline,
+            'residue_amount' => $residue, 'usage_total' => $usage,
+            'curr_unit_cash_value' => '1',
+            'deadline' => $deadline,
         ], fn ($v) => $v !== null);
     }
 

@@ -5,7 +5,8 @@
       <ElTabs v-model="activeTab" class="mb-3">
         <ElTabPane v-for="t in TABS" :key="t.key" :name="t.key">
           <template #label>
-            <span class="flex items-center gap-1.5">
+            <!-- title 来自 TABS[].title：给「炸弹会员」这类新清单一句可用悬浮读到的口径说明 -->
+            <span class="flex items-center gap-1.5" :title="t.title">
               {{ t.label }}
               <ElTag v-if="t.key !== 'all'" size="small" :type="t.tag" effect="plain">{{
                 listCounts[TAB_KEY_TO_LIST[t.key]] ?? 0
@@ -408,6 +409,33 @@
                 }}{{ row.lastTouch ? `（${daysAgo2(row.lastTouch)}天前）` : '' }} · 需协助
                 <ElTag v-if="row.needsHelp" size="small" type="danger">是</ElTag>
               </div>
+            </template>
+          </ElTableColumn>
+        </template>
+
+        <!--
+          炸弹会员：显示「哪张卡、过期多久、还剩多少节」。
+          数据源是后端保留区 `cardStats.expiredCards`（**不是** `cardsList` —— 过期卡
+          按用户决策不进判定层），因此这里必须读保留区，读 cardsList 会永远为空。
+        -->
+        <template v-if="activeTab === 'bomb'">
+          <ElTableColumn label="沉睡卡项" min-width="260">
+            <template #default="{ row }">
+              <div v-if="bombCards(row).length">
+                <div v-for="(card, i) in bombCards(row)" :key="i" class="leading-5">
+                  {{ card.title }} · 余 {{ card.residue }} 节
+                  <span class="text-xs text-gray-400" data-test="bomb-days">
+                    （已过期 {{ bombExpiredDays(card) }} 天）
+                  </span>
+                </div>
+              </div>
+              <span v-else class="text-xs text-gray-400">—</span>
+            </template>
+          </ElTableColumn>
+          <ElTableColumn label="沉睡合计" width="110" align="center">
+            <template #default="{ row }">
+              <span class="font-500 text-red-500">{{ bombSections(row) }}</span>
+              <span class="text-xs text-gray-400"> 节</span>
             </template>
           </ElTableColumn>
         </template>
@@ -898,26 +926,46 @@
       .join('；')
   }
 
-  const LIST_KEYS: MemberListKey[] = ['待续课', '出勤降低', 'VIP', '预流失', '待复活']
+  /**
+   * 全部清单键。判定口径**只在后端**（`helpers.php::computeMemberLists()`），
+   * 本页只用它们做「按清单筛 id」「页签 → 清单」的映射，不重算任何判定。
+   */
+  const LIST_KEYS: MemberListKey[] = [
+    '待续课',
+    '出勤降低',
+    'VIP',
+    '预流失',
+    '待复活',
+    '炸弹会员'
+  ]
   const EVALUATION_STATUSES = ['未评估', '高机会', '重点培育', '风险修复', '已过期']
   const TAB_KEY_TO_LIST: Record<string, MemberListKey> = {
     renewal: '待续课',
     decline: '出勤降低',
     vip: 'VIP',
     predrop: '预流失',
-    revive: '待复活'
+    revive: '待复活',
+    bomb: '炸弹会员'
   }
   const TABS: {
     key: string
     label: string
     tag?: 'danger' | 'warning' | 'success' | 'info' | 'primary'
+    /** 悬浮解释：说明这张清单「是谁、为什么」，避免店长靠猜 */
+    title?: string
   }[] = [
     { key: 'all', label: '总览' },
     { key: 'renewal', label: '待续课', tag: 'danger' },
     { key: 'decline', label: '出勤降低', tag: 'warning' },
     { key: 'vip', label: 'VIP', tag: 'success' },
     { key: 'predrop', label: '预流失', tag: 'primary' },
-    { key: 'revive', label: '待复活', tag: 'info' }
+    { key: 'revive', label: '待复活', tag: 'info' },
+    {
+      key: 'bomb',
+      label: '炸弹会员',
+      tag: 'danger',
+      title: '正式会员，名下次卡仍有余额，且该卡已过期超过 6 个月（钱收了、课没上）'
+    }
   ]
 
   const loading = ref(false)
@@ -1217,6 +1265,58 @@
   function touchOverdue(row: YimaiCustomer): boolean {
     if (!row.lastTouch) return true
     return daysAgo2(row.lastTouch) > 14
+  }
+
+  // ---------- 炸弹会员（只读后端保留区，不在前端重算） ----------
+
+  /** 与后端一致的「超过 6 个月」天数（严格大于，不含第 183 天当天） */
+  const BOMB_EXPIRED_DAYS = 183
+
+  /**
+   * 该会员的沉睡卡项 = 后端保留区 `cardStats.expiredCards` 里过期超 6 个月的次卡。
+   *
+   * ⚠️ 三个易错点：
+   * 1. **读 `expiredCards`，不是 `cardsList`**：按用户决策，过期卡不进判定层，
+   *    所以 `cardsList` 里**没有**它们（读它会永远为空，看起来像「功能没生效」）。
+   * 2. `type === '1'`（次卡，单位=节）：`type === '2'` 是期限卡、residue 单位是**天**，
+   *    混进来会把「沉睡 N 节」算成别的量纲。
+   * 3. 边界用**严格大于**：`> BOMB_EXPIRED_DAYS`。captain 已冻结该取法
+   *    （严格 ⇒ 393 卡/2509 节；含等号 ⇒ 394/2512），**不要**改成 `>=`。
+   *
+   * 这里只做**展示用**的过滤（与后端同条件），清单归属本身仍由后端 `memberListIds` 决定：
+   * 前端过滤只影响这一列的文案，不影响「谁在清单里」。
+   */
+  function bombCards(row: YimaiCustomer): { title: string; residue: number; deadline: string | null }[] {
+    const expired = row.cardStats?.expiredCards
+    if (!expired?.length) return []
+
+    return expired.filter(
+      (card) =>
+        card.type === '1' &&
+        Number(card.residue ?? 0) > 0 &&
+        Boolean(card.deadline) &&
+        bombExpiredDays(card) > BOMB_EXPIRED_DAYS
+    )
+  }
+
+  /** 该卡过期天数（正数=已过期；deadline 缺失时返回 0，调用方已先剔除） */
+  function bombExpiredDays(card: { deadline: string | null }): number {
+    if (!card.deadline) return 0
+    // deadline 是 'YYYY-MM-DD'（后端已把上游 Unix 时间戳归一化）。
+    // 直接 new Date('YYYY-MM-DD') 按 UTC 解析，与「今天」比较可能差一天；
+    // 这里统一按本地日期字符串构造，避免边界日被时区推到 182/184。
+    const [y, m, d] = String(card.deadline).split('-').map(Number)
+    if (!y || !m || !d) return 0
+    const days = Math.floor(
+      (Date.now() - new Date(y, m - 1, d).getTime()) / 86400000
+    )
+
+    return Math.max(0, days)
+  }
+
+  /** 沉睡合计节数（该会员所有命中卡的 residue 之和） */
+  function bombSections(row: YimaiCustomer): number {
+    return bombCards(row).reduce((sum, card) => sum + Number(card.residue ?? 0), 0)
   }
 
   function actionOverdue(row: YimaiCustomer): boolean {

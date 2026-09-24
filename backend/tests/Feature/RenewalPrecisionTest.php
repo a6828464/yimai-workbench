@@ -36,12 +36,27 @@ class RenewalPrecisionTest extends TestCase
 
     // ---------------------------------------------------------------- 夹具构造
 
-    /** 上游卡项原始行（与 KeepYoga 字段同名，直接喂 summarizeCards） */
+    /**
+     * 上游卡项原始行（与 KeepYoga 字段同名，直接喂 summarizeCards）。
+     *
+     * `$usage` 一直表示「已消耗**次数**」（夹具作者的意图，全部调用点都按次数传值：
+     * 5/15、2/98、180/20 …）。但 `usage_total` 在上游是**金额**，
+     * 真正权威的换算需要 `curr_unit_cash_value`。这里补上 `curr_unit_cash_value = 1`，
+     * 于是 `usage_total / 1 = $usage` 恰好等于夹具想要的已耗次数 ——
+     * 既保持所有现有用例的语义不变，又让它们继续走**真实的金额口径**，
+     * 而不是退化成「推导不出 → 分母只剩剩余节数」的降级路径。
+     *
+     * ⚠️ 不加这个字段的话，`consumedCount()` 会判定为「推导不出」并降级，
+     * 本文件里所有与分母相关的断言都会变成**空转**（分母恒等于剩余节数）——
+     * 那种「绿」是假的，等于把断言悄悄弱化掉了。
+     */
     private function card(string $title, string $status, string $type, ?int $residue, int $usage, ?string $deadline, ?int $validDays = null): array
     {
         return array_filter([
             'card_title' => $title, 'status' => $status, 'type' => $type,
             'residue_amount' => $residue, 'usage_total' => $usage,
+            // 单次折算价 = 1 ⇒ usage_total 数值 == 已耗次数（保持夹具语义）
+            'curr_unit_cash_value' => '1',
             'deadline' => $deadline, 'expiry_days' => $validDays,
         ], fn ($v) => $v !== null);
     }
@@ -100,6 +115,25 @@ class RenewalPrecisionTest extends TestCase
         $m->setAccessible(true);
 
         return $m->invoke(null, $cards);
+    }
+
+    /**
+     * 指定清单的会员 id（走真实 memberListIds()，与接口同源）。
+     * 与 CardStatsRenewalTest::renewalIds() 等价，此处按名字取清单。
+     */
+    private function listIdsFor(string $list): array
+    {
+        return memberListIds()[$list] ?? [];
+    }
+
+    /** 直接落库（供需要绕过 memberFromCards 聚合的用例使用） */
+    private function rawCustomer(array $attrs): Customer
+    {
+        return Customer::create(array_merge([
+            'name' => 'raw', 'phone' => '1380000'.random_int(1000, 9999), 'phone_tail' => '0000',
+            'venue' => '绿地店', 'source' => 'KeepYoga', 'owner' => '店长', 'consultant' => '店长',
+            'layer' => 'P4', 'status' => '在籍',
+        ], $attrs));
     }
 
     /** 判定明细（同一次缓存扫描，与清单计数同源） */
@@ -1128,5 +1162,219 @@ class RenewalPrecisionTest extends TestCase
 
         $this->assertSame('P5', $ky->fresh()->layer, 'ky: 无资产会员仍落 P5（分层语义不变）');
         $this->assertFalse(isLeadOnlyCustomer($ky->fresh()), 'ky: 无资产会员不得被当成客资');
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 待续费分母单位错误（v3.3.4 / t2）：usage_total 是金额不是次数
+    //
+    // 王素红「定制私教30节」residue=29、usage_total=466.63、curr_unit_cash_value=466.6333：
+    //   旧: bound = 29 + 466.63 = 495.63 ⇒ 29/495.63 = 5.85% ⇒ 误判「紧急待续费」
+    //   新: 已耗 = 466.63/466.6333 = 1 次 ⇒ bound = 30 ⇒ 29/30 = 96.67% ⇒ 不该提醒
+    //
+    // 权威规则（详见 KyMemberSyncService::consumedCount 注释与 docs/口径 报告）：
+    //   1) usage_total / curr_unit_cash_value  2) 回退 consume_amount_format
+    //   3) 都不可用 ⇒ null（显式降级，绝不编造分母）
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /** 上游卡项原始行：王素红真实卡数值（脱敏，仅卡名+数值，无 PII） */
+    private function amountCard(array $overrides = []): array
+    {
+        return array_merge([
+            'card_title' => '定制私教30节',
+            'status' => '5',
+            'type' => '1',
+            'is_taste' => '0',
+            'residue_amount' => '29',
+            'usage_total' => '466.63',
+            'curr_unit_cash_value' => '466.6333333333',
+            'consume_amount_format' => '1次',
+            'deal_price' => '13999',
+            'expiry_days' => '0',
+            'deadline' => '1810396799',       // 2027-05-15
+        ], $overrides);
+    }
+
+    private function summarizeAmountCards(array $cards): array
+    {
+        return $this->summarize($cards);
+    }
+
+    /** 用「卡项原始行」建会员（RenewalPrecisionTest::memberFromCards 的别名，语义同） */
+    private function memberFromAmountCards(string $name, array $cards, int $m3 = 6): Customer
+    {
+        return $this->memberFromCards($name, $cards, $m3);
+    }
+
+    private function enablePercentRule(int $percent = 15): void
+    {
+        $this->setRules([
+            'renewalThreshold' => 10, 'renewalCountPercent' => $percent,
+            'renewalExpireDays' => 30, 'renewalExpirePercent' => 0,
+            'vipAmountThreshold' => 30000, 'declineMode' => 'strict',
+            'predropMin' => 15, 'predropMax' => 30, 'reviveDays' => 30,
+        ]);
+    }
+
+    public function test_real_card_bound_is_total_sessions_not_amount(): void
+    {
+        $sum = $this->summarizeAmountCards([$this->amountCard()]);
+
+        $this->assertSame(29, $sum['card_stats']['countResidue'], '剩余节数必须是 29');
+        $this->assertSame(30, $sum['card_stats']['countBound'], '分母必须是总次数 30（29 剩余 + 1 已耗）');
+
+        $ratio = $sum['card_stats']['countResidue'] / $sum['card_stats']['countBound'] * 100;
+        $this->assertGreaterThanOrEqual(15, $ratio, "占比 {$ratio}% 必须 ≥ 15%：这是「不再命中 5.9%」的验收点");
+        $this->assertEqualsWithDelta(96.7, $ratio, 0.1);
+
+        // 逐卡 bound 与汇总同源表达式
+        $this->assertSame(30, $sum['cards_list'][0]['bound'], 'cards_list.bound 必须与 countBound 同源');
+        $this->assertSame(30, $sum['total_purchased'], 'total_purchased 同源表达式必须一并修正（旧实现会算成 495）');
+    }
+
+    public function test_real_card_member_is_not_flagged_as_renewal(): void
+    {
+        $this->enablePercentRule(15);
+        $c = $this->memberFromAmountCards('分母定点会员', [$this->amountCard()]);
+
+        $this->assertNotContains($c->id, $this->listIdsFor('待续课'), '29/30 = 96.7% 远高于 15%，不该进待续费');
+    }
+
+    public function test_genuine_tail_card_is_still_flagged(): void
+    {
+        $this->enablePercentRule(15);
+        $c = $this->memberFromAmountCards('真实尾段会员', [$this->amountCard([
+            'residue_amount' => '3',
+            'usage_total' => '12599.10',      // 27 次 × 466.6333
+        ])]);
+
+        $sum = $this->summarizeAmountCards([$this->amountCard(['residue_amount' => '3', 'usage_total' => '12599.10'])]);
+        $this->assertSame(30, $sum['card_stats']['countBound'], '3 剩余 + 27 已耗 = 30');
+        $this->assertContains($c->id, $this->listIdsFor('待续课'), '3/30 = 10% ≤ 15%，必须命中');
+    }
+
+    public function test_bound_is_never_residue_plus_usage_amount(): void
+    {
+        $sum = $this->summarizeAmountCards([$this->amountCard()]);
+        $wrong = (int) floor((float) '29' + (float) '466.63');   // 495
+
+        $this->assertNotSame($wrong, $sum['card_stats']['countBound'],
+            'bound 仍是 residue+usage_total（金额混入）——单位错误复现');
+        $this->assertLessThan(100, $sum['card_stats']['countBound'],
+            '30 节卡的 bound 不该是数百：金额量级（数百元）出现即说明又是金额当次数');
+    }
+
+    public function test_mutation_reverting_to_amount_breaks_the_regression(): void
+    {
+        $sum = $this->summarizeAmountCards([$this->amountCard()]);
+        // 旧实现（被修掉的那一行）的字面复刻
+        $mutated = (int) floor(max(0.0, (float) '29') + max(0.0, (float) '466.63'));
+        $mutatedRatio = (float) '29' / $mutated * 100;
+
+        $this->assertSame(495, $mutated, '变异体必须复刻旧表达式：29 + 466.63 = 495');
+        $this->assertLessThan(15, $mutatedRatio, '变异体占比 5.85% < 15% ⇒ 会误报（这正是被修的缺陷）');
+        $this->assertNotSame($mutated, $sum['card_stats']['countBound'],
+            '实现与变异体必须不同 —— 若相同则说明修复被回退，回归用例会红');
+        $this->assertGreaterThanOrEqual(15, $sum['card_stats']['countResidue'] / $sum['card_stats']['countBound'] * 100);
+    }
+
+    public function test_no_usage_amount_added_into_bound_expression(): void
+    {
+        $src = file_get_contents(base_path('app/Services/KyMemberSyncService.php'));
+
+        // 旧实现两处的字面形态：金额被直接加到剩余节数上
+        $this->assertStringNotContainsString(
+            "+ max(0.0, self::toNum(\$card['usage_total'] ?? 0))",
+            $src,
+            '分母仍含「剩余节数 + usage_total(金额)」形态——单位错误会复发'
+        );
+
+        // 分母累加处必须经 consumedCount() 推导
+        $this->assertStringContainsString('consumedCount', $src, '必须经 consumedCount() 统一推导已耗次数');
+        $this->assertMatchesRegularExpression(
+            '/\$countBound \+= \$residue \+ \$consumed;/',
+            $src,
+            '汇总分母必须是「剩余节数 + 已耗次数」'
+        );
+    }
+
+    public function test_amount_source_wins_when_sources_disagree(): void
+    {
+        // 金额推出 1 次，文本说 8 次 —— 必须取金额的 1 次
+        $sum = $this->summarizeAmountCards([$this->amountCard(['consume_amount_format' => '8次'])]);
+
+        $this->assertSame(30, $sum['card_stats']['countBound'], '冲突时金额优先：29 + 1 = 30（不是 29 + 8 = 37）');
+    }
+
+    public function test_text_source_is_used_when_unit_value_missing(): void
+    {
+        $sum = $this->summarizeAmountCards([$this->amountCard([
+            'curr_unit_cash_value' => '0',
+            'usage_total' => '0.00',
+            'consume_amount_format' => '4次',
+        ])]);
+
+        $this->assertSame(33, $sum['card_stats']['countBound'], '回退文本口径：29 + 4 = 33');
+        $this->assertSame(0, $sum['card_stats']['countBoundUnderivable'], '文本可解析 ⇒ 不算降级');
+    }
+
+    public function test_zero_usage_with_unit_value_means_zero_consumed(): void
+    {
+        $sum = $this->summarizeAmountCards([$this->amountCard([
+            'usage_total' => '0.00',
+            'consume_amount_format' => '5次',    // 与金额口径冲突：金额权威
+        ])]);
+
+        $this->assertSame(29, $sum['card_stats']['countBound'], '金额口径为 0 ⇒ bound = 29 + 0');
+    }
+
+    public function test_underivable_consumed_is_reported_and_not_fabricated(): void
+    {
+        $sum = $this->summarizeAmountCards([$this->amountCard([
+            'curr_unit_cash_value' => '0',
+            'usage_total' => '0.00',
+            'consume_amount_format' => '',        // 空文本：两来源皆不可用
+        ])]);
+
+        $this->assertSame(1, $sum['card_stats']['countBoundUnderivable'], '推导不出必须计数上报');
+        $this->assertSame(29, $sum['card_stats']['countBound'],
+            '降级时分母只含剩余节数（保守偏高），绝不凭空补一个已耗次数');
+
+        // 【O1 / t6 复核发现】`cards_list[].bound` 此前全仓只有 1 处断言
+        // （主路径 test_real_card_bound_is_total_sessions_not_amount），**降级路径没有断言**
+        // ⇒ 后人把降级分支的 bound 改坏（例如退化成 null、或又把金额混进来）不会转红。
+        // 这里补上降级路径的逐卡 bound：与 countBound 同源、降级时同样只含剩余节数。
+        $this->assertSame(29, $sum['cards_list'][0]['bound'],
+            '降级路径的 cards_list.bound 必须与 countBound 同源（只含剩余节数），改坏必须转红');
+    }
+
+    public function test_underivable_is_surfaced_through_degraded(): void
+    {
+        $sum = $this->summarizeAmountCards([$this->amountCard([
+            'curr_unit_cash_value' => '0', 'usage_total' => '0.00', 'consume_amount_format' => '',
+        ])]);
+        $c = $this->rawCustomer([
+            'name' => '降级上报会员', 'phone' => '13800001111', 'phone_tail' => '1111',
+            'venue' => '绿地店', 'source' => 'KeepYoga', 'owner' => '店长', 'consultant' => '店长',
+            'status' => '在籍', 'layer' => 'P4', 'external_id' => 'ky:test-degraded',
+            'main_card' => $sum['main_card'], 'remain_times' => $sum['remain_times'],
+            'card_stats' => $sum['card_stats'], 'cards_list' => $sum['cards_list'],
+            'attend_m1' => 6, 'attend_m2' => 6, 'attend_m3' => 6,
+            'last_visit' => now()->subDays(3)->toDateString(),
+        ]);
+
+        $degraded = customerDecision($c->fresh())['renewal']['degraded'];
+        $this->assertNotEmpty($degraded, '推导不出已耗次数必须显式降级，不能静默');
+        $this->assertStringContainsString('已耗次数', implode('；', $degraded));
+    }
+
+    public function test_negative_or_non_finite_values_are_treated_as_underivable(): void
+    {
+        $sum = $this->summarizeAmountCards([$this->amountCard([
+            'curr_unit_cash_value' => '-1', 'usage_total' => '466.63', 'consume_amount_format' => '-3次',
+        ])]);
+
+        $this->assertSame(29, $sum['card_stats']['countBound'], '脏数据下分母退化为剩余节数，不得为负或离谱');
+        $this->assertGreaterThanOrEqual(0, $sum['card_stats']['countBoundUnderivable']);
     }
 }

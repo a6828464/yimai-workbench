@@ -52,6 +52,18 @@
           </span>
         </div>
 
+        <!-- 双源核验摘要：常驻筛选栏下方，切到别的 tab 也看得到「两源差了几节」。
+             数据由「老师课时数」面板上抛（同一份响应，不重复请求）。 -->
+        <div v-if="hoursSource" class="source-bar">
+          <ElTag size="small" effect="plain" :type="hoursSourceTagType">
+            {{ hoursSourceTagText }}
+          </ElTag>
+          <span class="text-xs text-gray-500">
+            预约记录 {{ hoursSource.bookingSessions }} 课次 ·
+            课时记录 {{ hoursSource.available ? hoursSource.courseRecordSessions + ' 节' : '不可用' }}
+          </span>
+        </div>
+
         <!-- 权限/加载错误：403 单独说清，不混成「加载失败」 -->
         <ElAlert
           v-if="errorMsg"
@@ -87,6 +99,7 @@
           :month="month"
           :venue="venue"
           @error="onError"
+          @source="onHoursSource"
         />
         <PayrollProfilesPanel
           v-else-if="activeTab === 'profiles'"
@@ -150,6 +163,34 @@
   const successMsg = ref('')
   const errorIsForbidden = ref(false)
 
+  /** 双源核验摘要（由「老师课时数」面板上抛，页面级常驻展示差额） */
+  const hoursSource = ref<{
+    bookingSessions: number
+    courseRecordSessions: number
+    diff: number
+    available: boolean
+    label: string
+  } | null>(null)
+
+  function onHoursSource(s: typeof hoursSource.value) {
+    hoursSource.value = s
+  }
+
+  const hoursSourceTagType = computed<'success' | 'warning' | 'danger'>(() => {
+    const s = hoursSource.value
+    if (!s) return 'success'
+    if (!s.available) return 'danger'
+    return s.diff === 0 ? 'success' : 'warning'
+  })
+
+  const hoursSourceTagText = computed(() => {
+    const s = hoursSource.value
+    if (!s) return ''
+    if (!s.available) return '课时记录源不可用（差额无法计算）'
+    if (s.diff === 0) return '课时两源一致'
+    return `课时两源差 ${s.diff > 0 ? '+' : ''}${s.diff} 节`
+  })
+
   const venues = computed(() => catalog.value?.venues ?? [])
 
   function onError(msg: string) {
@@ -178,6 +219,8 @@
   function reloadAll() {
     errorMsg.value = ''
     successMsg.value = ''
+    // 月份/门店变了，上一轮的双源摘要已失效，先清掉避免显示旧差额
+    hoursSource.value = null
     void loadCatalog()
   }
 
@@ -185,6 +228,17 @@
 </script>
 
 <style scoped lang="scss">
+  .source-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 6px 10px;
+    background: var(--art-gray-100);
+    border-radius: 4px;
+  }
+
   .payroll-tabs {
     // Tabs 头部在手机上要能横向滚动，否则 5 个标签会把卡片撑出视口
     :deep(.el-tabs__nav-wrap) {

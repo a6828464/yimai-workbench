@@ -109,6 +109,18 @@ export interface PayrollHoursRow {
   accumulatedHours: number | null
   baseRewardTier: number
   baseReward: number
+  // ---- 双源核验（课时记录 vs 预约记录）----
+  /** 预约记录侧课次 = `classCount`（计价口径） */
+  bookingSessions: number
+  /** 课时记录侧节数（`course/api/getcoursesummaryrecordstat`） */
+  courseRecordSessions: number
+  /** 差额 = courseRecordSessions - bookingSessions（正数 = 课时记录多） */
+  sourceDiff: number
+  /** 谁多：course=课时记录多 / booking=预约记录多 / equal=一致 */
+  sourceLeader: 'course' | 'booking' | 'equal'
+  /** 课时记录里是否出现过此人 */
+  courseRecordSeen: boolean
+  courseRecordKinds: Partial<Record<'private' | 'small' | 'group', number>>
 }
 
 export interface PayrollHoursWarning {
@@ -125,6 +137,78 @@ export interface PayrollHoursWarning {
     sessions?: number
     sampleCourses?: string[]
   }[]
+  /** `HOURS_SOURCE_DIFF`：逐人差额明细（谁多、谁少、差几节） */
+  diffTeachers?: PayrollSourceDiffTeacher[]
+}
+
+/** 逐人两源差额（谁多、谁少、差几节） */
+export interface PayrollSourceDiffTeacher {
+  userId: number | null
+  profileId: number | null
+  name: string
+  venue: string
+  courseRecordSessions: number
+  bookingSessions: number
+  /** courseRecordSessions - bookingSessions */
+  diff: number
+  leader: 'course' | 'booking' | 'equal'
+  courseRecordSeen: boolean
+}
+
+/** 单侧来源的汇总（课时记录 / 预约记录） */
+export interface PayrollHoursSourceSide {
+  available: boolean
+  label: string
+  source: string
+  /** 该侧总节数 */
+  sessions: number
+  /** 该侧涉及老师数 */
+  teachers: number
+  /** 按上课门店的节数小计 */
+  byVenue: Record<string, number>
+  isPricingSource: boolean
+  error?: string | null
+}
+
+/** 一家门店的两源对照 */
+export interface PayrollHoursVenueDiff {
+  courseRecordSessions: number
+  bookingSessions: number
+  diff: number
+  leader: 'course' | 'booking' | 'equal'
+  courseRecordTeachers: number
+  bookingTeachers: number
+  teacherCourseRecord: Record<string, number>
+}
+
+/** 双源核验结果（`GET /payroll/hours` 的 `bySource`） */
+export interface PayrollHoursBySource {
+  bookingRecord: PayrollHoursSourceSide
+  courseRecord: PayrollHoursSourceSide
+  diff: {
+    /** 恒等于 courseRecord.sessions - bookingRecord.sessions */
+    sessions: number
+    teachers: PayrollSourceDiffTeacher[]
+    teacherCount: number
+    byVenue: Record<string, PayrollHoursVenueDiff>
+    label: string
+    directionNote: string
+  }
+  excluded: {
+    /** 课时记录有节数、预约记录 0 行 ⇒ 未开课，不计课时费 */
+    notOpened: {
+      userId: number | null
+      profileId: number | null
+      name: string
+      venue: string
+      courseRecordSessions: number
+      bookingSessions: number
+      reason: string
+    }[]
+    notOpenedCount: number
+    rule: string
+  }
+  unmatched: { courseRecordOnly: string[] }
 }
 
 export interface PayrollHoursMeta {
@@ -136,6 +220,19 @@ export interface PayrollHoursMeta {
   statusFilter: string
   trialExcluded: boolean
   durationPriority: string[]
+  /** 双源口径与来源说明（前端只渲染，不写第二份口径） */
+  sources?: {
+    bookingRecord: { label: string; table: string; endpoints: string[]; rule: string }
+    courseRecord: {
+      label: string
+      endpoint: string
+      /** 实际发出的四个参数（含 start/end/page_index/page_size），供用户核对 */
+      request: Record<string, string | number>
+      rule: string
+    }
+    pricingSource: string
+    pricingSourceReason: string
+  }
 }
 
 export interface PayrollHoursResult {
@@ -144,6 +241,8 @@ export interface PayrollHoursResult {
   rows: PayrollHoursRow[]
   warnings: PayrollHoursWarning[]
   meta: PayrollHoursMeta
+  /** 双源核验：两源并列 + 差额 + 显式排除 */
+  bySource: PayrollHoursBySource
 }
 
 export function fetchPayrollHours(

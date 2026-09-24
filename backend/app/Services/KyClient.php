@@ -29,6 +29,9 @@ class KyClient
         'venue/api/getallcontractlist',
         'course/api/queryreversionleague',
         'course/api/queryreversionprivate',
+        // 财务报表 → 课时费统计（**课时记录**口径，与上面两个预约记录接口并列）。
+        // 薪酬课时费的双源核验要读它；参数陷阱见 KyCourseRecordService 类注释。
+        'course/api/getcoursesummaryrecordstat',
         // 数据分析三件套（数据概览/会员活跃分析/访客转化），工作台经营 KPI 直读上游口径
         'venue/api/getvenuedataoverview',
         'venue/api/getmembershipactivityanalysis',

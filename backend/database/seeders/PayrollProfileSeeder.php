@@ -2,8 +2,8 @@
 
 namespace Database\Seeders;
 
+use App\Http\Controllers\PayrollController;
 use App\Models\PayrollProfile;
-use App\Models\User;
 use App\Support\PayrollMoney;
 use App\Support\PayrollRoles;
 use App\Support\XlsxReader;
@@ -120,8 +120,22 @@ class PayrollProfileSeeder extends Seeder
             $externalToProfile = [];
             $created = 0;
             $updated = 0;
+            $unbound = [];
 
-            DB::transaction(function () use ($rows, $dualBase, &$externalToProfile, &$created, &$updated) {
+            DB::transaction(function () use ($rows, $dualBase, &$externalToProfile, &$created, &$updated, &$unbound) {
+                // 账号绑定计划：**按姓名整组**一次算好，而不是在下面循环里逐行决定。
+                //
+                // 规则唯一实现在 `PayrollController::distributeUserAccounts()`；
+                // 必须整组算的原因：主档里**同一姓名可能有多行**（跨店老师两店各一行），
+                // 而 `payroll_profiles.user_id` 有 unique 约束。逐行「同名唯一就写 user_id」
+                // 会让第二行把同一个 user_id 再写一次 ⇒ SQLSTATE 23000 / 1062 ⇒
+                // 整个 `db:seed` 事务回滚。这与「系统已知信息预填」500 是**同一个缺陷**，
+                // 因此共用同一处实现，不在 seeder 里保留第三份复制。
+                //
+                // 又必须在**事务内**算：`distributeUserAccounts()` 用 `lockForUpdate()`
+                // 判「该账号是否已被本表别行占用」，事务外这层锁不成立。
+                $plan = $this->planBindings($rows);
+
                 foreach ($rows as $row) {
                     $existing = PayrollProfile::where('external_id', $row['external_id'])->first();
                     $profile = $existing ?? new PayrollProfile;
@@ -149,17 +163,27 @@ class PayrollProfileSeeder extends Seeder
                         'account_status' => $row['account_status'],
                         'note' => $row['note'],
                     ]);
-                    // 账号：只做「同名唯一」的自动绑定；对不上就留空（不猜）
-                    if ($profile->user_id === null) {
-                        $hits = User::where('name', $row['name'])->limit(2)->pluck('id');
-                        if ($hits->count() === 1) {
-                            $profile->user_id = (int) $hits->first();
-                        }
+                    // 账号绑定：取循环外算好的计划（同一处实现的规则）。
+                    // 已有绑定的行计划值 = 现值 ⇒ 不改绑、不解绑（重复跑幂等）。
+                    $decision = $plan[$row['external_id']] ?? ['userId' => null, 'reason' => null];
+                    $profile->user_id = $decision['userId'];
+                    $profile->note = PayrollController::composeNote((string) $row['note'], $decision['reason']);
+                    PayrollController::saveProfileGuardingUserId($profile, (string) $row['note']);
+                    if ($decision['userId'] === null && $decision['reason'] !== null) {
+                        $unbound[] = "{$row['name']}（{$row['venue']}）：{$decision['reason']}";
                     }
-                    $profile->save();
                     $externalToProfile[$row['external_id']] = $profile->id;
                 }
             });
+
+            // 未绑定不是静默事件：主档里同一姓名有多行时，只有一行能拿到账号，
+            // 其余行必须把原因打出来（页面/日志都要能看到）
+            foreach ($unbound as $line) {
+                $this->command?->warn('账号未绑定：'.$line);
+            }
+            if ($unbound !== []) {
+                $this->command?->info('账号绑定：'.count($rows).' 行中 '.count($unbound).' 行未绑定（原因见上）');
+            }
 
             // 别名：主档「姓名别名」sheet（103 条）。**必须在档案建好之后导入**，
             // 否则业绩导入时 9 个销售员列名全部解析不出来、直接归零。
@@ -217,6 +241,58 @@ class PayrollProfileSeeder extends Seeder
         } finally {
             $reader->close();
         }
+    }
+
+    /**
+     * 为整批主档行算出「人员编号 => 绑定结果」。
+     *
+     * 规则**不在本文件里重写**：`PayrollController::accountsByNames()` 取同名账号，
+     * `PayrollController::distributeUserAccounts()` 做分配（含「同名多个账号不猜」
+     * 「一个账号只能绑一行」「同店那行优先」「已被别行占用则不抢」四条）。
+     *
+     * @param  array<int, array{external_id: string, name: string, venue: string}>  $rows
+     * @return array<string, array{userId: ?int, reason: ?string}> 人员编号 => 绑定结果
+     */
+    private function planBindings(array $rows): array
+    {
+        // 已有档案的 id 与现绑定值要带进计划：规则 1「已绑定的行原样保留」靠它，
+        // 也是「重复执行 seeder 幂等」的根。
+        $existing = [];
+        foreach (PayrollProfile::whereNotNull('external_id')
+            ->get(['id', 'external_id', 'user_id']) as $p) {
+            $existing[(string) $p->external_id] = $p;
+        }
+
+        $byName = [];
+        $rowByExternalId = [];
+        foreach ($rows as $row) {
+            $externalId = (string) $row['external_id'];
+            $rowByExternalId[$externalId] = $row;
+            $byName[$row['name']][] = $externalId;
+        }
+        if ($byName === []) {
+            return [];
+        }
+        $accounts = PayrollController::accountsByNames(array_keys($byName));
+
+        $plan = [];
+        foreach ($byName as $name => $externalIds) {
+            $group = [];
+            foreach ($externalIds as $externalId) {
+                $row = $rowByExternalId[$externalId] ?? null;
+                $p = $existing[$externalId] ?? null;
+                $group[$externalId] = [
+                    'venue' => (string) ($row['venue'] ?? ''),
+                    'currentUserId' => ($p === null || $p->user_id === null) ? null : (int) $p->user_id,
+                    'profileId' => $p === null ? null : (int) $p->id,
+                ];
+            }
+            foreach (PayrollController::distributeUserAccounts((string) $name, $group, $accounts[$name] ?? []) as $externalId => $decision) {
+                $plan[(string) $externalId] = $decision;
+            }
+        }
+
+        return $plan;
     }
 
     /** 读「人员主档」sheet（表头第 1 行，15 列） */

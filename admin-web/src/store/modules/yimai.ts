@@ -38,6 +38,12 @@ export interface YimaiLead {
   trialTeacher?: string
   dealCard: string
   dealAmount: number | null
+  /**
+   * 成交时间。后端按 **UTC ISO** 序列化（如 `2026-08-27T18:46:34.000000Z`），
+   * 而库内存的是上海墙上时间（`2026-08-28 02:46:34`）—— 取字符串前 10 位会差一天，
+   * 展示/算天数前必须先换算到上海民用日（见 leads/index.vue 的 shanghaiCivilDate）。
+   */
+  dealAt?: string | null
   /** 团单核销金额（多节体验课自动汇总） */
   redeemAmount: number | null
   voucherCode?: string
@@ -662,6 +668,7 @@ const LEAD_LABELS: Record<string, string> = {
   trialTeacher: '授课老师',
   dealCard: '成交卡项',
   dealAmount: '成交金额',
+  dealAt: '成交时间',
   redeemAmount: '核销金额',
   phone: '手机号',
   voucherCode: '平台券码',

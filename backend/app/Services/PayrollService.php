@@ -29,6 +29,13 @@ use Illuminate\Support\Facades\DB;
  * 3. **课时按「课次」不按「预约行」**：`ky_bookings` 一行 = 一条会员预约，
  *    一节课 N 个会员 = N 行。直接 `count(*)` 会把课时放大 1.5~1.9 倍，
  *    连带把底薪奖励的 80/100/110/120 档位判错。
+ * 4. **课时费必须双源核验**：`ky_bookings` 只是**预约记录**一侧（由
+ *    `course/api/queryreversionleague` / `queryreversionprivate` 灌入）。
+ *    随心瑜官方的「课时记录」是另一套口径（`course/api/getcoursesummaryrecordstat`），
+ *    两者在「整节课无人预约」「私教按人排课」等情形下必然分叉 —— 实测一个月
+ *    东部店课时记录 413 节 vs 预约记录 344 课次，单靠预约记录会**漏 69 节**。
+ *    因此 {@see self::hours()} 两源**并列下发**并显式给出差额与谁多谁少，
+ *    绝不静默取其一。取数见 {@see KyCourseRecordService}（含两个上游参数陷阱）。
  */
 class PayrollService
 {
@@ -37,6 +44,25 @@ class PayrollService
 
     /** 全部课型（展示用；企业课/总监私教/短期集训类当前无数据源，恒 0） */
     private const ALL_KINDS = ['private60', 'private45', 'small', 'group', 'enterprise'];
+
+    /**
+     * 预约记录已计课次、但**课时记录里该节次没出现**时，是否仍计入课时费。
+     *
+     * 口径决策（写在常量里而不是散在代码中，便于审计）：
+     * **保持计价口径不变为「预约记录＝唯一计价源」**。依据是随心瑜官方的课时记录口径原文
+     * （《随心瑜后台完整解读》notes.md:368-373）：「**私教有预约才计**」—— 课时记录的
+     * 存在本身以预约成立为前提，因此「课时记录有、预约记录无」时**不能**据此发钱；
+     * 反向「预约记录有、课时记录无」才是漏课时的信号，由图中的差异显式暴露给人核对。
+     *
+     * 注意这条常量**不是**性能开关或临时兼容：改它会直接改变课时费金额。
+     */
+    private const COUNT_BOOKING_ONLY_SESSIONS = true;
+
+    public function __construct(
+        private ?KyCourseRecordService $courseRecords = null,
+    ) {
+        $this->courseRecords ??= new KyCourseRecordService;
+    }
 
     /**
      * 老师课时统计（`GET /payroll/hours`）。
@@ -53,13 +79,29 @@ class PayrollService
         // "wrong number of arguments to function count()"），所以用 group by 子查询。
         $classes = $this->classRows($start, $end, $venue);
 
+        // 另一侧来源：随心瑜「课时记录」（`course/api/getcoursesummaryrecordstat`）。
+        // 取数失败**不阻断**本出口 —— 预约记录那一侧仍然可用，但必须在 sources 里
+        // 显式标成不可用并给出原因，绝不能因为「拿不到第二源」就把双源悄悄降级成单源。
+        $courseSource = $this->courseRecordSource($start, $end, $venue);
+        $courseByTeacher = $courseSource['available'] ? $courseSource['byTeacher'] : [];
+
         $rowsByTeacher = [];   // teacher_name => ['kinds'=>[...], 'classes'=>n, 'rows'=>n, 'sources'=>[...]]
         $unresolvedNames = [];
+        // 预约记录侧按**上课门店**（`ky_bookings.venue`）的分店小计。
+        // 不能用档案所属门店来分组：跨店授课的老师（档案在绿地店、课在东部店）
+        // 会被整块算到绿地店，两店数字就都对不上了。
+        $bookingByVenue = [];
+        $bookingTeachersByVenue = [];
 
         foreach ($classes as $c) {
             $name = trim((string) $c->teacher_name);
             if ($name === '') {
                 continue;
+            }
+            $bookingVenue = trim((string) $c->venue);
+            if ($bookingVenue !== '') {
+                $bookingByVenue[$bookingVenue] = ($bookingByVenue[$bookingVenue] ?? 0) + 1;
+                $bookingTeachersByVenue[$bookingVenue][$name] = true;
             }
             $kind = $this->normalizeKind($c->course_kind);
             // 时长**只对私教**解析：引擎里只有「定制私教60分钟/45分钟」分两档
@@ -83,6 +125,9 @@ class PayrollService
                 'durationSources' => [],
                 'assumed60' => 0,
                 'sampleCourses' => [],
+                'courseRecordSessions' => 0,
+                'courseRecordKinds' => [],
+                'courseRecordSeen' => false,
             ];
             $rowsByTeacher[$name]['kinds'][$bucket] = ($rowsByTeacher[$name]['kinds'][$bucket] ?? 0) + 1;
             $rowsByTeacher[$name]['rows'] += (int) $c->row_count;
@@ -98,6 +143,39 @@ class PayrollService
             if ($cn !== '' && count($rowsByTeacher[$name]['sampleCourses']) < 6) {
                 $rowsByTeacher[$name]['sampleCourses'][$cn] = true;
             }
+        }
+
+        // ---- 第二源并轨：把课时记录的节数挂到同一批人身上 ----
+        //
+        // 只按**姓名**对齐，走同一个解析入口（别名在这里不加倍 —— `byProfile` 已按 profile
+        // 合并过 sourceNames，这里按每个 sourceName 累加即可）：
+        // 课时记录的 `coach_name` 与预约记录的 `teacher_name` 来自同一个上游人员池，
+        // 实测两源老师集合完全一致。对不上档案的名字在两侧都单列，不静默丢弃。
+        // 用「课时记录里有、但预约记录里没有行」的名字也建 `classCount = 0` 的行 ——
+        // 这类人正是「整节课无人预约」的样本，必须能出现在界面上被看见。
+        $courseOnlyNames = [];
+        foreach ($courseByTeacher as $crName => $agg) {
+            $crName = trim((string) $crName);
+            if ($crName === '') {
+                continue;
+            }
+            if (! isset($rowsByTeacher[$crName])) {
+                $rowsByTeacher[$crName] = [
+                    'kinds' => array_fill_keys(self::ALL_KINDS, 0),
+                    'rows' => 0,
+                    'classCount' => 0,
+                    'durationSources' => [],
+                    'assumed60' => 0,
+                    'sampleCourses' => [],
+                    'courseRecordSessions' => 0,
+                    'courseRecordKinds' => [],
+                    'courseRecordSeen' => false,
+                ];
+                $courseOnlyNames[$crName] = true;
+            }
+            $rowsByTeacher[$crName]['courseRecordSessions'] = (int) $agg['sessions'];
+            $rowsByTeacher[$crName]['courseRecordKinds'] = $agg['kinds'] ?? [];
+            $rowsByTeacher[$crName]['courseRecordSeen'] = true;
         }
 
         // 姓名 → 薪酬档案（走唯一解析入口，含 4 个别名来源）
@@ -117,6 +195,9 @@ class PayrollService
                     'durationSources' => $agg['durationSources'],
                     'assumed60' => $agg['assumed60'],
                     'sampleCourses' => array_keys($agg['sampleCourses']),
+                    'courseRecordSessions' => $agg['courseRecordSessions'],
+                    'courseRecordKinds' => $agg['courseRecordKinds'],
+                    'courseRecordSeen' => $agg['courseRecordSeen'],
                 ];
                 continue;
             }
@@ -131,6 +212,9 @@ class PayrollService
                     'durationSources' => [],
                     'assumed60' => 0,
                     'sampleCourses' => [],
+                    'courseRecordSessions' => 0,
+                    'courseRecordKinds' => [],
+                    'courseRecordSeen' => false,
                 ];
             }
             $byProfile[$key]['names'][] = $name;
@@ -143,6 +227,11 @@ class PayrollService
                 $byProfile[$key]['durationSources'][$src] = ($byProfile[$key]['durationSources'][$src] ?? 0) + $n;
             }
             $byProfile[$key]['assumed60'] += $agg['assumed60'];
+            $byProfile[$key]['courseRecordSessions'] += $agg['courseRecordSessions'];
+            foreach (($agg['courseRecordKinds'] ?? []) as $k => $n) {
+                $byProfile[$key]['courseRecordKinds'][$k] = ($byProfile[$key]['courseRecordKinds'][$k] ?? 0) + (int) $n;
+            }
+            $byProfile[$key]['courseRecordSeen'] = $byProfile[$key]['courseRecordSeen'] || $agg['courseRecordSeen'];
             // 注意要取 array_keys：`$agg['sampleCourses']` 是「课程名 => true」的**集合**，
             // 直接 merge 会把 true 当值合并进去，输出成 `[true]`（本机实测踩过）
             $byProfile[$key]['sampleCourses'] = array_values(array_unique(
@@ -154,6 +243,7 @@ class PayrollService
         $accumulated = $this->accumulatedValidHours($start, $end);
 
         $rows = [];
+        $excludedNotOpened = [];   // 显式排除：课时记录有、预约记录 0 行 ⇒ 判定为「未开课 / 不计课时」
         foreach ($byProfile as $item) {
             /** @var PayrollProfile|null $p */
             $p = $item['profile'];
@@ -166,6 +256,32 @@ class PayrollService
             $primarySource = $this->primaryDurationSource($item['durationSources']);
             $accKey = $p ? (string) $p->id : null;
             $acc = $accKey !== null ? ($accumulated[$accKey] ?? null) : null;
+
+            // ---- 「预约数为 0 = 未开课 = 不计课时」的**显式**分支 ----
+            //
+            // 背景：`ky_bookings` 里「整节课无人预约」的课**根本没有行**，所以
+            // 现行实现只是**碰巧**没有行可数（靠 `status='signed'` 间接成立），
+            // 代码里没有任何一句话表达「这节不算」。本项把它变成可证的分支：
+            // 只要课时记录报了节数、而预约记录一行都没有，就**显式**判定为
+            // 「未开课（无签到预约）→ 不计课时费」，并进入 bySource.excluded 清单。
+            //
+            // 这是**有意的**：随心瑜官方课时记录口径写明「**私教有预约才计**」
+            // （notes.md:368-373），即课时记录本身以预约成立为前提；反之，
+            // 「有课时记录、无预约记录」说明这节没有真实签到，按课时发钱就是多发工资。
+            // 差额仍会由 bySource.diff 如实暴露给人核对，**不是**静默丢弃。
+            $courseRecordSessions = (int) $item['courseRecordSessions'];
+            if ($courseRecordSessions > 0 && $item['classCount'] === 0) {
+                $excludedNotOpened[] = [
+                    'userId' => $p?->user_id,
+                    'profileId' => $p?->id,
+                    'name' => $p?->name ?? ($item['names'][0] ?? ''),
+                    'venue' => $p?->venue ?? '',
+                    'courseRecordSessions' => $courseRecordSessions,
+                    'bookingSessions' => 0,
+                    'reason' => '课时记录有 '.$courseRecordSessions.' 节，但预约记录 0 行（整节课无人预约）'
+                        .' ⇒ 判定未开课，不计入课时费（随心瑜口径：私教有预约才计）',
+                ];
+            }
 
             $rows[] = [
                 'userId' => $p?->user_id,
@@ -193,6 +309,17 @@ class PayrollService
                 'baseReward' => PayrollMoney::toFloat(
                     PayrollMoney::cents(PayrollRoles::baseRewardFor($acc ?? $valid))
                 ),
+                // ---- 双源核验字段（预约记录侧 / 课时记录侧 / 差额）----
+                'bookingSessions' => $item['classCount'],
+                'courseRecordSessions' => $courseRecordSessions,
+                'courseRecordKinds' => $item['courseRecordKinds'],
+                'courseRecordSeen' => (bool) $item['courseRecordSeen'],
+                'sourceDiff' => $courseRecordSessions - $item['classCount'],
+                // 谁多：course(课时记录多) / booking(预约记录多) / equal / unknown(第二源不可用)
+                'sourceLeader' => $courseRecordSessions === $item['classCount']
+                    ? 'equal'
+                    : ($courseRecordSessions > $item['classCount'] ? 'course' : 'booking'),
+                'matchesCourseRecord' => $courseRecordSessions === $item['classCount'],
             ];
         }
 
@@ -234,10 +361,45 @@ class PayrollService
             ];
         }
 
+        // ---- 双源汇总：整店/整月的两源节数与差额（并列下发，不静默取其一）----
+        $sources = $this->twoSourceSummary($rows, $courseSource, $excludedNotOpened, $bookingByVenue, $bookingTeachersByVenue);
+
+        if (! $sources['courseRecord']['available']) {
+            $warnings[] = [
+                'code' => 'COURSE_RECORD_UNAVAILABLE',
+                'message' => '随心瑜「课时记录」（course/api/getcoursesummaryrecordstat）本次取数失败，'
+                    .'课时费暂时**只有预约记录一侧**可核验，差额无法计算。原因：'
+                    .($sources['courseRecord']['error'] ?? '未知')
+                    .'。请检查随心瑜凭据与网络后重试；在此之前不要据此认定课时费无误。',
+            ];
+        } elseif ($sources['diff']['sessions'] !== 0) {
+            $warnings[] = [
+                'code' => 'HOURS_SOURCE_DIFF',
+                'count' => $sources['diff']['sessions'],
+                'message' => "两源课时差额：课时记录 {$sources['courseRecord']['sessions']} 节"
+                    ." vs 预约记录 {$sources['bookingRecord']['sessions']} 课次，差 "
+                    .$sources['diff']['sessions'].' 节（'
+                    .$sources['diff']['label'].'）。差额集中在私教课时；'
+                    .'课时费口径以预约记录（已签到）为准，课时记录用于核验与暴露漏记。',
+                'names' => array_column($sources['diff']['teachers'], 'name'),
+                'diffTeachers' => $sources['diff']['teachers'],
+            ];
+        }
+        if ($excludedNotOpened !== []) {
+            $warnings[] = [
+                'code' => 'HOURS_EXCLUDED_NOT_OPENED',
+                'count' => count($excludedNotOpened),
+                'message' => '这些老师本月在随心瑜有课时记录，但预约记录 0 行（整节课无人预约），'
+                    .'已按「未开课」**显式排除**、不计入课时费',
+                'names' => array_column($excludedNotOpened, 'name'),
+            ];
+        }
+
         return [
             'month' => $month,
             'venue' => $venue,
             'rows' => $rows,
+            'bySource' => $sources,
             'warnings' => $warnings,
             'meta' => [
                 // 口径透明：让用户能自己核对「行数 vs 课次」
@@ -248,6 +410,226 @@ class PayrollService
                 'statusFilter' => 'signed',
                 'trialExcluded' => true,
                 'durationPriority' => ['name_regex', 'raw_end_time', 'manual', 'assumed_60'],
+                // 双源核验的口径与来源，一并回显（前端据此渲染说明，不写第二份口径）
+                'sources' => [
+                    'bookingRecord' => [
+                        'label' => '预约记录课次',
+                        'table' => 'ky_bookings',
+                        'endpoints' => ['course/api/queryreversionleague', 'course/api/queryreversionprivate'],
+                        'rule' => "status='signed' 且排除体验课，按 (venue, teacher_name, start_at, course_kind) 去重到课次",
+                    ],
+                    'courseRecord' => [
+                        'label' => '课时记录节数',
+                        'endpoint' => KyCourseRecordService::PATH,
+                        'request' => $courseSource['request'],
+                        'rule' => '按老师汇总上课次数；参数必须齐传 start/end/page_index/page_size —— 漏传日期会静默返回全量历史',
+                    ],
+                    'pricingSource' => 'bookingRecord',
+                    'pricingSourceReason' => self::COUNT_BOOKING_ONLY_SESSIONS
+                        ? '课时费按预约记录（已签到课次）计价：随心瑜口径写明「私教有预约才计」，'
+                            .'「有课时记录、无预约记录」说明该节没有真实签到，据此发钱会多发工资。'
+                            .'课时记录用于核验与暴露漏记，差额在 bySource 与 warnings 里显式可见。'
+                        : '课时费按课时记录计价',
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * 课时记录源取数（包装 {@see KyCourseRecordService}，把异常转成「显式不可用」）。
+     *
+     * **失败不抛**：本出口的第一源（预约记录）仍然可用，抛异常会让整个课时页 500 ——
+     * 那等于用「第二源拿不到」把「第一源本来能看的数据」也一起弄没了。
+     * 失败时返回 `available=false` + `error`，由调用方进 warnings 与 bySource 显式暴露。
+     *
+     * @return array{available:bool,error:?string,request:array,sessions:int,byTeacher:array,venues:array}
+     */
+    private function courseRecordSource(Carbon $start, Carbon $end, ?string $venue): array
+    {
+        $stores = kyStores();
+        if ($venue !== null && $venue !== '') {
+            $stores = array_intersect_key($stores, [$venue => true]);
+        }
+
+        // 未配置凭据时不发请求（配置缺失是**本地/CI 常态**，不是错误）：
+        // 返回显式不可用，绝不让它变成一次真实的空网络调用。
+        if (! KyClient::configured()) {
+            return [
+                'available' => false,
+                'error' => '随心瑜凭据未配置（KY_PHONE / KY_PASSWORD），课时记录源不可用',
+                'request' => [],
+                'sessions' => 0,
+                'byTeacher' => [],
+                'venues' => [],
+            ];
+        }
+
+        try {
+            $data = $this->courseRecords->fetch($stores, $start, $end);
+        } catch (\Throwable $e) {
+            return [
+                'available' => false,
+                'error' => $e->getMessage(),
+                'request' => [],
+                'sessions' => 0,
+                'byTeacher' => [],
+                'venues' => [],
+            ];
+        }
+
+        return [
+            'available' => (bool) $data['available'],
+            'error' => $data['error'],
+            'request' => $data['request'],
+            'sessions' => array_sum(array_column($data['rows'], 'count')),
+            'byTeacher' => $data['byTeacher'],
+            'venues' => $data['venues'],
+        ];
+    }
+
+    /**
+     * 双源汇总（课时记录 vs 预约记录）。
+     *
+     * 差额恒等式：`diff.sessions === courseRecord.sessions - bookingRecord.sessions`；
+     * 逐人差额 `diff.teachers[].diff` 同样恒等于该人两源之差。
+     *
+     * 对不上的名字两侧都单列（`unmatched`），**不静默丢弃**：课时记录里出现、
+     * 预约记录里没有的老师，正是「整节课无人预约」的样本。
+     *
+     * @param  array<int,array>  $rows
+     * @param  array<string,mixed>  $courseSource
+     * @param  array<int,array>  $excluded
+     * @param  array<string,int>  $byVenueBooking  预约记录按**上课门店**的课次小计
+     * @param  array<string,array<string,bool>>  $bookingTeachersByVenue
+     * @return array<string,mixed>
+     */
+    private function twoSourceSummary(
+        array $rows,
+        array $courseSource,
+        array $excluded,
+        array $byVenueBooking = [],
+        array $bookingTeachersByVenue = [],
+    ): array {
+        $available = (bool) $courseSource['available'];
+
+        // 预约记录侧统计：人数用 teacher_name 全量（含 classCount=0 的第二源-only 老师不算）
+        $bookingSessions = 0;
+        $bookingTeachers = [];
+        $teachers = [];
+        $venueDiffBase = [];
+        foreach ($rows as $r) {
+            $bookingSessions += (int) $r['classCount'];
+            if ($r['classCount'] > 0) {
+                $bookingTeachers[$r['name']] = true;
+            }
+            $venueDiffBase[(string) ($r['venue'] ?? '')] = ($venueDiffBase[(string) ($r['venue'] ?? '')] ?? 0) + (int) $r['classCount'];
+
+            $crs = (int) $r['courseRecordSessions'];
+            if ($r['classCount'] === 0 && $crs === 0) {
+                continue;
+            }
+            $diff = $crs - (int) $r['classCount'];
+            $teachers[] = [
+                'userId' => $r['userId'],
+                'profileId' => $r['profileId'],
+                'name' => $r['name'],
+                'venue' => (string) ($r['venue'] ?? ''),
+                'courseRecordSessions' => $crs,
+                'bookingSessions' => (int) $r['classCount'],
+                'diff' => $diff,
+                'leader' => $diff === 0 ? 'equal' : ($diff > 0 ? 'course' : 'booking'),
+                'courseRecordSeen' => (bool) $r['courseRecordSeen'],
+            ];
+        }
+
+        // 差额榜：按绝对差额降序，让「谁多、谁少、差几节」一眼可见
+        $diffTeachers = array_values(array_filter($teachers, fn ($t) => $t['diff'] !== 0));
+        usort($diffTeachers, fn ($a, $b) => [abs($b['diff']), $b['diff']] <=> [abs($a['diff']), $a['diff']]);
+
+        $courseSessions = (int) ($courseSource['sessions'] ?? 0);
+        $courseTeachers = $courseSource['byTeacher'] ?? [];
+        $diff = $courseSessions - $bookingSessions;
+
+        // ---- 分店两源对照（验收基数：绿地店 420/401、东部店 413/344）----
+        // 两侧都按**上课门店**分组：课时记录侧用请求时的 venue 归属，
+        // 预约记录侧用 ky_bookings.venue（由调用方回填）。
+        $venueNames = array_values(array_unique(array_merge(
+            array_keys($byVenueBooking),
+            array_keys($courseSource['venues'] ?? [])
+        )));
+        $byVenue = [];
+        foreach ($venueNames as $v) {
+            $cr = (int) ($courseSource['venues'][$v]['sessions'] ?? 0);
+            $bk = (int) ($byVenueBooking[$v] ?? 0);
+            // 该店的逐人课时记录节数（`teacherSessions` 是名字 => 节数；
+            // `teachers` 是**人数**，不要拿它来遍历）
+            $venueTeacherDiff = [];
+            foreach ($courseSource['venues'][$v]['teacherSessions'] ?? [] as $name => $n) {
+                $venueTeacherDiff[(string) $name] = (int) $n;
+            }
+            $byVenue[$v] = [
+                'courseRecordSessions' => $cr,
+                'bookingSessions' => $bk,
+                'diff' => $cr - $bk,
+                'leader' => $cr === $bk ? 'equal' : ($cr > $bk ? 'course' : 'booking'),
+                'courseRecordTeachers' => (int) ($courseSource['venues'][$v]['teachers'] ?? 0),
+                // 注意要 count：`$bookingTeachersByVenue[$v]` 是「名字 => true」的集合，
+                // 直接 cast int 会恒等于 1（本机实测踩过）
+                'bookingTeachers' => count($bookingTeachersByVenue[$v] ?? []),
+                'teacherCourseRecord' => $venueTeacherDiff,
+            ];
+        }
+
+        return [
+            'bookingRecord' => [
+                'available' => true,
+                'label' => '预约记录课次',
+                'source' => 'ky_bookings（queryreversionleague + queryreversionprivate）',
+                'sessions' => $bookingSessions,
+                'teachers' => count($bookingTeachers),
+                'byVenue' => $byVenueBooking,
+                // 计价口径：课时费按这一侧计算（理由见 meta.sources.pricingSourceReason）
+                'isPricingSource' => true,
+            ],
+            'courseRecord' => [
+                'available' => $available,
+                'label' => '课时记录节数',
+                'source' => KyCourseRecordService::PATH,
+                'sessions' => $courseSessions,
+                'teachers' => count($courseTeachers),
+                'byVenue' => array_map(fn ($v) => (int) ($v['sessions'] ?? 0), $courseSource['venues'] ?? []),
+                'perVenue' => $courseSource['venues'] ?? [],
+                'error' => $courseSource['error'] ?? null,
+                'isPricingSource' => false,
+            ],
+            'diff' => [
+                // 恒等式：sessions === courseRecord.sessions - bookingRecord.sessions
+                'sessions' => $diff,
+                'teachers' => $diffTeachers,
+                'teacherCount' => count($diffTeachers),
+                'byVenue' => $byVenue,
+                'label' => $diff > 0
+                    ? "课时记录多 {$diff} 节（预约记录漏记）"
+                    : ($diff < 0 ? '预约记录多 '.abs($diff).' 课次' : '两源一致'),
+                // 方向说明：实测方向单一（课时记录恒 ≥ 预约记录），机理是
+                // 预约记录按「(课程,时间,班级)」去重成课次，而课时记录是该 (老师,课程) 的
+                // 上课次数；「整节课无人预约」与「私教按人排课」两种情形下必然分叉。
+                'directionNote' => '课时记录 ≥ 预约记录：预约记录只统计有会员预约并签到的课次，'
+                    .'整节课无人预约时预约表没有任何行；课时记录按老师上课次数统计，'
+                    .'两者在私教按人排课、整节无人预约时必然分叉。',
+            ],
+            'excluded' => [
+                'notOpened' => array_values($excluded),
+                'notOpenedCount' => count($excluded),
+                'rule' => '预约数为 0 = 未开课 = 不计课时：课时记录有节数但预约记录 0 行的，'
+                    .'显式判定为未开课、不计入课时费（随心瑜口径「私教有预约才计」）',
+            ],
+            'unmatched' => [
+                // 两侧对不上的名字（未命中薪酬档案）：分侧单列，提示去补别名/建档
+                'courseRecordOnly' => array_values(array_map(
+                    fn ($r) => $r['name'],
+                    array_filter($teachers, fn ($t) => $t['courseRecordSeen'] && $t['bookingSessions'] === 0)
+                )),
             ],
         ];
     }

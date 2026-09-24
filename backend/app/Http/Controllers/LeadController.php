@@ -54,7 +54,41 @@ class LeadController extends Controller
         return $values;
     }
 
-    private array $leadFields = ['lead_date', 'name', 'phone', 'wechat', 'demand', 'source', 'order_platform', 'venue', 'service_teacher', 'status', 'grade', 'trial_time', 'trial_topic', 'trial_teacher', 'deal_card', 'deal_amount', 'redeem_amount', 'voucher_code', 'coupon_name', 'coupon_total', 'coupon_remaining', 'trial_cards', 'remark'];
+    /**
+     * 可写字段白名单：写入走 `array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields))`，
+     * 不在这里登记的字段会被**静默丢弃**。加字段必须同时来这儿补一行。
+     *
+     * `deal_at`（成交时间）此前只存在于「状态变已成交时自动写 now()」这一条路径上，
+     * 用户手动填的成交时间因为不在白名单里被整列丢掉 —— 补录历史成交日期永远存不进去。
+     */
+    private array $leadFields = ['lead_date', 'name', 'phone', 'wechat', 'demand', 'source', 'order_platform', 'venue', 'service_teacher', 'status', 'grade', 'trial_time', 'trial_topic', 'trial_teacher', 'deal_card', 'deal_amount', 'deal_at', 'redeem_amount', 'voucher_code', 'coupon_name', 'coupon_total', 'coupon_remaining', 'trial_cards', 'remark'];
+
+    /**
+     * 成交时间该不该自动补 now()。只有两条主张，但第 2 条判定写错就会出事：
+     *
+     *  1. 请求里带了**非空**成交时间 ⇒ 一律以用户值为准，绝不被 now() 覆盖
+     *     （用户补录 8 月的成交，不能被改写成今天）；
+     *  2. 请求里没带 / 带了空值，且状态为「已成交」⇒ 仍自动写 now()，这是**既有行为不得回归**。
+     *     前端提交的是整个表单，成交时间这个键**恒存在**（未填时为 null），所以判定只能看
+     *     「有没有非空值」，不能看「键在不在」—— 看键会把既有兜底整个关掉。
+     *
+     * 「用户显式清空」（键在且为 null）**不需要单独处理**：末行只在本行原来为空时才补，
+     * 原来有值一律不补，清空照样生效。这里曾经多写过一个「键在且为 null 且原来有值就 return false」
+     * 的分支，实测是**死代码**（删掉它 15 个用例全绿），已移除。
+     *
+     * 与既有 `redeem` 兜底一致：只在「原来为空」时补，已有值不动。
+     */
+    private function shouldAutoFillDealAt(array $values, ?string $existingDealAt): bool
+    {
+        if (($values['status'] ?? null) !== '已成交') {
+            return false;
+        }
+        if (trim((string) ($values['deal_at'] ?? '')) !== '') {
+            return false; // 主张 1：用户值优先
+        }
+
+        return $existingDealAt === null; // 主张 2：只在原来为空时补
+    }
 
     /** GET /leads */
     public function index(Request $r)
@@ -134,6 +168,7 @@ class LeadController extends Controller
         $d = $r->validate([
             'name' => 'required|string', 'source' => 'required|string', 'venue' => 'required|string',
             'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0|decimal:0,2', 'redeemAmount' => 'nullable|numeric|min:0|decimal:0,2',
+            'dealAt' => 'nullable|date',
         ]);
         $values = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields)) + ['created_by' => $r->user()->name];
         $values = $this->withStaffIds($values);
@@ -143,7 +178,8 @@ class LeadController extends Controller
         $values = normalizeEmptyValues('leads', $values, except: ['status']);
         $values['status'] = $values['status'] ?? '新留资';
         $values['lead_date'] = $values['lead_date'] ?? now()->toDateString();
-        if ($values['status'] === '已成交') {
+        // 成交时间：用户填了就以用户值为准（补录历史成交日期），没填且状态为「已成交」才自动补 now()
+        if ($this->shouldAutoFillDealAt($values, null)) {
             $values['deal_at'] = now();
         }
         if ((float) ($values['redeem_amount'] ?? 0) > 0) {
@@ -163,6 +199,7 @@ class LeadController extends Controller
         $before = json_encode(camel($lead), JSON_UNESCAPED_UNICODE);
         $r->validate([
             'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0', 'redeemAmount' => 'nullable|numeric|min:0',
+            'dealAt' => 'nullable|date',
         ]);
         $changes = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields));
         $changes = $this->withStaffIds($changes);
@@ -171,7 +208,9 @@ class LeadController extends Controller
         // 注意别再写"$changes[$f] ?? '' 就置 null"那种兜底 —— 那会把用户没碰过的字段一起清掉
         // （老师只改备注也会把成交金额抹成 null）。lead_date 是非空日期列，由列定义兜住（清不掉）。
         $changes = normalizeEmptyValues('leads', $changes, except: ['venue', 'source', 'status', 'name']);
-        if (($changes['status'] ?? null) === '已成交' && ! $lead->deal_at) {
+        // 成交时间：用户显式传了就以用户值为准（不得被 now() 覆盖）、显式清空就尊重清空，
+        // 都没做且状态转「已成交」时才自动补 now()（既有行为）。
+        if ($this->shouldAutoFillDealAt($changes, $lead->deal_at?->toDateTimeString())) {
             $changes['deal_at'] = now();
         }
         if ((float) ($changes['redeem_amount'] ?? 0) > 0 && ! $lead->redeemed_at) {

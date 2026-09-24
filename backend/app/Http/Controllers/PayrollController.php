@@ -12,6 +12,7 @@ use App\Support\PayrollRoles;
 use App\Services\PayrollNameResolver;
 use App\Services\PayrollPerformanceImportService;
 use App\Services\PayrollService;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -279,21 +280,31 @@ class PayrollController extends Controller
             $this->fail(422, 'ROLE_NOT_ALLOWED', "身份标签「{$role}」不在枚举内");
         }
 
-        $profile = DB::transaction(function () use ($name, $venue, $role, $data) {
+        $binding = ['userId' => null, 'reason' => null];
+        $profile = DB::transaction(function () use ($name, $venue, $role, $data, &$binding) {
             $p = new PayrollProfile;
             $p->name = $name;
             $p->venue = $venue;
             // 身份标签未选时不写默认值，留空串；空串在计算侧由 pending_review 拦下
             $p->role = $role;
             $p->status = $data['status'] ?? '有效';
-            $p->note = $data['note'] ?? '';
             $p->pending_review = true;
-            // 账号：只做「同名唯一」自动绑定，对不上留空（不猜）
-            $hits = User::where('name', $name)->limit(2)->pluck('id');
-            if ($hits->count() === 1) {
-                $p->user_id = (int) $hits->first();
-            }
-            $p->save();
+
+            // 账号绑定：与预填（prefillProfiles）、人员主档导入（PayrollProfileSeeder）
+            // **同一处实现**（见各自注释）。此前这里是「同名唯一就写 user_id」的复制品，
+            // 给跨店老师手建第二条门店行时会踩 user_id 唯一约束 ⇒ 500。
+            $baseNote = (string) ($data['note'] ?? '');
+            $accounts = self::accountsByNames([$name]);
+            $decision = self::distributeUserAccounts(
+                $name,
+                ['row' => ['venue' => $venue, 'currentUserId' => null, 'profileId' => null]],
+                $accounts[$name] ?? []
+            )['row'];
+            $binding = $decision;
+
+            $p->user_id = $decision['userId'];
+            $p->note = self::composeNote($baseNote, $decision['reason']);
+            self::saveProfileGuardingUserId($p, $baseNote);
 
             if (! empty($data['aliases'])) {
                 $this->syncAliases($p, (array) $data['aliases']);
@@ -305,7 +316,7 @@ class PayrollController extends Controller
         $after = $profile->fresh()->toApiArray();
         audit($r, '新增薪酬档案', '薪酬计算', $profile->id, $profile->name, $profile->venue, '新增建档（待完善）');
 
-        return ok(['profile' => $after]);
+        return ok(['profile' => $after, 'binding' => $binding]);
     }
 
     /**
@@ -434,6 +445,28 @@ class PayrollController extends Controller
                 ];
                 continue;
             }
+
+            // 🔴 解析器 null 有**两种**含义，必须分开处理，否则跨店老师会「越跑越多」：
+            //
+            //  a) 系统里根本没这个人 ⇒ 该建；
+            //  b) **该姓名已经建了两行**（跨店老师两店各一行是设计意图）⇒
+            //     `PayrollNameResolver::warm()` 判「一个名字对多个档案」= 歧义 ⇒
+            //     `resolve()` 恒返回 null。这正是本功能自己造出来的状态，
+            //     若当成 (a) 就会在第二次预填时又建两条同姓名档案、如此往复。
+            //
+            // 判据用 **(姓名, 门店)**（与 `storeProfile` 的「同名同店拒绝」同一把尺）：
+            // 该键已存在 ⇒ 这一条本来就建好了，跳过并说明。它**不会**新增同姓名档案，
+            // 因此不会削弱上面那条「别名不得再建一条」的保护（那条由解析器先拦）。
+            $sameKey = PayrollProfile::where('name', $c['name'])->where('venue', $c['venue'])->first(['id', 'user_id']);
+            if ($sameKey !== null) {
+                $skipped[] = [
+                    'name' => $c['name'],
+                    'venue' => $c['venue'],
+                    'reason' => "已建档（#{$sameKey->id} {$c['name']} · {$c['venue']}）",
+                ];
+                continue;
+            }
+
             $toCreate[] = [
                 'name' => $c['name'],
                 'venue' => $c['venue'],
@@ -445,17 +478,38 @@ class PayrollController extends Controller
         usort($toCreate, fn ($a, $b) => [$a['venue'], $a['name']] <=> [$b['venue'], $b['name']]);
 
         if ($dryRun) {
+            // 预览也要算出绑定计划 —— 用户确认前就该看到「谁能绑上、谁绑不上及为什么」。
+            // 这里不在事务里：dryRun **只读**，`lockForUpdate()` 在自动提交下即普通读，
+            // 不持有任何锁，不会让一次预览卡住真实写入。
+            $plan = self::planAccountBindings($toCreate);
+            foreach ($plan as $i => $decision) {
+                $toCreate[$i]['userId'] = $decision['userId'];
+                $toCreate[$i]['bindingReason'] = $decision['reason'];
+            }
+
             return ok([
                 'dryRun' => true,
                 'willCreate' => $toCreate,
                 'skipped' => $skipped,
                 'created' => 0,
+                'bindings' => self::bindingTally($plan),
             ]);
         }
 
         $created = 0;
-        DB::transaction(function () use ($toCreate, &$created) {
-            foreach ($toCreate as $c) {
+        $boundCount = 0;
+        $unboundCount = 0;
+        $bindingNotes = [];
+        $plan = [];
+        DB::transaction(function () use ($toCreate, &$plan, &$created, &$boundCount, &$unboundCount, &$bindingNotes) {
+            // 计划必须在**事务内**算：`distributeUserAccounts()` 用 `lockForUpdate()`
+            // 判「该账号是否已被本表别行占用」，事务外这层锁不成立（MySQL 上退化成普通读）。
+            // 并发的两条预填请求因此可能同时看到「未被占用」，最后由
+            // `saveProfileGuardingUserId()` 兜住 —— 宁可留空待人工确认，也不能 500。
+            $plan = self::planAccountBindings($toCreate);
+
+            foreach ($toCreate as $i => $c) {
+                $decision = $plan[$i] ?? ['userId' => null, 'reason' => null];
                 $p = new PayrollProfile;
                 $p->name = $c['name'];
                 $p->venue = $c['venue'];
@@ -463,16 +517,27 @@ class PayrollController extends Controller
                 $p->role = '';
                 $p->status = '有效';
                 $p->pending_review = true;
-                $p->note = '系统预填（来源：'.implode('/', $c['sources']).'）。'
+                $baseNote = '系统预填（来源：'.implode('/', $c['sources']).'）。'
                     .'身份标签与课时费待确认；若该姓名是别名（如「苏米」），请改成本名并登记别名';
-                $hits = User::where('name', $c['name'])->limit(2)->pluck('id');
-                if ($hits->count() === 1) {
-                    $p->user_id = (int) $hits->first();
+                $p->user_id = $decision['userId'];
+                $p->note = self::composeNote($baseNote, $decision['reason']);
+                self::saveProfileGuardingUserId($p, $baseNote);
+                if ($decision['userId'] === null && $decision['reason'] !== null) {
+                    $unboundCount++;
+                    $bindingNotes[] = "{$c['name']}（{$c['venue']}）：{$decision['reason']}";
+                } elseif ($decision['userId'] !== null) {
+                    $boundCount++;
                 }
-                $p->save();
                 $created++;
             }
         });
+
+        // 回执里的绑定结果取事务内实际执行的计划（与落库值同源，不用事务外的预览值）
+        foreach ($toCreate as $i => $c) {
+            $decision = $plan[$i] ?? ['userId' => null, 'reason' => null];
+            $toCreate[$i]['userId'] = $decision['userId'];
+            $toCreate[$i]['bindingReason'] = $decision['reason'];
+        }
 
         audit($r, '批量预填薪酬档案', '薪酬计算', 0, '预填建档', '', "新增 {$created} 条待完善档案");
 
@@ -481,7 +546,74 @@ class PayrollController extends Controller
             'created' => $created,
             'willCreate' => $toCreate,
             'skipped' => $skipped,
+            // 账号绑定结果的显式回执：绑定是「一个账号只能绑一行」的分配，
+            // 未被绑定的行如实计数并把原因带回前端，不得静默
+            'bindings' => ['bound' => $boundCount, 'unbound' => $unboundCount],
+            'bindingNotes' => $bindingNotes,
         ]);
+    }
+
+    /**
+     * 为一批待建候选行算出**账号绑定计划**（姓名整组分配），并按行返回。
+     *
+     * 预填建的是「尚不存在的行」（`currentUserId`/`profileId` 恒为 null），
+     * 因此这里只负责「谁能拿到账号、谁不能及为什么」；占用检测在
+     * `distributeUserAccounts()` 里做事务内加锁读。
+     *
+     * @param  array<int, array{name: string, venue: string}>  $toCreate
+     * @return array<int, array{userId: ?int, reason: ?string}> 候选行下标 => 绑定结果
+     */
+    private static function planAccountBindings(array $toCreate): array
+    {
+        $byName = [];
+        foreach ($toCreate as $i => $c) {
+            $byName[(string) $c['name']][] = $i;
+        }
+        if ($byName === []) {
+            return [];
+        }
+        $accounts = self::accountsByNames(array_keys($byName));
+
+        $plan = [];
+        foreach ($byName as $name => $indexes) {
+            $rows = [];
+            foreach ($indexes as $i) {
+                $rows[$i] = [
+                    'venue' => (string) $toCreate[$i]['venue'],
+                    'currentUserId' => null,
+                    'profileId' => null,
+                ];
+            }
+            foreach (self::distributeUserAccounts((string) $name, $rows, $accounts[$name] ?? []) as $i => $decision) {
+                $plan[$i] = $decision;
+            }
+        }
+
+        return $plan;
+    }
+
+    /**
+     * 绑定计划 → 计数回执（`bindings`）。
+     *
+     * `unbound` 只数「有原因却没绑上」的行：没有同名账号的人留空属正常，
+     * 计进去会把一个真实数字稀释成噪声。
+     *
+     * @param  array<int, array{userId: ?int, reason: ?string}>  $plan
+     * @return array{bound: int, unbound: int}
+     */
+    private static function bindingTally(array $plan): array
+    {
+        $bound = 0;
+        $unbound = 0;
+        foreach ($plan as $d) {
+            if ($d['userId'] !== null) {
+                $bound++;
+            } elseif ($d['reason'] !== null) {
+                $unbound++;
+            }
+        }
+
+        return ['bound' => $bound, 'unbound' => $unbound];
     }
 
     // ------------------------------------------------------------------
@@ -853,5 +985,247 @@ class PayrollController extends Controller
         }
         $profile->aliases = $aliases;
         $profile->save();
+    }
+
+    // ==================================================================
+    // 账号绑定的**唯一定义处**
+    //
+    // 三处写入方共用下面两个 public static（与 `ShareController::sanitizeSalesPayload`
+    // 「入库侧与下发侧共用同一方法」的既有做法一致）：
+    //
+    //   | 写入方 | 场景 |
+    //   |---|---|
+    //   | `prefillProfiles()` | 批量预填建档（一次给该姓名的全部候选行） |
+    //   | `storeProfile()` | 单条新建（一次 1 行，但同样受唯一约束约束） |
+    //   | `PayrollProfileSeeder` | 人员主档导入（主档里同一姓名可能有多行） |
+    //
+    // **禁止**在任一处再写第三份「同名唯一就写 user_id」——那正是本任务修的缺陷：
+    // 跨店老师一人两行（venue 是「工资所属门店」），第二条行写同一个 user_id
+    // ⇒ `SQLSTATE[23000] 1062 Duplicate entry` ⇒ 事务回滚 ⇒ 整个请求 500
+    // （测试服 laravel-2026-09-24.log 09:38:59 / 09:39:16，PayrollController.php:472）。
+    // ==================================================================
+
+    /**
+     * 批量取「姓名 => 登录账号」（一次查询，避免逐行查库）。
+     *
+     * @param  array<int, string>  $names
+     * @return array<string, array<int, array{id: int, venue: string}>> 姓名 => [账号, …]（按 id 升序）
+     */
+    public static function accountsByNames(array $names): array
+    {
+        $names = array_values(array_unique(array_filter(array_map(
+            fn ($n) => trim((string) $n),
+            $names
+        ), fn ($n) => $n !== '')));
+        if ($names === []) {
+            return [];
+        }
+
+        $out = [];
+        foreach (User::query()->whereIn('name', $names)->orderBy('id')->get(['id', 'name', 'venue']) as $u) {
+            $out[trim((string) $u->name)][] = [
+                'id' => (int) $u->id,
+                'venue' => trim((string) $u->venue),
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * 账号绑定分配：**同一个姓名的候选档案行** → 每行该不该带 `user_id`、以及为什么。
+     *
+     * ## 规则（确定性 · 原子 · 可解释 · 幂等）
+     *
+     * 1. **已绑定的行原样保留**：`currentUserId` 非空的行不改绑、不解绑 ——
+     *    这是「重复预填 / 重复导入幂等」的根（第二次运行不得改动既有绑定）。
+     * 2. **同名多个账号不猜**：姓名命中 N>1 个账号时全员留空并说明
+     *    （猜错就是把钱记到别人头上）。
+     * 3. **一个账号只能绑一行**：本组内先到先得，且**候选人行门店与账号门店一致时优先**
+     *    —— 跨店老师两店各一行、账号只挂在其中一个店，让同店那行拿到账号，
+     *    而不是「谁的候选行先被扫到谁拿」。
+     * 4. **已被本表别行占用则不抢**：以 `payroll_profiles.user_id` 唯一列为准，
+     *    **事务内加锁读**（调用方必须在事务里调用本方法）。未拿到的行留空，
+     *    并得到一个指到占用者的原因，绝不静默。
+     * 5. **没有同名账号不算异常**：薪酬人员里大量的人本来就没有登录账号
+     *    （兼职/保洁），这类留空不写原因，避免把 `note` 刷满噪声。
+     *
+     * 唯一约束仍是最后一道防线：并发下两个请求可能同时读到「未被占用」，
+     * 因此调用方还要用 `saveProfileGuardingUserId()` 兜住 1062。
+     *
+     * @param  array<int|string, array{venue: string, currentUserId: ?int, profileId: ?int}>  $rows
+     *         **同一姓名**的候选行
+     * @param  array<int, array{id: int|string, venue: string}>  $accounts
+     *         该姓名下的登录账号（来自 `accountsByNames()`，按 id 升序）
+     * @return array<int|string, array{userId: ?int, reason: ?string}> 行键 => 绑定结果
+     */
+    public static function distributeUserAccounts(string $name, array $rows, array $accounts): array
+    {
+        $out = [];
+        /** @var array<int, int|string> $taken user_id => 本组内已持有它的行键 */
+        $taken = [];
+        foreach ($rows as $key => $row) {
+            $current = ($row['currentUserId'] ?? null) === null ? null : (int) $row['currentUserId'];
+            // 规则 1：已绑定行原样保留（幂等的根）
+            $out[$key] = ['userId' => $current, 'reason' => null];
+            if ($current !== null) {
+                $taken[$current] = $key;
+            }
+        }
+        if ($out === []) {
+            return $out;
+        }
+
+        // 规则 5：没有同名账号 —— 留空，且不写原因（这不是本行的异常）
+        if ($accounts === []) {
+            return self::canonicalBindings($out);
+        }
+
+        // 规则 2：同名多个账号 —— 不猜
+        if (count($accounts) > 1) {
+            $reason = "系统里叫「{$name}」的登录账号有 ".count($accounts).' 个（同名不同人），无法确定绑哪一个，已留空待人工指定';
+            foreach ($out as $key => $r) {
+                if ($r['userId'] === null) {
+                    $out[$key]['reason'] = $reason;
+                }
+            }
+
+            return self::canonicalBindings($out);
+        }
+
+        $userId = (int) $accounts[0]['id'];
+        $accountVenue = trim((string) ($accounts[0]['venue'] ?? ''));
+
+        $holderKey = $taken[$userId] ?? null;
+        if ($holderKey === null) {
+            // 规则 4：事务内加锁读「该账号是否已被本表别行占用」。
+            // 本组候选行自己的 id 不算占用（重复导入时改的是同一行）。
+            $ownIds = array_values(array_filter(
+                array_map(fn ($r) => $r['profileId'] ?? null, $rows),
+                fn ($id) => $id !== null
+            ));
+            $holder = PayrollProfile::query()->where('user_id', $userId)
+                ->whereNotIn('id', $ownIds)
+                ->lockForUpdate()
+                ->first(['id', 'name', 'venue']);
+
+            if ($holder !== null) {
+                $holderName = (string) ($holder->name !== '' ? $holder->name : '#'.$holder->id);
+                $reason = "登录账号 #{$userId} 已绑给档案 #{$holder->id}「{$holderName}」"
+                    .($holder->venue !== '' ? "（{$holder->venue}）" : '')
+                    .'—— 一个账号只能绑一行，本条留空，请人工确认应绑哪一行';
+                foreach ($out as $key => $r) {
+                    if ($r['userId'] === null) {
+                        $out[$key]['reason'] = $reason;
+                    }
+                }
+
+                return self::canonicalBindings($out);
+            }
+
+            // 规则 3：本组内分配 —— 同店那行优先，其余按调用方给定的（确定性）顺序
+            $holderKey = null;
+            if ($accountVenue !== '') {
+                foreach ($rows as $key => $row) {
+                    if ($out[$key]['userId'] === null && trim((string) $row['venue']) === $accountVenue) {
+                        $holderKey = $key;
+                        break;
+                    }
+                }
+            }
+            if ($holderKey === null) {
+                foreach ($out as $key => $r) {
+                    if ($r['userId'] === null) {
+                        $holderKey = $key;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if ($holderKey !== null) {
+            $out[$holderKey]['userId'] = $userId;
+            $out[$holderKey]['reason'] = null;
+        }
+
+        // 本组内没拿到账号的行：写明「账号归了同姓名的哪一行」，不静默
+        foreach ($out as $key => $r) {
+            if ($r['userId'] !== null) {
+                continue;
+            }
+            $grantedVenue = $holderKey === null ? '' : trim((string) ($rows[$holderKey]['venue'] ?? ''));
+            $out[$key]['reason'] = "登录账号 #{$userId} 已绑给同一姓名的「{$grantedVenue}」行"
+                .'（跨店老师两店各一行，一个账号只能绑一行），本条留空，请人工确认应绑哪一行';
+        }
+
+        return self::canonicalBindings($out);
+    }
+
+    /**
+     * 绑定结果按行键排序后再返回。
+     *
+     * 分配本身与行序无关（规则 3 显式挑「账号同店」那行），但如果把结果按**调用方传入
+     * 的顺序**返回，同一组候选行换个插入顺序就会得到键序不同的数组 —— 调用方（与审查者）
+     * 看到的就不叫「结果不变」。这里统一成规范键序，让「打乱插入顺序结果逐字相同」
+     * 在函数边界上成立。
+     *
+     * @param  array<int|string, array{userId: ?int, reason: ?string}>  $bindings
+     * @return array<int|string, array{userId: ?int, reason: ?string}>
+     */
+    private static function canonicalBindings(array $bindings): array
+    {
+        ksort($bindings);
+
+        return $bindings;
+    }
+
+    /**
+     * 保存档案，并**兜住** `payroll_profiles.user_id` 唯一约束（最后一道防线）。
+     *
+     * 分配阶段的加锁读已经把「已被占用」挡在前面，但并发下两个请求仍可能同时
+     * 读到「未被占用」。此时唯一约束会抛 1062 —— 对用户就是一次 500。
+     * 这里捕获它，退化成「本行留空 + 原因写进 note」：**宁可留空待人工确认，
+     * 也不能让人看到 500、整批档案回滚**。
+     *
+     * 只在 MySQL/SQLite 上重试是安全的：唯一键冲突回滚的是**该条语句**，
+     * 事务本身仍然可用（PG 会整事务作废，本仓库不使用 PG）。
+     */
+    public static function saveProfileGuardingUserId(PayrollProfile $p, string $baseNote): void
+    {
+        try {
+            $p->save();
+
+            return;
+        } catch (UniqueConstraintViolationException $e) {
+            $reason = "登录账号 #{$p->user_id} 已被本表其它档案占用"
+                .'（并发写入触发唯一约束），本条留空，请人工确认应绑哪一行';
+            $p->user_id = null;
+            $p->note = self::composeNote($baseNote, $reason);
+            $p->save();
+        }
+    }
+
+    /**
+     * 备注合成：原文 + 账号绑定原因（`note` 列 200 字符）。
+     *
+     * **原因优先于原文**：超长时先压缩原文、再截原因 —— 未绑定原因必须完整可见
+     * （不得静默），界面与接口都只读 `note` 这一个字段，把它截掉就等于藏起来了。
+     */
+    public static function composeNote(string $note, ?string $reason): string
+    {
+        $note = trim($note);
+        if ($reason === null || trim($reason) === '') {
+            return mb_substr($note, 0, 200);
+        }
+        $reasonPart = mb_substr('账号绑定：'.trim($reason), 0, 200);
+        if ($note === '') {
+            return $reasonPart;
+        }
+        $room = 200 - mb_strlen($reasonPart);
+        if ($room <= 0) {
+            return $reasonPart;
+        }
+
+        return mb_substr($note.'；', 0, $room).$reasonPart;
     }
 }
