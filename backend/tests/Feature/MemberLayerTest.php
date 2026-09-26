@@ -131,6 +131,91 @@ class MemberLayerTest extends TestCase
         $this->assertStringNotContainsString("'layer' => 'P3'", $src);
     }
 
+    // ------------------------------------------------- P2「频次下降」口径修复（T5）
+
+    /**
+     * 缺陷回归：P1 抢占把 P2 整层吃空（用户报告「P2 只剩 2 人」）。
+     *
+     * 根因：旧优先级链是 P0 → P1 → P2，而 $revive = dd > reviveDays(30)。
+     * 频次下降（M1>M2>M3）的人 last_visit 越来越久远，只要超 30 天就被 P1 抢走；
+     * 「仍在出勤且递减」的会员（P2 的核心画像：正在流失、还来得及拦）反而落不进 P2。
+     *
+     * 修法：把「仍在出勤的严格递减」（M3>0 且 M1>M2>M3）提到 P1 之前落 P2；
+     * 停练（M3=0）的递减者仍归 P1/P3/P4——停练不是「频次下降」，是「已经流失」。
+     * 下面四条用例分别钉住 P2 口径的四个象限（在出勤×递减、停练×递减、
+     * 待续费抢占、非严格递减），任何一档编排回退都会至少红一条。
+     */
+    public function test_p2_active_strictly_declining_member_lands_p2_even_if_revive_would_match(): void
+    {
+        // 象限①：仍在出勤（M3=3>0）且严格递减（9>6>3）、卡余量充足不触待续费。
+        // last_visit 5 天前——远小于 reviveDays=30，$revive 本来就不成立；
+        // 这条用例的价值在于**锁住优先级编排**：若有人把 P2 挪回 P1 之后，
+        // 该会员会因 preLoss 窗口外而仍落 P2（侥幸通过），所以再补一条 dd>30 的变体
+        // （见下一条）双保险钉住「P2 在 P1 之前」这件事本身。
+        $c = $this->member('P2-在出勤递减', [
+            $this->card('私教200次', '4', '1', 180, 20, now()->addDays(500)->toDateString()),
+        ], ['attend_m1' => 9, 'attend_m2' => 6, 'attend_m3' => 3, 'last_visit' => now()->subDays(5)->toDateString()]);
+
+        recalculateMemberLayers();
+        $this->assertSame('P2', $c->fresh()->layer, '仍在出勤且严格递减的会员必须落 P2（频次下降）');
+    }
+
+    public function test_p2_priority_precedes_p1_in_the_chain_itself(): void
+    {
+        // 象限①的编排锁：构造「$decliningActive 与 $revive 同时为真」的会员。
+        // m=9/6/3 严格递减、M3=3>0（仍在出勤），但 last_visit 设在 35 天前（> reviveDays=30）
+        // ——注意这在本库是**边界数据形态**（出勤窗口与 last_visit 字段不一致），
+        // 用它正是为了证明优先级链里 P2 排在 P1 前面：若编排回退成 P1 在前，
+        // 该会员会落 P1，本用例立刻红。
+        $c = $this->member('P2-编排优先级', [
+            $this->card('私教200次', '4', '1', 180, 20, now()->addDays(500)->toDateString()),
+        ], ['attend_m1' => 9, 'attend_m2' => 6, 'attend_m3' => 3, 'last_visit' => now()->subDays(35)->toDateString()]);
+
+        $d = customerDecision($c->fresh());
+        $this->assertTrue($d['revive'], '前置：dd=35>30 应命中 revive（用于证明两者重叠时的编排顺序）');
+        $this->assertSame('P2', $d['layer'], '仍在出勤（M3>0）的严格递减者必须赢过 P1——否则 P2 又被抢空');
+        recalculateMemberLayers();
+        $this->assertSame('P2', $c->fresh()->layer);
+    }
+
+    public function test_p2_stopped_training_declining_member_lands_p1_not_p2(): void
+    {
+        // 象限②：停练的递减者（m=6/3/0，last_visit 60 天前）→ P1。
+        // M3=0 说明本月一次没来——他不是「正在流失」，是「已经流失」，
+        // 属于 P1 待复活的画像。新 P2（要求 M3>0）不得把他抢走。
+        $c = $this->member('P1-停练递减', [
+            $this->card('私教200次', '4', '1', 180, 20, now()->addDays(500)->toDateString()),
+        ], ['attend_m1' => 6, 'attend_m2' => 3, 'attend_m3' => 0, 'last_visit' => now()->subDays(60)->toDateString()]);
+
+        recalculateMemberLayers();
+        $this->assertSame('P1', $c->fresh()->layer, '停练（M3=0）的递减者是待复活画像，必须落 P1 而非 P2');
+    }
+
+    public function test_p2_declining_member_hitting_renewal_still_lands_p0(): void
+    {
+        // 象限③：递减但命中待续费（次卡仅余 2 节 ≤ 阈值 10）→ P0。
+        // P0 续费窗口是打钱的池子，优先级必须保持最高——P2 的提前不能殃及 P0。
+        $c = $this->member('P0-递减且待续费', [
+            $this->card('私教20次', '4', '1', 2, 18, now()->addDays(300)->toDateString()),
+        ], ['attend_m1' => 9, 'attend_m2' => 6, 'attend_m3' => 3, 'last_visit' => now()->subDays(5)->toDateString()]);
+
+        recalculateMemberLayers();
+        $this->assertSame('P0', $c->fresh()->layer, '命中待续费的递减者必须落 P0（续费窗口优先级不被破坏）');
+    }
+
+    public function test_p2_non_strict_declining_member_does_not_land_p2(): void
+    {
+        // 象限④：m2=m3（6>3=3，非严格递减）→ 不落 P2。
+        // 分层 P2 固定用 strict（M1>M2>M3），「近两档持平」不算趋势下降。
+        // 该会员余额充足、近期出勤，应落 P4。
+        $c = $this->member('P4-非严格递减', [
+            $this->card('私教200次', '4', '1', 180, 20, now()->addDays(500)->toDateString()),
+        ], ['attend_m1' => 6, 'attend_m2' => 3, 'attend_m3' => 3, 'last_visit' => now()->subDays(5)->toDateString()]);
+
+        recalculateMemberLayers();
+        $this->assertSame('P4', $c->fresh()->layer, 'm2=m3 非严格递减不得落 P2（分层固定 strict 口径）');
+    }
+
     // ------------------------------------------------------------ P5 授权不变
 
     public function test_p5_still_means_no_card_asset_for_media_scope(): void

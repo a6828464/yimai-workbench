@@ -445,9 +445,9 @@ export const useSettingStore = defineStore(
     persist: {
       key: 'setting',
       storage: localStorage,
-      // 这两项是「系统策略」而不是用户偏好：由 config/setting.ts 决定，不跟随本地缓存。
-      // 否则老用户浏览器里存着旧值（showWorkTab: true），改了默认值对他们也不生效。
-      omit: ['showWorkTab', 'showLanguage']
+      // 这三项是「系统策略」而不是用户偏好：由 config/setting.ts 决定，不跟随本地缓存。
+      // 否则老用户浏览器里存着旧值（如 showWorkTab: true、showSettingGuide: true），改了默认值对他们也不生效。
+      omit: ['showWorkTab', 'showLanguage', 'showSettingGuide']
     }
   }
 )

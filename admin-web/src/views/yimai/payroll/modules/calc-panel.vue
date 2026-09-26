@@ -1,6 +1,11 @@
 <!--
   薪酬计算预览（`GET /payroll/calculate`）
 
+  v3.3.5：明细表在「展示岗位」（displayRole）旁新增「身份标签」列，显示存储层
+  `row.role` 原文 —— 两者是不同的东西：displayRole 是展示层归并（馆主→管理层），
+  role 是档案里真实存储、可编辑的身份。用户要求「身份标签单独拆出来显示」，
+  与展示岗位宁多勿少并列。
+
   两条不能妥协的展示要求（任务书第 4 条 + 验收项 9）：
 
   1. **`unavailable` 必须显式展示**（本次无法计算的项目及原因）。这些是系统内确实
@@ -130,7 +135,9 @@
           <div v-if="w.names?.length" class="text-xs">涉及：{{ w.names.join('、') }}</div>
           <div v-if="w.details?.length" class="text-xs">
             涉及：
-            <span v-for="(d, i) in w.details" :key="i" class="mr-2">{{ d.name }}（沿用 {{ d.from }}）</span>
+            <span v-for="(d, i) in w.details" :key="i" class="mr-2"
+              >{{ d.name }}（沿用 {{ d.from }}）</span
+            >
           </div>
           <div v-if="w.affectedUsers?.length" class="text-xs">
             涉及：
@@ -163,12 +170,15 @@
               <div class="expand-box__grid">
                 <div><span>底薪</span>{{ yuan(row.baseSalary) }}</div>
                 <div><span>绩效</span>{{ yuan(row.performance) }}</div>
-                <div><span>底薪奖励</span>{{ yuan(row.baseReward) }}（两店累计 {{ row.accumulatedValidHours }} 节）</div>
+                <div
+                  ><span>底薪奖励</span>{{ yuan(row.baseReward) }}（两店累计
+                  {{ row.accumulatedValidHours }} 节）</div
+                >
                 <div>
                   <span>基础课时费</span>{{ yuan(row.baseHourlyFee) }}
                   <div class="text-xs text-gray-400">
-                    私教60 {{ row.hours.private60 }}×{{ yuan(row.feePrivate60) }} +
-                    私教45 {{ row.hours.private45 }}×{{ yuan(row.feePrivate45) }}
+                    私教60 {{ row.hours.private60 }}×{{ yuan(row.feePrivate60) }} + 私教45
+                    {{ row.hours.private45 }}×{{ yuan(row.feePrivate45) }}
                     <span v-if="row.feePrivate45Derived" class="text-warning">
                       （45 分钟单价按 60×0.75 折算）
                     </span>
@@ -178,8 +188,8 @@
                 <div>
                   <span>私教激励</span>{{ yuan(row.hourlyIncentive) }}
                   <div class="text-xs text-gray-400">
-                    当月加价 {{ yuan(row.hourlyIncentiveAddOn) }}/节 × 课时；
-                    60 分钟 {{ yuan(row.hourlyIncentivePrivate60) }} + 45 分钟
+                    当月加价 {{ yuan(row.hourlyIncentiveAddOn) }}/节 × 课时； 60 分钟
+                    {{ yuan(row.hourlyIncentivePrivate60) }} + 45 分钟
                     {{ yuan(row.hourlyIncentivePrivate45) }}（45 档固定 ×0.75，与课时费单价无关）
                   </div>
                 </div>
@@ -209,16 +219,32 @@
               </div>
               <div class="expand-box__flags">
                 <span>数据来源：</span>
-                <ElTag size="small" :type="row.inputsReal.attendance ? 'success' : 'warning'" effect="plain">
+                <ElTag
+                  size="small"
+                  :type="row.inputsReal.attendance ? 'success' : 'warning'"
+                  effect="plain"
+                >
                   考勤{{ row.inputsReal.attendance ? '已填' : '默认全勤' }}
                 </ElTag>
-                <ElTag size="small" :type="row.inputsReal.socialSecurity ? 'success' : 'warning'" effect="plain">
+                <ElTag
+                  size="small"
+                  :type="row.inputsReal.socialSecurity ? 'success' : 'warning'"
+                  effect="plain"
+                >
                   社保{{ row.inputsReal.socialSecurity ? '已设' : '未操作' }}
                 </ElTag>
-                <ElTag size="small" :type="row.inputsReal.tax ? 'success' : 'warning'" effect="plain">
+                <ElTag
+                  size="small"
+                  :type="row.inputsReal.tax ? 'success' : 'warning'"
+                  effect="plain"
+                >
                   个税{{ row.inputsReal.tax ? '已填' : '默认 0' }}
                 </ElTag>
-                <ElTag size="small" :type="row.inputsReal.performance ? 'success' : 'warning'" effect="plain">
+                <ElTag
+                  size="small"
+                  :type="row.inputsReal.performance ? 'success' : 'warning'"
+                  effect="plain"
+                >
                   业绩{{ row.inputsReal.performance ? '已导入' : '未导入' }}
                 </ElTag>
               </div>
@@ -226,6 +252,15 @@
           </template>
         </ElTableColumn>
         <ElTableColumn prop="name" label="姓名" width="100" fixed="left" />
+        <!-- 身份标签（存储层枚举原文，v3.3.5）：与「展示岗位」（displayRole 展示层）并列。
+             用户要求单独拆出来显示 —— 展示岗位做的是语义归并（馆主→管理层），
+             身份标签才是档案里真实存储、可编辑的那个值。宁多勿少，用户后续自己删。 -->
+        <ElTableColumn label="身份标签" width="110">
+          <template #default="{ row }">
+            <span v-if="row.role">{{ row.role }}</span>
+            <span v-else class="text-gray-400">—</span>
+          </template>
+        </ElTableColumn>
         <ElTableColumn label="展示岗位" width="140">
           <template #default="{ row }">{{ row.displayRole }}</template>
         </ElTableColumn>
@@ -255,13 +290,24 @@
           </template>
         </ElTableColumn>
         <ElTableColumn label="应发" width="120" align="right">
-          <template #default="{ row }"><b>{{ yuan(row.gross) }}</b></template>
+          <template #default="{ row }"
+            ><b>{{ yuan(row.gross) }}</b></template
+          >
         </ElTableColumn>
         <ElTableColumn label="社保" width="115" align="right">
           <template #default="{ row }">
             {{ yuan(row.socialSecurity) }}
-            <div class="text-xs" :class="row.socialSecurityMode === 'off' ? 'text-danger' : 'text-gray-400'">
-              {{ row.socialSecurityMode === 'off' ? '不缴' : row.socialSecurityInheritedFrom ? `沿用${row.socialSecurityInheritedFrom}` : '' }}
+            <div
+              class="text-xs"
+              :class="row.socialSecurityMode === 'off' ? 'text-danger' : 'text-gray-400'"
+            >
+              {{
+                row.socialSecurityMode === 'off'
+                  ? '不缴'
+                  : row.socialSecurityInheritedFrom
+                    ? `沿用${row.socialSecurityInheritedFrom}`
+                    : ''
+              }}
             </div>
           </template>
         </ElTableColumn>
@@ -317,6 +363,7 @@
       top="5vh"
     >
       <ElDescriptions v-if="detailRow" :column="1" border size="small">
+        <ElDescriptionsItem label="身份标签">{{ detailRow.role || '—' }}</ElDescriptionsItem>
         <ElDescriptionsItem label="展示岗位">{{ detailRow.displayRole }}</ElDescriptionsItem>
         <ElDescriptionsItem label="底薪">{{ yuan(detailRow.baseSalary) }}</ElDescriptionsItem>
         <ElDescriptionsItem label="绩效">{{ yuan(detailRow.performance) }}</ElDescriptionsItem>
@@ -324,20 +371,24 @@
           {{ yuan(detailRow.baseReward) }}（两店累计 {{ detailRow.accumulatedValidHours }} 节）
         </ElDescriptionsItem>
         <ElDescriptionsItem label="课时">
-          私教60 {{ detailRow.hours.private60 }} / 私教45 {{ detailRow.hours.private45 }} /
-          小班 {{ detailRow.hours.small }} / 团课 {{ detailRow.hours.group }}
+          私教60 {{ detailRow.hours.private60 }} / 私教45 {{ detailRow.hours.private45 }} / 小班
+          {{ detailRow.hours.small }} / 团课 {{ detailRow.hours.group }}
         </ElDescriptionsItem>
         <ElDescriptionsItem label="基础课时费">
           {{ yuan(detailRow.baseHourlyFee) }}
           <div class="text-xs text-gray-400">
             私教60 {{ yuan(detailRow.baseHourlyPrivate60) }} + 私教45
             {{ yuan(detailRow.baseHourlyPrivate45) }}
-            <span v-if="detailRow.feePrivate45Derived" class="text-warning">（45 档按 60×0.75 折算）</span>
+            <span v-if="detailRow.feePrivate45Derived" class="text-warning"
+              >（45 档按 60×0.75 折算）</span
+            >
           </div>
         </ElDescriptionsItem>
         <ElDescriptionsItem label="私教激励">
           {{ yuan(detailRow.hourlyIncentive) }}
-          <div class="text-xs text-gray-400">当月加价 {{ yuan(detailRow.hourlyIncentiveAddOn) }}/节</div>
+          <div class="text-xs text-gray-400"
+            >当月加价 {{ yuan(detailRow.hourlyIncentiveAddOn) }}/节</div
+          >
         </ElDescriptionsItem>
         <ElDescriptionsItem label="销售提成">
           {{ yuan(detailRow.commission) }}
@@ -349,15 +400,23 @@
           {{ yuan(detailRow.storeCommission) }}（× {{ percent(detailRow.storeCommissionRate) }}）
         </ElDescriptionsItem>
         <ElDescriptionsItem label="补贴调整">{{ yuan(detailRow.subsidy) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="上月调整">{{ yuan(detailRow.previousAdjustment) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="请假扣款">{{ yuan(detailRow.leaveDeduction) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="其他扣款">{{ yuan(detailRow.otherDeduction) }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="上月调整">{{
+          yuan(detailRow.previousAdjustment)
+        }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="请假扣款">{{
+          yuan(detailRow.leaveDeduction)
+        }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="其他扣款">{{
+          yuan(detailRow.otherDeduction)
+        }}</ElDescriptionsItem>
         <ElDescriptionsItem label="社保">
           {{ yuan(detailRow.socialSecurity) }}
           <div class="text-xs text-gray-400">{{ socialLabelOf(detailRow) }}</div>
         </ElDescriptionsItem>
         <ElDescriptionsItem label="个税">{{ yuan(detailRow.tax) }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="应发"><b>{{ yuan(detailRow.gross) }}</b></ElDescriptionsItem>
+        <ElDescriptionsItem label="应发"
+          ><b>{{ yuan(detailRow.gross) }}</b></ElDescriptionsItem
+        >
         <ElDescriptionsItem label="实发">
           <b class="text-success">{{ yuan(detailRow.net) }}</b>
         </ElDescriptionsItem>
@@ -435,7 +494,9 @@
   function socialLabelOf(row: PayrollCalcRow): string {
     if (row.socialSecurityMode === 'off') return '本月显式停缴'
     if (row.socialSecurityMode === 'set') return '本月已设'
-    return row.socialSecurityInheritedFrom ? `沿用 ${row.socialSecurityInheritedFrom}` : '无历史设置（按 0）'
+    return row.socialSecurityInheritedFrom
+      ? `沿用 ${row.socialSecurityInheritedFrom}`
+      : '无历史设置（按 0）'
   }
 
   /** 哪些维度是默认值（不是真实输入）—— 逐行暴露，避免使用者把兜底值当人工填写 */
@@ -459,8 +520,11 @@
   }
 
   function calcTags(row: PayrollCalcRow): MobileCardTag[] {
-    const tags: MobileCardTag[] = [{ text: stageLabel(result.value?.stage ?? ''), type: 'info', effect: 'plain' }]
-    if (!row.inputsReal.performance) tags.push({ text: '业绩未导入', type: 'warning', effect: 'dark' })
+    const tags: MobileCardTag[] = [
+      { text: stageLabel(result.value?.stage ?? ''), type: 'info', effect: 'plain' }
+    ]
+    if (!row.inputsReal.performance)
+      tags.push({ text: '业绩未导入', type: 'warning', effect: 'dark' })
     return tags
   }
 

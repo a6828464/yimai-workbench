@@ -1805,7 +1805,7 @@ function layerDefinitions(): array
     return [
         'P0' => ['label' => '续费窗口', 'desc' => '命中续费判定（课时尾段 / 临期 / 已过期但有余量）'],
         'P1' => ['label' => '高资产低活跃', 'desc' => '停练超过 reviveDays 阈值、或人工标记待复活（有卡项资产）'],
-        'P2' => ['label' => '频次下降', 'desc' => '三个连续 30 天窗口出勤逐档下降（M1>M2>M3）'],
+        'P2' => ['label' => '频次下降', 'desc' => '仍在出勤、近三档 30 天窗口逐月下降（M1>M2>M3 且 M3>0，优先于待复活落层）；停练的递减者不在此层'],
         'P3' => ['label' => '过期有余额', 'desc' => '到期日已过、仍有余量，但**超出** renewalExpiredBackfillDays 回溯窗（未命中待续费）'],
         'P4' => ['label' => '可升级', 'desc' => '有卡项资产、未命中以上任何一层'],
         'P5' => ['label' => '新客转化', 'desc' => '无卡项资产（前端客资/留资）'],
@@ -2120,13 +2120,18 @@ function customerDecision(Customer $c, ?array $rules = null): array
         || ($daysLeft !== null && (int) $daysLeft > 0);
     $expiredWithBalance = $hasAsset && $expireDays !== null && $expireDays < 0 && $hasBalance;
 
-    // ── 炸弹会员（用户新增需求 2026-09-24）────────────────────────────────
-    // 口径（四条必须同时成立）：
+    // ── 炸弹会员（用户新增需求 2026-09-24；2026-09-25 补第 5 条）──────────
+    // 口径（五条必须同时成立）：
     //   1. 正式会员 —— 由**查询侧**的 scopeMemberCustomers() 保证（见 computeMemberLists），
     //      本函数只看卡项，不重复判「是不是客资」：那是授权面的事，两处各判一次必然分叉。
     //   2. 持有次卡（type=1，排除 is_taste / 体验·员工·测试）
     //   3. 该卡有余额（residue > 0）
     //   4. 已过期且超过 6 个月（deadline < 今天 − 183 天）
+    //   5. 超过 6 个月没有出勤记录（用户 2026-09-25 补充口径）：
+    //      last_visit 为 null（从未到店）视为满足；有 last_visit 但距今未超过
+    //      $bombDays 天的排除。口径与卡过期同用 $bombDays（用户定义里都是「6 个月」）。
+    //      注意是「最近一次出勤距今超 6 个月」，不是「从未出勤」——人只要 184 天前
+    //      来过一次就永远不再算炸弹，除非中间又来一次把计时刷新。
     //
     // 为什么「卡有余额 + 已过期」不会同时进待续费：过期卡（status≠4/5/7）不参与
     // ACTIVE_CARD_STATUSES，因此不在 cards_list、不参与任何续费分支；
@@ -2149,9 +2154,14 @@ function customerDecision(Customer $c, ?array $rules = null): array
         $bombCards[] = $card + ['daysExpired' => abs($days)];
         $bombSections += (int) ($card['residue'] ?? 0);
     }
-    $bomb = $bombCards !== [];
+    // 口径 5：超过 6 个月没有出勤。$dd 即函数前部算好的 lastVisitDays
+    // （last_visit 距今天数；last_visit 为 null 时 $dd 也为 null，表示从未到店）。
+    // 从未到店的人比「183 天前来过」更久没来，直接满足。
+    $bombLastVisitOk = $c->last_visit === null
+        || ($dd !== null && $dd > $bombDays);
+    $bomb = $bombCards !== [] && $bombLastVisitOk;
 
-    // 分层优先级：P0 → P1 → P2 → P3 → P4，先命中先落层（互斥单值）。
+    // 分层优先级：P0 → P2(仍在出勤) → P1 → P2(停练兜底) → P3 → P4，先命中先落层（互斥单值）。
     //
     // P0 放最前是**必须**的：真实数据里「待续费」与「待复活」重叠率 100%
     // （见诊断文档 C5），若把待复活放在 P0 之前，待续费窗口池会被整池搬空——
@@ -2162,12 +2172,33 @@ function customerDecision(Customer $c, ?array $rules = null): array
     // declineMode 是「出勤降低」**清单**的可调阈值（店长改它期望清单变化），
     // 而分层表达的是长期趋势，不应因为店长调清单阈值而整层换位。
     // 两者用途不同，所以是两个变量：$declining（清单，读配置）/ $decliningForLayer（分层，固定 strict）。
+    //
+    // ── P2 拆成两档、且「仍在出勤」档提到 P1 之前（2026-09-24 修复） ──
+    //
+    // 缺陷形态（用户报告「P2 只剩 2 人」的根因）：旧链是 P0 → P1 → P2，
+    // 而 $revive = dd > reviveDays(30) 没来。频次下降（M1>M2>M3）的人出勤在萎缩，
+    // last_visit 往往也越来越久远——只要超过 30 天就先命中 P1，P2 被整层吃空：
+    // 频次下降最严重的会员（M3 已归零、dd 必然 > 30）全部进 P1，
+    // P2 只剩「还在来且递减」的极小样本，经营价值归零。
+    //
+    // 修法依据 P2 的经营语义「正在流失、还来得及拦」把严格递减拆成两档：
+    //   $decliningActive（主档）：M3 > 0 且严格递减——本月还来，趋势下降是**主动信号**，
+    //     排到 P1 之前落 P2。M3 > 0 蕴含 last_visit 在 30 天内，与 $revive 天然互斥，
+    //     但必须显式排前：否则「仍在出勤的递减者」会先被 P1 抢走（正是本缺陷）。
+    //   $decliningForLayer（兜底档）：不要求 M3 > 0 的严格递减——已停练的递减者
+    //     理论上会被 $revive / $preLoss 捕获（M3=0 且 M2>0 直接命中 $preLoss；
+    //     dd>30 命中 $revive），此分支仅兜住两者都没接住的残余（例如 M2=M3=0
+    //     且 dd 在 reviveDays 内、未开卡的严格递减者），放回 P1 之后维持旧行为，
+    //     不扩大 P2 的授权面。
+    // 停练者（M3=0）不是「频次下降」，是「已经流失」——那是 P1 待复活的画像（验收 2）。
+    $decliningActive = $m3 > 0 && ($m1 > $m2 && $m2 > $m3);
     $decliningForLayer = ! $revive && ! $preLoss && ($m1 > $m2 && $m2 > $m3);
     $layer = ! $hasAsset ? 'P5'
         : ($in ? 'P0'
-            : ($revive ? 'P1'
-                : ($decliningForLayer ? 'P2'
-                    : ($expiredWithBalance ? 'P3' : 'P4'))));
+            : ($decliningActive ? 'P2'
+                : ($revive ? 'P1'
+                    : ($decliningForLayer ? 'P2'
+                        : ($expiredWithBalance ? 'P3' : 'P4')))));
 
     return [
         'hasAsset' => $hasAsset,
@@ -2180,7 +2211,7 @@ function customerDecision(Customer $c, ?array $rules = null): array
         'vip' => $paid >= $vip,
         'hasBalance' => $hasBalance,
         'expiredWithBalance' => $expiredWithBalance,
-        // 炸弹会员：正式会员 + 次卡有余额 + 已过期超 6 个月（口径见上方 $bombCards 注释）
+        // 炸弹会员：正式会员 + 次卡有余额 + 已过期超 6 个月 + 超 6 个月未到店（口径见上方 $bomb 注释）
         'bomb' => ['in' => $bomb, 'sections' => $bombSections, 'cards' => $bombCards],
         'layer' => $layer,
         'renewal' => [
@@ -2368,9 +2399,9 @@ function computeMemberLists(array $rules): array
                 if ($d['revive']) {
                     $lists['待复活'][] = $c->id;
                 }
-                // ── 炸弹会员（正式会员 + 次卡有余额 + 过期超 6 个月）──
-                // 卡项四条口径由 customerDecision 的 $bomb 给出；「正式会员」这一条
-                // 必须由 scopeMemberCustomers() 判（见函数开头 $memberIds 注释）。
+                // ── 炸弹会员（正式会员 + 次卡有余额 + 过期超 6 个月 + 超 6 个月未到店）──
+                // 卡项四条 + 出勤一条共五条口径由 customerDecision 的 $bomb 给出；
+                // 「正式会员」这一条必须由 scopeMemberCustomers() 判（见函数开头 $memberIds 注释）。
                 // 两者**同时**成立才入清单：卡项条件判「是不是炸弹」，会员条件判「要不要提醒他」。
                 if ($d['bomb']['in'] && isset($memberIds[(int) $c->id])) {
                     $lists['炸弹会员'][] = $c->id;
@@ -2379,7 +2410,7 @@ function computeMemberLists(array $rules): array
                         $d['bomb']['cards']
                     ), 0, 3));
                     $watch['炸弹会员'][$c->id] = [
-                        'why' => ['「'.$titles.'」已过期超 6 个月，仍余 '.$d['bomb']['sections'].' 节未消课'],
+                        'why' => ['「'.$titles.'」已过期超 6 个月，仍余 '.$d['bomb']['sections'].' 节未消课，且超 6 个月未到店'],
                         'whyCodes' => ['bomb_expired'],
                         'sections' => $d['bomb']['sections'],
                         'cardCount' => count($d['bomb']['cards']),

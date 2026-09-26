@@ -216,7 +216,10 @@ class CardStatsRenewalTest extends TestCase
         ], $sum['card_stats'], [
             'cards_list' => $sum['cards_list'],
             'attend_m1' => 6, 'attend_m2' => 6, 'attend_m3' => 6,
-            'last_visit' => now()->subDays(3)->toDateString(),
+            // 2026-09-25 炸弹口径加第 5 条（超 183 天无出勤）后，夹具默认从
+            // subDays(3) 改为 subDays(400)：本组用例测的是**卡项**口径
+            // （保留区/边界/互不干扰），出勤不是它们要验证的维度。
+            'last_visit' => now()->subDays(400)->toDateString(),
         ]);
     }
 

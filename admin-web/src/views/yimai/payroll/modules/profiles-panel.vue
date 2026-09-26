@@ -4,6 +4,11 @@
   身份标签是薪酬计算方式的分叉点（规格 §2.2），所以编辑弹窗里**必须**把该标签的
   规则说明一并展示 —— 用户改「全职老师 → 兼职老师」时得知道底薪/绩效会被强制归零。
 
+  v3.3.5：身份标签支持**表格内联编辑**（点 Tag 直接变下拉，change 只提交 `{role}` 一个
+  字段 —— 后端 PUT 对未提交字段保持原值），成功用 res.profile 整行替换（含
+  assertSameProfile 防错人），失败回滚。编辑弹窗保留（承担课时费等完整编辑）。
+  另新增「课时费」列：五种课型单价紧凑并排，45 分钟显示生效值并保留折算标注。
+
   ⚠️ 枚举一律来自 `GET /payroll/roles`（规格 §7.4 的唯一下发点），本文件不写死列表。
 
   ⚠️ 45 分钟课时费有两层语义，界面必须分开：
@@ -42,13 +47,7 @@
       </template>
 
       <!-- 待完善档案：显式提示，并说明为什么不参与计算 -->
-      <ElAlert
-        v-if="pendingCount > 0"
-        type="warning"
-        show-icon
-        :closable="false"
-        class="mb-3"
-      >
+      <ElAlert v-if="pendingCount > 0" type="warning" show-icon :closable="false" class="mb-3">
         <template #title>有 {{ pendingCount }} 条「待完善」档案，暂不参与工资计算</template>
         <div class="text-xs mt-1">
           身份标签决定底薪 / 绩效 / 课时费 / 提成 / 底薪奖励 / 门店提成六项算法，
@@ -70,7 +69,13 @@
         <ElTableColumn prop="name" label="姓名" width="100" fixed="left">
           <template #default="{ row }">
             {{ row.name }}
-            <ElTag v-if="row.dualBaseSalary" size="small" type="warning" effect="plain" class="ml-1">
+            <ElTag
+              v-if="row.dualBaseSalary"
+              size="small"
+              type="warning"
+              effect="plain"
+              class="ml-1"
+            >
               双底薪
             </ElTag>
             <ElTag v-if="row.pendingReview" size="small" type="danger" effect="plain" class="ml-1">
@@ -81,12 +86,74 @@
         <ElTableColumn label="所属门店" width="92">
           <template #default="{ row }">{{ row.venue }}</template>
         </ElTableColumn>
-        <ElTableColumn label="身份标签" width="130">
+        <!-- 身份标签：内联编辑（v3.3.5 需求「表格里直接改，不用进编辑弹窗」）。
+             PUT profiles 已支持只提交 {role} 一个字段，其余字段后端保持原值。 -->
+        <ElTableColumn label="身份标签" width="150">
           <template #default="{ row }">
-            <ElTag v-if="!row.role" size="small" type="danger" effect="plain">未设置</ElTag>
-            <ElTooltip v-else :content="ruleSummary(row.role)" placement="top" :show-after="300">
-              <ElTag size="small" effect="plain">{{ roleLabel(row.role) }}</ElTag>
-            </ElTooltip>
+            <div class="role-cell">
+              <template v-if="inlineEditingId === row.id">
+                <ElSelect
+                  :model-value="inlineDraftRole"
+                  size="small"
+                  class="role-cell__select"
+                  :loading="inlineSaving"
+                  @change="(v: string) => commitInlineRole(row, v)"
+                  @visible-change="(open: boolean) => !open && cancelInlineRole()"
+                >
+                  <ElOption v-for="r in roles" :key="r.value" :label="r.label" :value="r.value" />
+                </ElSelect>
+              </template>
+              <template v-else>
+                <ElTag
+                  v-if="!row.role"
+                  size="small"
+                  type="danger"
+                  effect="plain"
+                  class="role-cell__tag"
+                  @click="startInlineRole(row)"
+                >
+                  未设置
+                </ElTag>
+                <ElTooltip
+                  v-else
+                  :content="ruleSummary(row.role)"
+                  placement="top"
+                  :show-after="300"
+                >
+                  <ElTag
+                    size="small"
+                    effect="plain"
+                    class="role-cell__tag"
+                    @click="startInlineRole(row)"
+                  >
+                    {{ roleLabel(row.role) }}
+                    <i class="ri-edit-line role-cell__icon" />
+                  </ElTag>
+                </ElTooltip>
+                <ElIcon v-if="inlineSavingId === row.id" class="role-cell__loading is-loading">
+                  <i class="ri-loader-4-line" />
+                </ElIcon>
+              </template>
+            </div>
+          </template>
+        </ElTableColumn>
+        <!-- 课时费（各课型单价紧凑展示）：把单价并成一列，一眼对全五种课型。
+             45 分钟显示生效值，derived 时保留「折算」标注（与私教45列同一口径）。 -->
+        <ElTableColumn label="课时费" min-width="210">
+          <template #default="{ row }">
+            <div class="fee-cell">
+              <span class="fee-cell__item">私教60 {{ money(row.feePrivate60) }}</span>
+              <span class="fee-cell__item">
+                私教45
+                <span v-if="row.feePrivate45Derived" class="text-warning">
+                  {{ money(row.feePrivate45Effective) }}<i class="fee-cell__derived">折算</i>
+                </span>
+                <template v-else>{{ money(row.feePrivate45) }}</template>
+              </span>
+              <span class="fee-cell__item">小班 {{ money(row.feeSmall) }}</span>
+              <span class="fee-cell__item">团课 {{ money(row.feeGroup) }}</span>
+              <span class="fee-cell__item">企业课 {{ money(row.feeEnterprise) }}</span>
+            </div>
           </template>
         </ElTableColumn>
         <ElTableColumn label="基本底薪" width="110" align="right">
@@ -192,7 +259,8 @@
           :title="`「${roleLabel(form.role)}」的薪酬计算方式`"
         >
           <div v-for="(v, k) in currentRoleRule" :key="String(k)" class="text-xs">
-            <b>{{ ruleKeyLabel(String(k)) }}</b>：{{ v }}
+            <b>{{ ruleKeyLabel(String(k)) }}</b
+            >：{{ v }}
           </div>
         </ElAlert>
 
@@ -201,8 +269,10 @@
             <ElOption v-for="r in roles" :key="r.value" :label="r.label" :value="r.value" />
           </ElSelect>
           <div class="form-hint">
-            身份标签决定底薪 / 绩效 / 课时费 / 提成 / 底薪奖励 / 门店提成六项算法，改动会直接影响工资。
-            <b>必填</b>：后端不接受空身份标签（空标签会被默认成「全职老师」，按实际课时发底薪奖励）。
+            身份标签决定底薪 / 绩效 / 课时费 / 提成 / 底薪奖励 /
+            门店提成六项算法，改动会直接影响工资。
+            <b>必填</b
+            >：后端不接受空身份标签（空标签会被默认成「全职老师」，按实际课时发底薪奖励）。
           </div>
         </ElFormItem>
 
@@ -281,9 +351,7 @@
             :step="0.01"
             :precision="4"
           />
-          <div class="form-hint">
-            覆盖阶梯提成，如 0.07 = 固定 7%。清空则按身份标签走阶梯
-          </div>
+          <div class="form-hint"> 覆盖阶梯提成，如 0.07 = 固定 7%。清空则按身份标签走阶梯 </div>
         </ElFormItem>
 
         <div class="form-section">姓名别名</div>
@@ -344,13 +412,24 @@
           <div class="form-hint">工资所属门店（可与账号绑定门店不同）</div>
         </ElFormItem>
         <ElFormItem label="身份标签">
-          <ElSelect v-model="createForm.role" clearable placeholder="不确定就留空，稍后补" style="width: 100%">
+          <ElSelect
+            v-model="createForm.role"
+            clearable
+            placeholder="不确定就留空，稍后补"
+            style="width: 100%"
+          >
             <ElOption v-for="r in roles" :key="r.value" :label="r.label" :value="r.value" />
           </ElSelect>
           <div class="form-hint">留空 = 待完善，不会参与计算；确定后填上即视为已确认</div>
         </ElFormItem>
         <ElFormItem label="备注">
-          <ElInput v-model="createForm.note" maxlength="200" show-word-limit type="textarea" :rows="2" />
+          <ElInput
+            v-model="createForm.note"
+            maxlength="200"
+            show-word-limit
+            type="textarea"
+            :rows="2"
+          />
         </ElFormItem>
       </ElForm>
 
@@ -375,9 +454,9 @@
           </template>
           <div class="text-xs mt-1">
             来源＝系统里真实出现过的人：<b>上过课的老师</b>（随心瑜预约）、
-            <b>有登录账号的员工</b>、<b>留资里登记的上课老师</b>。
-            姓名与门店会填好；<b>身份标签留空、底薪与课时费一律留 0 并标「待完善」</b>，
-            由你补齐 —— 金额是算钱的输入，系统绝不替你猜。
+            <b>有登录账号的员工</b>、<b>留资里登记的上课老师</b>。 姓名与门店会填好；<b
+              >身份标签留空、底薪与课时费一律留 0 并标「待完善」</b
+            >， 由你补齐 —— 金额是算钱的输入，系统绝不替你猜。
           </div>
         </ElAlert>
 
@@ -394,7 +473,9 @@
         </ElTable>
 
         <div v-if="prefillResult.skipped.length" class="mt-3">
-          <div class="text-xs font-500 mb-1">已跳过 {{ prefillResult.skipped.length }} 项（不会重复建档）</div>
+          <div class="text-xs font-500 mb-1"
+            >已跳过 {{ prefillResult.skipped.length }} 项（不会重复建档）</div
+          >
           <div v-for="(s, i) in prefillResult.skipped" :key="i" class="text-xs text-gray-500">
             {{ s.venue }} {{ s.name }} —— {{ s.reason }}
           </div>
@@ -631,12 +712,68 @@
       dialogVisible.value = false
       emit(
         'success',
-        res.changed ? `已保存「${res.profile.name}」的课时费与身份标签` : `「${res.profile.name}」没有改动`
+        res.changed
+          ? `已保存「${res.profile.name}」的课时费与身份标签`
+          : `「${res.profile.name}」没有改动`
       )
     } catch (e) {
       emit('error', payrollErrorMessage(e, '保存失败'))
     } finally {
       saving.value = false
+    }
+  }
+
+  // ---------- 身份标签内联编辑（表格里直接改，不进弹窗） ----------
+
+  /** 当前处于下拉编辑态的行 id；null = 无行在编辑 */
+  const inlineEditingId = ref<number | null>(null)
+  /** 正在提交 PUT 的行 id（单元格旁转圈）；失败回滚后清除 */
+  const inlineSavingId = ref<number | null>(null)
+  const inlineSaving = ref(false)
+  /** 下拉打开瞬间的展示值快照（change 前的 model-value），用于失败回滚 */
+  const inlineDraftRole = ref('')
+
+  function startInlineRole(row: PayrollProfileRow) {
+    if (inlineSaving.value) return // 上一次提交还没落定，不许并发开第二个
+    inlineDraftRole.value = row.role
+    inlineEditingId.value = row.id
+  }
+
+  function cancelInlineRole() {
+    // 下拉收起且没有触发 change：退出编辑态即可，行数据从未被改过
+    if (!inlineSaving.value) inlineEditingId.value = null
+  }
+
+  /**
+   * 就地提交身份标签。只发 `{role}` 一个字段（后端 PUT 保持未提交字段原值），
+   * 成功用 res.profile 整行替换并走 assertSameProfile 防错人，失败回滚并上抛错误。
+   */
+  async function commitInlineRole(row: PayrollProfileRow, newRole: string) {
+    if (newRole === row.role) {
+      inlineEditingId.value = null
+      return
+    }
+    inlineSaving.value = true
+    inlineSavingId.value = row.id
+    try {
+      const res = await updatePayrollProfile(row.id, { role: newRole })
+      // 与 save() 同一防线：后端两段式查找可能错人，先核对再落界面
+      assertSameProfile(row, res.profile)
+      const idx = rows.value.findIndex((r) => r.id === res.profile.id)
+      if (idx >= 0) rows.value[idx] = res.profile
+      emit(
+        'success',
+        res.changed
+          ? `已把「${res.profile.name}」的身份标签改为「${roleLabel(res.profile.role)}」`
+          : `「${res.profile.name}」的身份标签没有改动`
+      )
+    } catch (e) {
+      // 回滚：行数据未被直接改过（下拉只存 draft），退出编辑态即还原显示
+      emit('error', payrollErrorMessage(e, '身份标签保存失败'))
+    } finally {
+      inlineSaving.value = false
+      inlineSavingId.value = null
+      inlineEditingId.value = null
     }
   }
 
@@ -770,7 +907,9 @@
   function profileNote(row: PayrollProfileRow): string {
     const parts: string[] = []
     if (row.feePrivate45Derived) {
-      parts.push(`45 分钟未单独设置，按 60×${fee45Factor.value} 折算为 ${yuan(row.feePrivate45Effective)}`)
+      parts.push(
+        `45 分钟未单独设置，按 60×${fee45Factor.value} 折算为 ${yuan(row.feePrivate45Effective)}`
+      )
     }
     if (row.storeCommissionRate > 0) parts.push(`门店提成 ${percent(row.storeCommissionRate)}`)
     if (row.aliases?.length) parts.push(`别名：${row.aliases.join('、')}`)
@@ -788,6 +927,56 @@
     font-weight: 500;
     color: var(--art-gray-600);
     border-left: 3px solid var(--el-color-primary);
+  }
+
+  // 身份标签内联编辑：Tag 点击切换成下拉，失败回滚（行数据未被改过）
+  .role-cell {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+
+    &__tag {
+      cursor: pointer;
+    }
+
+    &__icon {
+      margin-left: 4px;
+      font-size: 12px;
+      color: var(--art-gray-400);
+    }
+
+    &__select {
+      width: 120px;
+    }
+
+    &__loading {
+      font-size: 14px;
+      color: var(--el-color-primary);
+    }
+  }
+
+  // 课时费紧凑列：五种课型单价并排，45 分钟折算沿用「text-warning + 小字标注」口径
+  .fee-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+    font-size: 12px;
+    line-height: 1.7;
+
+    &__item {
+      white-space: nowrap;
+      color: var(--art-gray-600);
+    }
+
+    &__derived {
+      margin-left: 2px;
+      padding: 0 3px;
+      font-size: 10px;
+      font-style: normal;
+      color: var(--el-color-warning);
+      background: var(--el-color-warning-light-9);
+      border-radius: 2px;
+    }
   }
 
   .form-hint {

@@ -13,11 +13,14 @@ use Tests\TestCase;
 /**
  * 「炸弹会员」清单（v3.3.4 / t11）。
  *
- * 语义：**钱收了、课没上、卡过期很久**。四条口径必须同时成立：
+ * 语义：**钱收了、课没上、卡过期很久、人也很久没来**。五条口径必须同时成立：
  *   1. 正式会员 —— 沿用既有 `scopeMemberCustomers()` 谓词，**不得**新写第二份判定
  *   2. 持有次卡（`type='1'`，排除体验卡/员工卡/测试卡）
  *   3. 该卡有余额（`residue > 0`）
  *   4. 该卡已过期且**过期天数严格大于 183 天**（deadline 早于「今天 − 183 天」）
+ *   5. **超过 183 天没有出勤记录**（2026-09-25 用户补充口径）：
+ *      `last_visit` 为 null（从未到店）视为满足；有 `last_visit` 但距今
+ *      未超过 183 天的排除（近 6 个月来过的人不是炸弹）
  *
  * ─────────────────────────────────────────────────────────────────────────
  * ⚠️ 边界必须用**严格不等号**（captain 已冻结该取法，请勿「修正」）：
@@ -89,12 +92,17 @@ class BombMemberTest extends TestCase
      *
      * `$layer`/`$externalId` 决定它是不是「正式会员」：
      * `scopeMemberCustomers()` = `layer != 'P5' OR external_id like 'ky:%'`。
+     *
+     * `$lastVisit`：默认 400 天前（满足第 5 条「超 6 个月无出勤」）；
+     * 传 'never' 表示「从未到店」（last_visit 落库为 null）；
+     * 传其他日期字符串表示「近期/边界来过」。
      */
     private function member(
         string $name,
         array $cards,
         string $layer = 'P4',
-        ?string $externalId = null
+        ?string $externalId = null,
+        ?string $lastVisit = null
     ): Customer {
         $sum = $this->summarize($cards);
 
@@ -115,7 +123,13 @@ class BombMemberTest extends TestCase
             'card_stats' => $sum['card_stats'],
             'cards_list' => $sum['cards_list'],
             'attend_m1' => 6, 'attend_m2' => 6, 'attend_m3' => 6,
-            'last_visit' => now()->subDays(3)->toDateString(),
+            // 默认 400 天没来：满足第 5 条口径（超过 183 天无出勤）。
+            // 旧值 subDays(3) 在加入出勤口径后会让所有卡项用例的人都不再命中炸弹。
+            // 'never' 哨兵 ⇒ last_visit 落库 null（从未到店）——不能直接用 null 传参：
+            // ?? 兜底会把显式传的 null 一起吞掉，「从未到店」语义就测不到了。
+            'last_visit' => $lastVisit === 'never'
+                ? null
+                : ($lastVisit ?? now()->subDays(400)->toDateString()),
             'card_paid_amount' => 0,
             'in_revive' => 0,
         ]);
@@ -224,6 +238,62 @@ class BombMemberTest extends TestCase
 
         $this->assertNotEmpty($c->fresh()->card_stats['expiredCards'] ?? [], '过期卡数据仍须保留可查');
         $this->assertNotContains($c->id, $this->bombIds(), '只过期 100 天（<183）不算炸弹');
+    }
+
+    // ─────────────────────────────────────── 2.5 第 5 条口径：超 6 个月无出勤
+
+    /**
+     * 口径 5（2026-09-25 用户补充）：近 30 天有出勤记录的**不是**炸弹。
+     *
+     * 卡项口径（次卡+余额+过期超 183 天）全部命中也不行 ——
+     * 人来过就说明还在练，不是「钱收了、课没上、人没来」。
+     */
+    public function test_recent_visitor_is_not_a_bomb(): void
+    {
+        $c = $this->member('近期到店', [$this->card()], lastVisit: now()->subDays(30)->toDateString());
+
+        $this->assertNotContains($c->id, $this->bombIds(), '30 天前来过的人不是炸弹（有出勤记录的不能放炸弹清单）');
+    }
+
+    /** 口径 5：last_visit 为 null（从未到店）也算——比「183 天前来过」更久没来 */
+    public function test_never_visited_member_is_a_bomb(): void
+    {
+        $c = $this->member('从未到店', [$this->card()], lastVisit: 'never');
+
+        // 双保险：先证明 last_visit 确实落库 null（防止哨兵失效让用例静默退化），
+        // 再断言清单命中。若夹具退回 ?? 兜底吞掉 null，第一条断言就会红。
+        $this->assertNull($c->fresh()->last_visit, '哨兵验证：从未到店的会员 last_visit 必须是 null');
+        $this->assertContains($c->id, $this->bombIds(), '从未到店的人满足「超过 6 个月没有出勤记录」');
+    }
+
+    /**
+     * 口径 5 边界：与卡过期口径同用严格不等号。
+     * 恰好 183 天前来过 → 不算（未「超过」6 个月）；184 天前 → 算。
+     */
+    public function test_visit_boundary_is_strictly_greater_than_183_days(): void
+    {
+        $exact183 = $this->member(
+            '恰好183天到店',
+            [$this->card()],
+            lastVisit: now()->subDays(183)->toDateString()
+        );
+        $day184 = $this->member(
+            '184天前到店',
+            [$this->card()],
+            lastVisit: now()->subDays(184)->toDateString()
+        );
+        $ids = $this->bombIds();
+
+        $this->assertNotContains($exact183->id, $ids, '183 天前来过 = 未「超过」6 个月，必须排除（严格 >）');
+        $this->assertContains($day184->id, $ids, '184 天前到店且卡过期超 6 个月必须命中');
+    }
+
+    /** 口径 5 反向：近期来过（3 天前）即便卡过期超 6 个月也不算 */
+    public function test_member_who_visited_3_days_ago_is_not_a_bomb(): void
+    {
+        $c = $this->member('三天前到店', [$this->card()], lastVisit: now()->subDays(3)->toDateString());
+
+        $this->assertNotContains($c->id, $this->bombIds(), '3 天前来过的人绝不能进炸弹清单');
     }
 
     // ─────────────────────────────────────── 3. 正式会员边界（口径 1）

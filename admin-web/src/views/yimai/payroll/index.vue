@@ -59,8 +59,8 @@
             {{ hoursSourceTagText }}
           </ElTag>
           <span class="text-xs text-gray-500">
-            预约记录 {{ hoursSource.bookingSessions }} 课次 ·
-            课时记录 {{ hoursSource.available ? hoursSource.courseRecordSessions + ' 节' : '不可用' }}
+            预约记录 {{ hoursSource.bookingSessions }} 课次 · 课时记录
+            {{ hoursSource.available ? hoursSource.courseRecordSessions + ' 节' : '不可用' }}
           </span>
         </div>
 
@@ -87,6 +87,7 @@
         <ElTabs v-model="activeTab" class="payroll-tabs">
           <ElTabPane name="hours" label="老师课时数" />
           <ElTabPane name="profiles" label="课时费与身份标签" />
+          <ElTabPane name="teachers" label="门店老师一览" />
           <ElTabPane name="performance" label="业绩表导入" />
           <ElTabPane name="inputs" label="考勤 / 社保 / 个税" />
           <ElTabPane name="calc" label="薪酬计算" />
@@ -107,6 +108,14 @@
           :catalog="catalog"
           @error="onError"
           @success="onSuccess"
+        />
+        <!-- 门店老师一览：档案 + 当月课时合并，按门店分组（v3.3.5） -->
+        <PayrollTeachersPanel
+          v-else-if="activeTab === 'teachers'"
+          :month="month"
+          :venue="venue"
+          :catalog="catalog"
+          @error="onError"
         />
         <PayrollPerformancePanel
           v-else-if="activeTab === 'performance'"
@@ -142,6 +151,7 @@
   import { useDevice } from '@/hooks/core/useDevice'
   import PayrollHoursPanel from './modules/hours-panel.vue'
   import PayrollProfilesPanel from './modules/profiles-panel.vue'
+  import PayrollTeachersPanel from './modules/teachers-panel.vue'
   import PayrollPerformancePanel from './modules/performance-panel.vue'
   import PayrollInputsPanel from './modules/inputs-panel.vue'
   import PayrollCalculatePanel from './modules/calc-panel.vue'
@@ -240,7 +250,7 @@
   }
 
   .payroll-tabs {
-    // Tabs 头部在手机上要能横向滚动，否则 5 个标签会把卡片撑出视口
+    // Tabs 头部在手机上要能横向滚动，否则 6 个标签会把卡片撑出视口
     :deep(.el-tabs__nav-wrap) {
       overflow-x: auto;
     }

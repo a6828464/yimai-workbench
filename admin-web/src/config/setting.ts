@@ -57,8 +57,8 @@ export const SETTING_DEFAULT_CONFIG = {
   showLanguage: false,
   /** 是否显示顶部进度条（默认开启，跳转时有反馈） */
   showNprogress: true,
-  /** 是否显示设置引导 */
-  showSettingGuide: true,
+  /** 是否显示设置引导（系统策略：默认关闭，右上角设置图标不再默认弹出引导气泡） */
+  showSettingGuide: false,
   /** 是否显示节日文本 */
   showFestivalText: false,
   /** 是否显示水印 */
