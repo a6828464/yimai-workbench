@@ -24,13 +24,19 @@ use RuntimeException;
  * `PayrollProfileFromMasterSeeder` 负责 —— 解析可被单测直接覆盖，
  * 也避免把「读文件」与「写库」揉成一个难以验证的大事务。
  *
- * ## 🔴 PII：本类**刻意不读**身份证号 / 手机 / 银行卡 / 开户行
+ * ## 🔴 PII：收款账户与联系方式（用户决策 2026-09-26：完整入库）
  *
  * 主档含身份证号、手机号、银行卡号、开户行（sheet 名自己就写着「含身份银行卡」）。
- * `payroll_profiles` 表**没有**这些列，仓库政策也明确「公开仓库，PII 不入库」。
- * 所以本类**只在表头存在性检查里承认这些列**（用于「资料缺口」统计），
- * **取值白名单** `FIELDS` 里一个 PII 列都没有 —— 即使 main 档多出更多敏感列，
- * 也不可能被顺手带进档案行。详见 `docs/验证/v3.3.4-建档导入/` 的交付说明。
+ * 此前按「公开仓库 PII 不入库」政策**刻意不读**这些列（v3.3.4 的交付口径）。
+ * 用户 2026-09-26 明确拍板要在「人员档案」里展示银行卡信息并**完整入库**
+ * ——该决策由用户显式做出，本类相应扩展 `ACCOUNT_FIELDS` 读取白名单
+ * （迁移 `2026_09_26_000001` 建了对应列）。
+ *
+ * 边界仍然收紧：
+ * - 这些字段只经超管端点下发（`/payroll/profiles` 全部 `requireSuper`）；
+ * - 前端展示层默认**掩码**（卡号只显示后 4 位，点「显示」才露出完整卡号）；
+ * - 仓库仍不提交主档 xlsx 本体，这些列由 seeder 从仓库外文件灌入；
+ * - 列缺失不报错（旧版主档没有这些列也能导入），值为空存 `''`。
  *
  * ## 缺失 ≠ 0
  *
@@ -60,9 +66,8 @@ final class PayrollMasterImporter
     /**
      * 取值的**白名单**：只有这些列会被带进档案行。
      *
-     * 键 = 主档列名，值 = 档案行字段名。PII 列（`身份证号`/`手机`/`银行卡号`/
-     * `开户行/网点`/`收款银行`/`联行号`/`转账类型`/`收款户名`）**一律不在表内** ——
-     * 这是「PII 不入库」的**机制**保证，不是靠注释约定。
+     * 键 = 主档列名，值 = 档案行字段名。收款账户/联系方式列在
+     * `ACCOUNT_FIELDS` 里单独维护（用户 2026-09-26 决策入库，见类头注释）。
      */
     private const FIELDS = [
         '人员编号' => 'external_id',
@@ -80,6 +85,25 @@ final class PayrollMasterImporter
         '企业课课时费' => 'fee_enterprise',
         '账户确认状态' => 'account_status',
         '重点提醒' => 'alert',
+    ];
+
+    /**
+     * 收款账户与联系方式列（用户决策 2026-09-26：完整入库）。
+     *
+     * 与 `FIELDS` 分开维护的原因：这批列在旧版主档里**不存在**，读取必须
+     * 「列缺失不报错」（`cell()` 对缺失列天然返回 `''`，恰好满足）；
+     * 且 `stats()` 里的 `skippedColumnsPresent` 审计口径需要单独识别它们。
+     * 文本空存 `''`（与金额列的 `null` 语义不同：卡号没有「未知 vs 0」的歧义）。
+     */
+    private const ACCOUNT_FIELDS = [
+        '收款户名' => 'bank_account_name',
+        '银行卡号' => 'bank_card_no',
+        '开户行/网点' => 'bank_name',
+        '联行号' => 'bank_cnaps',
+        '转账类型' => 'transfer_type',
+        '手机' => 'phone',
+        '身份证号' => 'id_card_no',
+        '企业微信账号' => 'wechat_work',
     ];
 
     /** 金额列（空 = 未知 ⇒ `null`，**绝不写 0**；显式 `0` 落 `0.00`） */
@@ -308,6 +332,16 @@ final class PayrollMasterImporter
         foreach (self::MONEY_FIELDS as $col => $field) {
             $raw = self::cell($cells, $header, $col);
             $row[$field] = $raw === '' ? null : PayrollMoney::fmt(PayrollMoney::cents($raw));
+        }
+
+        // 收款账户与联系方式（用户 2026-09-26 决策入库）。列缺失 → `''`（旧版主档兼容）；
+        // 卡号统一只留数字（Excel 可能把长卡号读成科学计数法或带空格，录入侧无法约束上游）。
+        foreach (self::ACCOUNT_FIELDS as $col => $field) {
+            $raw = self::cell($cells, $header, $col);
+            if (in_array($field, ['bank_card_no', 'bank_cnaps', 'id_card_no', 'phone'], true)) {
+                $raw = preg_replace('/\s+/', '', $raw);
+            }
+            $row[$field] = mb_substr($raw, 0, 120);
         }
 
         // 「待补录」清单：主档里留空的字段。**这不是错误**，是给用户的补录指引 ——
@@ -550,15 +584,35 @@ final class PayrollMasterImporter
     }
 
     /** 主档里存在、但**刻意不导入**的列（PII 与付款资料；落库表没有对应列） */
+    /**
+     * 仍然**刻意不导入**的列（2026-09-26 收紧口径后仅剩无业务含义的杂项）。
+     *
+     * 历史版本这里列着全部 PII 列（手机/身份证/银行卡等）；用户 2026-09-26
+     * 拍板收款账户入库后，那批列已迁入 `ACCOUNT_FIELDS`。
+     * 保留 `收款银行`（全空列，`开户行/网点` 已覆盖）与两个纯文档列。
+     */
     public const SKIPPED_COLUMNS = [
-        '手机', '身份证号', '收款户名', '银行卡号', '开户行/网点', '收款银行', '联行号',
-        '转账类型', '企业微信账号', '资料状态', '来源文件',
+        '收款银行', '资料状态', '来源文件',
     ];
 
-    /** 该列是否属于「不得入库」的敏感列 */
+    /** 该列是否属于「不得入库」的列（杂项/无业务含义） */
     public static function isPiiColumn(string $column): bool
     {
         return in_array($column, self::SKIPPED_COLUMNS, true);
+    }
+
+    /**
+     * 收款账户字段名列表（档案表列名）。
+     *
+     * 供 seeder 遍历写入用（文本字段空值存 `''`，与金额列的「留空不覆盖」语义不同：
+     * 主档就是唯一权威来源，重跑覆盖为空串即「主档确实没这项」）。
+     * 顺序稳定，便于测试断言。
+     *
+     * @return array<int, string>
+     */
+    public static function accountFields(): array
+    {
+        return array_values(self::ACCOUNT_FIELDS);
     }
 
     /**

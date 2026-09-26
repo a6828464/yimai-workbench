@@ -86,8 +86,8 @@
       <ElCard shadow="never">
         <ElTabs v-model="activeTab" class="payroll-tabs">
           <ElTabPane name="hours" label="老师课时数" />
-          <ElTabPane name="profiles" label="课时费与身份标签" />
-          <ElTabPane name="teachers" label="门店老师一览" />
+          <ElTabPane name="profiles" label="课时与业绩" />
+          <ElTabPane name="teachers" label="人员档案" />
           <ElTabPane name="performance" label="业绩表导入" />
           <ElTabPane name="inputs" label="考勤 / 社保 / 个税" />
           <ElTabPane name="calc" label="薪酬计算" />
@@ -109,13 +109,16 @@
           @error="onError"
           @success="onSuccess"
         />
-        <!-- 门店老师一览：档案 + 当月课时合并，按门店分组（v3.3.5） -->
+        <!-- 人员档案（原「门店老师一览」，v3.3.6 改名并聚焦基本信息）：
+             各门店老师的基本信息 —— 身份信息 / 银行卡信息 / 归属门店 / 课时费。
+             课时节数不再在此展示（与「老师课时数」「课时与业绩」重复）。 -->
         <PayrollTeachersPanel
           v-else-if="activeTab === 'teachers'"
           :month="month"
           :venue="venue"
           :catalog="catalog"
           @error="onError"
+          @go-profiles="activeTab = 'profiles'"
         />
         <PayrollPerformancePanel
           v-else-if="activeTab === 'performance'"

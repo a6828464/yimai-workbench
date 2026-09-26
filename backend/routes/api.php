@@ -208,6 +208,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // 否则会被参数化规则当成 userId 吃掉（与上面 copy-from-previous 同一个坑）
     Route::post('/payroll/profiles/prefill', [PayrollController::class, 'prefillProfiles']);
     Route::post('/payroll/profiles', [PayrollController::class, 'storeProfile']);
+    // 人员主档导入：界面直接上传主档 xlsx（支持 dryRun 预览），复用 seeder 的
+    // 幂等落库逻辑 —— 服务器上不再需要手工放置仓库外文件 + 配环境变量
+    Route::post('/payroll/profiles/import-master', [PayrollController::class, 'importMaster']);
     Route::put('/payroll/profiles/{userId}', [PayrollController::class, 'updateProfile']);
     Route::get('/payroll/performance', [PayrollController::class, 'performanceIndex']);
     Route::post('/payroll/performance/preview', [PayrollController::class, 'performancePreview']);

@@ -460,26 +460,20 @@ class PayrollMasterImportTest extends TestCase
     // ==================================================================
 
     /**
-     * PII 不得进入档案行：导入器只取**薪酬计算所需字段**。
+     * 收款账户字段进入档案行（用户决策 2026-09-26：完整入库）。
      *
-     * 这是**机制**保证（取值白名单 `FIELDS` 里没有 PII 列），不是靠注释约定：
-     * 断言解析出的行里不存在 `手机`/`身份证号`/`银行卡号`/`开户行` 等键，
-     * 也断言它们的**值**没有以任何形式混进来。
+     * 历史版本（v3.3.4）这些列按「PII 不入库」政策被刻意跳过；用户明确拍板在
+     * 「人员档案」展示银行卡信息后，收款账户/联系方式列改为导入。
+     * 本用例钉住：值正确映射到英文键；仍然不读的杂项列不出现；键集合恰好等于允许清单。
      */
     public function test_导入器不产生任何PII字段(): void
     {
-        // ⚠️ 这些哨兵值**故意做成不像真 PII**（不是 11 位手机号、不是 18 位证件号）：
-        // 本用例只需要「足够独特、能证明没被带进档案行」的值，而把 PII 形状的
-        // 数字串写进仓库文件本身就违反本文件禁止的那条规则（见 `test_测试文件自身不含真实PII`）。
-        // 真正的「真库里不出现 PII 形状」由 `test_真实主档可完整落库且不含PII` 的
-        // 长度正则兜底 —— 那条不含任何字面量。
         $pii = [
             '手机' => 'SENTINEL-PHONE-NOT-REAL',
             '身份证号' => 'SENTINEL-IDCARD-NOT-REAL',
             '银行卡号' => 'SENTINEL-BANKCARD-NOT-REAL',
             '开户行/网点' => 'SENTINEL-BANK-BRANCH',
             '收款户名' => 'SENTINEL-PAYEE',
-            '收款银行' => 'SENTINEL-BANK',
             '联行号' => 'SENTINEL-BANK-CODE',
             '转账类型' => 'SENTINEL-TRANSFER-TYPE',
             '企业微信账号' => 'SENTINEL-WECOM',
@@ -489,48 +483,37 @@ class PayrollMasterImportTest extends TestCase
             $read = (new PayrollMasterImporter)->read($path);
             $row = $read['rows'][0];
 
-            // ① 行里不得有这些键
-            foreach (array_keys($pii) as $col) {
-                $this->assertArrayNotHasKey($col, $row, "档案行不得含 PII 列「{$col}」");
-            }
-            // ② 值不得以任何形式出现在行里（防止被顺手塞进 note/alert）
-            $flat = json_encode($row, JSON_UNESCAPED_UNICODE);
-            foreach ($pii as $col => $value) {
-                $this->assertStringNotContainsString($value, $flat, "PII 值「{$col}」不得出现在档案行里");
-            }
-            // ③ 导入器必须**知道**这些列存在但不读（否则「没读到」可能只是列名拼错）
-            $this->assertContains('身份证号', $read['stats']['skippedColumnsPresent']);
-            $this->assertContains('银行卡号', $read['stats']['skippedColumnsPresent']);
+            // ① 收款账户字段已入库（用户 2026-09-26 决策）：值正确映射到英文键
+            $this->assertSame('SENTINEL-PHONE-NOT-REAL', $row['phone'] ?? null, '手机号应进入档案行');
+            $this->assertSame('SENTINEL-IDCARD-NOT-REAL', $row['id_card_no'] ?? null, '身份证号应进入档案行');
+            $this->assertSame('SENTINEL-BANKCARD-NOT-REAL', $row['bank_card_no'] ?? null, '银行卡号应进入档案行');
+            $this->assertSame('SENTINEL-BANK-BRANCH', $row['bank_name'] ?? null, '开户行应进入档案行');
+            $this->assertSame('SENTINEL-PAYEE', $row['bank_account_name'] ?? null, '收款户名应进入档案行');
+            $this->assertSame('SENTINEL-BANK-CODE', $row['bank_cnaps'] ?? null, '联行号应进入档案行');
+            $this->assertSame('SENTINEL-TRANSFER-TYPE', $row['transfer_type'] ?? null, '转账类型应进入档案行');
+            $this->assertSame('SENTINEL-WECOM', $row['wechat_work'] ?? null, '企业微信应进入档案行');
 
-            // ④ 关键：档案行的**键集合必须恰好等于允许清单**。
-            //
-            // 只断言「没有 `手机` 这个键」是不够的 —— 把 PII 列改成映射到英文键
-            // （`'手机' => 'phone'`）就能绕过中文键断言。钉住整个键集合，
-            // 任何新增字段（含 PII、含把 `alert` 换成别的名字）都会立刻失败。
+            // ② 键集合恰好等于「薪酬字段 + 收款账户字段」允许清单
             $allowed = [
                 'external_id', 'name', 'venue', 'role', 'status', 'aliases', 'alert',
                 'account_status', 'dual_base_salary', 'status_note', 'row_number',
                 'base_salary', 'performance', 'fee_private60', 'fee_private45',
                 'fee_small', 'fee_group', 'fee_enterprise', 'missing',
+                // 收款账户与联系方式（用户决策 2026-09-26）
+                'bank_account_name', 'bank_card_no', 'bank_name', 'bank_cnaps',
+                'transfer_type', 'phone', 'id_card_no', 'wechat_work',
             ];
             $this->assertEqualsCanonicalizing(
                 $allowed,
                 array_keys($row),
-                '档案行的键必须恰好是薪酬所需字段，多一个都不行（PII 可能换英文键混进来）'
+                '档案行的键必须恰好是薪酬 + 收款账户字段'
             );
-
-            // ⑤ 反向：允许清单里也不得出现任何 PII 语义的字段名
-            foreach (['phone', 'mobile', 'id_card', 'idcard', 'bank_card', 'bank',
-                'bank_account', 'account_no', 'id_number', 'wecom', 'id_no'] as $forbidden) {
-                $this->assertNotContains($forbidden, array_keys($row), "字段名「{$forbidden}」属 PII，不得出现在档案行");
-                $this->assertNotContains($forbidden, $read['stats']['fieldsImported'], "允许清单不得含 PII 字段「{$forbidden}」");
-            }
         } finally {
             @unlink($path);
         }
     }
 
-    /** 落库后表里不得出现 PII：`payroll_profiles` 没有这些列，且任何列的值都不含它们 */
+    /** 落库后收款账户字段进表：用户决策入库，值必须原样落进对应列 */
     public function test_落库结果中不出现PII(): void
     {
         $path = $this->fixture([array_merge($this->samplePeople()[0], [
@@ -545,18 +528,17 @@ class PayrollMasterImportTest extends TestCase
             @unlink($path);
         }
 
-        // 表结构层面：不存在这些列
+        // 表结构层面：收款账户列存在（2026_09_26 迁移建列）
         $columns = \Illuminate\Support\Facades\Schema::getColumnListing('payroll_profiles');
-        foreach (['手机', '身份证号', '银行卡号', '开户行', 'phone', 'id_card', 'bank_card'] as $forbidden) {
-            $this->assertNotContains($forbidden, $columns, "payroll_profiles 不得有 PII 列「{$forbidden}」");
+        foreach (['phone', 'id_card_no', 'bank_card_no', 'bank_name'] as $required) {
+            $this->assertContains($required, $columns, "payroll_profiles 应有收款账户列「{$required}」");
         }
 
-        // 数据层面：整行任何字段都不得含 PII 字面量
+        // 数据层面：值原样落进对应列（用户决策：完整入库）
         $profile = PayrollProfile::where('external_id', 'YM-PII2')->firstOrFail();
-        $flat = json_encode($profile->toApiArray(), JSON_UNESCAPED_UNICODE);
-        $this->assertStringNotContainsString('SENTINEL-PHONE-NOT-REAL', $flat);
-        $this->assertStringNotContainsString('SENTINEL-IDCARD-NOT-REAL', $flat);
-        $this->assertStringNotContainsString('SENTINEL-BANKCARD-NOT-REAL', $flat);
+        $this->assertSame('SENTINEL-PHONE-NOT-REAL', (string) $profile->phone);
+        $this->assertSame('SENTINEL-IDCARD-NOT-REAL', (string) $profile->id_card_no);
+        $this->assertSame('SENTINEL-BANKCARD-NOT-REAL', (string) $profile->bank_card_no);
     }
 
     /**
@@ -938,10 +920,14 @@ class PayrollMasterImportTest extends TestCase
         sort($expected, SORT_STRING);
         $this->assertSame($expected, $dual);
 
-        // PII 不落库：整库序列化后不得出现任何 18/19 位数字串（银行卡/身份证长度）
-        // —— 这是「万一有列偷偷存了」的兜底断言
-        $dump = PayrollProfile::all()->map(fn ($p) => json_encode($p->toApiArray(), JSON_UNESCAPED_UNICODE))->implode('');
-        $this->assertSame(0, preg_match('/(?<!\d)\d{15,19}(?!\d)/', $dump), '档案里不得出现身份证/银行卡长度的数字串');
+        // 收款账户已入库（用户决策 2026-09-26）：卡号列必须**有值**——
+        // 主档 55 人里 50 人有卡号（缺 5 人），断言有卡号的人卡号原样落库。
+        // 长度正则断言随之反转：现在库里**应当**出现银行卡长度的数字串。
+        $withCard = PayrollProfile::where('bank_card_no', '!=', '')->whereNotNull('bank_card_no')->count();
+        $this->assertSame(50, $withCard, '主档 50 人有银行卡号，应全部落库');
+        $meng = PayrollProfile::where('name', '蒙澍南')->firstOrFail();
+        $this->assertNotSame('', (string) $meng->bank_card_no, '蒙澍南的卡号应已入库');
+        $this->assertNotSame('', (string) $meng->bank_name, '开户行应已入库');
 
         // 幂等：再跑一次逐字相同
         $before = PayrollProfile::orderBy('id')->get()->map(fn ($p) => $p->toApiArray())->all();

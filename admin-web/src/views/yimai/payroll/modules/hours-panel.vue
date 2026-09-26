@@ -187,7 +187,7 @@
       <template #title>{{ w.message }}（{{ w.count ?? w.names?.length ?? 0 }} 位）</template>
       <div v-if="w.names?.length" class="text-xs mt-1">未计入合计：{{ w.names.join('、') }}</div>
       <div class="text-xs mt-1">
-        姓名解析依赖薪酬档案的别名数据（由人员主档导入）。请先在「课时费与身份标签」里补齐这些老师的别名或建档。
+        姓名解析依赖薪酬档案的别名数据（由人员主档导入）。请先在「课时与业绩」里补齐这些老师的别名或建档。
       </div>
     </ElAlert>
 

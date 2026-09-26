@@ -285,6 +285,23 @@ export interface PayrollProfileRow {
   status: string
   alert: string
   accountStatus: string
+  // ── 收款账户与联系方式（用户决策 2026-09-26 完整入库；展示层做掩码）──
+  /** 收款户名（可能与真实姓名不同，如代发亲属卡） */
+  bankAccountName: string
+  /** 银行卡号（完整值；界面默认掩码只显示后 4 位，点「显示」露出） */
+  bankCardNo: string
+  /** 开户行/网点 */
+  bankName: string
+  /** 联行号（跨行转账用） */
+  bankCnaps: string
+  /** 转账类型（行内/行外） */
+  transferType: string
+  /** 手机号（主档缺 41 人，空串 = 未提供） */
+  phone: string
+  /** 身份证号（完整值；界面掩码显示） */
+  idCardNo: string
+  /** 企业微信账号 */
+  wechatWork: string
   /**
    * 待完善：档案已建但身份标签/单价未经确认，**不参与工资计算**。
    *
@@ -332,6 +349,15 @@ export interface PayrollProfileUpdate {
   status?: string
   alert?: string
   accountStatus?: string
+  // 收款账户与联系方式（用户决策 2026-09-26 完整入库）
+  bankAccountName?: string
+  bankCardNo?: string
+  bankName?: string
+  bankCnaps?: string
+  transferType?: string
+  phone?: string
+  idCardNo?: string
+  wechatWork?: string
   /** 待完善标记：一般不必手动传（身份标签合法时保存即自动解除） */
   pendingReview?: boolean
   note?: string
@@ -528,6 +554,45 @@ export function previewPayrollPerformance(
   form.append('month', month)
   return apiPost<PayrollPerformancePayload>(
     '/payroll/performance/preview',
+    form as unknown as Record<string, unknown>,
+    120000
+  )
+}
+
+// ---------------------------------------------------------------------------
+// 人员主档导入（POST /payroll/profiles/import-master，v3.3.6）
+// ---------------------------------------------------------------------------
+
+/** 主档导入统计（dryRun 预览与提交共用） */
+export interface PayrollMasterImportStats {
+  total: number
+  valid: number
+  byVenue: Record<string, number>
+  dualBase: string[]
+  aliasRows: number
+  moneyMissing: Record<string, number>
+  blanks: Record<string, number>
+}
+
+export interface PayrollMasterImportResult {
+  dryRun: boolean
+  created?: number
+  updated?: number
+  total?: number
+  stats: PayrollMasterImportStats
+  problems?: string[]
+}
+
+/** 上传人员主档 xlsx（dryRun=true 只解析预览，不落库） */
+export function importPayrollMaster(
+  file: File,
+  dryRun: boolean
+): Promise<PayrollMasterImportResult> {
+  const form = new FormData()
+  form.append('file', file)
+  if (dryRun) form.append('dryRun', '1')
+  return apiPost<PayrollMasterImportResult>(
+    '/payroll/profiles/import-master',
     form as unknown as Record<string, unknown>,
     120000
   )

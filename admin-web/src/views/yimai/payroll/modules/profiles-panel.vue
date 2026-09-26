@@ -21,7 +21,7 @@
     <ElCard shadow="never" class="mb-3">
       <template #header>
         <div class="flex-cb">
-          <span class="font-500">老师课时费与身份标签（{{ rows.length }} 人）</span>
+          <span class="font-500">课时与业绩 · 老师课时费与身份标签（{{ rows.length }} 人）</span>
           <div class="flex-c gap-2">
             <ElSelect
               v-model="roleFilter"
@@ -343,6 +343,35 @@
           />
           <div class="form-hint">小数形式，如 0.02 = 2%。店长默认 2%，留 0 表示不参与门店提成</div>
         </ElFormItem>
+
+        <div class="form-section">收款账户与联系方式（发薪付款用）</div>
+        <ElFormItem label="收款户名">
+          <ElInput v-model="form.bankAccountName" maxlength="60" placeholder="与本人姓名可能不同（如代发亲属卡）" />
+        </ElFormItem>
+        <ElFormItem label="银行卡号">
+          <ElInput v-model="form.bankCardNo" maxlength="32" placeholder="完整卡号" />
+        </ElFormItem>
+        <ElFormItem label="开户行">
+          <ElInput v-model="form.bankName" maxlength="120" placeholder="如 宁波鄞州农村商业银行江北支行" />
+        </ElFormItem>
+        <ElFormItem label="联行号">
+          <ElInput v-model="form.bankCnaps" maxlength="16" placeholder="跨行转账用（12 位）" />
+        </ElFormItem>
+        <ElFormItem label="转账类型">
+          <ElSelect v-model="form.transferType" clearable style="width: 100%">
+            <ElOption label="行内" value="行内" />
+            <ElOption label="行外" value="行外" />
+          </ElSelect>
+        </ElFormItem>
+        <ElFormItem label="手机号">
+          <ElInput v-model="form.phone" maxlength="20" placeholder="主档缺 41 人，可补录" />
+        </ElFormItem>
+        <ElFormItem label="身份证号">
+          <ElInput v-model="form.idCardNo" maxlength="32" placeholder="主档缺 40 人，可补录" />
+        </ElFormItem>
+        <ElFormItem label="企业微信">
+          <ElInput v-model="form.wechatWork" maxlength="60" placeholder="主档缺 26 人，可补录" />
+        </ElFormItem>
         <ElFormItem label="固定提成率">
           <ElInputNumber
             v-model="form.commissionFixedRate"
@@ -532,7 +561,6 @@
   }>()
 
   const emit = defineEmits<{ error: [msg: string]; success: [msg: string] }>()
-
   const { isHandheld } = useDevice()
   const { tableMaxHeight, tableRef } = useTableHeight()
 
@@ -612,6 +640,14 @@
     feeEnterprise: number
     storeCommissionRate: number
     commissionFixedRate: number | null
+    bankAccountName: string
+    bankCardNo: string
+    bankName: string
+    bankCnaps: string
+    transferType: string
+    phone: string
+    idCardNo: string
+    wechatWork: string
     aliases: string[]
     note: string
   }>({
@@ -628,6 +664,14 @@
     feeEnterprise: 0,
     storeCommissionRate: 0,
     commissionFixedRate: null,
+    bankAccountName: '',
+    bankCardNo: '',
+    bankName: '',
+    bankCnaps: '',
+    transferType: '',
+    phone: '',
+    idCardNo: '',
+    wechatWork: '',
     aliases: [],
     note: ''
   })
@@ -657,6 +701,14 @@
       feeEnterprise: row.feeEnterprise,
       storeCommissionRate: row.storeCommissionRate,
       commissionFixedRate: row.commissionFixedRate,
+      bankAccountName: row.bankAccountName ?? '',
+      bankCardNo: row.bankCardNo ?? '',
+      bankName: row.bankName ?? '',
+      bankCnaps: row.bankCnaps ?? '',
+      transferType: row.transferType ?? '',
+      phone: row.phone ?? '',
+      idCardNo: row.idCardNo ?? '',
+      wechatWork: row.wechatWork ?? '',
       aliases: [...(row.aliases ?? [])],
       note: row.note
     }
@@ -694,6 +746,14 @@
         feeGroup: form.value.feeGroup,
         feeEnterprise: form.value.feeEnterprise,
         storeCommissionRate: form.value.storeCommissionRate,
+        bankAccountName: form.value.bankAccountName,
+        bankCardNo: form.value.bankCardNo,
+        bankName: form.value.bankName,
+        bankCnaps: form.value.bankCnaps,
+        transferType: form.value.transferType,
+        phone: form.value.phone,
+        idCardNo: form.value.idCardNo,
+        wechatWork: form.value.wechatWork,
         aliases: form.value.aliases,
         note: form.value.note
       }

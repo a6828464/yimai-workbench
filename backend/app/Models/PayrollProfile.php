@@ -151,6 +151,17 @@ class PayrollProfile extends Model
             'status' => $this->status,
             'alert' => (string) $this->alert,
             'accountStatus' => (string) $this->account_status,
+            // ── 收款账户与联系方式（用户决策 2026-09-26 完整入库；展示层做掩码）──
+            // 下发完整值：编辑弹窗需要可提交的原文；「掩码显示」是前端展示策略，
+            // 不在数据层截断（截了就无法再编辑回正确值）。
+            'bankAccountName' => (string) ($this->bank_account_name ?? ''),
+            'bankCardNo' => (string) ($this->bank_card_no ?? ''),
+            'bankName' => (string) ($this->bank_name ?? ''),
+            'bankCnaps' => (string) ($this->bank_cnaps ?? ''),
+            'transferType' => (string) ($this->transfer_type ?? ''),
+            'phone' => (string) ($this->phone ?? ''),
+            'idCardNo' => (string) ($this->id_card_no ?? ''),
+            'wechatWork' => (string) ($this->wechat_work ?? ''),
             // 待完善：前端要据此打「待完善」标记并提示「不参与计算」
             'pendingReview' => (bool) $this->pending_review,
             'note' => (string) $this->note,

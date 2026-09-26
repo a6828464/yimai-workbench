@@ -7,6 +7,7 @@ use App\Models\Lead;
 use App\Models\PayrollMonthlyInput;
 use App\Models\PayrollProfile;
 use App\Models\User;
+use App\Support\PayrollMasterImporter;
 use App\Support\PayrollMoney;
 use App\Support\PayrollRoles;
 use App\Services\PayrollNameResolver;
@@ -144,6 +145,15 @@ class PayrollController extends Controller
             'status' => 'nullable|string|max:16',
             'alert' => 'nullable|string|max:200',
             'accountStatus' => 'nullable|string|max:60',
+            // 收款账户与联系方式（用户决策 2026-09-26 完整入库）
+            'bankAccountName' => 'nullable|string|max:60',
+            'bankCardNo' => 'nullable|string|max:32',
+            'bankName' => 'nullable|string|max:120',
+            'bankCnaps' => 'nullable|string|max:16',
+            'transferType' => 'nullable|string|max:16',
+            'phone' => 'nullable|string|max:20',
+            'idCardNo' => 'nullable|string|max:32',
+            'wechatWork' => 'nullable|string|max:60',
             'note' => 'nullable|string|max:200',
             // 待完善：true=不参与计算；false/不传且身份标签合法时自动解除
             'pendingReview' => 'nullable|boolean',
@@ -198,6 +208,16 @@ class PayrollController extends Controller
                 'status' => $data['status'] ?? null,
                 'alert' => $data['alert'] ?? null,
                 'account_status' => $data['accountStatus'] ?? null,
+                // 收款账户与联系方式：与上面文本字段同一「null 不覆盖」语义。
+                // 注意空串是合法值（用户清空卡号 = 显式删除），只有不传才保持原值。
+                'bank_account_name' => $data['bankAccountName'] ?? null,
+                'bank_card_no' => $data['bankCardNo'] ?? null,
+                'bank_name' => $data['bankName'] ?? null,
+                'bank_cnaps' => $data['bankCnaps'] ?? null,
+                'transfer_type' => $data['transferType'] ?? null,
+                'phone' => $data['phone'] ?? null,
+                'id_card_no' => $data['idCardNo'] ?? null,
+                'wechat_work' => $data['wechatWork'] ?? null,
                 'note' => $data['note'] ?? null,
             ], fn ($v) => $v !== null));
             $profile->dual_base_salary = $dual;
@@ -317,6 +337,95 @@ class PayrollController extends Controller
         audit($r, '新增薪酬档案', '薪酬计算', $profile->id, $profile->name, $profile->venue, '新增建档（待完善）');
 
         return ok(['profile' => $after, 'binding' => $binding]);
+    }
+
+    /**
+     * POST /api/payroll/profiles/import-master（界面直接上传人员主档 xlsx，v3.3.6）
+     *
+     * 背景：主档是仓库外高敏文件，此前导入需要「把文件传到服务器仓库外目录 +
+     * 配 PAYROLL_MASTER_XLSX_V2 环境变量 + 跑 db:seed」三步，且 SSH/宝塔面板
+     * 都不便传文件。现在超管直接在「人员档案」页上传 xlsx —— 与业绩表导入
+     * 同一交互模式（dryRun 预览 → 确认提交）。
+     *
+     * 幂等与 seeder 同源：按 external_id 定位，留空金额不覆盖既有补录值，
+     * 重复导入逐字相同。收款账户字段（2026-09-26 用户决策入库）以主档为
+     * 唯一权威来源，直接覆盖。
+     */
+    public function importMaster(Request $r)
+    {
+        requireSuper($r);
+        $r->validate([
+            'file' => 'required|file|max:10240',
+            'dryRun' => 'nullable|boolean',
+        ]);
+        $dryRun = (bool) $r->boolean('dryRun');
+
+        $file = $r->file('file');
+        if (! preg_match('/\.xlsx$/i', (string) $file->getClientOriginalName())) {
+            $this->fail(422, 'INVALID_FILE', '只支持 .xlsx 文件（.xls 请先另存为 .xlsx）');
+        }
+        $path = $file->getRealPath();
+        if ($path === false) {
+            $this->fail(422, 'INVALID_FILE', '上传文件读取失败');
+        }
+
+        // 先解析（不落库）：文件结构问题在这一步就报出来
+        try {
+            $read = (new PayrollMasterImporter)->read($path);
+        } catch (\RuntimeException $e) {
+            $this->fail(422, 'INVALID_FILE', $e->getMessage());
+        }
+
+        if ($dryRun) {
+            return ok([
+                'dryRun' => true,
+                'stats' => $this->masterStatsForApi($read['stats']),
+            ]);
+        }
+
+        // 落库：与 seeder 共用同一实现（幂等、账号绑定统一规则）
+        $seeder = new \Database\Seeders\PayrollProfileFromMasterSeeder;
+        $result = $seeder->importFromFile($path);
+
+        audit(
+            $r,
+            '导入人员主档',
+            '薪酬计算',
+            0,
+            (string) $file->getClientOriginalName(),
+            '',
+            json_encode([
+                'created' => $result['created'],
+                'updated' => $result['updated'],
+                'total' => $read['stats']['total'] ?? 0,
+            ], JSON_UNESCAPED_UNICODE) ?: ''
+        );
+
+        return ok([
+            'dryRun' => false,
+            'created' => $result['created'],
+            'updated' => $result['updated'],
+            'total' => PayrollProfile::count(),
+            'stats' => $this->masterStatsForApi($read['stats']),
+            'problems' => $read['stats']['problems'] ?? [],
+        ]);
+    }
+
+    /** 导入统计（给界面的精简版：数字 + 异常清单） */
+    private function masterStatsForApi(array $stats): array
+    {
+        return [
+            'total' => $stats['total'] ?? 0,
+            'valid' => $stats['valid'] ?? 0,
+            'byVenue' => $stats['byVenue'] ?? [],
+            'dualBase' => $stats['dualBase'] ?? [],
+            'aliasRows' => $stats['aliasRows'] ?? 0,
+            'moneyMissing' => $stats['moneyMissing'] ?? [],
+            'blanks' => array_intersect_key(
+                $stats['blanks'] ?? [],
+                array_flip(['手机', '身份证号', '银行卡号', '开户行/网点', '企业微信账号'])
+            ),
+        ];
     }
 
     /**

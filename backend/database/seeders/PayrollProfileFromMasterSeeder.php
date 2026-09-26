@@ -64,6 +64,22 @@ class PayrollProfileFromMasterSeeder extends Seeder
             return;
         }
 
+        $result = $this->importFromFile($path);
+        $this->report($result['stats'], $result['created'], $result['updated'], $result['skippedAliases']);
+    }
+
+    /**
+     * 从主档文件导入（幂等），返回结果统计 —— 供 `run()` 与
+     * `PayrollController::importMaster`（界面直接上传 xlsx）共用同一实现。
+     *
+     * 这是在 v3.3.6 把落库核心从 run() 抽出来的原因：服务器上不再需要
+     * 「手工放置仓库外文件 + 配环境变量 + 跑 db:seed」三步，超管直接在
+     * 「人员档案」页上传主档即可；而 env + seeder 的老路径继续可用（CI/本地）。
+     *
+     * @return array{rows: array, stats: array, created: int, updated: int, skippedAliases: array<int, string>}
+     */
+    public function importFromFile(string $path): array
+    {
         $importer = new PayrollMasterImporter;
         $read = $importer->read($path);
         $rows = $read['rows'];
@@ -72,7 +88,7 @@ class PayrollProfileFromMasterSeeder extends Seeder
         if ($rows === []) {
             $this->command?->warn('新版人员主档里没有可用行，未做任何改动。');
 
-            return;
+            return ['rows' => $rows, 'stats' => $stats, 'created' => 0, 'updated' => 0, 'skippedAliases' => []];
         }
 
         $created = 0;
@@ -121,6 +137,14 @@ class PayrollProfileFromMasterSeeder extends Seeder
                     }
                 }
 
+                // 收款账户与联系方式（用户决策 2026-09-26 完整入库）：
+                // 文本字段直接写入（空 = 主档确实没这项，存 `''`）。
+                // 与金额列的「留空不覆盖」语义不同：主档是这些字段的**唯一权威来源**，
+                // 用户改卡号应改主档再重导，而不是在系统里改出一份与主档分叉的值。
+                foreach (PayrollMasterImporter::accountFields() as $field) {
+                    $profile->{$field} = (string) ($row[$field] ?? '');
+                }
+
                 // 账号绑定：取计划（同一处实现的规则）。
                 // 计划里「已有绑定」的行会原样返回现值 ⇒ 不改绑、不解绑。
                 $decision = $plan[$i] ?? ['userId' => null, 'reason' => null];
@@ -161,7 +185,7 @@ class PayrollProfileFromMasterSeeder extends Seeder
             }
         });
 
-        $this->report($stats, $created, $updated, $skippedAliases);
+        return ['rows' => $rows, 'stats' => $stats, 'created' => $created, 'updated' => $updated, 'skippedAliases' => $skippedAliases];
     }
 
     /** 由本 seeder 追加的机器段前缀（`composeNote()` 只摘这些，不动用户手写正文） */
