@@ -153,11 +153,31 @@ async function main(): Promise<void> {
 
   // ---------------------------------------------------------------------
   // 版本解析：与 vite 构建一致（__APP_VERSION__ = VITE_VERSION）
+  //
+  // 依次尝试多个 mode —— **不能只读 `development`**：
+  //   `.env` 被 .gitignore 忽略（每台机器/部署各自维护），因此 CI 检出里
+  //   **不存在** `.env`；只有 `.env.production` 入库。若固定读 development，
+  //   本脚本在 CI 上必然报「.env 未定义 VITE_VERSION」并以 exit 1 失败
+  //   —— 那样它就从一个护栏变成了一道永久红灯。
+  //   （该故障在接入 CI 时真实发生过一次：本机全绿、CI 红，因为本机有 .env。）
+  //
+  // 取第一个真正定义到 VITE_VERSION 的 mode；两个都没有才算致命。
+  // 各 mode 的 VITE_VERSION 在版本同步时是一起改的（见 make-release 约定），
+  // 故取到哪个都不影响「当前版本键」的判定。
   // ---------------------------------------------------------------------
-  const env = loadEnv('development', ROOT)
+  const env = (() => {
+    for (const mode of ['development', 'production'] as const) {
+      const loaded = loadEnv(mode, ROOT)
+      if (loaded.VITE_VERSION) return loaded
+    }
+
+    return {} as Record<string, string>
+  })()
   const version = env.VITE_VERSION
   if (!version) {
-    log(`${color.red}致命：.env 未定义 VITE_VERSION，无法确定写入端键名口径${color.reset}`)
+    log(
+      `${color.red}致命：.env 与 .env.production 均未定义 VITE_VERSION，无法确定写入端键名口径${color.reset}`
+    )
     process.exit(1)
   }
   Object.defineProperty(globalThis, '__APP_VERSION__', { value: version, configurable: true })
