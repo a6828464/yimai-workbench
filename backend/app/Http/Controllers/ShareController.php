@@ -39,11 +39,34 @@ final class ShareController extends Controller
      * 只挡顶层键是不够的：`cases[].stages`、`info.intro`、`products[].desc`、
      * `coaches[].intro` 这类**内层**位置同样能承载文本，把未授权内容换个容器
      * 就能出网。这里按「对客页真正会渲染的字段」逐层收口。
+     *
+     * `info.complianceNotice`（S18「合规说明」区块）是本白名单的一次**有意新增**：
+     * 合规说明由店长在管理端填写、按 `info.*` 的既有约定进入快照，若不放行就会
+     * 在 `sanitizeSalesPayload()` 里被静默剥掉 —— 前端保存成功、H5 区块空白，
+     * 属于「测试绿但功能坏」。该键的长度/类型约束不在本常量内，见
+     * `COMPLIANCE_NOTICE_MAX_LENGTH` 与 sanitize 里对它的单独收口。
      */
     public const NESTED_FIELDS = [
         'share' => ['enabled', 'code', 'views'],
-        'info' => ['name', 'industry', 'slogan', 'intro', 'address', 'phone'],
+        'info' => ['name', 'industry', 'slogan', 'intro', 'address', 'phone', 'complianceNotice'],
     ];
+
+    /**
+     * `info.complianceNotice` 的最大长度（字符数，非字节）。
+     *
+     * 为什么需要单独特判：`complianceNotice` 与 `info` 里其余 6 个键不同 ——
+     * 那 6 个都是短字段（门店名/行业/口号/简介/地址/电话），简介虽长也有前端
+     * 输入框兜着；合规说明是**自由文本**，且整包 payload 里没有任何其它地方
+     * 限制它，客户端可以塞进数 MB 的字符串，原样进 `published_shares.payload`
+     * 后每次公开读取都要下发一遍。白名单只回答「这个键能不能出网」，
+     * 不回答「能出多大」—— 所以尺寸必须在 sanitize 里单独收口。
+     *
+     * 500 的取值理由：合规说明的用途是「声明已取得会员授权 / 说明案例展示口径 /
+     * 免责提示」，这类文案在对客 H5 上是几行到一段，500 字足以写下完整声明并留
+     * 余量；超过这个量级已不是「说明」，而是把快照当存储用。前端输入框按同一
+     * 上限做校验，服务端仍然是权威截断点（前端校验可被绕过）。
+     */
+    public const COMPLIANCE_NOTICE_MAX_LENGTH = 500;
 
     /** 列表型容器的元素白名单 */
     public const ITEM_FIELDS = [
@@ -643,6 +666,65 @@ final class ShareController extends Controller
                 }
             }
             $out[$container] = $kept;
+        }
+
+        // `info.complianceNotice`：白名单之外的**类型与尺寸**收口（S18 合规说明）。
+        //
+        // 上面的通用循环只回答「这个键在不在白名单里」，不回答「它的值合不合规」。
+        // 对 info 里其余 6 个键这没问题 —— 它们是短字段，尺寸由前端输入框兜着；
+        // 但合规说明是自由文本，客户端可以塞进任意大的字符串（`payload` 本身只校验
+        // `array`，没有任何内层尺寸约束），原样进库后每次公开读取都要下发一遍。
+        // 白名单放行一个键 ≠ 放行它的任意取值，所以这里单独收口。
+        //
+        // 三条规则，都是 fail-closed：
+        //  1. 非字符串 → **删除该键**，不转型。`(string) $arr` 会抛
+        //     「Array to string conversion」并把数组变成字面量 "Array" 写进快照；
+        //     对 `null`/`false`/数字也没有任何「保留」的理由 —— 与上方
+        //     「类型不符即丢弃」同一条规则，不为这个键开例外。
+        //  2. 空白 → **删除该键**，而不是写入空串。写空串会让快照里出现
+        //     `complianceNotice: ""` 这种「已设置但没内容」的脏值，前端据此渲染
+        //     一个空白区块，且无法与「店长没填」区分；不下发该键时前端按缺省处理，
+        //     语义更干净（既有的 info 键不受影响）。
+        //
+        //     「空白」用正则判而不是 PHP 的 trim()：trim() 的默认字符表只含 ASCII
+        //     空白，而中文输入法最常打出的全角空格 U+3000、以及从网页/文档粘来的
+        //     不换行空格 U+00A0 都不在表内 —— 店长粘进一串全角空格就能绕过
+        //     「空白即不写入」，落下一个肉眼看不见的脏值。`/u` 模式下若输入不是
+        //     合法 UTF-8，preg_replace 返回 null，同样按丢弃处理（fail-closed）。
+        //  3. 超长 → 按**字符数**截断到 COMPLIANCE_NOTICE_MAX_LENGTH（见其注释里的
+        //     取值理由）。用 mb_substr 而非 substr：后者按字节切，中文会被切成半个
+        //     字符，产生无效 UTF-8，JSON 编码后是乱码或直接失败。
+        //
+        // 注意这里**不是**转义/净化 HTML：合规说明是对客页要显示的文本，转义属于
+        // 渲染侧（前端按文本插值）的职责，在快照里提前转义会让内容在非 HTML 消费者
+        // 眼里变成 `&lt;` 之类的脏数据。本方法只管「能不能出网」与「能出多大」。
+        //
+        // 入库与下发共用本方法，所以这段在两侧都生效：历史快照里已经存下的超长值，
+        // 下发时同样会被截断（不需要额外的数据搬迁）。
+        //
+        // 判「键存在」用 array_key_exists 而非 isset：`complianceNotice => null`
+        // 也要进入本段处理（isset(null) 为 false，会把「键存在但值为 null」当成
+        // 「键不存在」而跳过，于是 null 原样留在快照里 —— 正是要避免的脏值）。
+        // 外层 `isset($out['info']) && is_array($out['info'])` 是安全的：上面的循环里
+        // info 键只要留下就一定是数组（非数组已被 unset），存在即可安全取内层。
+        if (isset($out['info']) && is_array($out['info'])
+            && array_key_exists('complianceNotice', $out['info'])) {
+            $notice = $out['info']['complianceNotice'];
+
+            if (! is_string($notice)) {
+                unset($out['info']['complianceNotice']);
+            } else {
+                $trimmed = preg_replace('/^[\s\x{00A0}\x{3000}]+|[\s\x{00A0}\x{3000}]+$/u', '', $notice);
+                if ($trimmed === null || $trimmed === '') {
+                    unset($out['info']['complianceNotice']);
+                } else {
+                    $out['info']['complianceNotice'] = mb_substr(
+                        $trimmed,
+                        0,
+                        self::COMPLIANCE_NOTICE_MAX_LENGTH
+                    );
+                }
+            }
         }
 
         // 列表容器（products / coaches / cases）

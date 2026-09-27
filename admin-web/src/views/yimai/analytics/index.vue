@@ -300,11 +300,351 @@
       </ElCol>
     </ElRow>
 
+    <!-- S13 渠道四列：核销率 / 成交率 / 客单。
+         与上方环形图同源同一个 /analytics/channels 响应（rows 已含 channel/leads），
+         不额外发第二个请求。**既有两列原样保留**（channel=来源、leads=留资数）
+         —— 后端也只加不改，别在这里改既有列的键名。
+
+         移动端：本表走**横滑**而不是卡片列表。依据 mobile.scss:11-16 的规范
+         「宽表格一律降级为卡片列表，不要用横向滚动代替 —— 固定列不参与横向滚动，
+         固定列一多就会把中间的数据列挤成零宽」。该规范针对的失效前提是**存在固定列**；
+         本表是既有表的加列（加列后仍无固定列、列数少），前提不成立，故按例外走横滑
+         —— 既保持与原表同构（用户无需重新学习），也不会挤零宽。 -->
+    <ElRow :gutter="16" class="mb-4">
+      <ElCol :span="24" class="mb-4">
+        <ElCard shadow="never" data-test="channel-four-cols">
+          <template #header>
+            <div class="flex-cb media-head">
+              <span class="font-500">渠道效果四列（核销率 / 成交率 / 客单价）</span>
+              <ElTag size="small" effect="plain">含既有两列 · 向后兼容</ElTag>
+            </div>
+          </template>
+          <div v-if="channelRows.length" class="table-scroll-x">
+            <ElTable :data="channelRows" border stripe size="small">
+              <!-- 既有两列（键名与语义都不动）。
+                   ⚠️ 刻意**不加 fixed** —— 本表走横滑的正当性正建立在「无固定列」上；
+                   一旦加固定列就落入 mobile.scss:11-16 所禁止的形态（固定列不参与横滑，
+                   会把中间数据列挤成零宽）。 -->
+              <ElTableColumn prop="channel" label="渠道" min-width="110" />
+              <ElTableColumn prop="leads" label="留资数" align="right" min-width="80" />
+              <!-- S13 新增四列 -->
+              <ElTableColumn label="核销率" align="right" min-width="92">
+                <template #default="{ row }">
+                  {{ row.leads > 0 ? `${row.redeemRate ?? 0}%` : '—' }}
+                  <div class="text-xs text-gray-400"
+                    >{{ row.redeemCount ?? 0 }}/{{ row.leads }}</div
+                  >
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="成交率" align="right" min-width="92">
+                <template #default="{ row }">
+                  {{ row.leads > 0 ? `${row.dealRate ?? 0}%` : '—' }}
+                  <div class="text-xs text-gray-400">{{ row.deals ?? 0 }}/{{ row.leads }}</div>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="客单价" align="right" min-width="100">
+                <template #default="{ row }">
+                  {{ row.deals > 0 ? `¥${money(row.avgDealAmount)}` : '—' }}
+                  <div class="text-xs text-gray-400">成交 ¥{{ money(row.dealAmount) }}</div>
+                </template>
+              </ElTableColumn>
+              <ElTableColumn label="核销金额" align="right" min-width="100">
+                <template #default="{ row }">¥{{ money(row.redeemAmount) }}</template>
+              </ElTableColumn>
+            </ElTable>
+          </div>
+          <ElEmpty v-else description="暂无留资记录" :image-size="60" />
+
+          <div v-if="channelSummary" class="mt-2 text-xs text-gray-400">
+            <div>
+              合计：留资 <strong>{{ channelSummary.leads }}</strong> · 成交
+              {{ channelSummary.deals }} · 核销 {{ channelSummary.redeemCount }} · 整体成交率
+              {{ channelSummary.dealRate }}% · 整体核销率 {{ channelSummary.redeemRate }}% ·
+              整体客单 ¥{{ money(channelSummary.avgDealAmount) }}
+            </div>
+            <div class="mt-1">
+              ⚠️ 核销率是<strong>代理口径</strong>：{{
+                channelFormula.redeemRate ?? '分母用留资数（本地无独立「券售出数」列）'
+              }}
+            </div>
+            <div class="mt-1">成交率：{{ channelFormula.dealRate }}</div>
+            <div class="mt-1">客单价：{{ channelFormula.avgDealAmount }}</div>
+            <div class="mt-1">
+              整体比率按各自分子分母重算，<strong>不是各行比率的平均</strong>；
+              本表「留资数」的合计口径与其他端点同名键语义不同，勿混用。
+            </div>
+          </div>
+        </ElCard>
+      </ElCol>
+    </ElRow>
+
+    <!-- ==================== 战略规划象限② 新增指标（S10–S14）====================
+         口径说明放在每块卡片里，别集中到页脚：运营截屏发出去时截图里要带着口径。 -->
+
+    <!-- S10 收入结构 -->
+    <ElRow :gutter="16" class="mb-4">
+      <ElCol :xs="24" :md="12" class="mb-4">
+        <ElCard shadow="never">
+          <template #header>
+            <div class="flex-cb">
+              <span class="font-500">收入结构（三类课耗卡占比）</span>
+              <ElTag size="small" effect="plain">课时耗卡 ÷ 耗卡总额</ElTag>
+            </div>
+          </template>
+          <div v-if="revenueMix" style="height: 260px">
+            <ArtRingChart
+              v-if="revenueRows.length"
+              :height="'260px'"
+              :data="revenueRows"
+              show-label
+            />
+            <ElEmpty v-else description="该时间段暂无课时耗卡记录" :image-size="60" />
+          </div>
+          <ElEmpty v-else :description="emptyText('收入结构')" :image-size="60" />
+          <div v-if="revenueMix" class="mt-2 text-xs text-gray-400">
+            <div>
+              数据来源：私教/小班/团课按 <strong>课时耗卡金额</strong>（预约签到行的单次价值）聚合；
+              占比分母是<strong>三类耗卡总额 ¥{{ money(revenueMix.consumptionTotal) }}</strong
+              >， 与下方「售卡金额」不是同一分母，故此处各类相加 = 100%。
+            </div>
+            <div class="mt-1">
+              售卡金额 ¥{{ money(revenueMix.cardSales) }}（另一分母，用于「耗卡 ÷ 售卡」的结构参照，
+              两窗口不重叠，不能相加或相减）。
+            </div>
+            <div v-if="revenueMix.degraded.bookingsWithoutAmount > 0" class="mt-1 text-warning">
+              另有
+              {{ revenueMix.degraded.bookingsWithoutAmount }} 条签到行取不到单次价值，耗卡金额按 0
+              计（不估算）：{{ revenueMix.degraded.note }}
+            </div>
+          </div>
+        </ElCard>
+      </ElCol>
+
+      <!-- S11 到店频次 × 续费率曲线：**两图分列**（不做同量级换算）
+           ArtLineChart 不支持双轴，把续费率按系数缩放到人数量级会让观众误读数量级，
+           所以拆成上（人数）/ 下（续费率）两张同 x 轴的图，语义无损。 -->
+      <ElCol :xs="24" :md="12" class="mb-4">
+        <ElCard shadow="never" data-test="attendance-renewal">
+          <template #header>
+            <div class="flex-cb media-head">
+              <span class="font-500">到店频次 × 续费率</span>
+              <!-- 用户拍板的口径，硬性要求标注在图上；极易被后人误改成其他窗口/口径 -->
+              <ElTag size="small" type="warning" effect="dark">窗口 30 天 · 按人计</ElTag>
+            </div>
+          </template>
+          <div v-if="curve" class="curve-block">
+            <div class="curve-block__title">各档会员人数</div>
+            <div style="height: 180px">
+              <ArtLineChart
+                v-if="curve.buckets.length"
+                :height="'180px'"
+                :data="curveMemberSeries"
+                :x-axis-data="curveLabels"
+                smooth
+                show-area-color
+              />
+              <ElEmpty v-else description="暂无会员数据" :image-size="60" />
+            </div>
+            <div class="curve-block__title mt-3">各档续费率（%）</div>
+            <div style="height: 180px">
+              <ArtLineChart
+                v-if="curve.buckets.length"
+                :height="'180px'"
+                :data="curveRateSeries"
+                :x-axis-data="curveLabels"
+                smooth
+              />
+              <ElEmpty v-else description="暂无会员数据" :image-size="60" />
+            </div>
+
+            <div class="mt-2 text-xs text-gray-400">
+              <div>
+                口径：<strong>近 {{ curve.window.windowDays }} 天</strong>到店次数（字段
+                <code>{{ curve.window.attendField }}</code
+                >）分 {{ curve.buckets.length }} 档；<strong>续费率按人算</strong>（分母 =
+                该档会员人数， 分子 = 该档已续费人数），续费率 = renewedCount ÷ memberCount。
+              </div>
+              <div class="mt-1">续费判定：{{ curve.renewalCriterion }}</div>
+              <div class="mt-1 text-warning">取数陷阱：{{ curve.window.trap }}</div>
+              <div class="mt-1">
+                合计 {{ curve.totalMembers }} 人 / 已续 {{ curve.totalRenewed }} 人，整体续费率
+                {{ curve.overallRenewalRate }}%。
+                <span v-if="curve.buckets.some((b) => b.memberCount === 0)" class="text-warning">
+                  有档位样本为 0：分母为 0 时续费率显示「—」而不是 0%，小样本档的正负号不可当结论。
+                </span>
+              </div>
+              <div v-if="curve.unbucketed > 0" class="mt-1 text-warning">
+                另有 {{ curve.unbucketed }} 人未能归入任何档（桶定义异常），未计入曲线。
+              </div>
+            </div>
+          </div>
+          <ElEmpty v-else :description="emptyText('到店频次')" :image-size="60" />
+        </ElCard>
+      </ElCol>
+    </ElRow>
+
+    <!-- S12 未耗课余额分桶（卡数口径） -->
+    <ElRow :gutter="16" class="mb-4">
+      <ElCol :span="24" class="mb-4">
+        <ElCard shadow="never" data-test="asset-buckets">
+          <template #header>
+            <div class="flex-cb media-head">
+              <span class="font-500">未耗课余额分桶（期限档 × 卡种）</span>
+              <ElTag size="small" effect="plain">卡数口径 · 非金额</ElTag>
+            </div>
+          </template>
+
+          <!-- 宽表在手持设备降级为卡片（依据 mobile.scss:11-16：宽表格一律卡片化，
+               不要用横滑代替 —— 固定列不参与横滑会把数据列挤成零宽）。本表无固定列，
+               但 5 列 × 16 行在 390px 上仍不可读，故同样走卡片。 -->
+          <template v-if="assetBuckets">
+            <ElTable
+              v-if="!isHandheld"
+              :data="assetRows"
+              border
+              stripe
+              size="small"
+              :summary-method="assetSummary"
+              show-summary
+            >
+              <ElTableColumn prop="deadlineLabel" label="剩余期限" min-width="150" fixed />
+              <ElTableColumn
+                v-for="t in ASSET_TYPES"
+                :key="t.key"
+                :label="t.label"
+                align="right"
+                min-width="90"
+              >
+                <template #default="{ row }">{{ row.cells[t.key] || '—' }}</template>
+              </ElTableColumn>
+              <ElTableColumn label="小计" align="right" min-width="90">
+                <template #default="{ row }"
+                  ><strong>{{ row.subtotal }}</strong></template
+                >
+              </ElTableColumn>
+            </ElTable>
+
+            <div v-else class="m-card-list">
+              <MobileCard
+                v-for="row in assetRows"
+                :key="row.key"
+                :title="row.deadlineLabel"
+                :subtitle="`该期限档合计 ${row.subtotal} 张`"
+                :metrics="assetCardMetrics(row)"
+              />
+              <div class="m-card-list__empty text-sm text-gray-400">
+                合计 {{ assetBuckets.totalCards }} 张卡
+              </div>
+            </div>
+
+            <div class="mt-2 text-xs text-gray-400">
+              <div>
+                共 <strong>{{ assetBuckets.totalCards }}</strong> 张有效卡（每张卡计
+                1，与金额无关）。 交叉表 {{ ASSET_TYPES.length }} 卡种档 × 期限档 =
+                {{ assetRows.length }} 行。
+              </div>
+              <!-- 余额维度（后端单列的下发数据，不并进交叉表 —— 它是第二个切面，
+                   并进去会让「张数」被重复计算） -->
+              <div v-if="assetBuckets.byResidue.length" class="mt-1">
+                按余额：
+                <span v-for="(r, i) in assetBuckets.byResidue" :key="r.key">
+                  <template v-if="i > 0"> · </template>{{ r.label }} {{ r.cardCount }} 张（{{
+                    r.ratio
+                  }}%）
+                </span>
+              </div>
+              <div v-if="assetBuckets.note" class="mt-1">{{ assetBuckets.note }}</div>
+              <div v-if="assetBuckets.scope" class="mt-1">人员范围：{{ assetBuckets.scope }}</div>
+              <div v-if="!assetBuckets.integrity.balanced" class="mt-1 text-warning">
+                自洽性校验未通过：交叉表合计 {{ assetBuckets.integrity.cellSum }} ≠ 总卡数
+                {{ assetBuckets.integrity.totalCards }}，请核对数据。
+              </div>
+              <!-- 口径差异（队长裁定 a）：不做对账差值展示，只指向权威处，
+                   避免两个不同源的数字并排被误读成「误差」。 -->
+              <div class="mt-1">
+                本表为<strong>本地卡片口径</strong>（不含已过期卡，与同步白名单一致）；
+                上游剩余资产见「经营概览」，两者不同源、不同量纲，<strong>不可互相校验</strong>。
+              </div>
+            </div>
+          </template>
+          <ElEmpty v-else :description="emptyText('未耗课余额分桶')" :image-size="60" />
+        </ElCard>
+      </ElCol>
+    </ElRow>
+
+    <!-- S14 体验卡 → 会员卡转化率排行 -->
+    <ElRow :gutter="16" class="mb-4">
+      <ElCol :span="24" class="mb-4">
+        <ElCard shadow="never" data-test="trial-conversion">
+          <template #header>
+            <div class="flex-cb media-head">
+              <span class="font-500">体验卡 → 会员卡转化率排行（按会籍顾问）</span>
+              <ElTag size="small" type="warning" effect="dark">按人计 · 非卡口径</ElTag>
+            </div>
+          </template>
+
+          <template v-if="trialConversion">
+            <ElTable v-if="!isHandheld" :data="trialConversion.rows" border stripe size="small">
+              <ElTableColumn type="index" label="#" width="52" align="center" />
+              <ElTableColumn prop="teacher" label="会籍顾问" min-width="110" />
+              <ElTableColumn prop="trialPeople" label="体验人数" align="right" min-width="90" />
+              <ElTableColumn prop="convertedPeople" label="转化人数" align="right" min-width="90" />
+              <ElTableColumn label="转化率" align="right" min-width="100">
+                <template #default="{ row }">
+                  <strong>{{ row.trialPeople > 0 ? `${row.conversionRate}%` : '—' }}</strong>
+                </template>
+              </ElTableColumn>
+              <!-- 卡口径仅作过程量核对，视觉上弱化，避免与主指标并列被误当第二个结论 -->
+              <ElTableColumn label="卡口径(参考)" align="right" min-width="110">
+                <template #default="{ row }">
+                  <span class="text-gray-400">
+                    {{ row.trialCards > 0 ? `${row.conversionRateByCard}%` : '—' }}
+                    <span class="text-xs">({{ row.convertedCards }}/{{ row.trialCards }})</span>
+                  </span>
+                </template>
+              </ElTableColumn>
+            </ElTable>
+
+            <div v-else class="m-card-list">
+              <MobileCard
+                v-for="(row, i) in trialConversion.rows"
+                :key="row.teacher"
+                :title="`${i + 1}. ${row.teacher}`"
+                :subtitle="`体验卡口径 ${row.convertedCards}/${row.trialCards}（仅供参考）`"
+                :metrics="trialCardMetrics(row)"
+              />
+              <div
+                v-if="!trialConversion.rows.length"
+                class="m-card-list__empty text-sm text-gray-400"
+              >
+                暂无体验卡转化数据
+              </div>
+            </div>
+
+            <div class="mt-2 text-xs text-gray-400">
+              <div>
+                排名按<strong>按人口径</strong>转化率倒序（同率时样本量大的在前）。整体
+                {{ trialConversion.totalConvertedPeople }}/{{ trialConversion.totalTrialPeople }} =
+                {{ trialConversion.overallConversionRate }}%。
+              </div>
+              <div v-if="trialConversion.note" class="mt-1">{{ trialConversion.note }}</div>
+              <div class="mt-1">{{ trialConversion.formula.overall }}</div>
+            </div>
+          </template>
+          <ElEmpty v-else :description="emptyText('体验卡转化')" :image-size="60" />
+        </ElCard>
+      </ElCol>
+    </ElRow>
+
     <ElRow :gutter="16">
       <ElCol :xs="24" :md="12" class="mb-4">
         <ElCard shadow="never">
+          <!-- 口径修正（仅文案，判定逻辑未变）：
+               原文案写「最近三个自然月」，实际 attendanceWindows() 给的是三个
+               **连续且等长的 30 天滚动窗口**（不是自然月），两者在同一个人身上
+               会给出不同的数字，措辞必须与实现一致。 -->
           <template #header
-            ><span class="font-500">活跃度（最近三个自然月有签到的会员）</span></template
+            ><span class="font-500">活跃度（三个连续 30 天窗口内有签到的会员）</span></template
           >
           <div class="grid grid-cols-4 gap-3 text-center py-2">
             <div>
@@ -324,9 +664,13 @@
               <div class="text-xs text-gray-400 mt-1">30天到店</div>
             </div>
           </div>
-          <div class="mt-2 text-xs text-gray-400"
-            >M1=最近完整月，M3=最早完整月。签到下降趋势用于出勤降低预警。</div
-          >
+          <!-- 口径修正（仅文案，判定逻辑未变）：原写「M1=最近完整月，M3=最早完整月」，
+               与 attendanceWindows() 相反 —— 实际 M1=60~89 天前（最旧）、M2=30~59 天前、
+               M3=近 30 天（含今天，最新）。这里写反会让「出勤降低」的判读整个倒过来。 -->
+          <div class="mt-2 text-xs text-gray-400">
+            M1=60~89 天前（最旧）· M2=30~59 天前 · M3=近 30 天（最新，含今天）。三者等长，
+            故可直接比较；签到下降趋势用于出勤降低预警。
+          </div>
         </ElCard>
       </ElCol>
       <ElCol :xs="24" :md="12" class="mb-4">
@@ -380,14 +724,37 @@
 <script setup lang="ts">
   import { apiGet } from '@/api/backend'
   import { fetchPayrollCalculate } from '@/api/payroll'
-  import { getDashboardSeries, mediaSplitRowFrom, checkMediaSplitSums } from '@/api/yimai'
+  import {
+    getDashboardSeries,
+    mediaSplitRowFrom,
+    checkMediaSplitSums,
+    getAttendanceRenewalCurve,
+    getAssetBuckets,
+    getTrialConversion
+  } from '@/api/yimai'
   import { toLocalDateString } from '@/utils'
   import { useRouter } from 'vue-router'
-  import type { MediaPerformance, MediaSplitRow, DashboardSummary } from '@/api/yimai'
+  import { useDevice } from '@/hooks/core/useDevice'
+  import type {
+    MediaPerformance,
+    MediaSplitRow,
+    DashboardSummary,
+    ChannelSummary,
+    ChannelFormula,
+    ChannelLeadItem,
+    AttendanceRenewalCurve,
+    AssetBuckets,
+    TrialConversionResult,
+    TrialConversionRow,
+    RevenueMix
+  } from '@/api/yimai'
+  import type { MobileCardMetric } from '@/components/business/mobile-card/types'
 
   defineOptions({ name: 'YimaiAnalytics' })
 
   const router = useRouter()
+  // 手持设备（<=768）：三张新表降级为卡片列表（断点唯一来源 breakpoints.ts，勿硬编码）
+  const { isHandheld } = useDevice()
 
   /** 跳到同栏目下的「薪酬计算」页（仅超管，路由组已限） */
   function goPayroll() {
@@ -641,7 +1008,121 @@
 
   // ---------- 来源分布（真实数据） ----------
   const channelLoading = ref(false)
-  const channelRows = ref<{ channel: string; leads: number }[]>([])
+  const channelRows = ref<ChannelLeadItem[]>([])
+  /** S13 四列的合计（后端重算的整体比率，不是各行比率的平均） */
+  const channelSummary = ref<ChannelSummary | undefined>(undefined)
+  /** S13 四列的公式说明（含核销率的**代理口径**限定，必须原样展示） */
+  const channelFormula = ref<ChannelFormula>({})
+
+  // ---------- S10 收入结构 / S11 频次×续费率 / S12 分桶 / S14 转化率 ----------
+  //
+  // 四个新数据块**各自独立降级**：任一接口失败只让该卡片显示空态，
+  // 不影响其它块与既有图表（后端缓存/首次聚合较慢，用 Promise.allSettled 并发拉取）。
+  const revenueMix = ref<RevenueMix | undefined>(undefined)
+  const curve = ref<AttendanceRenewalCurve | undefined>(undefined)
+  const assetBuckets = ref<AssetBuckets | undefined>(undefined)
+  const trialConversion = ref<TrialConversionResult | undefined>(undefined)
+
+  /**
+   * 象限② 数据是否仍在加载。
+   *
+   * 没有这个标志时，首屏会先渲染「XXX数据加载失败」再突然变成图表 —— 把「还没回来」
+   * 谎报成「失败了」。空态与失败态必须分开（本页既有注释也强调过区分二者）。
+   */
+  const metricsLoading = ref(true)
+
+  /** 空态文案：加载中不写「失败」，加载完才可能是真失败 */
+  function emptyText(name: string): string {
+    return metricsLoading.value ? '加载中…' : `${name}数据加载失败`
+  }
+
+  /** S10 环形图数据：用 `share`（÷耗卡总额，三类相加=100），**不是** ratio */
+  const revenueRows = computed(() => {
+    const m = revenueMix.value
+    if (!m) return []
+    return (['private', 'small', 'group'] as const)
+      .map((k) => ({ name: m[k].label, value: m[k].amount }))
+      .filter((x) => x.value > 0)
+  })
+
+  /** S11 上图：各档人数 */
+  const curveLabels = computed(() => (curve.value?.buckets ?? []).map((b) => b.label))
+  const curveMemberSeries = computed(() => [
+    { name: '会员人数', data: (curve.value?.buckets ?? []).map((b) => b.memberCount) }
+  ])
+  /** S11 下图：各档续费率（%）。单独一张图而不是同图双线 —— 见模板注释 */
+  const curveRateSeries = computed(() => [
+    { name: '续费率(%)', data: (curve.value?.buckets ?? []).map((b) => b.renewalRate) }
+  ])
+
+  /** S12 卡种列（与后端 $typeBuckets 逐字一致，含其它卡种兜底列） */
+  const ASSET_TYPES = [
+    { key: 'count', label: '次卡' },
+    { key: 'time', label: '期限卡' },
+    { key: 'stored', label: '储值卡' },
+    { key: 'other', label: '其它卡种' }
+  ] as const
+
+  /**
+   * S12 交叉表：把后端的 16 个扁平格聚成「一行一个期限档」。
+   *
+   * 行序按后端 byDeadline 的顺序（含「到期日未知」），不从 buckets 自己分组 ——
+   * 后端是桶定义的唯一来源，前端另立一套顺序会在后端调档位时静默错位。
+   */
+  const assetRows = computed(() => {
+    const b = assetBuckets.value
+    if (!b) return []
+    const order = b.byDeadline.map((d) => d.key)
+    return order.map((key) => {
+      const cells: Record<string, number> = {}
+      let subtotal = 0
+      for (const c of b.buckets) {
+        if (c.deadlineBucket !== key) continue
+        cells[c.cardType] = c.cardCount
+        subtotal += c.cardCount
+      }
+      return {
+        key,
+        deadlineLabel: b.byDeadline.find((d) => d.key === key)?.label ?? key,
+        cells,
+        subtotal
+      }
+    })
+  })
+
+  /** S12 合计行：走 ElTable 的 show-summary（本页无先例，若不显示则改手工行） */
+  function assetSummary({ columns }: { columns: { property?: string }[] }): string[] {
+    const total = assetBuckets.value?.totalCards ?? 0
+    return columns.map((_c, i) => {
+      if (i === 0) return '合计'
+      if (i === columns.length - 1) return String(total)
+      const key = ASSET_TYPES[i - 1]?.key
+      if (!key) return '—'
+      const sum = assetRows.value.reduce((s, r) => s + (r.cells[key] ?? 0), 0)
+      return String(sum)
+    })
+  }
+
+  /** S12 手持端卡片指标：该期限档下各卡种张数（4 个，符合 MobileCard 的 2–4 建议） */
+  function assetCardMetrics(row: { cells: Record<string, number> }): MobileCardMetric[] {
+    return ASSET_TYPES.map((t) => ({
+      label: t.label,
+      value: row.cells[t.key] ?? 0,
+      unit: '张'
+    }))
+  }
+
+  /** S14 手持端卡片指标：按人口径为主，卡口径弱化为副标题 */
+  function trialCardMetrics(row: TrialConversionRow): MobileCardMetric[] {
+    return [
+      { label: '体验人数', value: row.trialPeople, unit: '人' },
+      { label: '转化人数', value: row.convertedPeople, unit: '人' },
+      {
+        label: '转化率',
+        value: row.trialPeople > 0 ? `${row.conversionRate}%` : '—'
+      }
+    ]
+  }
 
   // ---------- 活跃度 ----------
   const attend = ref({ m1: 0, m2: 0, m3: 0 })
@@ -697,11 +1178,15 @@
       trends.value = { visit30: t.visit30 ?? 0, activeCustomers: t.activeCustomers ?? 0 }
       // 新媒体业绩 + 分店拆分单独按自然月取（见 currentMonth() 注释：滚动窗口会跨月导致对不上账）
       await loadMedia()
-      const c = await apiGet<{ rows: { channel: string; leads: number }[]; total: number }>(
-        '/analytics/channels',
-        { start, end }
-      )
+      const c = await apiGet<{
+        rows: ChannelLeadItem[]
+        total: number
+        summary?: ChannelSummary
+        formula?: ChannelFormula
+      }>('/analytics/channels', { start, end })
       channelRows.value = (c.rows ?? []).sort((a, b) => b.leads - a.leads)
+      channelSummary.value = c.summary
+      channelFormula.value = c.formula ?? {}
     } catch (e) {
       // 区分「加载失败」与「无数据」，避免故障时 KPI 静默显示 0 误导决策
       const status = (e as { response?: { status?: number } })?.response?.status
@@ -712,18 +1197,47 @@
     }
   }
 
+  /**
+   * 象限② 四个新数据块并发拉取。
+   *
+   * 用 allSettled 而不是 all：任一接口失败只让该卡片显示空态，
+   * 不能让一个慢/坏的端点把整页新指标全打成空白（四个端点各自独立缓存）。
+   *
+   * S10 不在这里 —— `revenueMix` 是 `/analytics/summary` 的新增键，
+   * 与既有 KPI 同一个请求，在 onMounted 里一并取回，不额外发第二次。
+   */
+  async function loadQuadrantTwo(): Promise<void> {
+    try {
+      const [curveRes, assetRes, trialRes] = await Promise.allSettled([
+        getAttendanceRenewalCurve(),
+        getAssetBuckets(),
+        getTrialConversion()
+      ])
+      curve.value = curveRes.status === 'fulfilled' ? curveRes.value : undefined
+      assetBuckets.value = assetRes.status === 'fulfilled' ? assetRes.value : undefined
+      trialConversion.value = trialRes.status === 'fulfilled' ? trialRes.value : undefined
+    } finally {
+      // 无论成败都要落下来，否则首屏空态会永远停在「加载中…」
+      metricsLoading.value = false
+    }
+  }
+
   onMounted(async () => {
     try {
-      const res = await apiGet<Record<string, number>>('/analytics/summary')
-      d.value = { ...d.value, ...res }
+      const res = await apiGet<Record<string, unknown>>('/analytics/summary')
+      // 既有 KPI 全是数字；revenueMix 是 S10 新并入的对象键，单独取出来，
+      // 不要并进 d（d 的声明是数字映射，并入对象会污染既有渲染与类型）。
+      const { revenueMix: mix, ...rest } = res
+      d.value = { ...d.value, ...(rest as Record<string, number>) }
+      revenueMix.value = (mix as RevenueMix | undefined) ?? undefined
       analyticsError.value = ''
     } catch (e) {
       const status = (e as { response?: { status?: number } })?.response?.status
       analyticsError.value = status === 401 || status === 403 ? '' : '看板数据加载失败，请稍后重试'
     }
     await loadTrends()
-    // 薪酬概括与看板其它数据并行拉取（薪酬计算较重，不阻塞上面的图表）
-    await loadPayrollSummary()
+    // 象限② 新指标与薪酬概括都不阻塞上面的既有图表
+    await Promise.all([loadQuadrantTwo(), loadPayrollSummary()])
   })
 </script>
 
@@ -802,6 +1316,32 @@
         flex-direction: column;
         align-items: flex-start;
       }
+    }
+  }
+
+  // S13 渠道四列表：窄屏横向滑动而不挤压列。
+  // 断点走全局注入的 $bp-handheld（与 breakpoints.ts 同值），不硬编码像素。
+  // ⚠️ 本表是 mobile.scss「宽表格一律卡片化」规范的**有意例外**，
+  //    理由见模板里 S13 那段注释（无固定列 ⇒ 规范的失效前提不成立）。
+  .table-scroll-x {
+    @include respond-below($bp-handheld) {
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      -webkit-overflow-scrolling: touch;
+
+      :deep(.el-table) {
+        min-width: 620px;
+        font-size: 12px;
+      }
+    }
+  }
+
+  // S11 两图分列的小标题（上图人数 / 下图续费率）
+  .curve-block {
+    &__title {
+      font-size: 12px;
+      color: var(--art-gray-500);
+      margin-bottom: 4px;
     }
   }
 </style>

@@ -123,6 +123,14 @@
               >复制地址</button
             >
           </div>
+          <!-- 合规说明（S18）：对客文案。
+               后端在「键缺失 / 空白（含全角空格、U+00A0）/ 非字符串」时**不下发该键**，
+               所以这里必须按「键不存在即整块不渲染」处理 —— 渲染一个空卡片会让客户
+               以为门店漏填了，而实际语义是「本店无需声明」。 -->
+          <div v-if="complianceNotice" class="card mt-4 text-xs leading-5 text-gray-500">
+            <p class="font-500 mb-1 text-gray-600">合规说明</p>
+            <p class="whitespace-pre-wrap">{{ complianceNotice }}</p>
+          </div>
           <p class="mt-4 text-center text-xs text-gray-400">© 一麦瑜伽 · 双店运营</p>
         </section>
       </main>
@@ -242,6 +250,20 @@
       d.share && typeof d.share === 'object' ? (d.share as Record<string, unknown>) : undefined
     return { ...d, share, info }
   }
+
+  /**
+   * 合规说明（S18）。
+   *
+   * 后端对「键缺失 / 空白（含全角空格、U+00A0）/ 非字符串」一律**不下发该键**，
+   * 所以这里返回 null 表示「整块不渲染」——不要退化成空串去渲染一个空卡片：
+   * 那会让客户以为门店漏填，而真实语义是「本店无需声明」。
+   */
+  const complianceNotice = computed(() => {
+    const n = info.value?.complianceNotice
+    if (typeof n !== 'string') return null
+    const t = n.trim()
+    return t === '' ? null : t
+  })
 
   /** 电话链接：号码缺失/非字符串时返回 null（模板据此不渲染按钮） */
   const telHref = computed(() => {

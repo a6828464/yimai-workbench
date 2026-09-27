@@ -8,7 +8,22 @@ export interface SalesStoreInfo {
   intro: string
   address: string
   phone: string
+  /**
+   * 合规说明（S18）：在 H5 分享页展示的一段对客文案
+   * （案例授权声明 / 免责提示 / 展示口径说明）。
+   *
+   * ⚠️ 与 info 里其余 6 个键不同，后端对它有**类型与尺寸收口**：
+   *  - 上限 500 字（`ShareController::COMPLIANCE_NOTICE_MAX_LENGTH`），前端同限；
+   *  - 键缺失 / 空白（含全角空格与 U+00A0）/ 非字符串时，后端**不下发该键**（不是空串）。
+   *    所以 H5 侧一律按「键不存在」处理缺省，不要用 `?? ''` 去构造空区块。
+   *
+   * 可选：老快照里没有这个键。
+   */
+  complianceNotice?: string
 }
+
+/** 合规说明长度上限，与后端 `ShareController::COMPLIANCE_NOTICE_MAX_LENGTH` 同源 */
+export const COMPLIANCE_NOTICE_MAX_LENGTH = 500
 
 export interface SalesProduct {
   id: number

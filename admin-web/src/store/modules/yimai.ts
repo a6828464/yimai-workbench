@@ -26,6 +26,14 @@ export interface YimaiLead {
   wechat?: string
   demand: string
   source: string
+  /**
+   * 介绍人姓名（S15）。
+   *
+   * 仅当来源是「转介绍 / 会员转介绍 / 老会员转介绍」时语义上有值，但后端**不做必填校验**
+   * （只做长度 max:50，见 `LeadController::referrerRules()`），所以这里也保持可选。
+   * 统计转介绍占比时按**三者之和**算（三者在枚举里刻意并存）。
+   */
+  referrer?: string | null
   /** 体验课下单平台 */
   orderPlatform?: string
   venue: '绿地店' | '东部店'
@@ -169,6 +177,19 @@ export interface MemberRules {
   mediaValidMonths: number
   /** 炸弹会员：卡已过期且最后一次出勤距今超过 N 天（默认 183 ≈ 6 个月） */
   bombExpiredDays: number
+  /**
+   * 卡项限额（S16「上海三限」合规口径）。
+   *
+   * ⚠️ 四个键的 **0 = 不限制** 是统一约定（与后端 `helpers.php` 的 `rules()` 同源），
+   * 所以前端输入框的 `:min` 必须是 0 —— 设成 1 等于把「关闭该限额」这个合法状态删掉。
+   *
+   * 后端只做**软提示不阻断**（响应 `data.warnings`，HTTP 200），所以这四个值即使
+   * 配得偏严也不会造成数据损失。
+   */
+  capMembershipAmount: number
+  capMembershipMonths: number
+  capLessonAmount: number
+  capLessonTimes: number
 }
 
 export interface YimaiSyncSnapshot {
@@ -217,7 +238,14 @@ const DEFAULT_RULES: MemberRules = {
   renewalExpiredBackfillDays: 90,
   mediaVisitReward: 20,
   mediaValidMonths: 2,
-  bombExpiredDays: 183
+  bombExpiredDays: 183,
+  // 卡项限额（S16）。默认取上海上限而非 0：即使没人去改配置，超限软提示也立刻可用。
+  // ⚠️ 这两处 DEFAULT 必须与 `api/yimai.ts` 的 DEFAULT_MEMBER_RULES 同步 ——
+  //    漏一处会表现为「保存后回读仍是默认」（历史踩坑）。
+  capMembershipAmount: 5000,
+  capMembershipMonths: 24,
+  capLessonAmount: 20000,
+  capLessonTimes: 60
 }
 
 function seedCustomers(): YimaiCustomer[] {

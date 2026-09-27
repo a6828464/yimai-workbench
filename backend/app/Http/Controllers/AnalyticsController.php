@@ -36,6 +36,24 @@ final class AnalyticsController extends Controller
         return 'analytics:v'.businessCacheVersion('analytics').":{$endpoint}:".md5("{$scope}|{$venue}|{$start}|{$end}");
     }
 
+    /**
+     * 四档到店频次分桶标签（S11 用），顺序即前端渲染顺序。
+     *
+     * 窗口 = **30 天**（用户 2026-09 拍板口径），对应 `customers.attend_m3`
+     * （M3 = 含今天在内的近 30 天滚动窗口，写入方见 `KyMemberSyncService` 的
+     * attendance 计算；注意不是「近 90 天」——`m1/m2/m3` 是三个**连续且等长**的
+     * 30 天窗口，命名里的数字是「第几个窗口」而非月数）。
+     */
+    private const ATTENDANCE_BUCKETS = [
+        ['key' => '0', 'label' => '0 次', 'min' => 0, 'max' => 0],
+        ['key' => '1-3', 'label' => '1-3 次', 'min' => 1, 'max' => 3],
+        ['key' => '4-7', 'label' => '4-7 次', 'min' => 4, 'max' => 7],
+        ['key' => '8+', 'label' => '8 次及以上', 'min' => 8, 'max' => null],
+    ];
+
+    /** 课型键 → 对客标签（与 KyBooking::KIND_LABELS 同源，勿另立一套文案） */
+    private const REVENUE_KINDS = ['private', 'small', 'group'];
+
     /** GET /analytics/summary */
     public function summary(Request $r)
     {
@@ -90,6 +108,630 @@ final class AnalyticsController extends Controller
             'taskRate' => $taskRate,                // 任务完成率
             'doneTasks' => $tasks->where('status', '已完成')->count(),
             'totalTasks' => $tasks->count(),
+            // S10 收入结构：按课型聚合课时耗卡金额 ÷ 售卡金额（口径见 computeRevenueMix）
+            'revenueMix' => $this->computeRevenueMix($u),
+        ];
+    }
+
+    /**
+     * S10 收入结构：按课型（私教 / 小班 / 团课）聚合**课时耗卡金额**，给出结构占比。
+     *
+     * ## 口径（用户 2026-09 拍板，勿自行改成别的分母）
+     *
+     *  1. **课型口径唯一**：走 `KyBooking::courseKind()` —— 它内部只调用 `courseKindFrom()`
+     *     （列值优先，缺列时回退 `raw.course_type`）。本方法**不再写第二套 match**：
+     *     全站课型判定一旦多出一份，`raw` 缺失时的兜底方向会漂移（见 `courseKindFrom` 注释
+     *     里 t35 误判的复盘）。
+     *  2. **耗卡金额单行推导**（逐行取第一项可用值，与上游字段语义一致）：
+     *       ① `raw.m_card_unit_cash_value × raw.single_charge`（单次现金价值 × 本次扣次）
+     *       ② 回退 `raw.charge`（本次支付金额）
+     *       ③ 都取不到 ⇒ 计 0，并计入 `degraded.bookingsWithoutAmount`
+     *     取不到金额的行**不猜**：宁可少算也不按平均价编一个数，但必须显式告知，
+     *     否则「收入结构」会静默偏小。
+     *  3. **只算已签到（`status = signed`）的行**：未签到/已取消/爽约的预约没有消耗课时，
+     *     与 trends 端点的 `classCount` 同源。
+     *  4. **分母 = 售卡实收金额**：`ky_cards` 的 `deal_price` 合计，排除体验/赠卡
+     *     （`is_taste`）与退卡（`status_format = '退卡'`），与 trends 的售卡金额同源过滤。
+     *
+     * ⚠️ 分子（一段时间内的课时消耗）与分母（全部售卡实收）**不是同一个会计区间**：
+     * 本端点没有 start/end 参数，两者都是「全量至今」。所以 `ratio` 只作**结构参照**，
+     * 不能当财务上的「耗卡率」。真的要按期对比请用 trends（分子分母同窗口）。
+     *
+     * @return array<string, mixed>
+     */
+    private function computeRevenueMix($u): array
+    {
+        $cardQ = applyVenueScope(
+            KyCard::query()
+                ->where('is_taste', false)
+                ->where('status_format', '!=', '退卡'),
+            $u, ''
+        );
+        $cardSales = (float) $cardQ->sum('deal_price');
+
+        $kindAmount = array_fill_keys(self::REVENUE_KINDS, 0.0);
+        $kindClasses = array_fill_keys(self::REVENUE_KINDS, 0);
+        $withoutAmount = 0;
+
+        $bookingQ = applyVenueScope(
+            KyBooking::query()->where('status', 'signed'),
+            $u, ''
+        );
+        foreach ($bookingQ->get() as $booking) {
+            $kind = $booking->courseKind();
+            if (! isset($kindAmount[$kind])) {
+                // courseKindFrom 只返回这三个值；真出现了说明有人改了判定函数，
+                // 落到 group 会静默改写结构，故显式计数而不是静默归类。
+                $kind = 'group';
+                $kindClasses[$kind]++;
+                continue;
+            }
+            $kindClasses[$kind]++;
+            $amount = self::bookingConsumeAmount($booking);
+            if ($amount <= 0) {
+                $withoutAmount++;
+            }
+            $kindAmount[$kind] += $amount;
+        }
+
+        $consumptionTotal = array_sum($kindAmount);
+        $mix = [];
+        foreach (self::REVENUE_KINDS as $kind) {
+            $mix[$kind] = [
+                'label' => KyBooking::KIND_LABELS[$kind],
+                'amount' => round($kindAmount[$kind], 2),
+                // 占比口径：该类耗卡金额 ÷ 售卡金额（有售卡收入时的结构参照）
+                'ratio' => $cardSales > 0 ? round($kindAmount[$kind] / $cardSales * 100, 2) : 0,
+                // 耗卡内部结构（三类相加 = 100），与 ratio 是两个不同分母，勿混用
+                'share' => $consumptionTotal > 0 ? round($kindAmount[$kind] / $consumptionTotal * 100, 2) : 0,
+                'classCount' => $kindClasses[$kind],
+            ];
+        }
+
+        return [
+            'private' => $mix['private'],
+            'small' => $mix['small'],
+            'group' => $mix['group'],
+            'cardSales' => round($cardSales, 2),
+            'consumptionTotal' => round($consumptionTotal, 2),
+            'degraded' => [
+                'bookingsWithoutAmount' => $withoutAmount,
+                'note' => '这些签到行在 raw 里既无单次现金价值也无可解析的支付金额，耗卡金额按 0 计（不估算）',
+            ],
+        ];
+    }
+
+    /**
+     * 单行预约的耗卡金额（元）：单次现金价值 × 本次扣次，回退本次支付金额。
+     *
+     * `raw` 的形态不保证（cast 后是数组，部分 `select` 场景可能是 JSON 串），
+     * 故这里统一归一化后再取，不在调用方各自解析。
+     */
+    private static function bookingConsumeAmount(KyBooking $booking): float
+    {
+        $raw = $booking->raw;
+        if (! is_array($raw)) {
+            $raw = (array) json_decode((string) $raw, true);
+        }
+        $num = function ($v): float {
+            return is_numeric($v) ? (float) $v : 0.0;
+        };
+
+        $unit = $num($raw['m_card_unit_cash_value'] ?? null);
+        if ($unit > 0) {
+            // single_charge 的形态有 "1" / "1次" / 1.0 三种历史写法，取其中的数字
+            $times = 1.0;
+            if (isset($raw['single_charge'])) {
+                $text = (string) $raw['single_charge'];
+                if (preg_match('/\d+(\.\d+)?/', $text, $m)) {
+                    $times = (float) $m[0];
+                }
+            }
+
+            return $unit * max(0.0, $times);
+        }
+
+        return max(0.0, $num($raw['charge'] ?? null));
+    }
+
+    /**
+     * 「会员」谓词（查询构造器形式）。
+     *
+     * 与 `computeSummary()` 的 `totalMembers`、`computeTrends()` 的 `memberTotal`
+     * **同一口径**：正式会员，或随心瑜同步进来的会员（`external_id = ky:*`）。
+     * 抽成一处是为了让「会员」这个词在本控制器里只有一个定义 —— 同一批人数在
+     * 两个端点上差一个人，运营就会开始怀疑整块看板。
+     */
+    private static function applyMemberScope($query)
+    {
+        return $query->where(function ($q) {
+            $q->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%');
+        });
+    }
+
+    /**
+     * 会员可见范围 + venue 收窄，与 `computeTrends()` 里的 `$custQ` 完全同源。
+     *
+     * 会员类指标必须走 `scopeCustomersForUser()` 而不是 `applyVenueScope()`：
+     * 后者只按门店收窄，而服务老师/授课老师「只看本人名下会员」的**按人**收窄
+     * 只在 `scopeCustomersForUser()` 里。只卡门店会让老师看到全店会员，
+     * 正是 summary 注释里记过的那次事故。
+     */
+    private function scopedCustomers($u, string $venue)
+    {
+        $q = scopeCustomersForUser(Customer::query(), $u);
+        if (userHasRole($u, 'R_SUPER') && $venue !== '') {
+            $q->where('venue', $venue);
+        }
+
+        return $q;
+    }
+
+    /** GET /analytics/attendance-renewal-curve */
+    public function attendanceRenewalCurve(Request $r)
+    {
+        $u = $r->user();
+        $venue = (string) $r->query('venue', '');
+        abort_unless($venue === '' || in_array($venue, ['绿地店', '东部店'], true), 422, '门店参数无效');
+
+        return ok(Cache::remember(
+            self::cacheKey('attendance-renewal-curve', $u, $venue, '', ''),
+            60,
+            fn () => $this->computeAttendanceRenewalCurve($u, $venue)
+        ));
+    }
+
+    /**
+     * S11 到店频次 × 续费率曲线：按「近 30 天到店次数」分 4 档，各档给出**按人**算的续费率。
+     *
+     * ## 窗口 = 30 天，字段 = `attend_m3`（易取错，务必读完）
+     *
+     * `KyMemberSyncService::attendanceWindows()` 定义的是三个**连续且等长**的 30 天窗口：
+     *
+     *     M1 = 60~89 天前      M2 = 30~59 天前      M3 = 近 30 天（含今天）
+     *
+     * 所以「30 天窗口」对应的是 **`attend_m3`**（`attendanceWindows()[2]`），
+     * 而字段名里的数字是「第几个窗口」不是月数。⚠️ 前端「活跃度」卡片的脚注
+     * （`admin-web/src/views/yimai/analytics/index.vue` 的 `M1=最近完整月，M3=最早完整月`）
+     * 把 M1/M3 的新旧**写反了**（`M1` 实为最旧的 60~89 天前窗口）。**不要照抄那句**：
+     * 取 `attend_m1` 会得到「60~89 天前」的曲线，与需求差 3 倍窗口。
+     *
+     * ## 续费率按人算（用户 2026-09 拍板）
+     *
+     *   - 分母 = 该档**会员人数**（不是卡张数、不是人次）
+     *   - 分子 = 该档已续费**人数**
+     *     判定与 `/analytics/summary` 的 `renewalTouched` 同源：`renewal_plan` 非空
+     *     （即工作台里已登记续课预报）。**不按卡张数计**：一个会员名下三张卡续了
+     *     一张，按卡算会得到 1/3 与 1 两个都说得通的答案，按人只有「续没续」一个答案。
+     *
+     * 曲线本身不是结论而是**标定工具**：用于反推 `reviveDays` / `renewalExpireDays`
+     * 这类阈值（见 `docs/战略审查与规划/07-发展方向规划.md` ②-2），故各档分母一并给出，
+     * 避免「小样本档看起来续费率 100%」被当成结论。
+     *
+     * @return array<string, mixed>
+     */
+    private function computeAttendanceRenewalCurve($u, string $venue): array
+    {
+        $customers = self::applyMemberScope($this->scopedCustomers($u, $venue))->get();
+
+        $rows = [];
+        foreach (self::ATTENDANCE_BUCKETS as $spec) {
+            $rows[$spec['key']] = [
+                'bucket' => $spec['key'],
+                'label' => $spec['label'],
+                'memberCount' => 0,
+                'renewedCount' => 0,
+                'renewalRate' => 0,
+            ];
+        }
+
+        foreach ($customers as $c) {
+            // attend_m3 在库里有 default 0，不存在 null；仍统一转 int 防止驱动返回字符串
+            $times = (int) $c->attend_m3;
+            $key = null;
+            foreach (self::ATTENDANCE_BUCKETS as $spec) {
+                if ($times >= $spec['min'] && ($spec['max'] === null || $times <= $spec['max'])) {
+                    $key = $spec['key'];
+                    break;
+                }
+            }
+            if ($key === null) {
+                // 桶定义被改坏时才会走到这里（8+ 的 max 是 null，理论覆盖全部 >= 8 的值）。
+                // 不归入任何档、计入 unbucketed：静默塞进某一档会让曲线看着正常但数字是错的。
+                $unbucketed = ($unbucketed ?? 0) + 1;
+
+                continue;
+            }
+            $rows[$key]['memberCount']++;
+            if ($c->renewal_plan !== null && $c->renewal_plan !== '') {
+                $rows[$key]['renewedCount']++;
+            }
+        }
+
+        $totalMembers = 0;
+        $totalRenewed = 0;
+        foreach ($rows as &$row) {
+            $totalMembers += $row['memberCount'];
+            $totalRenewed += $row['renewedCount'];
+            $row['renewalRate'] = $row['memberCount'] > 0
+                ? round($row['renewedCount'] / $row['memberCount'] * 100, 1)
+                : 0;
+        }
+        unset($row);
+
+        return [
+            'buckets' => array_values($rows),
+            'totalMembers' => $totalMembers,
+            'totalRenewed' => $totalRenewed,
+            'overallRenewalRate' => $totalMembers > 0 ? round($totalRenewed / $totalMembers * 100, 1) : 0,
+            'unit' => 'person',
+            'window' => [
+                'attendField' => 'attend_m3',
+                'windowDays' => 30,
+                'basis' => 'KyMemberSyncService::attendanceWindows()[2] = 含今天的近 30 天滚动窗口',
+                'trap' => 'attend_m1 是 60~89 天前（最旧窗口），不是「近 30 天」；前端「活跃度」卡片脚注把 M1/M3 写反了，勿照抄',
+            ],
+            'renewalCriterion' => 'renewedCount = 该档 renewal_plan 非空的会员人数（与 /analytics/summary 的 renewalRate 同源口径）；按人计，不按卡张数',
+            'unbucketed' => $unbucketed ?? 0,
+        ];
+    }
+
+    /** GET /analytics/asset-buckets */
+    public function assetBuckets(Request $r)
+    {
+        $u = $r->user();
+        $venue = (string) $r->query('venue', '');
+        abort_unless($venue === '' || in_array($venue, ['绿地店', '东部店'], true), 422, '门店参数无效');
+
+        return ok(Cache::remember(
+            self::cacheKey('asset-buckets', $u, $venue, '', ''),
+            60,
+            fn () => $this->computeAssetBuckets($u, $venue)
+        ));
+    }
+
+    /**
+     * S12 未耗课余额分桶：`cards_list` 逐卡按「剩余期限 × 卡种」交叉分桶。
+     *
+     * ## ⚠️ 口径声明（先读，防止后人强行与 153 万对上）
+     *
+     * 本端点输出的是**卡数**，不是金额，也**不可能**与上游 `remainingAssets` 相等：
+     *
+     *  1. `remainingAssets` = 上游接口 `getvenuedataoverview.remaining_assets_total`
+     *     （`KyController.php:156`），单位**元**，来源是随心瑜的聚合值；
+     *  2. `cards_list` 里逐卡的 `residue` 单位是**节或天**（`unit` 字段），
+     *     全仓库没有任何「把卡换算成剩余资产金额」的本地逻辑（`grep remaining_assets`
+     *     在 `helpers.php` 零命中）；
+     *  3. `cards_list` 本身**刻意不含过期卡**——过期卡在 `card_stats.expiredCards`
+     *     保留区（见 `KyMemberSyncService.php:33-34` 与 `:524-525` 的注释：
+     *     「不要把过期卡塞进 cards_list」，否则会经由 C8 分支污染待续费判定）；
+     *  4. `residue === null`（上游没返回 `residue_amount`）的卡是「余额未知」而不是 0，
+     *     helpers 里也显式把它们排除在判定之外。
+     *
+     * ⇒ 所以验收标准是**分类守恒**：`Σ 各桶卡数 === cards_list 总卡数`，
+     * 一张不漏、一张不重。**绝不允许为了「对上 153 万」去调分母**。
+     *
+     * ## 分桶维度
+     *
+     *  - 剩余期限（按逐卡 `deadline` 距今自然日）：`≤30` / `31-90` / `>90` / `未知`
+     *    （`deadline` 缺失或不可解析 ⇒ 未知桶；已过期卡的天数为负，归入 `≤30`）
+     *  - 卡种：`type` 1=次卡 / 2=期限卡 / 3=储值卡（上游字典 `cardtype`）/ 其它
+     *  - 余额状态（单列，承接 `residue === null` 那批）：已知有余额 / 已耗尽 / 未知
+     *
+     * ⚠️ 逐卡字段名是 `deadline` 不是 `expire_date`：`expire_date` 是 `customers`
+     * 表上「全部卡里最早到期日」的**聚合列**，逐卡明细里只有 `deadline`
+     * （见 `KyMemberSyncService::cardSummary()` 的 `cards_list` 映射）。
+     *
+     * ## 人员范围：**不收窄到「会员」**，凡持有有效卡者一律计入（有意为之）
+     *
+     * 本端点是**预收负债视角**（未履约余额），而不是会员结构视角，故不走
+     * `applyMemberScope()`：一个 `layer = P5` 但名下仍有有效卡的客户，他手上的卡
+     * 依然是「已收钱、未交付课时」的负债，把他排除会让负债**少报**。
+     * 这与 `helpers.php:1925-1940` 把 `cards_list` 非空视为「有资产」的判定一致。
+     * 对比：S11 的续费率是会员结构指标，走 `applyMemberScope()`（只算会员）。
+     * 两者的分母**本就应当不同**，`scope` 键把这个差异显式暴露出来，避免被当成 bug。
+     *
+     * @return array<string, mixed>
+     */
+    private function computeAssetBuckets($u, string $venue): array
+    {
+        $deadlineBuckets = [
+            'within30' => '30 天以内（含已过期）',
+            '31to90' => '31-90 天',
+            'over90' => '90 天以上',
+            'unknown' => '到期日未知',
+        ];
+        $typeBuckets = ['count' => '次卡', 'time' => '期限卡', 'stored' => '储值卡', 'other' => '其它卡种'];
+        $residueBuckets = ['positive' => '仍有余额', 'zero' => '余额已耗尽', 'unknown' => '余额未知'];
+
+        $cells = [];
+        foreach (array_keys($deadlineBuckets) as $d) {
+            foreach (array_keys($typeBuckets) as $t) {
+                $cells["{$d}|{$t}"] = ['deadlineBucket' => $d, 'cardType' => $t, 'cardCount' => 0];
+            }
+        }
+        $byDeadline = array_fill_keys(array_keys($deadlineBuckets), 0);
+        $byType = array_fill_keys(array_keys($typeBuckets), 0);
+        $byResidue = array_fill_keys(array_keys($residueBuckets), 0);
+
+        $totalCards = 0;
+        $expiredCount = 0;
+
+        foreach ($this->scopedCustomers($u, $venue)->get() as $c) {
+            $cards = is_array($c->cards_list) ? $c->cards_list : [];
+            foreach ($cards as $card) {
+                if (! is_array($card)) {
+                    continue;
+                }
+                $totalCards++;
+
+                // ── 剩余期限 ──
+                $deadline = $card['deadline'] ?? null;
+                $days = null;
+                if (is_string($deadline) && trim($deadline) !== '') {
+                    try {
+                        $days = (int) now()->startOfDay()->diffInDays(CarbonImmutable::parse($deadline)->startOfDay(), false);
+                    } catch (\Throwable $e) {
+                        $days = null; // 不可解析 ⇒ 归入「到期日未知」，不猜
+                    }
+                }
+                if ($days === null) {
+                    $deadlineKey = 'unknown';
+                } elseif ($days <= 30) {
+                    $deadlineKey = 'within30';
+                    if ($days < 0) {
+                        $expiredCount++;
+                    }
+                } elseif ($days <= 90) {
+                    $deadlineKey = '31to90';
+                } else {
+                    $deadlineKey = 'over90';
+                }
+
+                // ── 卡种（上游 cardtype：1=次数卡 2=期限卡 3=储值卡 4=套餐卡）──
+                $typeKey = match ((string) ($card['type'] ?? '')) {
+                    '1' => 'count',
+                    '2' => 'time',
+                    '3' => 'stored',
+                    default => 'other',
+                };
+
+                // ── 余额状态：null 是「未知」不是 0（与 helpers 的 unknownResidue 同判定）──
+                $residue = $card['residue'] ?? null;
+                $residueKey = $residue === null ? 'unknown' : ((float) $residue > 0 ? 'positive' : 'zero');
+
+                $cells["{$deadlineKey}|{$typeKey}"]['cardCount']++;
+                $byDeadline[$deadlineKey]++;
+                $byType[$typeKey]++;
+                $byResidue[$residueKey]++;
+            }
+        }
+
+        $rows = [];
+        $cellSum = 0;
+        foreach ($cells as $cell) {
+            $cellSum += $cell['cardCount'];
+            $rows[] = [
+                'deadlineBucket' => $cell['deadlineBucket'],
+                'deadlineLabel' => $deadlineBuckets[$cell['deadlineBucket']],
+                'cardType' => $cell['cardType'],
+                'cardTypeLabel' => $typeBuckets[$cell['cardType']],
+                'cardCount' => $cell['cardCount'],
+                'ratio' => $totalCards > 0 ? round($cell['cardCount'] / $totalCards * 100, 2) : 0,
+            ];
+        }
+
+        $summarize = fn (array $counts, array $labels) => array_values(array_map(
+            fn ($key, $count) => ['key' => $key, 'label' => $labels[$key], 'cardCount' => $count,
+                'ratio' => $totalCards > 0 ? round($count / $totalCards * 100, 2) : 0],
+            array_keys($counts),
+            array_values($counts)
+        ));
+
+        return [
+            'buckets' => $rows,
+            'byDeadline' => $summarize($byDeadline, $deadlineBuckets),
+            'byType' => $summarize($byType, $typeBuckets),
+            'byResidue' => $summarize($byResidue, $residueBuckets),
+            'totalCards' => $totalCards,
+            'unit' => 'card_count',
+            'integrity' => [
+                // 守恒断言的可读版本：前端与测试都能直接核对，避免「分桶漏卡」静默发生。
+                // cellSum 为规范键名（下游 t3 已按此对接）；bucketsSum 是同值别名，
+                // 保留是为了不让任何按旧名读取的消费方拿到 null。
+                'cellSum' => $cellSum,
+                'bucketsSum' => $cellSum,
+                'totalCards' => $totalCards,
+                'balanced' => $cellSum === $totalCards,
+            ],
+            'source' => 'customers.cards_list（有效卡明细；不含 card_stats.expiredCards 过期卡保留区）',
+            // 人员范围显式暴露：预收负债视角，含 P5 但有卡的客户（与 S11 的会员分母不同口径）
+            'scope' => '凡 customers.cards_list 非空者一律计入（含 layer=P5 但仍持有效卡的客户）'
+                .'——本端点是预收负债视角而非会员结构视角，排除他们会让负债少报；'
+                .'与 S11 的「只看会员」分母不同，属有意差异。',
+            'expiredCardsIncluded' => $expiredCount,
+            'note' => '本地卡片口径，单位=张数，不出金额：cards_list 的 residue 单位是节/天，本地不存在「剩余资产金额」换算逻辑；'
+                .'与上游 remaining_assets_total（单位元，见 /ky/overview）不同源、不同量纲，不可互相校验；'
+                .'已过期但仍有余量的卡不在 cards_list 内（见 KyMemberSyncService 的过期卡保留区），因此本分桶不等于全部未履约负债。',
+        ];
+    }
+
+    /** GET /analytics/trial-conversion */
+    public function trialConversion(Request $r)
+    {
+        $u = $r->user();
+        $venue = (string) $r->query('venue', '');
+        abort_unless($venue === '' || in_array($venue, ['绿地店', '东部店'], true), 422, '门店参数无效');
+
+        return ok(Cache::remember(
+            self::cacheKey('trial-conversion', $u, $venue, '', ''),
+            60,
+            fn () => $this->computeTrialConversion($u, $venue)
+        ));
+    }
+
+    /**
+     * S14 体验卡 → 会员卡转化率：按 `leads.service_teacher`（归属）分组的排行。
+     *
+     * ## 口径（用户 2026-09 拍板 → 队长 2026-09 裁定主指标为**按人**）
+     *
+     *  主口径 `conversionRate`（**按人**，与 `07-发展方向规划.md` §1.3 ②-5 原文的
+     *  「人数」一致，也与同屏的 S11 续费率口径一致 —— 同一块看板上不出现
+     *  「一个按人、一个按卡」的矛盾）：
+     *
+     *   - 分母 = 该老师名下**有过体验卡的人数**（按归一化手机号去重）
+     *   - 分子 = 其中**至少有 1 张 `attended` 体验卡、且同手机号在 `customers` 里
+     *     存在且 `layer != 'P5'`** 的人数
+     *
+     *  同时保留**卡口径**作参考，但**显式命名**为 `conversionRateByCard`
+     *  （绝不复用 `conversionRate` 这个名字 —— 同名两义正是本仓库历史上
+     *  「同一数字两页不同」的成因）。两者各自的分子分母同源，**不可交叉搭配**。
+     *
+     *  为什么决策单位是「人」：这个指标回答的是「这个会籍顾问把多少人转化成了
+     *  会员」。按卡算会被「一人多节体验课」放大，同一个人来三次就变成三个分子，
+     *  转化率虚高；按人算只有「转化没转化」一个答案。
+     *
+     * ## 体验卡读取走模型访问器
+     *
+     * `Lead::trialCards()` 会按数组位置补上缺失的 `session`（历史卡片没写这个键），
+     * 并且**只在缺失时补、不重排**。注意它注册在**蛇形属性名** `trial_cards` 上
+     * （Laravel 的 `Attribute` 访问器按列名解析），所以这里读 `$lead->trial_cards`
+     * 才会命中该访问器；读 `$lead->trialCards` 拿到的是空数组（实测），
+     * 那会让分母静默变成 0。不要改成直接 `json_decode($lead->getRawOriginal(...))`——
+     * 绕过访问器就丢了 session 补全与合法性过滤（见该访问器的长注释）。
+     *
+     * ## 会员存在性判定的范围
+     *
+     * 「是否已成为会员」是一次**存在性**检查，按**门店级**收窄（`applyVenueScope`），
+     * 不叠加 `scopeCustomersForUser` 的按人收窄：否则服务老师角色下，自己名下留资
+     * 转化成的会员若归属写的是别人，会被判成「没转化」——那是归属问题，不是转化问题。
+     * 输出本身只含聚合计数，不含客户标识。
+     *
+     * @return array<string, mixed>
+     */
+    private function computeTrialConversion($u, string $venue): array
+    {
+        // 会员手机号集合：只用于「同手机号是否已是正式会员」的存在性判定。
+        // 归一化统一走 normalizePhone()，避免 `138-0000-0001` 这类分隔符导致同一人被判成两个。
+        $memberPhones = [];
+        $memberQ = applyVenueScope(
+            Customer::query()->where('layer', '!=', 'P5'),
+            $u, $venue
+        );
+        foreach ($memberQ->pluck('phone') as $phone) {
+            $key = normalizePhone($phone);
+            if ($key !== '') {
+                $memberPhones[$key] = true;
+            }
+        }
+
+        // 全局去重集合：同一个人可能同时挂在多个老师名下（留资被转派过），
+        // 各老师行相加会重复计人，故整体分母/分子单独按人去重算，不用各行相加。
+        $allTrialPhones = [];
+        $allConvertedPhones = [];
+
+        $teachers = [];
+        foreach (applyVenueScope(Lead::query(), $u, $venue)->get() as $lead) {
+            $teacher = trim((string) $lead->service_teacher);
+            if ($teacher === '') {
+                // 未归属的留资不能丢：丢了会让「分母合计」小于总量，
+                // 而运营看到的恰恰是「谁名下还没归属」。单列一档而不是静默排除。
+                $teacher = '未分配';
+            }
+            $teachers[$teacher] ??= [
+                'teacher' => $teacher,
+                'leads' => 0,
+                'trialCards' => 0,
+                'attendedCards' => 0,
+                'convertedCards' => 0,
+                // trialPhones：名下有体验卡的人（人口径的分母）
+                // convertedPhones：其中已转化的人（人口径的分子）
+                'trialPhones' => [],
+                'convertedPhones' => [],
+            ];
+            $teachers[$teacher]['leads']++;
+
+            $phoneKey = normalizePhone($lead->phone);
+            $isMember = $phoneKey !== '' && isset($memberPhones[$phoneKey]);
+
+            foreach ($lead->trial_cards as $card) {
+                $teachers[$teacher]['trialCards']++;
+                if ($phoneKey !== '') {
+                    $teachers[$teacher]['trialPhones'][$phoneKey] = true;
+                    $allTrialPhones[$phoneKey] = true;
+                }
+                if (empty($card['attended'])) {
+                    continue;
+                }
+                $teachers[$teacher]['attendedCards']++;
+                if ($isMember) {
+                    $teachers[$teacher]['convertedCards']++;
+                    if ($phoneKey !== '') {
+                        $teachers[$teacher]['convertedPhones'][$phoneKey] = true;
+                        $allConvertedPhones[$phoneKey] = true;
+                    }
+                }
+            }
+        }
+
+        $rows = [];
+        $totalCards = 0;
+        $totalConvertedCards = 0;
+        foreach ($teachers as $t) {
+            $cards = $t['trialCards'];
+            $convertedCards = $t['convertedCards'];
+            $people = count($t['trialPhones']);
+            $convertedPeople = count($t['convertedPhones']);
+            $totalCards += $cards;
+            $totalConvertedCards += $convertedCards;
+
+            $byPerson = $people > 0 ? round($convertedPeople / $people * 100, 1) : 0;
+
+            $rows[] = [
+                'teacher' => $t['teacher'],
+                'leads' => $t['leads'],
+                // 卡口径只作过程量展示，不参与主指标
+                'trialCards' => $cards,
+                'attendedCards' => $t['attendedCards'],
+                'convertedCards' => $convertedCards,
+                'conversionRateByCard' => $cards > 0 ? round($convertedCards / $cards * 100, 1) : 0,
+                // 人口径（**主口径**，键名与字段名一致可避免同名两义）
+                'trialPeople' => $people,
+                'convertedPeople' => $convertedPeople,
+                'conversionRate' => $byPerson,
+                // 兼容别名：值等同 conversionRate，供已按旧结构对接的消费方读取
+                'conversionRateByPerson' => $byPerson,
+            ];
+        }
+
+        // 排行：按**主指标**（人口径）倒序；同率按样本量大的在前（小样本档排前面会误导运营）
+        usort($rows, function ($a, $b) {
+            return [$b['conversionRate'], $b['trialPeople'], $a['teacher']]
+                <=> [$a['conversionRate'], $a['trialPeople'], $b['teacher']];
+        });
+
+        $totalPeople = count($allTrialPhones);
+        $totalConvertedPeople = count($allConvertedPhones);
+
+        return [
+            'rows' => $rows,
+            'totalTrialCards' => $totalCards,
+            'totalConvertedCards' => $totalConvertedCards,
+            // 主指标的整体值（按人去重，不用各行相加——转派过的留资会在多个老师行里出现）
+            'totalTrialPeople' => $totalPeople,
+            'totalConvertedPeople' => $totalConvertedPeople,
+            'overallConversionRate' => $totalPeople > 0 ? round($totalConvertedPeople / $totalPeople * 100, 1) : 0,
+            'overallConversionRateByCard' => $totalCards > 0 ? round($totalConvertedCards / $totalCards * 100, 1) : 0,
+            'memberPhones' => count($memberPhones),
+            'formula' => [
+                'conversionRate' => '同老师名下「至少有 1 张 attended 体验卡且同手机号已是正式会员（layer≠P5）」的人数 ÷ 该老师名下有过体验卡的人数（按手机号去重）——按人算，与 S11 续费率同口径',
+                'conversionRateByCard' => '同老师名下「体验卡 attended 且同手机号已是正式会员」的卡数 ÷ 该老师名下体验卡总数（仅作参考，勿与人口径混用）',
+                'overall' => '整体值按手机号全局去重（同一人挂在多个老师名下时只算一次），不等于各行相加',
+                'attribution' => '归属取 leads.service_teacher（空值归入「未分配」，不丢弃）',
+            ],
+            'unit' => 'person',
+            'note' => '主指标按人算（conversionRate），分母=该老师名下有过体验卡的人数，分子=其中已转化为正式会员的人数；'
+                .'conversionRateByPerson 为同值别名；卡口径见 conversionRateByCard，仅供核对，勿与主指标并列展示。',
         ];
     }
 
@@ -590,19 +1232,90 @@ final class AnalyticsController extends Controller
         $leadQ = applyVenueScope(Lead::query(), $u, $venue);
         $leads = $leadQ->whereBetween('lead_date', [$start, $end])->get();
 
+        // S13 渠道四列（核销率 / 成交率 / 客单价）复用的两路口径与 computePlatforms() **完全同源**：
+        // 成交按 deal_at 归期、核销按 redeemed_at 归期，时间缺失时回退 lead_date。
+        // 不在本方法里另写一套「按 lead_date 过滤」——那会让同一笔成交在
+        // channels 与 platforms 两个端点上落到不同月份。
+        $salesQ = applyVenueScope(Lead::query(), $u, $venue);
+        $sales = $salesQ->where('status', '已成交')
+            ->where(function ($q) use ($start, $end) {
+                $q->whereBetween('deal_at', [$start.' 00:00:00', $end.' 23:59:59'])
+                    ->orWhere(fn ($q2) => $q2->whereNull('deal_at')->whereBetween('lead_date', [$start, $end]));
+            })->get();
+        $redeemQ = applyVenueScope(Lead::query(), $u, $venue);
+        $redeems = $redeemQ->where('redeem_amount', '>', 0)
+            ->where(function ($q) use ($start, $end) {
+                $q->whereBetween('redeemed_at', [$start.' 00:00:00', $end.' 23:59:59'])
+                    ->orWhere(fn ($q2) => $q2->whereNull('redeemed_at')->whereBetween('lead_date', [$start, $end]));
+            })->get();
+
+        $channelOf = fn ($l) => trim((string) $l->source) !== '' ? $l->source : '其他';
+
         $channels = [];
         foreach ($leads as $l) {
-            $src = trim((string) $l->source) !== '' ? $l->source : '其他';
-            $channels[$src] = ($channels[$src] ?? 0) + 1;
+            $src = $channelOf($l);
+            $channels[$src] = $channels[$src] ?? ['leads' => 0, 'deals' => 0, 'redeemCount' => 0, 'dealAmount' => 0.0, 'redeemAmount' => 0.0];
+            $channels[$src]['leads']++;
         }
-        arsort($channels);
+        foreach ($sales as $sale) {
+            $src = $channelOf($sale);
+            $channels[$src] = $channels[$src] ?? ['leads' => 0, 'deals' => 0, 'redeemCount' => 0, 'dealAmount' => 0.0, 'redeemAmount' => 0.0];
+            $channels[$src]['deals']++;
+            $channels[$src]['dealAmount'] += (float) $sale->deal_amount;
+        }
+        foreach ($redeems as $redeem) {
+            $src = $channelOf($redeem);
+            $channels[$src] = $channels[$src] ?? ['leads' => 0, 'deals' => 0, 'redeemCount' => 0, 'dealAmount' => 0.0, 'redeemAmount' => 0.0];
+            $channels[$src]['redeemCount']++;
+            $channels[$src]['redeemAmount'] += (float) $redeem->redeem_amount;
+        }
+
+        // 排序保持既有口径（按留资数倒序），不得改成按四列里的新列排 —— 已有前端在消费顺序
+        uasort($channels, fn ($a, $b) => $b['leads'] <=> $a['leads']);
 
         $rows = [];
-        foreach ($channels as $name => $leadsCount) {
-            $rows[] = ['channel' => $name, 'leads' => $leadsCount];
+        foreach ($channels as $name => $v) {
+            $rows[] = [
+                // ── 既有三键：原样保留（前端已在消费，只能加不能改）──
+                'channel' => $name,
+                'leads' => $v['leads'],
+                // ── S13 新增四列 ──
+                // 核销率：该渠道有核销记录的留资数 ÷ 该渠道留资数。
+                // ⚠️ 分母用「留资数」是**代理口径**（每条线上留资对应一张团购券的登记）：
+                //    本地没有「券售出数」这个独立事实列，故不假装它是严格售出量。
+                'redeemCount' => $v['redeemCount'],
+                'redeemRate' => $v['leads'] > 0 ? round($v['redeemCount'] / $v['leads'] * 100, 1) : 0,
+                'redeemAmount' => round($v['redeemAmount'], 2),
+                // 成交率：按成交事件归期统计的成交条数 ÷ 该渠道留资数（与 platforms 的 deal 同源）
+                'deals' => $v['deals'],
+                'dealRate' => $v['leads'] > 0 ? round($v['deals'] / $v['leads'] * 100, 1) : 0,
+                // 客单价：成交金额 ÷ 成交条数（不是除以留资数）
+                'dealAmount' => round($v['dealAmount'], 2),
+                'avgDealAmount' => $v['deals'] > 0 ? round($v['dealAmount'] / $v['deals'], 2) : 0,
+            ];
         }
 
-        return ['rows' => $rows, 'total' => $leads->count()];
+        return [
+            'rows' => $rows,
+            'total' => $leads->count(),
+            // 四列的合计与整体比率（与 rows 逐个相加一致，供前端做合计行）
+            'summary' => [
+                'leads' => $leads->count(),
+                'deals' => $sales->count(),
+                'redeemCount' => $redeems->count(),
+                'dealAmount' => round((float) $sales->sum('deal_amount'), 2),
+                'redeemAmount' => round((float) $redeems->sum('redeem_amount'), 2),
+                'dealRate' => $leads->count() > 0 ? round($sales->count() / $leads->count() * 100, 1) : 0,
+                'redeemRate' => $leads->count() > 0 ? round($redeems->count() / $leads->count() * 100, 1) : 0,
+                'avgDealAmount' => $sales->count() > 0 ? round((float) $sales->sum('deal_amount') / $sales->count(), 2) : 0,
+            ],
+            'formula' => [
+                'redeemRate' => '核销留资数 ÷ 该渠道留资数（本地无独立「券售出数」列，故以留资数为代理分母）',
+                'dealRate' => '成交条数（按 deal_at 归期，缺失回退 lead_date）÷ 该渠道留资数',
+                'avgDealAmount' => '成交金额合计 ÷ 成交条数',
+            ],
+            'period' => ['start' => $start, 'end' => $end],
+        ];
     }
 
     /** GET /analytics/platforms */

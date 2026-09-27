@@ -1458,7 +1458,14 @@ class PublicShareSalesTest extends TestCase
             ShareController::SALES_TOP_FIELDS
         );
         $this->assertSame(['enabled', 'code', 'views'], ShareController::NESTED_FIELDS['share']);
-        $this->assertSame(['name', 'industry', 'slogan', 'intro', 'address', 'phone'], ShareController::NESTED_FIELDS['info']);
+        // t6/S18：'complianceNotice' 是**有意的功能新增**（合规说明区块要出网），
+        // 其余 6 键原样保留、顺序未动 —— assertSame 仍能挡住任何顺手增删/重排。
+        // 该键取值是否合规由 ShareController::COMPLIANCE_NOTICE_MAX_LENGTH 与
+        // sanitize 里的单独收口负责，见 SalesShareComplianceFieldTest。
+        $this->assertSame(
+            ['name', 'industry', 'slogan', 'intro', 'address', 'phone', 'complianceNotice'],
+            ShareController::NESTED_FIELDS['info']
+        );
         $this->assertSame(['id', 'name', 'desc', 'showPrice', 'cols', 'rows'], ShareController::ITEM_FIELDS['products']);
         $this->assertSame(['id', 'name', 'title', 'tags', 'intro'], ShareController::ITEM_FIELDS['coaches']);
         $this->assertSame(['id', 'coachId', 'goal', 'desc', 'stages', 'authorized'], ShareController::ITEM_FIELDS['cases']);

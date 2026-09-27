@@ -6,6 +6,7 @@ use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Lead;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class LeadController extends Controller
 {
@@ -61,7 +62,69 @@ class LeadController extends Controller
      * `deal_at`（成交时间）此前只存在于「状态变已成交时自动写 now()」这一条路径上，
      * 用户手动填的成交时间因为不在白名单里被整列丢掉 —— 补录历史成交日期永远存不进去。
      */
-    private array $leadFields = ['lead_date', 'name', 'phone', 'wechat', 'demand', 'source', 'order_platform', 'venue', 'service_teacher', 'status', 'grade', 'trial_time', 'trial_topic', 'trial_teacher', 'deal_card', 'deal_amount', 'deal_at', 'redeem_amount', 'voucher_code', 'coupon_name', 'coupon_total', 'coupon_remaining', 'trial_cards', 'remark'];
+    private array $leadFields = ['lead_date', 'name', 'phone', 'wechat', 'demand', 'source', 'order_platform', 'referrer', 'venue', 'service_teacher', 'status', 'grade', 'trial_time', 'trial_topic', 'trial_teacher', 'deal_card', 'deal_amount', 'deal_at', 'redeem_amount', 'voucher_code', 'coupon_name', 'coupon_total', 'coupon_remaining', 'trial_cards', 'remark'];
+
+    /**
+     * `source` / `order_platform` 的**受控枚举校验规则**（S15 / 渠道枚举收口）。
+     *
+     * 取值来自 helpers.php 的 `LEAD_SOURCES` / `ORDER_PLATFORMS` —— 那两份常量是
+     * 渠道清单的**唯一来源**，这里只做「取用 + 拼规则」，不得在此另写一份清单
+     * （历史上前端一份、统计一份、导出一份，加渠道漏改一处就静默出错）。
+     *
+     * `Rule::in()` + `leadEnumMessage()` 的组合是为了让 422 的错误文案**列出允许值**。
+     * 用 `'in:'.implode(',', ...)` 的字符串写法不行：渠道名里可能含逗号，且 Laravel
+     * 的字符串式 `in` 会把中文错误信息拼成无法阅读的长串；数组形式 + 显式 message
+     * 则稳定可控。
+     *
+     * ⚠ **只用于写入路径**（store / update）。读取路径（index / show / 导出 / 统计）
+     * 一律不得调用本方法 —— 生产库里有枚举外的历史值（`到店`/`测试`/`KeepYoga`/
+     * `抖音周年庆直播`…），它们是真实历史而非脏数据，读侧拒绝等于把历史记录锁死。
+     *
+     * ## 更新路径必须允许「回流既有值」（否则枚举会变成单向闸门）
+     *
+     * PATCH 提交的是**整个表单**（前端编辑弹窗的既有行为），所以一条来源为
+     * `到店` 的历史留资只要被打开、改个备注再保存，请求里就会带上 `source=到店`。
+     * 如果 update 对 `source` 严格 `in:LEAD_SOURCES`，这条历史记录就**再也存不回去**
+     * ——店长只是改了个备注，却被告知「来源非法」，而且**无法自救**（下拉框里没有
+     * 这个选项，改任何值都是在篡改真实渠道）。
+     *
+     * 所以 update 的语义是：**改动才校验**。
+     *   - 提交值与库里现值**相同** ⇒ 视为「原样带回」，放行（历史值因此永远可以
+     *     被继续保存，枚举不会把老数据锁死）；
+     *   - 提交值与现值**不同**（含首次从空值写入）⇒ 必须落在枚举内，否则 422。
+     * 这正是「校验只作用于写入」的准确含义：**拦的是新增/改写，不是存量本身**。
+     */
+    private function channelRules(bool $required): array
+    {
+        $presence = $required ? 'required' : 'sometimes';
+
+        return [
+            'source' => [$presence, 'string', Rule::in(LEAD_SOURCES)],
+            'orderPlatform' => ['sometimes', 'nullable', 'string', Rule::in(ORDER_PLATFORMS)],
+        ];
+    }
+
+    /** 渠道枚举的 422 文案（允许值原样列出，见 leadEnumMessage()） */
+    private function channelMessages(): array
+    {
+        return [
+            'source.in' => leadEnumMessage('来源', LEAD_SOURCES),
+            'orderPlatform.in' => leadEnumMessage('下单平台', ORDER_PLATFORMS),
+        ];
+    }
+
+    /**
+     * `referrer`（介绍人）校验：**只做长度约束，不做存不存在校验**。
+     *
+     * 介绍人是**手填的姓名**，不是账号引用：老会员可能早已不再来、也可能是
+     * 非会员的熟人（朋友介绍）。去校验「介绍人必须是系统里的会员」会把最真实的
+     * 那部分转介绍堵在门外，也会把一次录入变成一次查库往返。
+     * 列宽 50（见迁移）就是这里 max:50 的依据，两处必须同步改。
+     */
+    private function referrerRules(): array
+    {
+        return ['referrer' => ['sometimes', 'nullable', 'string', 'max:50']];
+    }
 
     /**
      * 成交时间该不该自动补 now()。只有两条主张，但第 2 条判定写错就会出事：
@@ -133,7 +196,18 @@ class LeadController extends Controller
         $total = (clone $q)->count();
         $rows = $q->orderByDesc('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
 
-        return ok(['records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size]);
+        return ok([
+            'records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size,
+            // 渠道枚举随列表一并下发（**纯新增键**，既有消费方不受影响）。
+            // 这是本任务唯一允许的「让前端读到权威清单」的通道：routes/api.php
+            // 不在本任务的改动范围内，所以不新建 /leads/options 之类的端点，
+            // 而是把两个常量挂到前端**已经在调用**的列表响应上。
+            // 前端改造见 t3：删掉自备的 SOURCE_OPTIONS/PLATFORM_OPTIONS，改读这里。
+            'enums' => [
+                'sources' => LEAD_SOURCES,
+                'orderPlatforms' => ORDER_PLATFORMS,
+            ],
+        ]);
     }
 
     /** GET /leads/check：新增留资时校验手机号是否已命中会员 / 已有留资 */
@@ -165,11 +239,11 @@ class LeadController extends Controller
     /** POST /leads */
     public function store(Request $r)
     {
-        $d = $r->validate([
-            'name' => 'required|string', 'source' => 'required|string', 'venue' => 'required|string',
+        $d = $r->validate(array_merge([
+            'name' => 'required|string', 'venue' => 'required|string',
             'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0|decimal:0,2', 'redeemAmount' => 'nullable|numeric|min:0|decimal:0,2',
             'dealAt' => 'nullable|date',
-        ]);
+        ], $this->channelRules(required: true), $this->referrerRules()), $this->channelMessages());
         $values = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields)) + ['created_by' => $r->user()->name];
         $values = $this->withStaffIds($values);
         $values = $this->withNormalizedPhone($values);
@@ -189,7 +263,18 @@ class LeadController extends Controller
         audit($r, '新增', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue, '录入客资');
         invalidateBusinessCaches('analytics');
 
-        return ok(['id' => $lead->id]);
+        // 卡项限额软提示（S16）：**只附加，不阻断**。详见 leadDealCapWarnings()。
+        // 金额取请求值而不是 $lead->deal_amount —— 后者是 float cast 后的结果，
+        // 与本函数拿到的原始录入值可能有精度差；提示要对用户填的数字负责。
+        $warnings = leadDealCapWarnings($values['deal_amount'] ?? null);
+        if ($warnings !== []) {
+            // 超限本身要留痕：只有被记录过的偏差才能被复盘（否则「提示过」这件事
+            // 随响应消失，谁也不知道当时到底录了多少）。
+            audit($r, '提示', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue,
+                implode('；', array_column($warnings, 'message')));
+        }
+
+        return ok(['id' => $lead->id, 'warnings' => $warnings]);
     }
 
     /** PATCH /leads/{id} */
@@ -197,10 +282,24 @@ class LeadController extends Controller
     {
         $lead = Lead::findOrFail($id);
         $before = json_encode(camel($lead), JSON_UNESCAPED_UNICODE);
-        $r->validate([
+        // 渠道枚举：库里现值原样带回时放行（见 channelRules 的说明）。
+        // 「显式传 null 想清空 source」走严格校验并按 422 处理：source 本就不可清空
+        // （下方 normalizeEmptyValues 的 except 也含它），与既有语义一致，不需要为它
+        // 开一条「能清成 null」的新路径。
+        // 注：清空被拦是来自本数组的 'string' 规则（null 不是 string），**不是**因为
+        // `$r->exists()` —— 实测它对 JSON null 返回 true（`has()` → `Arr::has()` →
+        // `Arr::exists()`，无 null 特判），此处与 `array_key_exists` 行为等价。
+        $enumRules = $this->channelRules(required: false);
+        foreach (['source', 'orderPlatform'] as $field) {
+            $column = strtolower(preg_replace('/([a-z\d])([A-Z])/', '$1_$2', $field));
+            if ($r->exists($field) && (string) $r->input($field) === (string) $lead->getAttribute($column)) {
+                unset($enumRules[$field]);
+            }
+        }
+        $r->validate(array_merge([
             'leadDate' => 'nullable|date', 'dealAmount' => 'nullable|numeric|min:0', 'redeemAmount' => 'nullable|numeric|min:0',
             'dealAt' => 'nullable|date',
-        ]);
+        ], $enumRules, $this->referrerRules()), $this->channelMessages());
         $changes = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields));
         $changes = $this->withStaffIds($changes);
         $changes = $this->withNormalizedPhone($changes);
@@ -220,7 +319,18 @@ class LeadController extends Controller
         audit($r, '修改', '前端客资', $id, "{$lead->name}（{$lead->source}）", $lead->venue, '字段更新');
         invalidateBusinessCaches('analytics');
 
-        return ok(['before' => json_decode($before), 'after' => camel($lead)]);
+        // 卡项限额软提示（S16）：与 store 同口径、同样**不阻断**。
+        // 只在本次确实改动了成交金额时才提示 —— 否则「改个备注也弹超限」，
+        // 提示会被训练成噪音（与 rules() 里 bombExpiredDays 的处理同一个教训）。
+        $warnings = array_key_exists('deal_amount', $changes)
+            ? leadDealCapWarnings($changes['deal_amount'])
+            : [];
+        if ($warnings !== []) {
+            audit($r, '提示', '前端客资', $id, "{$lead->name}（{$lead->source}）", $lead->venue,
+                implode('；', array_column($warnings, 'message')));
+        }
+
+        return ok(['before' => json_decode($before), 'after' => camel($lead), 'warnings' => $warnings]);
     }
 
     /** DELETE /leads/{id}：删除留资，权限与「编辑」一致（店长本店 / 超管新媒体全部 / 老师本人或未分配），删除写留痕 */

@@ -578,6 +578,27 @@ class CustomerController extends Controller
             'mediaVisitReward' => 'nullable|integer|min:0|max:1000',
             'mediaValidMonths' => 'nullable|integer|min:1|max:12',
             'bombExpiredDays' => 'nullable|integer|min:30|max:3650',
+            // ── 卡项限额（S16，合规：上海「三限」）──────────────────────────
+            // 这四个键此前**根本不存在**（限额是硬编码），现登记为可配置项，
+            // 给「宁波是否跟进上海/北京政策」预留开关。
+            //
+            // `min:0` 不是随手写的边界：**0 = 不限制**，是本组键的统一语义
+            // （见 rules() 里的注释），所以下界必须是 0 而不是 1 —— 写 min:1
+            // 会把「暂时关掉限额」这个合法操作变成 422。
+            //
+            // 刻意**不给 max**：这些键存在的意义就是让运营能调到比默认值更大的
+            // 值，任何 max 都是在配置项里新埋一个硬编码上限（正是本任务要消灭的
+            // 东西）。类型用 integer：限额是「元 / 月 / 次」的整数标定，
+            // 不允许小数会让「4999.5 元算不算超限」这类边界问题不再存在。
+            //
+            // 注意不要在这些键后面补 `?? 默认值` 的强制回写（第 583-586 行那种）：
+            // 那是为「必须有值才能算」的清单口径准备的；本组键**未提交即代表
+            // 「不改」**，`setRules()` 的 array_merge 会保留原值。补默认值回写
+            // 会让前端未提交的时刻把店长的自定义限额静默打回 5000/20000。
+            'capMembershipAmount' => 'nullable|integer|min:0',
+            'capMembershipMonths' => 'nullable|integer|min:0',
+            'capLessonAmount' => 'nullable|integer|min:0',
+            'capLessonTimes' => 'nullable|integer|min:0',
         ]);
         // 未传的新阈值回落到默认值，避免存一半缺键
         $data['renewalCountPercent'] = (int) ($data['renewalCountPercent'] ?? 20);

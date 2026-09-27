@@ -314,7 +314,7 @@
           <ElCol :span="12">
             <ElFormItem label="来源" required>
               <ElSelect v-model="dialog.form.source" placeholder="选择来源渠道" class="!w-full">
-                <ElOption v-for="s in SOURCE_OPTIONS" :key="s" :label="s" :value="s" />
+                <ElOption v-for="s in sourceOptions" :key="s" :label="s" :value="s" />
               </ElSelect>
             </ElFormItem>
           </ElCol>
@@ -326,8 +326,23 @@
                 placeholder="体验课下单平台"
                 class="!w-full"
               >
-                <ElOption v-for="p in PLATFORM_OPTIONS" :key="p" :label="p" :value="p" />
+                <ElOption v-for="p in platformOptions" :key="p" :label="p" :value="p" />
               </ElSelect>
+            </ElFormItem>
+          </ElCol>
+          <!-- 介绍人（S15）：仅转介绍类来源才显示。
+               后端**不做必填校验**（只限长度 50），所以这里也不设 required
+               —— 前端加必填会在后端接受的情况下凭空挡住一条本来能存的留资。
+               来源枚举里「转介绍 / 会员转介绍 / 老会员转介绍」三者并存是刻意的
+               （枚举只增不减以保证历史数据可回存），任一个都算转介绍。 -->
+          <ElCol v-if="isReferralSource(dialog.form.source)" :span="12">
+            <ElFormItem label="介绍人">
+              <ElInput
+                v-model="dialog.form.referrer"
+                maxlength="50"
+                show-word-limit
+                placeholder="介绍人姓名（选填）"
+              />
             </ElFormItem>
           </ElCol>
           <ElCol :span="12">
@@ -492,7 +507,7 @@
                 <ElCol :span="12">
                   <ElFormItem label="下单平台" class="!mb-2">
                     <ElSelect v-model="card.platform" clearable class="!w-full">
-                      <ElOption v-for="p in PLATFORM_OPTIONS" :key="p" :label="p" :value="p" />
+                      <ElOption v-for="p in platformOptions" :key="p" :label="p" :value="p" />
                     </ElSelect>
                   </ElFormItem>
                 </ElCol>
@@ -595,7 +610,8 @@
     getLeadHistory,
     queryLeads,
     queryCustomerOptions,
-    updateLead
+    updateLead,
+    FALLBACK_LEAD_ENUMS
   } from '@/api/yimai'
   import type { YimaiLead } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
@@ -624,23 +640,29 @@
     '已流失'
   ] as const
 
-  const SOURCE_OPTIONS = [
-    '大众点评',
-    '美团',
-    '抖音',
-    '抖音直播',
-    '抖音私信',
-    '视频号',
-    '小红书',
-    '电话咨询',
-    '转介绍',
-    '会员转介绍',
-    '自然到店',
-    '潜客激活'
-  ]
+  /**
+   * 渠道 / 下单平台枚举（S15）：**改读后端下发值**，不再自备一份。
+   *
+   * 源：`GET /leads` 的 `enums` 键（后端 `helpers.php` 的 LEAD_SOURCES /
+   * ORDER_PLATFORMS 是唯一权威）。历史上两边各写一份，前端 12 项而后端是 15 项
+   * 的最宽并集 —— 后果是「后端接受、前端下拉里没有」，即能存不能选。
+   *
+   * 初值用 `FALLBACK_LEAD_ENUMS`，列表加载回来后整体替换（见 loadList）。
+   * 这样首屏渲染前下拉也不为空。
+   */
+  const sourceOptions = ref<string[]>([...FALLBACK_LEAD_ENUMS.sources])
+  const platformOptions = ref<string[]>([...FALLBACK_LEAD_ENUMS.orderPlatforms])
 
-  /** 体验课下单平台 */
-  const PLATFORM_OPTIONS = ['大众点评', '美团', '抖音', '抖音直播', '小红书', '视频号', '其他']
+  /**
+   * 是否为「转介绍」类来源 —— 决定表单是否显示「介绍人」输入框。
+   *
+   * 判据用**前缀**而不是精确匹配三个字面量：枚举里三者并存
+   * （转介绍 / 会员转介绍 / 老会员转介绍），将来若再细分类别也能覆盖。
+   * `includes('转介绍')` 而非 startsWith：三种写法都含这三个字。
+   */
+  function isReferralSource(source: string | undefined): boolean {
+    return String(source ?? '').includes('转介绍')
+  }
 
   /** 体验课类型（替代原客户分级） */
   const TRIAL_TYPES = ['定制私教', '私教小班', '精品团课', '其他']
@@ -713,6 +735,8 @@
       wechat: '',
       demand: '',
       source: '',
+      /** 介绍人（S15）：转介绍类来源才显示，选填；后端限长 50 */
+      referrer: '',
       orderPlatform: '',
       venue:
         isManager.value || isTeacher.value
@@ -798,6 +822,12 @@
       })
       list.value = res.records
       total.value = res.total
+      // 枚举以后端下发为准（S15）。每次加载都覆盖：后端加值时无需发版即可见，
+      // 也不会因为某次响应缺 enums 而把已有选项清空（api 层已用兜底补齐）。
+      if (res.enums) {
+        sourceOptions.value = [...res.enums.sources]
+        platformOptions.value = [...res.enums.orderPlatforms]
+      }
     } catch (e) {
       console.error('[leads.load]', e)
       ElMessage.error('留资列表加载失败，请稍后重试')
@@ -867,6 +897,9 @@
       // value-format="YYYY-MM-DD" 解析 —— 直接喂 ISO 串会解析失败、日期框空白，
       // 保存时还会把用户没动过的成交时间清掉。
       dealAt: shanghaiCivilDate(row.dealAt) || null,
+      // 介绍人（S15）：后端对空值返回 null，而 ElInput 的 v-model 拿到 null 会
+      // 变成「受控值为 null」的告警态；统一归一成空串（保存时空串由后端转 null）。
+      referrer: row.referrer ?? '',
       trialCards: Array.isArray(row.trialCards)
         ? row.trialCards.map((c) => ({ ...c, cancelled: Boolean(c.cancelled) }))
         : []
@@ -910,6 +943,7 @@
               wechat: dialog.form.wechat,
               demand: dialog.form.demand,
               source: dialog.form.source,
+              referrer: dialog.form.referrer,
               orderPlatform: dialog.form.orderPlatform,
               venue: dialog.form.venue,
               serviceTeacher: String(userStore.getUserInfo.staffName ?? ''),

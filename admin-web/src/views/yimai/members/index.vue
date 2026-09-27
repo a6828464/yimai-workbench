@@ -874,6 +874,53 @@
             >留资月 + 之后 (n-1) 个自然月内到店/成交才算新媒体新客</span
           ></ElFormItem
         >
+        <ElDivider content-position="left">合规限额（上海三限 · 0 = 不限制）</ElDivider>
+        <ElAlert type="info" :closable="false" class="mb-3">
+          <template #title>超限只做软提示，不阻断录入</template>
+          <template #default>
+            <div class="text-xs leading-5">
+              成交/开卡金额超过下面的限额时，保存<strong>仍然成功</strong>（HTTP 200），只在响应
+              <code>data.warnings</code> 里给出提示，由店长决定是否调整。
+              <br />
+              四个值填 <strong>0 即表示不限制</strong>（注意不是「不启用」）—— 0
+              是合法配置，故输入下限就是 0。
+            </div>
+          </template>
+        </ElAlert>
+        <!-- 卡项限额（S16）。:min 一律 0：后端约定「0=不限制」，设成 1 会删掉这个合法状态。
+             :max 只防手滑、不是业务约束（后端刻意未设上界，避免在配置项里埋硬编码上限）。 -->
+        <ElFormItem label="会籍卡金额(元)"
+          ><ElInputNumber
+            v-model="rulesForm.capMembershipAmount"
+            :min="0"
+            :max="1000000"
+            :step="1000"
+          /><span class="ml-2 text-xs text-gray-400"
+            >会籍卡单卡金额上限（默认 5000）</span
+          ></ElFormItem
+        >
+        <ElFormItem label="会籍卡时长(月)"
+          ><ElInputNumber v-model="rulesForm.capMembershipMonths" :min="0" :max="120" /><span
+            class="ml-2 text-xs text-gray-400"
+            >会籍卡有效期上限（默认 24）</span
+          ></ElFormItem
+        >
+        <ElFormItem label="课时包金额(元)"
+          ><ElInputNumber
+            v-model="rulesForm.capLessonAmount"
+            :min="0"
+            :max="1000000"
+            :step="1000"
+          /><span class="ml-2 text-xs text-gray-400"
+            >课时包单包金额上限（默认 20000）</span
+          ></ElFormItem
+        >
+        <ElFormItem label="课时包次数(次)"
+          ><ElInputNumber v-model="rulesForm.capLessonTimes" :min="0" :max="1000" /><span
+            class="ml-2 text-xs text-gray-400"
+            >课时包总次数上限（默认 60）</span
+          ></ElFormItem
+        >
       </ElForm>
       <template #footer>
         <ElButton @click="rulesDlg = false">取消</ElButton>

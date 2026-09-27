@@ -29,7 +29,13 @@ const DEFAULT_MEMBER_RULES: MemberRules = {
   renewalExpiredBackfillDays: 90,
   mediaVisitReward: 20,
   mediaValidMonths: 2,
-  bombExpiredDays: 183
+  bombExpiredDays: 183,
+  // 卡项限额（S16）。⚠️ 必须与 store/modules/yimai.ts 的 DEFAULT_RULES 同步 ——
+  // 漏一处会表现为「保存后回读仍是默认」（历史踩坑，vue-tsc 能抓到缺键）。
+  capMembershipAmount: 5000,
+  capMembershipMonths: 24,
+  capLessonAmount: 20000,
+  capLessonTimes: 60
 }
 
 let rulesCache: MemberRules = { ...DEFAULT_MEMBER_RULES }
@@ -479,6 +485,50 @@ function allCustomers(): YimaiCustomer[] {
 
 // ==================== 前端客资（留资） ====================
 
+/**
+ * 渠道/平台枚举（S15）。
+ *
+ * **后端权威清单的唯一取用点** —— 由 `GET /leads` 的 `enums` 键随列表一并下发
+ * （源：`helpers.php` 的 `LEAD_SOURCES` / `ORDER_PLATFORMS`）。
+ *
+ * 前端**不再自备一份**：历史上两边各写一份，前端 12 项而后端是「最宽并集」15 项，
+ * 结果是「后端接受、前端下拉里没有」——能存不能选。改读这里后不会再分叉。
+ *
+ * ⚠️ `到店`/`自然到店`、`会员转介绍`/`老会员转介绍` 并存是**刻意的**（枚举只增不减，
+ * 保证历史数据可回存），不是重复项，不要清理。
+ */
+export interface LeadEnums {
+  sources: string[]
+  orderPlatforms: string[]
+}
+
+/**
+ * 兜底枚举：仅在「后端未下发 enums」时使用（演示模式 / 老缓存）。
+ *
+ * 与后端 `LEAD_SOURCES` / `ORDER_PLATFORMS` **逐字一致**，任何一侧改动都要同步两处；
+ * 这是兜底而非主路径，正常路径一律走后端下发。
+ */
+export const FALLBACK_LEAD_ENUMS: LeadEnums = {
+  sources: [
+    '大众点评',
+    '美团',
+    '抖音',
+    '抖音直播',
+    '抖音私信',
+    '视频号',
+    '小红书',
+    '电话咨询',
+    '转介绍',
+    '会员转介绍',
+    '老会员转介绍',
+    '自然到店',
+    '潜客激活',
+    '到店',
+    '抖音周年庆直播'
+  ],
+  orderPlatforms: ['大众点评', '美团', '抖音', '抖音直播', '小红书', '视频号', '其他']
+}
+
 export function queryLeads(
   params: PageParams & {
     name?: string
@@ -491,10 +541,20 @@ export function queryLeads(
   }
 ) {
   if (USE_BACKEND) {
-    return apiGet<{ records: YimaiLead[]; total: number }>(
+    return apiGet<{ records: YimaiLead[]; total: number; enums?: Partial<LeadEnums> }>(
       '/leads',
       params as Record<string, unknown>
-    ).then((d) => ({ records: d.records ?? [], total: d.total ?? 0 }))
+    ).then((d) => ({
+      records: d.records ?? [],
+      total: d.total ?? 0,
+      // 后端没给（或给了半个）时按兜底补齐，保证下拉永不空
+      enums: {
+        sources: d.enums?.sources?.length ? d.enums.sources : FALLBACK_LEAD_ENUMS.sources,
+        orderPlatforms: d.enums?.orderPlatforms?.length
+          ? d.enums.orderPlatforms
+          : FALLBACK_LEAD_ENUMS.orderPlatforms
+      } as LeadEnums
+    }))
   }
   ensureSeeded()
   const store = useYimaiStore()
@@ -519,7 +579,11 @@ export function queryLeads(
   if (params.dateFrom) list = list.filter((l) => (l.leadDate ?? '') >= String(params.dateFrom))
   if (params.dateTo) list = list.filter((l) => (l.leadDate ?? '') <= String(params.dateTo))
   const sorted = [...list].sort((x, y) => y.id - x.id)
-  return Promise.resolve({ records: paginate(sorted, params), total: sorted.length })
+  return Promise.resolve({
+    records: paginate(sorted, params),
+    total: sorted.length,
+    enums: FALLBACK_LEAD_ENUMS
+  })
 }
 
 export function addLead(
@@ -1730,9 +1794,201 @@ export interface MediaPerformance {
   }
 }
 
+/**
+ * 渠道一行。
+ *
+ * S13 起后端新增四列（核销率 / 成交率 / 客单），**既有 `channel`/`leads` 原样保留**
+ * （其余消费方仍在读，只能加不能改）。新增六键全部 optional：老缓存/演示模式下
+ * 可能整块缺失，页面按「无该列」降级而不是显示 0（0 与「没数据」是两件事）。
+ */
 export interface ChannelLeadItem {
   channel: string
   leads: number
+  /** 该渠道有核销记录的留资数（分子） */
+  redeemCount?: number
+  /**
+   * 核销率（%）。
+   *
+   * ⚠️ **代理口径**：分母是「该渠道留资数」而非「券售出数」——本地没有独立的
+   * 券售出事实列。展示时必须带这个限定（见 `channelFormula.redeemRate`），
+   * 否则会被读成严格售出核销率。
+   */
+  redeemRate?: number
+  redeemAmount?: number
+  deals?: number
+  /** 成交率（%）= 成交条数（按 deal_at 归期，缺失回退 lead_date）÷ 该渠道留资数 */
+  dealRate?: number
+  dealAmount?: number
+  /** 客单价 = 成交金额合计 ÷ 成交条数（**不是**除以留资数） */
+  avgDealAmount?: number
+}
+
+/** 渠道四列的合计与解释（S13）。整体比率按各自分子分母重算，不等于各行比率求平均。 */
+export interface ChannelSummary {
+  leads: number
+  deals: number
+  redeemCount: number
+  dealAmount: number
+  redeemAmount: number
+  dealRate: number
+  redeemRate: number
+  avgDealAmount: number
+}
+
+export type ChannelFormula = Record<string, string>
+
+/** S11 到店频次 × 续费率曲线 */
+export interface AttendanceRenewalBucket {
+  /** 分档键：'0' / '1-3' / '4-7' / '8+' */
+  bucket: string
+  label: string
+  memberCount: number
+  renewedCount: number
+  /** 续费率（%）= renewedCount / memberCount —— **按人计** */
+  renewalRate: number
+}
+
+export interface AttendanceRenewalCurve {
+  buckets: AttendanceRenewalBucket[]
+  totalMembers: number
+  totalRenewed: number
+  overallRenewalRate: number
+  unit: 'person'
+  window: {
+    /** 'attend_m3' —— 30 天窗口对应 M3，字段名里的数字是「第几个窗口」不是月数 */
+    attendField: string
+    windowDays: number
+    basis: string
+    /** 后端写明的取字段陷阱（attend_m1 是 60~89 天前），直接渲染，别自己另写一份 */
+    trap: string
+  }
+  renewalCriterion: string
+  /** 未能归入任何档的人数（正常情况下 0；非 0 说明桶定义被改坏） */
+  unbucketed: number
+}
+
+/** S12 未耗课余额分桶（**卡数口径**，不是金额） */
+export interface AssetBucketCellRow {
+  deadlineBucket: string
+  deadlineLabel: string
+  cardType: string
+  cardTypeLabel: string
+  cardCount: number
+  /** 占全部卡数的比例（%） */
+  ratio: number
+}
+
+export interface AssetBucketSummaryRow {
+  key: string
+  label: string
+  cardCount: number
+  ratio: number
+}
+
+export interface AssetBuckets {
+  /** 期限档 × 卡种的交叉表（后端返回 4×4=16 格，含其它卡种兜底列） */
+  buckets: AssetBucketCellRow[]
+  byDeadline: AssetBucketSummaryRow[]
+  byType: AssetBucketSummaryRow[]
+  byResidue: AssetBucketSummaryRow[]
+  totalCards: number
+  /** 'card_count' —— 卡数口径，渲染时**不要**自己拼「元」 */
+  unit: string
+  integrity: {
+    /** 交叉表格数求和 */
+    cellSum: number
+    bucketsSum: number
+    totalCards: number
+    /** 自洽性：cellSum === totalCards。与上游 remaining_assets_total 不同源，不可互相校验 */
+    balanced: boolean
+  }
+  scope?: string
+  /** 后端下的口径说明，原样渲染（含与上游 remainingAssets 的口径差异） */
+  note?: string
+}
+
+/** S14 体验卡→会员卡转化率排行的一行 */
+export interface TrialConversionRow {
+  teacher: string
+  leads: number
+  trialCards: number
+  attendedCards: number
+  convertedCards: number
+  /** 卡口径（%），仅作过程量核对，**不参与排行** */
+  conversionRateByCard: number
+  /** 该老师名下有过体验卡的人数（去重，主口径分母） */
+  trialPeople: number
+  convertedPeople: number
+  /** **主指标**：按人算的转化率（%），排行即按它倒序 */
+  conversionRate: number
+  /** 与 conversionRate 同值的别名 */
+  conversionRateByPerson: number
+}
+
+export interface TrialConversionResult {
+  rows: TrialConversionRow[]
+  totalTrialCards: number
+  totalConvertedCards: number
+  totalTrialPeople: number
+  totalConvertedPeople: number
+  /** 整体值按手机号全局去重，**不等于各行相加** */
+  overallConversionRate: number
+  overallConversionRateByCard: number
+  memberPhones: number
+  formula: Record<string, string>
+  unit: 'person'
+  note?: string
+}
+
+/** S10 收入结构：单个课型的耗卡金额 */
+export interface RevenueMixKind {
+  label: string
+  amount: number
+  /** 该类耗卡金额 ÷ **售卡金额**（结构参照；本端点窗口是全量至今） */
+  ratio: number
+  /** 该类耗卡金额 ÷ **耗卡总额**（三类相加 = 100）—— 画占比图用这个 */
+  share: number
+  classCount: number
+}
+
+export interface RevenueMix {
+  private: RevenueMixKind
+  small: RevenueMixKind
+  group: RevenueMixKind
+  /** 售卡金额（ratio 的分母） */
+  cardSales: number
+  /** 耗卡总额（share 的分母） */
+  consumptionTotal: number
+  degraded: {
+    bookingsWithoutAmount: number
+    note: string
+  }
+}
+
+/**
+ * 到店频次 × 续费率曲线（S11）。
+ *
+ * 图上必须显式标注「30 天窗口 · 按人计」—— 这是用户拍板的口径，容易被人误改。
+ */
+export function getAttendanceRenewalCurve(venue = ''): Promise<AttendanceRenewalCurve | undefined> {
+  if (!USE_BACKEND) return Promise.resolve(undefined)
+  return apiGet<AttendanceRenewalCurve>('/analytics/attendance-renewal-curve', {
+    ...(venue ? { venue } : {})
+  })
+}
+
+/** 未耗课余额分桶（S12，卡数口径） */
+export function getAssetBuckets(venue = ''): Promise<AssetBuckets | undefined> {
+  if (!USE_BACKEND) return Promise.resolve(undefined)
+  return apiGet<AssetBuckets>('/analytics/asset-buckets', { ...(venue ? { venue } : {}) })
+}
+
+/** 体验卡→会员卡转化率排行（S14，主指标按人算） */
+export function getTrialConversion(venue = ''): Promise<TrialConversionResult | undefined> {
+  if (!USE_BACKEND) return Promise.resolve(undefined)
+  return apiGet<TrialConversionResult>('/analytics/trial-conversion', {
+    ...(venue ? { venue } : {})
+  })
 }
 
 const CHANNELS = ['大众点评', '美团', '抖音', '视频号', '小红书', '转介绍', '自然到店']

@@ -32,13 +32,30 @@
           ><ElFormItem label="电话"><ElInput v-model="form.phone" maxlength="16" /></ElFormItem
         ></ElCol>
       </ElRow>
+      <!-- 合规说明（S18）：对客展示的自由文本，单独一行而不挤进上面的 12 栏网格 -->
+      <ElFormItem label="合规说明">
+        <ElInput
+          v-model="form.complianceNotice"
+          type="textarea"
+          :rows="4"
+          :maxlength="COMPLIANCE_NOTICE_MAX_LENGTH"
+          show-word-limit
+          placeholder="例：本页案例均已取得会员书面授权，展示不含面部信息；价格与课程信息以门店当期公示为准。"
+        />
+        <div class="mt-1 text-xs text-gray-400 leading-5">
+          展示在 H5 分享页底部（对客可见）。留空即<strong>不展示该区块</strong> ——
+          不会渲染一个空白框。<br />
+          上限 {{ COMPLIANCE_NOTICE_MAX_LENGTH }} 字；超长由服务端按<strong>字数</strong>截断
+          （不是字节，中文不会被切半）。
+        </div>
+      </ElFormItem>
       <ElButton type="primary" @click="save">保存基础信息</ElButton>
     </ElForm>
   </div>
 </template>
 
 <script setup lang="ts">
-  import { useSalesStore } from '@/store/modules/sales'
+  import { useSalesStore, COMPLIANCE_NOTICE_MAX_LENGTH } from '@/store/modules/sales'
   import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'SalesBasic' })

@@ -170,6 +170,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/analytics/trends', [AnalyticsController::class, 'trends']);
     Route::get('/analytics/channels', [AnalyticsController::class, 'channels']);
     Route::get('/analytics/platforms', [AnalyticsController::class, 'platforms']);
+    // 战略规划象限② 新增：S11 到店频次×续费率曲线 / S12 未耗课余额分桶（卡数口径）/ S14 体验卡→会员卡转化
+    Route::get('/analytics/attendance-renewal-curve', [AnalyticsController::class, 'attendanceRenewalCurve']);
+    Route::get('/analytics/asset-buckets', [AnalyticsController::class, 'assetBuckets']);
+    Route::get('/analytics/trial-conversion', [AnalyticsController::class, 'trialConversion']);
 
     // ---------- 通知中心 ----------
     Route::get('/notifications', [NotificationController::class, 'index']);
