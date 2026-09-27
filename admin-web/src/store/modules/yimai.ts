@@ -7,7 +7,7 @@ import { useUserStore } from './user'
  *
  * 生产构建里 `USE_BACKEND` 是编译期常量 true（`VITE_USE_BACKEND=true`），所以
  * `if (!DEMO_SEEDS)` 整块会被打包器消除 —— 种子数据连同下面的假会员名单不会进包。
- * 之前种子是无条件调用的，于是入口 chunk 里躺着「王雅琴/郑好/许静姝…」一整套编造的
+ * 之前种子是无条件调用的，于是入口 chunk 里躺着「示例会员01/示例会员10/示例会员12…」一整套编造的
  * 客户名单（约 10KB），任何人都能从发布产物里读到。
  *
  * 加 try 是因为打包器对 `if (常量) {}` 的消除是可靠的，但对 `x ? a : b` 里带函数调用
@@ -224,7 +224,7 @@ function seedCustomers(): YimaiCustomer[] {
   const base: YimaiCustomer[] = [
     {
       id: 1,
-      name: '王雅琴',
+      name: '示例会员01',
       phoneTail: '2073',
       venue: '绿地店',
       source: '大众点评',
@@ -244,7 +244,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 2,
-      name: '李梦',
+      name: '示例会员02',
       phoneTail: '5581',
       venue: '绿地店',
       source: '朋友介绍',
@@ -264,7 +264,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 3,
-      name: '张璐',
+      name: '示例会员03',
       phoneTail: '3390',
       venue: '东部店',
       source: '美团',
@@ -284,7 +284,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 4,
-      name: '陈晓芸',
+      name: '示例会员04',
       phoneTail: '8826',
       venue: '绿地店',
       source: '小红书',
@@ -304,7 +304,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 5,
-      name: '刘思颖',
+      name: '示例会员05',
       phoneTail: '4417',
       venue: '东部店',
       source: '自然到店',
@@ -324,7 +324,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 6,
-      name: '赵一诺',
+      name: '示例会员06',
       phoneTail: '9052',
       venue: '绿地店',
       source: '抖音',
@@ -344,7 +344,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 7,
-      name: '孙美琪',
+      name: '示例会员07',
       phoneTail: '6634',
       venue: '东部店',
       source: '美团',
@@ -364,7 +364,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 8,
-      name: '周雨彤',
+      name: '示例会员08',
       phoneTail: '1278',
       venue: '绿地店',
       source: '朋友介绍',
@@ -384,7 +384,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 9,
-      name: '吴佳宁',
+      name: '示例会员09',
       phoneTail: '7745',
       venue: '东部店',
       source: '大众点评',
@@ -404,7 +404,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 10,
-      name: '郑好',
+      name: '示例会员10',
       phoneTail: '3509',
       venue: '绿地店',
       source: '美团',
@@ -424,7 +424,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 11,
-      name: '冯悦',
+      name: '示例会员11',
       phoneTail: '6821',
       venue: '绿地店',
       source: '小红书',
@@ -444,7 +444,7 @@ function seedCustomers(): YimaiCustomer[] {
     },
     {
       id: 12,
-      name: '许静姝',
+      name: '示例会员12',
       phoneTail: '9913',
       venue: '东部店',
       source: '朋友介绍',
@@ -490,8 +490,8 @@ function seedLeads(): YimaiLead[] {
     {
       id: 1,
       leadDate: '2026-08-24',
-      name: '康女士',
-      phone: '13805745021',
+      name: '示例客资01',
+      phone: '13800000021',
       phoneTail: '5021',
       demand: '体验大器械',
       source: '抖音',
@@ -513,8 +513,8 @@ function seedLeads(): YimaiLead[] {
     {
       id: 2,
       leadDate: '2026-08-24',
-      name: 'summer',
-      phone: '13705744022',
+      name: '示例客资02',
+      phone: '13800000022',
       phoneTail: '4022',
       demand: '体式提升',
       source: '转介绍',
@@ -536,8 +536,8 @@ function seedLeads(): YimaiLead[] {
     {
       id: 3,
       leadDate: '2026-08-25',
-      name: '章月',
-      phone: '13567542747',
+      name: '示例客资03',
+      phone: '13800000023',
       phoneTail: '2747',
       demand: '产后修复',
       source: '美团',
@@ -559,8 +559,8 @@ function seedLeads(): YimaiLead[] {
     {
       id: 4,
       leadDate: '2026-08-22',
-      name: '姜宝颖',
-      phone: '13777067399',
+      name: '示例客资04',
+      phone: '13800000024',
       phoneTail: '7399',
       demand: '私教入门',
       source: '抖音直播',
@@ -582,8 +582,8 @@ function seedLeads(): YimaiLead[] {
     {
       id: 5,
       leadDate: '2026-08-20',
-      name: '竺爱华',
-      phone: '13806672906',
+      name: '示例客资05',
+      phone: '13800000025',
       phoneTail: '2906',
       demand: '塑形减脂',
       source: '大众点评',
@@ -605,8 +605,8 @@ function seedLeads(): YimaiLead[] {
     {
       id: 6,
       leadDate: '2026-08-25',
-      name: '顾女士',
-      phone: '13905741188',
+      name: '示例客资06',
+      phone: '13800000026',
       phoneTail: '1188',
       demand: '肩颈改善',
       source: '视频号',
@@ -628,8 +628,8 @@ function seedLeads(): YimaiLead[] {
     {
       id: 7,
       leadDate: '2026-08-18',
-      name: '王燕',
-      phone: '15858401132',
+      name: '示例客资07',
+      phone: '13800000027',
       phoneTail: '1132',
       demand: '小班系统练习',
       source: '抖音周年庆直播',

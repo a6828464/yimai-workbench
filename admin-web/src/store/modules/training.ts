@@ -56,7 +56,7 @@ const SEEDS: TrainingPlan[] = [
     images: [],
     share: { enabled: true, code: 'plan-1-demo', views: 0 },
     id: 1,
-    memberName: '陈晓芸',
+    memberName: '示例会员04',
     age: '32',
     gender: '女',
     height: '163',

@@ -1062,7 +1062,7 @@ const TASKS: YimaiTask[] = [
   {
     id: 1,
     title: '新客首次响应',
-    customerName: '郑好',
+    customerName: '示例会员10',
     venue: '绿地店',
     owner: '未分配',
     priority: '高',
@@ -1073,7 +1073,7 @@ const TASKS: YimaiTask[] = [
   {
     id: 2,
     title: '预约确认',
-    customerName: '赵一诺',
+    customerName: '示例会员06',
     venue: '绿地店',
     owner: '婷婷',
     priority: '高',
@@ -1084,7 +1084,7 @@ const TASKS: YimaiTask[] = [
   {
     id: 3,
     title: '体验后跟进',
-    customerName: '刘思颖',
+    customerName: '示例会员05',
     venue: '东部店',
     owner: '苏米',
     priority: '高',
@@ -1095,7 +1095,7 @@ const TASKS: YimaiTask[] = [
   {
     id: 4,
     title: '临期沟通',
-    customerName: '许静姝',
+    customerName: '示例会员12',
     venue: '东部店',
     owner: '苏米',
     priority: '中',
@@ -1106,7 +1106,7 @@ const TASKS: YimaiTask[] = [
   {
     id: 5,
     title: '低频唤醒',
-    customerName: '李梦',
+    customerName: '示例会员02',
     venue: '绿地店',
     owner: '冰璐',
     priority: '中',
@@ -1117,7 +1117,7 @@ const TASKS: YimaiTask[] = [
   {
     id: 6,
     title: '训练反馈补录',
-    customerName: '陈晓芸',
+    customerName: '示例会员04',
     venue: '绿地店',
     owner: '娟子',
     priority: '低',
@@ -1128,7 +1128,7 @@ const TASKS: YimaiTask[] = [
   {
     id: 7,
     title: '预约确认',
-    customerName: '冯悦',
+    customerName: '示例会员11',
     venue: '绿地店',
     owner: '娟子',
     priority: '低',
@@ -1205,7 +1205,7 @@ export async function updateTask(
 const APPROVALS: YimaiApproval[] = [
   {
     id: 1,
-    customerName: '刘思颖',
+    customerName: '示例会员05',
     applicant: '苏米',
     cardName: '全能小班年卡',
     standardPrice: 8800,
@@ -1216,7 +1216,7 @@ const APPROVALS: YimaiApproval[] = [
   },
   {
     id: 2,
-    customerName: '周雨彤',
+    customerName: '示例会员08',
     applicant: '冰璐',
     cardName: 'VIP私教50节',
     standardPrice: 22500,
@@ -1227,7 +1227,7 @@ const APPROVALS: YimaiApproval[] = [
   },
   {
     id: 3,
-    customerName: '吴佳宁',
+    customerName: '示例会员09',
     applicant: '芷晴',
     cardName: '私教小班10节',
     standardPrice: 3200,
@@ -1238,7 +1238,7 @@ const APPROVALS: YimaiApproval[] = [
   },
   {
     id: 4,
-    customerName: '孙美琪',
+    customerName: '示例会员07',
     applicant: '张青',
     cardName: '精品团课季卡',
     standardPrice: 1980,
@@ -1249,7 +1249,7 @@ const APPROVALS: YimaiApproval[] = [
   },
   {
     id: 5,
-    customerName: '王雅琴',
+    customerName: '示例会员01',
     applicant: '婷婷',
     cardName: '精品白领年卡（3次/周）',
     standardPrice: 6800,
@@ -3364,7 +3364,7 @@ export function getRiskAlerts(): Promise<
   alerts.push({
     id: 1,
     level: '高',
-    text: '郑好 留资超24小时未分配负责人',
+    text: '示例会员10 留资超24小时未分配负责人',
     action: '立即分配首接老师'
   })
   alerts.push({
@@ -3384,13 +3384,13 @@ export function getRiskAlerts(): Promise<
   alerts.push({
     id: 4,
     level: '中',
-    text: '许静姝 卡项3天后到期，尚无续费动作',
+    text: '示例会员12 卡项3天后到期，尚无续费动作',
     action: '确认续费窗口沟通结果'
   })
   alerts.push({
     id: 5,
     level: '低',
-    text: '李梦 54天未到店且无未来预约',
+    text: '示例会员02 54天未到店且无未来预约',
     action: '检查服务断档原因'
   })
 
