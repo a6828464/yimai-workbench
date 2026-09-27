@@ -157,22 +157,34 @@ final class AnalyticsController extends Controller
             KyBooking::query()->where('status', 'signed'),
             $u, ''
         );
-        foreach ($bookingQ->get() as $booking) {
-            $kind = $booking->courseKind();
-            if (! isset($kindAmount[$kind])) {
-                // courseKindFrom 只返回这三个值；真出现了说明有人改了判定函数，
-                // 落到 group 会静默改写结构，故显式计数而不是静默归类。
-                $kind = 'group';
+        // ⚠ 必须 chunkById，不能 `->get()`：
+        // 生产实测 `ky_bookings` 有 4 万余行（团课 35453 + 私教 6123），且每行带一个大
+        // `raw` JSON 列（bookingConsumeAmount 要从里面读 m_card_unit_cash_value /
+        // single_charge 两个键，故不能把它 select 掉省内存）。
+        // 一次性 get() 实例化全部模型会撑爆 PHP 内存上限 —— 2026-09-28 测试服实测
+        // `/analytics/summary` 返回 500：`Allowed memory size of 134217728 bytes exhausted`
+        // （128MB，抛在 Connection.php:427）。本机测试库为空，该量级在本地复现不出来。
+        // chunk 后峰值内存只与批大小有关，与总行数无关（同 KyMemberSyncService:749 既有做法）。
+        $bookingQ->orderBy('id')->chunkById(1000, function ($bookings) use (
+            &$kindAmount, &$kindClasses, &$withoutAmount
+        ) {
+            foreach ($bookings as $booking) {
+                $kind = $booking->courseKind();
+                if (! isset($kindAmount[$kind])) {
+                    // courseKindFrom 只返回这三个值；真出现了说明有人改了判定函数，
+                    // 落到 group 会静默改写结构，故显式计数而不是静默归类。
+                    $kind = 'group';
+                    $kindClasses[$kind]++;
+                    continue;
+                }
                 $kindClasses[$kind]++;
-                continue;
+                $amount = self::bookingConsumeAmount($booking);
+                if ($amount <= 0) {
+                    $withoutAmount++;
+                }
+                $kindAmount[$kind] += $amount;
             }
-            $kindClasses[$kind]++;
-            $amount = self::bookingConsumeAmount($booking);
-            if ($amount <= 0) {
-                $withoutAmount++;
-            }
-            $kindAmount[$kind] += $amount;
-        }
+        });
 
         $consumptionTotal = array_sum($kindAmount);
         $mix = [];

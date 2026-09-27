@@ -176,6 +176,80 @@ class AnalyticsMetricsTest extends TestCase
         $this->assertSame(0, (int) $mix['degraded']['bookingsWithoutAmount']);
     }
 
+    /**
+     * S10 必须走 chunk 流式聚合，不得一次性 `->get()` 全表。
+     *
+     * ## 为什么要钉这一条（2026-09-28 测试服事故的回归锁）
+     *
+     * 首版实现写的是 `foreach ($bookingQ->get() as $booking)`。本机测试库为空、
+     * 该写法一路全绿；但测试服 `ky_bookings` 实测 **4 万余行**（团课 35453 +
+     * 私教 6123），且每行带一个大 `raw` JSON 列（`bookingConsumeAmount()` 要从里面读
+     * `m_card_unit_cash_value` / `single_charge`，故不能 select 掉省内存）。
+     * 一次性实例化全部模型直接撑爆 PHP 的 128MB 上限，`/analytics/summary` 返回 500：
+     *
+     *     Allowed memory size of 134217728 bytes exhausted
+     *     (tried to allocate 20480 bytes)  at Connection.php:427
+     *
+     * 因 `analyticsError` 由 summary 的 catch 设置，整页顶部弹出「看板数据加载失败」，
+     * 而 trends/channels 等其它请求都 200 —— 症状正是用户报的「有数据、但部分没显示」。
+     *
+     * ## 本测试如何守住它
+     *
+     * 只断言「结果正确 + 不 OOM」不够（空库下 `->get()` 也不会 OOM）。故这里**造出足以
+     * 区分两种写法的数据量**：3000 行 × ~2KB raw。旧写法需一次性持有约 6MB raw 字符串
+     * 加 3000 个 Eloquent 模型（实测峰值 30MB+）；chunk 写法峰值只与批大小有关。
+     * 判定用**峰值内存增量**而非计时，与机器性能无关。
+     *
+     * 若有人改回 `->get()`，峰值断言会失败 —— 那正是它存在的意义。
+     */
+    public function test_revenue_mix_streams_bookings_instead_of_loading_all_at_once(): void
+    {
+        Sanctum::actingAs($this->superUser());
+
+        $pad = str_repeat('x', 2000);
+        $now = now();
+        for ($chunk = 0; $chunk < 3; $chunk++) {
+            $rows = [];
+            for ($i = 0; $i < 1000; $i++) {
+                $n = $chunk * 1000 + $i;
+                $rows[] = [
+                    'source_key' => "stream-probe:{$n}", 'venue' => '绿地店',
+                    'booking_type' => '私教', 'course_kind' => 'private',
+                    'member_id' => 'm'.($n % 500), 'member_name' => '流式探针',
+                    'phone' => '13900000000', 'start_at' => $now->copy()->subDays($n % 100),
+                    'teacher_name' => '王教练', 'status' => 'signed', 'is_trial' => false,
+                    'raw' => json_encode([
+                        'm_card_unit_cash_value' => '128.5',
+                        'single_charge' => '1次',
+                        'pad' => $pad,
+                    ], JSON_UNESCAPED_UNICODE),
+                    'created_at' => $now, 'updated_at' => $now,
+                ];
+            }
+            KyBooking::insert($rows);
+        }
+        $this->assertSame(3000, KyBooking::count(), '夹具必须真的落库（否则本测试失去意义）');
+
+        $before = memory_get_peak_usage(true);
+        $mix = $this->getJson('/api/analytics/summary')->assertOk()->json('data.revenueMix');
+        $peakGrowthMb = (memory_get_peak_usage(true) - $before) / 1048576;
+
+        // 聚合结果正确（不是靠少算换来的低内存）：3000 行 × 128.5 = 385500
+        $this->assertSame(385500.0, (float) $mix['private']['amount']);
+        $this->assertSame(3000, (int) $mix['private']['classCount']);
+
+        // 阈值 12MB：本夹具下 chunk(1000) 实测峰值增量 **6.0MB**，旧写法（一次性
+        // `->get()`）实测 **16.0MB** —— 取中间偏上，既能拦住回归又不随机器抖动误报。
+        // （阈值不能拍脑袋定：本测试最初写 20MB，结果把旧写法也放过了 —— 已用
+        //  「临时改回 ->get() 看它是否变红」的方式验证过判据有效，别再放宽。）
+        $this->assertLessThan(
+            12,
+            $peakGrowthMb,
+            "S10 一次性加载了全部预约（峰值增长 {$peakGrowthMb}MB；chunk 版应为 6MB 左右）——"
+            .'必须用 chunkById 流式聚合，否则生产 4 万行会 OOM（见方法注释）'
+        );
+    }
+
     // ==================== S11 到店频次 × 续费率曲线 ====================
 
     public function test_attendance_renewal_curve_buckets_by_attend_m3_and_counts_renewal_by_person(): void
