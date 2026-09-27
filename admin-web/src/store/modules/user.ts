@@ -44,6 +44,7 @@ import { useMenuStore } from './menu'
 import { StorageConfig } from '@/utils/storage/storage-config'
 import { StorageKeyManager } from '@/utils/storage/storage-key-manager'
 import { notifySessionReset, notifyUserChange } from '@/utils/session-lifecycle'
+import { apiPost } from '@/api/backend'
 
 /**
  * 清理可能含客户/留资 PII 的持久化业务数据（登出 / 会话失效 / 切换账号共用），
@@ -172,6 +173,17 @@ export const useUserStore = defineStore(
      * 清空所有用户相关状态并跳转到登录页
      */
     const logOut = () => {
+      // 先让服务端撤销当前 token，再清本地会话。
+      //
+      // 此前全仓 **0 处**调用 `POST /auth/logout`（后端端点存在且路由已注册），
+      // 于是登出只清浏览器侧状态、Sanctum token 在服务端仍然有效 ——
+      // 共用机场景下，登出后旧 token 仍可访问 /api/me 等接口，会话链路未闭合。
+      //
+      // 用 fire-and-forget 而非 await：logOut 是同步函数（调用点较多），改成 async 会波及
+      // 全部调用方；而这里只需「尽力通知服务端」，失败（离线/已过期）不应阻塞登出。
+      // 必须在清 accessToken 之前发出，否则请求头里已无 token。
+      void apiPost('/auth/logout').catch(() => {})
+
       // 保存当前用户 ID，用于下次登录时判断是否为同一用户
       const currentUserId = info.value.userId
       if (currentUserId) {

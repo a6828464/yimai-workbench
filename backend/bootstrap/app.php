@@ -24,6 +24,11 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->redirectGuestsTo(fn () => null);
+        // 全局限流：单账号 120 req/min。逐端点另有 7 处更严的 throttle（登录/AI/体测解析），
+        // 这里补的是兜底 —— 此前 api 组不含 throttle，任何已登录账号（含离职未停用者）
+        // 可无限枚举 /api/customers、/api/leads 等列表接口，无任何速率约束。
+        // 120/min 对单用户远高于正常操作（约 2 req/s 才会触顶），不影响前端轮询。
+        $middleware->throttleApi('120,1');
         $middleware->api(append: [EnsureUserIsEnabled::class, LogApiRequest::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

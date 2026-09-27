@@ -24,7 +24,12 @@ const DEFAULT_MEMBER_RULES: MemberRules = {
   reviveDays: 30,
   cultivationPrivate: 8,
   cultivationSmall: 12,
-  cultivationGroup: 12
+  cultivationGroup: 12,
+  // 与后端 helpers.php:rules() 的默认值保持一致（缺键会在提交时把服务端值打回默认）
+  renewalExpiredBackfillDays: 90,
+  mediaVisitReward: 20,
+  mediaValidMonths: 2,
+  bombExpiredDays: 183
 }
 
 let rulesCache: MemberRules = { ...DEFAULT_MEMBER_RULES }

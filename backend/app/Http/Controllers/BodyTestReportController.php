@@ -102,13 +102,32 @@ final class BodyTestReportController extends Controller
         $parts = BodyTestReportService::parseUrl($url);
         abort_if($parts === null, 422, '链接格式不对');
 
-        $raw = BodyTestReportService::fetch($parts['body_test_id'], $parts['sign'], $parts['timestamp']);
-        abort_if($raw === null, 422, '体测报告拉取失败，请确认链接是否有效');
-        $analysis = BodyTestReportService::analyze($raw);
-
+        // 写入侧归属校验（T1 §7 F3）：此前 venue 直接取请求输入、customerId/leadId 全无校验，
+        // 任何可写角色都能把报告挂到**任意门店**的**任意会员**身上 —— 体测含健康数据，
+        // 这既是越权写入，也是往他人档案里塞数据。非超管的 venue 一律取账号自身门店。
+        //
+        // 位置：必须放在 `BodyTestReportService::fetch()` **之前** —— 否则越权请求仍会先
+        // 触发一次到上游（internalservice.ruleye.com）的出网调用，白耗配额且扩大攻击面。
         $venue = (string) $r->input('venue', $u->venue ?: '');
         $customerId = $r->input('customerId') ?: null;
         $leadId = $r->input('leadId') ?: null;
+
+        if (! userHasRole($u, 'R_SUPER')) {
+            abort_if($venue !== '' && $venue !== $u->venue, 403, '只能录入本店体测报告');
+            $venue = (string) $u->venue;
+        }
+        if ($customerId) {
+            $c = Customer::find((int) $customerId);
+            abort_if($c === null || ! canAccessCustomer($u, $c), 403, '无权为该会员录入体测报告');
+        }
+        if ($leadId) {
+            $l = Lead::find((int) $leadId);
+            abort_if($l === null || ! $this->leadVisible($u, $l), 403, '无权为该客资录入体测报告');
+        }
+
+        $raw = BodyTestReportService::fetch($parts['body_test_id'], $parts['sign'], $parts['timestamp']);
+        abort_if($raw === null, 422, '体测报告拉取失败，请确认链接是否有效');
+        $analysis = BodyTestReportService::analyze($raw);
 
         // 没显式传关联时按会员名/手机号回填，保证报告能挂到人身上
         $name = (string) ($analysis['profile']['nickName'] ?? '');
@@ -168,8 +187,45 @@ final class BodyTestReportController extends Controller
             $q->where('created_by', $u->id);
         }
 
+        // 列表口径必须与详情 isVisible() 一致（T1 §7 F4）：此前 R_SERVICE 只卡门店，
+        // 而详情要求 ownsByRelation ⇒ 「列表看得见、点进去 403」。列表本身就是全店
+        // 健康数据的泄露面 —— 对 R_SERVICE 补上与详情同源的归属过滤。
+        // （R_TEACHER 已由上面的 created_by 过滤；此处只处理依赖关系的角色。）
+        if (! userHasRole($u, 'R_SUPER') && ! userHasRole($u, 'R_MANAGER')) {
+            $q->where(function ($w) use ($u) {
+                // 本人录入的
+                $w->where('created_by', $u->id);
+                // 或挂在本人名下会员/客资上的
+                $keys = staffNames($u);
+                if ($keys !== []) {
+                    $w->orWhereIn('customer_id', Customer::query()
+                        ->where(fn ($c) => $c->whereIn('consultant', $keys)->orWhereIn('owner', $keys))
+                        ->select('id'));
+                    $w->orWhereIn('lead_id', Lead::query()
+                        ->where(fn ($l) => $l->whereIn('service_teacher', $keys))
+                        ->select('id'));
+                }
+            });
+        }
+
         return ok(['records' => $q->orderByDesc('tested_at')->limit(50)->get()
             ->map(fn ($x) => $this->present($x))->all()]);
+    }
+
+    /** 客资是否对该用户可见（与留资中间件同谓词，供体测写入校验复用） */
+    private function leadVisible(User $u, Lead $l): bool
+    {
+        if (userHasRole($u, 'R_SUPER')) {
+            return true;
+        }
+        if ($l->venue !== $u->venue) {
+            return false;
+        }
+
+        return userHasRole($u, 'R_MANAGER')
+            || staffOwnsRow($u, $l, 'service_teacher_user_id', 'service_teacher')
+            || staffOwnsRow($u, $l, 'trial_teacher_user_id', 'trial_teacher')
+            || staffOwnsRow($u, $l, 'created_by_user_id', 'created_by');
     }
 
     /** GET /body-test-reports/{id} */

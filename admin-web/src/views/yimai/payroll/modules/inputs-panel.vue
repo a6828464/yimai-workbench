@@ -374,10 +374,23 @@
     dirty.value = new Set(dirty.value)
   }
 
-  /** 切换社保模式：从 inherit 切到 set 时把沿用值带进来，避免用户从 0 开始填 */
+  /**
+   * 切换社保模式：从 inherit 切到 set 时，金额框要有初始值，避免用户从空白/0 开始填。
+   *
+   * 注意这里**不需要**从别处搬值：`row.socialSecurity` 是**生效值**（规格 §4.2），
+   * inherit 时它已经是沿用来的金额（如 557.76），off 时为 0 —— 输入框绑定的就是它，
+   * 所以切换后自然显示沿用值。
+   *
+   * 原实现是 `row.socialSecurity = row.socialSecurity`（自赋值空操作，被 eslint
+   * no-self-assign 拦下）。**不可**改成 `= row.socialSecurityRaw`：规格 §4.2 定义
+   * `socialSecurityRaw` 是「本行显式存储的金额」，inherit 模式下**恒为 null**，
+   * 赋值反而会把沿用值清空（与注释意图相反）。
+   *
+   * 仅在异常地拿到非数值时兜底，保证输入框不空白。
+   */
   function onModeChange(row: PayrollMonthlyInputRow) {
-    if (row.socialSecurityMode === 'set' && row.socialSecurityRaw === null) {
-      row.socialSecurity = row.socialSecurity
+    if (row.socialSecurityMode === 'set' && !Number.isFinite(row.socialSecurity)) {
+      row.socialSecurity = row.socialSecurityRaw ?? 0
     }
     markDirty(row)
   }

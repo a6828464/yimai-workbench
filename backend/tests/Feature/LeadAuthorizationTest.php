@@ -123,15 +123,50 @@ class LeadAuthorizationTest extends TestCase
         $lead = $this->lead('双店客资', '13800000003', '东部店', '东部老师');
         $this->auditFor($lead);
 
-        foreach ([
-            $this->user('owner', '老板', 'R_SUPER', null),
-            $this->user('media', '新媒体', 'R_MEDIA', null),
-        ] as $user) {
-            Sanctum::actingAs($user);
-            $this->getJson('/api/leads/check?phone=13800000003')->assertJsonCount(1, 'data.matches');
-            $this->patchJson("/api/leads/{$lead->id}", ['remark' => $user->name])->assertOk();
-            $this->getJson("/api/leads/{$lead->id}/history")->assertOk();
-        }
+        // 超管：双店全权（口径未变）
+        Sanctum::actingAs($this->user('owner', '老板', 'R_SUPER', null));
+        $this->getJson('/api/leads/check?phone=13800000003')->assertJsonCount(1, 'data.matches');
+        $this->patchJson("/api/leads/{$lead->id}", ['remark' => '老板'])->assertOk();
+        $this->getJson("/api/leads/{$lead->id}/history")->assertOk();
+
+        // 新媒体：**仅本人录入的**（v3.1.64 收口了列表口径，但单条路径当时被遗漏；
+        // 本用例原先断言新媒体可跨店改单条，锁的是收口前的旧行为 —— 见下方新用例）
+        Sanctum::actingAs($this->user('media', '新媒体', 'R_MEDIA', null));
+        $this->patchJson("/api/leads/{$lead->id}", ['remark' => '新媒体'])->assertForbidden();
+        $this->deleteJson("/api/leads/{$lead->id}")->assertForbidden();
+    }
+
+    /**
+     * 新媒体的单条读写口径必须与列表口径一致（F2 越权修复）。
+     *
+     * 列表走 `staffOwnerFilter($user,'created_by_user_id','created_by')`（helpers.php:1096-1098），
+     * 而单条在 `EnsureUserIsEnabled::canAccessLead()` 里对 R_MEDIA 直接 `return true` ⇒
+     * 新媒体能改/删**任意门店**留资的 venue/deal_amount/status。典型 IDOR：两套口径。
+     * 两个用例的冲突本身即证据：列表用例（v3.1.64）说「只看自己录入的」，本条所说的旧行为
+     * 说「可跨店管理」—— 同一次请求的列表与详情不可能都对。
+     */
+    public function test_media_can_only_touch_leads_it_created(): void
+    {
+        $mine = $this->lead('我录的', '13800000041', '绿地店', '', '新媒体小张');
+        $others = $this->lead('别人录的', '13800000042', '东部店', '', '东部店长');
+
+        Sanctum::actingAs($this->user('media-scope', '新媒体小张', 'R_MEDIA', null));
+
+        // 本人录入：可写可读可删
+        $this->patchJson("/api/leads/{$mine->id}", ['remark' => '我的'])->assertOk();
+        $this->getJson("/api/leads/{$mine->id}/history")->assertOk();
+
+        // 他人录入：一律 403（改属性 / 删除 / 读变更历史）
+        $this->patchJson("/api/leads/{$others->id}", ['remark' => '越权'])->assertForbidden();
+        $this->patchJson("/api/leads/{$others->id}", ['dealAmount' => 99999])->assertForbidden();
+        $this->patchJson("/api/leads/{$others->id}", ['status' => '已成交'])->assertForbidden();
+        $this->deleteJson("/api/leads/{$others->id}")->assertForbidden();
+        $this->getJson("/api/leads/{$others->id}/history")->assertForbidden();
+
+        // 库内未被改动
+        $others->refresh();
+        $this->assertSame(0, (int) $others->deal_amount, '越权写入不得生效');
+        $this->assertSame('新留资', $others->status);
     }
 
     public function test_lead_amounts_accept_two_decimal_places(): void

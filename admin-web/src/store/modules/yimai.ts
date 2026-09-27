@@ -161,6 +161,14 @@ export interface MemberRules {
   cultivationPrivate: number
   cultivationSmall: number
   cultivationGroup: number
+  /** 已过期但仍有余额的卡，只回溯最近 N 天（默认 90；0=不看已过期卡） */
+  renewalExpiredBackfillDays: number
+  /** 新媒体：时效内到店的线上新客奖励金额（元/人，默认 20）—— 算钱口径 */
+  mediaVisitReward: number
+  /** 新媒体：时效月数 n（默认 2 ⇒ 留资月 + 下一个自然月内有效）—— 算钱口径 */
+  mediaValidMonths: number
+  /** 炸弹会员：卡已过期且最后一次出勤距今超过 N 天（默认 183 ≈ 6 个月） */
+  bombExpiredDays: number
 }
 
 export interface YimaiSyncSnapshot {
@@ -205,7 +213,11 @@ const DEFAULT_RULES: MemberRules = {
   reviveDays: 30,
   cultivationPrivate: 8,
   cultivationSmall: 12,
-  cultivationGroup: 12
+  cultivationGroup: 12,
+  renewalExpiredBackfillDays: 90,
+  mediaVisitReward: 20,
+  mediaValidMonths: 2,
+  bombExpiredDays: 183
 }
 
 function seedCustomers(): YimaiCustomer[] {

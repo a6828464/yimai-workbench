@@ -119,6 +119,72 @@ class CardStatsRenewalTest extends TestCase
             ->assertJsonPath('data.renewalExpireDays', 45);
     }
 
+    /**
+     * 三个此前「界面调不了」的键必须能保存并回读（T1 F9 / T6 §7 纠正#9）。
+     *
+     * 背景：`mediaVisitReward`/`mediaValidMonths`（**算钱**口径）与 `bombExpiredDays`
+     * 要么不在校验表、要么不在默认值里 ⇒ 前端界面改了也存不下，或存了被回落默认。
+     * 其中 `renewalExpiredBackfillDays` 更隐蔽：它在校验表内，但随后被无条件
+     * `?? 90` 强制写回 ⇒ 前端未提交该键时，店长的自定义值被打回默认。
+     */
+    public function test_newly_exposed_rules_persist_across_round_trip(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'super2', 'role' => 'R_SUPER', 'status' => '启用']));
+
+        $base = [
+            'renewalThreshold' => 10,
+            'vipAmountThreshold' => 30000,
+            'declineMode' => 'strict',
+            'predropMin' => 15,
+            'predropMax' => 30,
+            'reviveDays' => 30,
+        ];
+
+        // 写：给出非默认值
+        $this->putJson('/api/member-rules', $base + [
+            'renewalExpiredBackfillDays' => 120,
+            'mediaVisitReward' => 50,
+            'mediaValidMonths' => 3,
+            'bombExpiredDays' => 200,
+        ])->assertOk()
+            ->assertJsonPath('data.renewalExpiredBackfillDays', 120)
+            ->assertJsonPath('data.mediaVisitReward', 50)
+            ->assertJsonPath('data.mediaValidMonths', 3)
+            ->assertJsonPath('data.bombExpiredDays', 200);
+
+        // 读：重读仍是新值（此前 renewalExpiredBackfillDays 会被打回 90）
+        $this->getJson('/api/member-rules')->assertOk()
+            ->assertJsonPath('data.renewalExpiredBackfillDays', 120)
+            ->assertJsonPath('data.mediaVisitReward', 50)
+            ->assertJsonPath('data.mediaValidMonths', 3)
+            ->assertJsonPath('data.bombExpiredDays', 200);
+
+        // 未提交的键必须保留原值（setRules 走 array_merge），不得回落默认
+        $this->putJson('/api/member-rules', $base + ['mediaVisitReward' => 30])->assertOk()
+            ->assertJsonPath('data.mediaVisitReward', 30)
+            ->assertJsonPath('data.mediaValidMonths', 3, '未提交的键必须保留原值，而非回落默认')
+            ->assertJsonPath('data.bombExpiredDays', 200, '未提交的键必须保留原值');
+    }
+
+    /** 炸弹会员天数阈值默认可读且可改 */
+    public function test_bomb_expired_days_rule_is_configurable(): void
+    {
+        Sanctum::actingAs(User::factory()->create(['username' => 'super3', 'role' => 'R_SUPER', 'status' => '启用']));
+
+        $this->getJson('/api/member-rules')->assertOk()
+            ->assertJsonPath('data.bombExpiredDays', 183, '默认值应为 183（约 6 个月）');
+
+        $this->putJson('/api/member-rules', [
+            'renewalThreshold' => 10,
+            'vipAmountThreshold' => 30000,
+            'declineMode' => 'strict',
+            'predropMin' => 15,
+            'predropMax' => 30,
+            'reviveDays' => 30,
+            'bombExpiredDays' => 365,
+        ])->assertOk()->assertJsonPath('data.bombExpiredDays', 365);
+    }
+
     private function assertInRenewalList(Customer $c): void
     {
         $ids = $this->renewalIds();

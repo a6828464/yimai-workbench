@@ -1651,6 +1651,10 @@ function rules(): array
         //                    默认 2 ⇒ 9.1 留资 → 10.31 前有效（留资月 + 下一个自然月）
         'mediaVisitReward' => 20,
         'mediaValidMonths' => 2,
+        // 炸弹会员：卡已过期且最后一次出勤距今超过 N 天（默认 183 ≈ 6 个月）。
+        // 此前该键只在消费点 `$rules['bombExpiredDays'] ?? 183` 被读取，
+        // 既未登记进本默认值、也不在校验白名单里 ⇒ 运营永远改不了这个口径（死配置）。
+        'bombExpiredDays' => 183,
     ];
 
     return array_merge($defaults, (array) ($s?->rules ?? []));

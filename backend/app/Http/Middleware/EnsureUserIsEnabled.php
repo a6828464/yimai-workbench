@@ -130,15 +130,30 @@ class EnsureUserIsEnabled
 
     private function canAccessLead(User $user, Lead $lead): bool
     {
-        if ($lead->venue !== $user->venue && ! userHasAnyRole($user, ['R_SUPER', 'R_MEDIA'])) {
+        // 超管：双店全权，不受门店约束
+        if (userHasRole($user, 'R_SUPER')) {
+            return true;
+        }
+
+        // 新媒体：**只认本人录入的**，与列表口径严格一致。
+        //
+        // 列表走 scopeLeadsForUser 的 media 分支 —— `staffOwnerFilter($user,'created_by_user_id','created_by')`
+        // （helpers.php:1096-1098）；而此处原先对 R_MEDIA 直接 `return true`，使新媒体能改/删
+        // **任意门店**留资的 venue/deal_amount/status。两套口径相差一个门店维度，是典型 IDOR。
+        // 注：v3.1.64 当时只收口了列表，单条路径被遗漏，遗留至今。
+        //
+        // 「有 store 角色」的新媒体（多角色叠加）由下面的 MANAGER/SERVICE/TEACHER 分支接管，
+        // 不会被这里提前拦死；姓名/别名并集判定复用 staffOwnsRow，与列表同谓词。
+        if (userHasRole($user, 'R_MEDIA')
+            && ! userHasAnyRole($user, ['R_MANAGER', 'R_SERVICE', 'R_TEACHER'])) {
+            return staffOwnsRow($user, $lead, 'created_by_user_id', 'created_by');
+        }
+
+        if ($lead->venue !== $user->venue) {
             return false;
         }
 
-        // 多角色取并集：任一角色能给到的可见性即成立
-        if (userHasAnyRole($user, ['R_SUPER', 'R_MEDIA'])) {
-            return true;
-        }
-        if (userHasRole($user, 'R_MANAGER') && $lead->venue === $user->venue) {
+        if (userHasRole($user, 'R_MANAGER')) {
             return true;
         }
         // 服务老师（会籍顾问）：本人名下的客资 + 待承接池。

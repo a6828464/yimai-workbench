@@ -379,71 +379,82 @@ class BombMemberTest extends TestCase
         $this->assertIsArray($cards, '冻结卡样本必须可解析');
         $this->assertIsArray($expected, '冻结基线必须可解析');
 
-        $today = CarbonImmutable::today();
-        $byMember = [];
-        foreach ($cards as $card) {
-            $byMember[(string) $card['member_id']][] = $card;
-        }
+        // 冻结时钟到基线生成日。基线落盘于 2026-09-24（见文件名），断言的是「截至该日
+        // 过期天数 > 183」的绝对张数（302/393/2509）。若用真实 today()，每有一张卡跨过
+        // 183 天边界，命中数就单调膨胀 —— 实测 2026-09-27 已从 393 变成 394
+        // （2026-03-25 到期那张从 -183 天变成 -186 天），「冻结基线」随真实时间腐烂。
+        // 钉死「今天」后，断言才与被冻结的样本自洽；finally 复位，避免污染同进程其他用例。
+        CarbonImmutable::setTestNow('2026-09-24 12:00:00');
 
-        $mine = [];
-        foreach ($byMember as $memberId => $memberCards) {
-            $sum = $this->summarize($memberCards);
-            $keep = [];
-            $sections = 0;
-            foreach ($sum['card_stats']['expiredCards'] as $ec) {
-                $days = (int) $today->diffInDays(CarbonImmutable::parse($ec['deadline']), false);
-                // 严格「过期天数 > 183」⇔ $days < -183
-                if ($days >= -self::SIX_MONTHS_DAYS) {
-                    continue;
+        try {
+            $today = CarbonImmutable::today();
+            $byMember = [];
+            foreach ($cards as $card) {
+                $byMember[(string) $card['member_id']][] = $card;
+            }
+
+            $mine = [];
+            foreach ($byMember as $memberId => $memberCards) {
+                $sum = $this->summarize($memberCards);
+                $keep = [];
+                $sections = 0;
+                foreach ($sum['card_stats']['expiredCards'] as $ec) {
+                    $days = (int) $today->diffInDays(CarbonImmutable::parse($ec['deadline']), false);
+                    // 严格「过期天数 > 183」⇔ $days < -183
+                    if ($days >= -self::SIX_MONTHS_DAYS) {
+                        continue;
+                    }
+                    $keep[] = $ec;
+                    $sections += (int) $ec['residue'];
                 }
-                $keep[] = $ec;
-                $sections += (int) $ec['residue'];
+                if ($keep !== []) {
+                    $mine[$memberId] = ['cards' => $keep, 'sections' => $sections];
+                }
             }
-            if ($keep !== []) {
-                $mine[$memberId] = ['cards' => $keep, 'sections' => $sections];
+
+            // ① 总数与冻结基线逐项一致
+            $myCards = array_sum(array_map(fn ($x) => count($x['cards']), $mine));
+            $mySections = array_sum(array_column($mine, 'sections'));
+            $baseCards = array_sum(array_map(fn ($x) => count($x['cards']), $expected));
+            $baseSections = array_sum(array_column($expected, 'sections'));
+
+            $this->assertSame(self::BASELINE_MEMBERS, count($mine), '命中人数必须等于冻结基线 302');
+            $this->assertSame(self::BASELINE_CARDS, $myCards, '命中卡数必须等于冻结基线 393');
+            $this->assertSame(self::BASELINE_SECTIONS, $mySections, '沉睡节数必须等于冻结基线 2509');
+            $this->assertSame(count($expected), count($mine), '命中人数必须与基线文件逐人一致');
+            $this->assertSame($baseCards, $myCards, '卡数必须与基线文件一致');
+            // 基线 JSON 里的 sections 是浮点（如 2509.0），故用 == 比较数值而非 assertSame
+            // （assertSame 会因 int/float 类型不同而误报「不一致」）
+            $this->assertEqualsWithDelta($baseSections, $mySections, 0.0001, '节数必须与基线文件一致');
+
+            // ② 名单完全相同（不多、不漏）
+            $this->assertSame([], array_keys(array_diff_key($mine, $expected)), '不得有基线之外的会员');
+            $this->assertSame([], array_keys(array_diff_key($expected, $mine)), '不得漏掉基线中的会员');
+
+            // ③ 逐人卡数/节数 + 逐卡明细（名称|剩余|到期日）
+            $norm = function (array $list): array {
+                $out = array_map(
+                    fn ($x) => (string) $x['title'].'|'.(float) $x['residue'].'|'.(string) $x['deadline'],
+                    $list
+                );
+                sort($out);
+
+                return $out;
+            };
+            foreach ($expected as $memberId => $row) {
+                $this->assertCount(count($row['cards']), $mine[$memberId]['cards'], "会员 {$memberId} 卡数不一致");
+                $this->assertSame((int) $row['sections'], $mine[$memberId]['sections'], "会员 {$memberId} 节数不一致");
+                $this->assertSame(
+                    $norm(array_map(
+                        fn ($x) => ['title' => $x['title'], 'residue' => $x['residue'], 'deadline' => $x['deadline']],
+                        $row['cards']
+                    )),
+                    $norm($mine[$memberId]['cards']),
+                    "会员 {$memberId} 的卡项明细（名称/剩余/到期日）不一致"
+                );
             }
-        }
-
-        // ① 总数与冻结基线逐项一致
-        $myCards = array_sum(array_map(fn ($x) => count($x['cards']), $mine));
-        $mySections = array_sum(array_column($mine, 'sections'));
-        $baseCards = array_sum(array_map(fn ($x) => count($x['cards']), $expected));
-        $baseSections = array_sum(array_column($expected, 'sections'));
-
-        $this->assertSame(self::BASELINE_MEMBERS, count($mine), '命中人数必须等于冻结基线 302');
-        $this->assertSame(self::BASELINE_CARDS, $myCards, '命中卡数必须等于冻结基线 393');
-        $this->assertSame(self::BASELINE_SECTIONS, $mySections, '沉睡节数必须等于冻结基线 2509');
-        $this->assertSame(count($expected), count($mine), '命中人数必须与基线文件逐人一致');
-        $this->assertSame($baseCards, $myCards, '卡数必须与基线文件一致');
-        // 基线 JSON 里的 sections 是浮点（如 2509.0），故用 == 比较数值而非 assertSame
-        // （assertSame 会因 int/float 类型不同而误报「不一致」）
-        $this->assertEqualsWithDelta($baseSections, $mySections, 0.0001, '节数必须与基线文件一致');
-
-        // ② 名单完全相同（不多、不漏）
-        $this->assertSame([], array_keys(array_diff_key($mine, $expected)), '不得有基线之外的会员');
-        $this->assertSame([], array_keys(array_diff_key($expected, $mine)), '不得漏掉基线中的会员');
-
-        // ③ 逐人卡数/节数 + 逐卡明细（名称|剩余|到期日）
-        $norm = function (array $list): array {
-            $out = array_map(
-                fn ($x) => (string) $x['title'].'|'.(float) $x['residue'].'|'.(string) $x['deadline'],
-                $list
-            );
-            sort($out);
-
-            return $out;
-        };
-        foreach ($expected as $memberId => $row) {
-            $this->assertCount(count($row['cards']), $mine[$memberId]['cards'], "会员 {$memberId} 卡数不一致");
-            $this->assertSame((int) $row['sections'], $mine[$memberId]['sections'], "会员 {$memberId} 节数不一致");
-            $this->assertSame(
-                $norm(array_map(
-                    fn ($x) => ['title' => $x['title'], 'residue' => $x['residue'], 'deadline' => $x['deadline']],
-                    $row['cards']
-                )),
-                $norm($mine[$memberId]['cards']),
-                "会员 {$memberId} 的卡项明细（名称/剩余/到期日）不一致"
-            );
+        } finally {
+            CarbonImmutable::setTestNow();
         }
     }
 

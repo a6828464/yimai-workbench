@@ -845,6 +845,44 @@
             >新客团课已上课 ≥ 该值视为已养成</span
           ></ElFormItem
         >
+        <ElDivider content-position="left">会员清单 · 其他口径</ElDivider>
+        <ElFormItem label="过期卡回溯(天)"
+          ><ElInputNumber
+            v-model="rulesForm.renewalExpiredBackfillDays"
+            :min="0"
+            :max="3650"
+          /><span class="ml-2 text-xs text-gray-400"
+            >已过期但仍有余额的卡只回溯最近 N 天；0=完全不看已过期卡</span
+          ></ElFormItem
+        >
+        <ElFormItem label="炸弹会员(天)"
+          ><ElInputNumber
+            v-model="rulesForm.bombExpiredDays"
+            :min="30"
+            :max="3650"
+          /><span class="ml-2 text-xs text-gray-400"
+            >卡已过期且最后一次出勤距今超过 N 天（默认 183 ≈ 6 个月）</span
+          ></ElFormItem
+        >
+        <ElDivider content-position="left">新媒体业绩 · 算钱口径</ElDivider>
+        <ElFormItem label="到店奖励(元/人)"
+          ><ElInputNumber
+            v-model="rulesForm.mediaVisitReward"
+            :min="0"
+            :max="1000"
+          /><span class="ml-2 text-xs text-gray-400"
+            >时效内到店的线上新客，每人奖励金额</span
+          ></ElFormItem
+        >
+        <ElFormItem label="时效(月)"
+          ><ElInputNumber
+            v-model="rulesForm.mediaValidMonths"
+            :min="1"
+            :max="12"
+          /><span class="ml-2 text-xs text-gray-400"
+            >留资月 + 之后 (n-1) 个自然月内到店/成交才算新媒体新客</span
+          ></ElFormItem
+        >
       </ElForm>
       <template #footer>
         <ElButton @click="rulesDlg = false">取消</ElButton>

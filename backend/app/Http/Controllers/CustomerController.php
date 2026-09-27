@@ -572,6 +572,12 @@ class CustomerController extends Controller
             'cultivationPrivate' => 'nullable|integer|min:1|max:100',
             'cultivationSmall' => 'nullable|integer|min:1|max:100',
             'cultivationGroup' => 'nullable|integer|min:1|max:100',
+            // 以下三个键此前不在校验表内 ⇒ `$r->validate()` 不返回它们 ⇒ 界面永远改不了。
+            // 其中 mediaVisitReward/mediaValidMonths 是**算钱**口径（到店奖励金额 / 时效月数），
+            // bombExpiredDays 是炸弹会员的过期天数阈值。现补齐，使其可调且可保存。
+            'mediaVisitReward' => 'nullable|integer|min:0|max:1000',
+            'mediaValidMonths' => 'nullable|integer|min:1|max:12',
+            'bombExpiredDays' => 'nullable|integer|min:30|max:3650',
         ]);
         // 未传的新阈值回落到默认值，避免存一半缺键
         $data['renewalCountPercent'] = (int) ($data['renewalCountPercent'] ?? 20);

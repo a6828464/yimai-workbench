@@ -191,12 +191,17 @@ fi
 # 碰上不可删文件会以非 0 退出，脚本在 set -e 下直接中断，正好制造我们要避免的半新半旧状态。
 # 真正的目录膨胀来自 public/assets（每次发版换一批内容 hash 文件名，只增不减），单独清掉即可。
 rm -rf "$APP_ROOT/public/assets"
-rsync -a \
+# rsync 失败必须回滚：这是升级链上唯一的静默损坏路径 —— migrate(:211) 与结构健康检查(:223)
+# 失败都会 rollback_code，但覆盖代码这步原先不会。中途失败（磁盘满/权限/被中断）会留下
+# 「半新半旧」的站点：部分文件已是新版、部分还是旧版，且脚本不报错。与另两处保持同一模式。
+if ! rsync -a \
   --exclude '.env' \
   --exclude 'storage/' \
   --exclude 'bootstrap/cache/' \
   --exclude 'database/database.sqlite*' \
-  "$RELEASE_ROOT/backend/" "$APP_ROOT/"
+  "$RELEASE_ROOT/backend/" "$APP_ROOT/"; then
+  rollback_code "rsync 覆盖代码失败"
+fi
 
 # 升级包同时携带最新版更新脚本；在当前进程结束前覆盖自身不影响本次执行。
 if [ "$PACKED_UPDATE_OK" -eq 1 ]; then
