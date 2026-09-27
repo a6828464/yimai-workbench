@@ -7,9 +7,20 @@
       </ElIcon>
     </div>
     <div class="mt-2 text-2xl font-600 leading-7" :style="accent ? { color: accent } : {}">
-      {{ prefix }}{{ displayValue }}<span v-if="suffix" class="text-sm font-400 ml-0.5">{{ suffix }}</span>
+      {{ prefix }}{{ displayValue
+      }}<span v-if="suffix" class="text-sm font-400 ml-0.5">{{ suffix }}</span>
     </div>
-    <div v-if="hint" class="mt-1 text-xs" :class="hintType === 'up' ? 'text-green-600' : hintType === 'down' ? 'text-red-500' : 'text-gray-400'">
+    <div
+      v-if="hint"
+      class="mt-1 text-xs"
+      :class="
+        hintType === 'up'
+          ? 'text-green-600'
+          : hintType === 'down'
+            ? 'text-red-500'
+            : 'text-gray-400'
+      "
+    >
       {{ hint }}
     </div>
   </ElCard>

@@ -6,7 +6,14 @@
       实测手机端横幅因此高达 186px（其中 72px 是重复文字），桌面端同样重复。
       这里 slot 只留「前往配置」按钮。
     -->
-    <ElAlert v-if="isSuper" :title="bannerText" type="info" show-icon :closable="false" class="mb-4">
+    <ElAlert
+      v-if="isSuper"
+      :title="bannerText"
+      type="info"
+      show-icon
+      :closable="false"
+      class="mb-4"
+    >
       <template #default>
         <div class="mk-banner-actions">
           <ElButton link type="primary" @click="$router.push('/yimai/ai-config')">
@@ -20,13 +27,17 @@
       <ElTabs v-model="activeTab">
         <ElTabPane name="moments">
           <template #label>
-            <span class="flex items-center gap-1"><ElIcon><ChatDotRound /></ElIcon> 朋友圈</span>
+            <span class="flex items-center gap-1"
+              ><ElIcon><ChatDotRound /></ElIcon> 朋友圈</span
+            >
           </template>
           <MomentsTool />
         </ElTabPane>
         <ElTabPane name="xhs">
           <template #label>
-            <span class="flex items-center gap-1"><ElIcon><EditPen /></ElIcon> 小红书</span>
+            <span class="flex items-center gap-1"
+              ><ElIcon><EditPen /></ElIcon> 小红书</span
+            >
           </template>
           <XhsTool />
         </ElTabPane>

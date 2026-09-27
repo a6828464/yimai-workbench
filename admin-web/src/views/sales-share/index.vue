@@ -14,7 +14,10 @@
 
     <template v-else>
       <!-- 品牌头：info 整键可能缺失（见 script 里的降级说明），逐行判空后再渲染 -->
-      <header class="px-5 pt-8 pb-6 text-center text-white" style="background: linear-gradient(135deg, #2f7d5d, #1d5c43)">
+      <header
+        class="px-5 pt-8 pb-6 text-center text-white"
+        style="background: linear-gradient(135deg, #2f7d5d, #1d5c43)"
+      >
         <!-- 标题是版式的视觉主体，缺 name 时用品牌名兜底，而不是留一条空白绿带 -->
         <h1 class="text-xl font-600 tracking-wide">{{ info.name || '一麦瑜伽' }}</h1>
         <p v-if="info.industry" class="mt-1 text-sm opacity-80">{{ info.industry }}</p>
@@ -34,12 +37,23 @@
             <table v-if="p.showPrice" class="w-full mt-3 text-xs border-collapse">
               <thead>
                 <tr style="background: #eef5f0">
-                  <th v-for="c in p.cols" :key="c" class="border border-gray-200 px-2 py-1.5 font-500 text-left">{{ c }}</th>
+                  <th
+                    v-for="c in p.cols"
+                    :key="c"
+                    class="border border-gray-200 px-2 py-1.5 font-500 text-left"
+                    >{{ c }}</th
+                  >
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="(row, ri) in p.rows" :key="ri">
-                  <td v-for="(cell, ci) in row" :key="ci" class="border border-gray-200 px-2 py-1.5" :class="{ 'font-600 text-green-800': String(cell).startsWith('¥') }">{{ cell }}</td>
+                  <td
+                    v-for="(cell, ci) in row"
+                    :key="ci"
+                    class="border border-gray-200 px-2 py-1.5"
+                    :class="{ 'font-600 text-green-800': String(cell).startsWith('¥') }"
+                    >{{ cell }}</td
+                  >
                 </tr>
               </tbody>
             </table>
@@ -68,14 +82,24 @@
         <!-- 学员案例（仅已授权） -->
         <section v-if="authedCases.length" class="mt-5">
           <h2 class="sec-title">学员案例</h2>
-          <p class="text-xs text-gray-400 mb-2">以下案例由门店确认已取得会员授权 · 展示不含面部信息</p>
+          <p class="text-xs text-gray-400 mb-2"
+            >以下案例由门店确认已取得会员授权 · 展示不含面部信息</p
+          >
           <div v-for="c in authedCases" :key="c.id" class="card mb-3">
             <div class="text-xs text-gray-400 mb-1">目标</div>
             <h3 class="font-600">{{ c.goal }}</h3>
             <p class="text-xs text-gray-500 mt-1 leading-5">{{ c.desc }}</p>
-            <div v-if="coachName(c)" class="mt-2 text-xs"><ElTag size="small" effect="plain">指导教练：{{ coachName(c) }}</ElTag></div>
+            <div v-if="coachName(c)" class="mt-2 text-xs"
+              ><ElTag size="small" effect="plain">指导教练：{{ coachName(c) }}</ElTag></div
+            >
             <div class="mt-2 flex flex-wrap gap-1.5">
-              <ElTag v-for="(s, si) in c.stages || []" :key="si" size="small" :effect="si === 0 ? 'plain' : 'dark'" type="success">
+              <ElTag
+                v-for="(s, si) in c.stages || []"
+                :key="si"
+                size="small"
+                :effect="si === 0 ? 'plain' : 'dark'"
+                type="success"
+              >
                 {{ si === 0 ? '初始' : s.duration || `阶段${si}` }}
               </ElTag>
             </div>
@@ -89,11 +113,15 @@
             <p v-if="info.address">📍 {{ info.address }}</p>
             <p v-if="info.phone">📞 {{ info.phone }}</p>
           </div>
-          <div v-else class="card text-sm text-gray-400">门店地址与电话暂未提供，可直接到店咨询</div>
+          <div v-else class="card text-sm text-gray-400"
+            >门店地址与电话暂未提供，可直接到店咨询</div
+          >
           <!-- 电话/地址为空时不渲染对应按钮：空的 tel: 链接点下去会误拨、复制空串也无意义 -->
           <div v-if="telHref || copyableAddress" class="mt-4 grid grid-cols-2 gap-3">
             <a v-if="telHref" class="cta" :href="telHref">电话咨询</a>
-            <button v-if="copyableAddress" class="cta secondary" @click="copyAddress">复制地址</button>
+            <button v-if="copyableAddress" class="cta secondary" @click="copyAddress"
+              >复制地址</button
+            >
           </div>
           <p class="mt-4 text-center text-xs text-gray-400">© 一麦瑜伽 · 双店运营</p>
         </section>
@@ -194,7 +222,9 @@
    */
   const info = computed(() => data.value?.info ?? {})
   const coaches = computed(() => (Array.isArray(data.value?.coaches) ? data.value.coaches : []))
-  const priceProducts = computed(() => (Array.isArray(data.value?.products) ? data.value.products : []))
+  const priceProducts = computed(() =>
+    Array.isArray(data.value?.products) ? data.value.products : []
+  )
   const authedCases = computed(() =>
     (Array.isArray(data.value?.cases) ? data.value.cases : []).filter((c) => c?.authorized)
   )
@@ -208,7 +238,8 @@
   function normalizeSnapshot(raw: unknown): ShareSnapshot {
     const d = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
     const info = d.info && typeof d.info === 'object' ? (d.info as Record<string, unknown>) : {}
-    const share = d.share && typeof d.share === 'object' ? (d.share as Record<string, unknown>) : undefined
+    const share =
+      d.share && typeof d.share === 'object' ? (d.share as Record<string, unknown>) : undefined
     return { ...d, share, info }
   }
 
@@ -252,7 +283,9 @@
       revoked.value = false
       try {
         const base = (import.meta.env.VITE_API_BASE as string) || '/api'
-        const resp = await axios.get(`${base.replace(/\/$/, '')}/public/sales/${encodeURIComponent(code)}`)
+        const resp = await axios.get(
+          `${base.replace(/\/$/, '')}/public/sales/${encodeURIComponent(code)}`
+        )
         // 归一成形状安全的快照：响应体异常时 `resp.data?.data` 可能为 undefined，
         // 一旦赋进去，后面所有 `data.value.*` 都会连锁抛错（整页白屏）。
         data.value = normalizeSnapshot(resp.data?.data)

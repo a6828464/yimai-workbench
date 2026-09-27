@@ -48,7 +48,8 @@
           </ElFormItem>
         </ElCol>
         <ElCol :xs="8" :md="3"
-          ><ElFormItem :label-position="formLabelPosition" label="同城属性"><ElSwitch v-model="profile.localFocus" /></ElFormItem
+          ><ElFormItem :label-position="formLabelPosition" label="同城属性"
+            ><ElSwitch v-model="profile.localFocus" /></ElFormItem
         ></ElCol>
         <ElCol :xs="24" :lg="12">
           <ElFormItem :label-position="formLabelPosition" label="专业">

@@ -138,7 +138,8 @@
                 :value="MOMENT_LENGTH_CUSTOM" /></ElSelect></ElFormItem
         ></ElCol>
         <ElCol :xs="12" :md="4"
-          ><ElFormItem :label-position="formLabelPosition" label="多分行"><ElSwitch v-model="multiLine" /></ElFormItem
+          ><ElFormItem :label-position="formLabelPosition" label="多分行"
+            ><ElSwitch v-model="multiLine" /></ElFormItem
         ></ElCol>
         <ElCol :xs="12" :md="9"
           ><ElFormItem :label-position="formLabelPosition" label="表情符号"

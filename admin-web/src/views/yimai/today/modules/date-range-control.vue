@@ -78,9 +78,12 @@
     emit('change', [s, e])
   }
 
-  watch(() => [props.start, props.end], () => {
-    /* 外部重置时由 props 驱动，无需本地状态 */
-  })
+  watch(
+    () => [props.start, props.end],
+    () => {
+      /* 外部重置时由 props 驱动，无需本地状态 */
+    }
+  )
 </script>
 
 <style scoped lang="scss">
@@ -123,8 +126,7 @@
 <style lang="scss">
   /* 弹层为 teleport 到 body 的全局节点：限制宽度避免小屏溢出 */
   @media only screen and (max-width: 768px) {
-    body>.el-popper {
-
+    body > .el-popper {
       .el-date-picker,
       .el-date-range-picker {
         max-width: calc(100vw - 16px);

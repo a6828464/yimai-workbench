@@ -136,7 +136,12 @@
               @change="markDirty(row)"
             />
             <!-- off：明确不缴 -->
-            <ElTag v-else-if="row.socialSecurityMode === 'off'" size="small" type="danger" effect="dark">
+            <ElTag
+              v-else-if="row.socialSecurityMode === 'off'"
+              size="small"
+              type="danger"
+              effect="dark"
+            >
               本月不缴
             </ElTag>
             <!-- inherit：沿用历史金额，**显示金额而不是 0** -->
@@ -163,7 +168,9 @@
               style="width: 100%"
               @change="markDirty(row)"
             />
-            <div v-if="row.taxIsDefault" class="text-xs text-gray-400">未填（按 0，不沿用上月）</div>
+            <div v-if="row.taxIsDefault" class="text-xs text-gray-400"
+              >未填（按 0，不沿用上月）</div
+            >
           </template>
         </ElTableColumn>
         <ElTableColumn label="补贴调整" width="130">
@@ -244,8 +251,17 @@
       destroy-on-close
     >
       <ElForm v-if="editing" label-width="110px">
-        <ElAlert type="info" show-icon :closable="false" class="mb-3" :title="`门店 ${editing.venue}`">
-          <div class="text-xs">社保按门店扣；本行实际生效门店为 {{ editing.venue }}（所属门店 {{ editing.homeVenue }}）</div>
+        <ElAlert
+          type="info"
+          show-icon
+          :closable="false"
+          class="mb-3"
+          :title="`门店 ${editing.venue}`"
+        >
+          <div class="text-xs"
+            >社保按门店扣；本行实际生效门店为 {{ editing.venue }}（所属门店
+            {{ editing.homeVenue }}）</div
+          >
         </ElAlert>
 
         <div class="form-section">考勤</div>
@@ -269,13 +285,10 @@
           </ElRadioGroup>
         </ElFormItem>
         <ElFormItem v-if="editing.socialSecurityMode === 'set'" label="社保金额">
-          <ElInputNumber
-            v-model="editing.socialSecurity"
-            :min="0"
-            :max="999999"
-            :precision="2"
-          />
-          <div class="form-hint">填 0 表示<b>本月明确不扣</b>（与「未操作」不同，未操作会沿用上月）</div>
+          <ElInputNumber v-model="editing.socialSecurity" :min="0" :max="999999" :precision="2" />
+          <div class="form-hint"
+            >填 0 表示<b>本月明确不扣</b>（与「未操作」不同，未操作会沿用上月）</div
+          >
         </ElFormItem>
         <div v-else-if="editing.socialSecurityMode === 'off'" class="form-hint form-hint--warn">
           本月不缴：会<b>打断继承链</b>，不会沿用历史非零值
@@ -283,7 +296,8 @@
         <div v-else class="form-hint">
           本月未操作：按 (门店, 人) 往更早月份找<b>最近一条</b>显式设置。
           <template v-if="editing.socialSecurityInheritedFrom">
-            当前命中 {{ editing.socialSecurityInheritedFrom }} 的 <b>{{ yuan(editing.socialSecurity) }}</b>
+            当前命中 {{ editing.socialSecurityInheritedFrom }} 的
+            <b>{{ yuan(editing.socialSecurity) }}</b>
           </template>
           <template v-else>当前无历史设置，按 0 处理</template>
         </div>
@@ -297,12 +311,7 @@
           <ElInputNumber v-model="editing.subsidy" :min="-999999" :max="999999" :precision="2" />
         </ElFormItem>
         <ElFormItem label="其他扣款">
-          <ElInputNumber
-            v-model="editing.otherDeduction"
-            :min="0"
-            :max="999999"
-            :precision="2"
-          />
+          <ElInputNumber v-model="editing.otherDeduction" :min="0" :max="999999" :precision="2" />
         </ElFormItem>
         <ElFormItem label="上月调整">
           <ElInputNumber
@@ -331,7 +340,6 @@
     savePayrollMonthlyInputs,
     type PayrollMonthlyInputRow,
     type PayrollMonthlyInputUpdateRow,
-    type PayrollSocialMode,
     type PayrollSocialModeOption
   } from '@/api/payroll'
   import { useDevice } from '@/hooks/core/useDevice'
@@ -527,7 +535,9 @@
     }
     return [
       {
-        text: row.socialSecurityInheritedFrom ? `沿用 ${row.socialSecurityInheritedFrom}` : '无历史设置',
+        text: row.socialSecurityInheritedFrom
+          ? `沿用 ${row.socialSecurityInheritedFrom}`
+          : '无历史设置',
         type: 'info',
         effect: 'plain'
       }
@@ -538,7 +548,11 @@
     return [
       { label: '社保', value: yuan(row.socialSecurity) },
       { label: '个税', value: row.taxIsDefault ? '—' : yuan(row.tax) },
-      { label: '应出勤', value: row.attendanceDays === null ? '—' : num(row.attendanceDays), unit: '天' }
+      {
+        label: '应出勤',
+        value: row.attendanceDays === null ? '—' : num(row.attendanceDays),
+        unit: '天'
+      }
     ]
   }
 

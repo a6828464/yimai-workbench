@@ -52,7 +52,11 @@
                   ]"
                 >
                   <div v-if="message.isMe" class="whitespace-pre-wrap">{{ message.content }}</div>
-                  <div v-else class="bot-answer whitespace-pre-wrap" v-html="renderMd(message.content)"></div>
+                  <div
+                    v-else
+                    class="bot-answer whitespace-pre-wrap"
+                    v-html="renderMd(message.content)"
+                  ></div>
                 </div>
               </div>
             </div>
@@ -136,14 +140,17 @@
     })
   }
 
-  const messages = ref<ChatMessage[]>([{
-    id: 0,
-    sender: BOT_NAME,
-    content: '你好，我是一麦AI助手。有什么门店经营、会员服务、文案创作的问题都可以问我（由大模型驱动）。',
-    time: formatCurrentTime(),
-    isMe: false,
-    avatar: aiAvatar
-  }])
+  const messages = ref<ChatMessage[]>([
+    {
+      id: 0,
+      sender: BOT_NAME,
+      content:
+        '你好，我是一麦AI助手。有什么门店经营、会员服务、文案创作的问题都可以问我（由大模型驱动）。',
+      time: formatCurrentTime(),
+      isMe: false,
+      avatar: aiAvatar
+    }
+  ])
 
   const scrollToBottom = (): void => {
     nextTick(() => {
@@ -158,8 +165,7 @@
   /** 极简 Markdown 渲染（聊天回复排版）：换行/加粗/行内代码/无序列表 */
   function renderMd(md: string): string {
     if (!md) return ''
-    const esc = (s: string) =>
-      s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     const inline = (s: string) =>
       esc(s)
         .replace(/`([^`]+)`/g, '<code class="px-1 rounded bg-black/10 text-xs">$1</code>')
@@ -252,7 +258,12 @@
           { role: 'system', content: '你是一麦瑜伽普拉提馆的内部AI助手，回答简洁、专业、口语化。' },
           { role: 'user', content: text }
         ],
-        { onDelta: (t) => { thinking.content += t; scrollToBottom() } }
+        {
+          onDelta: (t) => {
+            thinking.content += t
+            scrollToBottom()
+          }
+        }
       )
       thinking.content = reply || '（模型未返回内容，请重试）'
     } catch (e) {

@@ -251,9 +251,7 @@
     <ElDrawer
       v-model="detail.visible"
       size="480px"
-      :title="
-        detail.row ? `训练计划 #${detail.row.id} · ${detail.row.memberName || '—'}` : ''
-      "
+      :title="detail.row ? `训练计划 #${detail.row.id} · ${detail.row.memberName || '—'}` : ''"
     >
       <template v-if="detail.row && detail.row.content">
         <ElTag size="small" effect="dark" :type="statusType(detail.row.status)" class="mb-3">
@@ -348,7 +346,12 @@
 
 <script setup lang="ts">
   import { useTrainingStore } from '@/store/modules/training'
-  import type { TrainingPlan, PlanContent, PlanImage, TrainingStatus } from '@/store/modules/training'
+  import type {
+    TrainingPlan,
+    PlanContent,
+    PlanImage,
+    TrainingStatus
+  } from '@/store/modules/training'
   import { generateTrainingPlan, detectHighRisk } from '@/api/ai'
   import { loadTrainingPlansCloud, syncTrainingPlansCloud } from '@/api/yimai'
   import { USE_BACKEND } from '@/api/backend'

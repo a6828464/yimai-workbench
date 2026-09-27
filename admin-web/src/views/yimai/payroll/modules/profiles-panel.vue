@@ -346,13 +346,21 @@
 
         <div class="form-section">收款账户与联系方式（发薪付款用）</div>
         <ElFormItem label="收款户名">
-          <ElInput v-model="form.bankAccountName" maxlength="60" placeholder="与本人姓名可能不同（如代发亲属卡）" />
+          <ElInput
+            v-model="form.bankAccountName"
+            maxlength="60"
+            placeholder="与本人姓名可能不同（如代发亲属卡）"
+          />
         </ElFormItem>
         <ElFormItem label="银行卡号">
           <ElInput v-model="form.bankCardNo" maxlength="32" placeholder="完整卡号" />
         </ElFormItem>
         <ElFormItem label="开户行">
-          <ElInput v-model="form.bankName" maxlength="120" placeholder="如 宁波鄞州农村商业银行江北支行" />
+          <ElInput
+            v-model="form.bankName"
+            maxlength="120"
+            placeholder="如 宁波鄞州农村商业银行江北支行"
+          />
         </ElFormItem>
         <ElFormItem label="联行号">
           <ElInput v-model="form.bankCnaps" maxlength="16" placeholder="跨行转账用（12 位）" />

@@ -52,13 +52,7 @@ export async function refreshMemberRules(): Promise<MemberRules> {
  *   （钱收了、课没上、卡过期很久）。同样由后端 `computeMemberLists()` 统一产出，
  *   前端**只消费 id**，不在此处重算。
  */
-export type MemberListKey =
-  | '待续课'
-  | '出勤降低'
-  | 'VIP'
-  | '预流失'
-  | '待复活'
-  | '炸弹会员'
+export type MemberListKey = '待续课' | '出勤降低' | 'VIP' | '预流失' | '待复活' | '炸弹会员'
 
 /** 新客培养：单个课型维度的上课统计 */
 export interface CultivationCategory {

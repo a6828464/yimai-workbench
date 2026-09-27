@@ -7,7 +7,10 @@
 
     <template v-else-if="plan && plan.content">
       <!-- 头部 -->
-      <header class="px-5 pt-8 pb-6 text-white" style="background: linear-gradient(135deg, #2f7d5d, #1d5c43)">
+      <header
+        class="px-5 pt-8 pb-6 text-white"
+        style="background: linear-gradient(135deg, #2f7d5d, #1d5c43)"
+      >
         <div class="max-w-100 mx-auto">
           <p class="text-xs opacity-70 mb-1">一麦瑜伽 · 专属训练计划</p>
           <h1 class="text-xl font-600">{{ plan.memberName }} 的{{ plan.stageWeeks }}周练习方案</h1>
@@ -25,7 +28,10 @@
         <section class="mt-5 card">
           <h2 class="sec-title">计划概要</h2>
           <p class="text-sm leading-6">{{ plan.content.summary }}</p>
-          <div v-if="plan.stageGoal" class="mt-3 text-xs bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300 rounded-lg p-2.5">
+          <div
+            v-if="plan.stageGoal"
+            class="mt-3 text-xs bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300 rounded-lg p-2.5"
+          >
             本阶段目标：{{ plan.stageGoal }}
           </div>
         </section>
@@ -51,8 +57,16 @@
           <p class="text-xs text-gray-400 mb-2">已取得会员授权展示 · 不含面部信息</p>
           <div class="grid grid-cols-2 gap-3">
             <div v-for="img in plan.images" :key="img.id" class="photo-card">
-              <ElImage :src="img.url" fit="cover" :preview-src-list="[img.url]" preview-teleported class="w-full h-40 rounded-t-xl" />
-              <div class="text-xs text-center py-1.5 bg-white dark:bg-gray-800 rounded-b-xl">{{ img.label }}</div>
+              <ElImage
+                :src="img.url"
+                fit="cover"
+                :preview-src-list="[img.url]"
+                preview-teleported
+                class="w-full h-40 rounded-t-xl"
+              />
+              <div class="text-xs text-center py-1.5 bg-white dark:bg-gray-800 rounded-b-xl">{{
+                img.label
+              }}</div>
             </div>
           </div>
         </section>
@@ -61,7 +75,12 @@
         <section class="mt-5">
           <h2 class="sec-title">注意事项</h2>
           <div class="card space-y-1.5">
-            <p v-for="ct in plan.content.cautions" :key="ct" class="text-sm leading-6 text-orange-700 dark:text-orange-400">· {{ ct }}</p>
+            <p
+              v-for="ct in plan.content.cautions"
+              :key="ct"
+              class="text-sm leading-6 text-orange-700 dark:text-orange-400"
+              >· {{ ct }}</p
+            >
           </div>
         </section>
 
@@ -102,7 +121,9 @@
       loading.value = true
       try {
         const base = (import.meta.env.VITE_API_BASE as string) || '/api'
-        const resp = await axios.get(`${base.replace(/\/$/, '')}/public/training/${encodeURIComponent(code)}`)
+        const resp = await axios.get(
+          `${base.replace(/\/$/, '')}/public/training/${encodeURIComponent(code)}`
+        )
         plan.value = resp.data?.data as TrainingPlan
       } catch {
         // 后端不可用或演示模式：回退本地

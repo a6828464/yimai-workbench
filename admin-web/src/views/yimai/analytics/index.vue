@@ -30,7 +30,8 @@
         <div class="payroll-entry__text">
           <div class="payroll-entry__title">薪酬计算</div>
           <div class="payroll-entry__desc">
-            老师课时数（课次口径，45/60 分钟可辨识）、课时费与身份标签设置、业绩表导入、考勤社保个税月度输入与工资计算
+            老师课时数（课次口径，45/60
+            分钟可辨识）、课时费与身份标签设置、业绩表导入、考勤社保个税月度输入与工资计算
           </div>
         </div>
         <ElButton type="primary" class="payroll-entry__btn" @click="goPayroll">
@@ -51,7 +52,9 @@
               <span v-if="payrollPendingCount > 0" class="text-xs text-warning">
                 {{ payrollPendingCount }} 人待完善，未计入
               </span>
-              <span class="text-xs text-gray-400">数据来自薪酬计算（月度输入未填时按默认值，明细见该页）</span>
+              <span class="text-xs text-gray-400"
+                >数据来自薪酬计算（月度输入未填时按默认值，明细见该页）</span
+              >
             </div>
           </div>
 
@@ -78,7 +81,8 @@
           </ElTable>
           <div class="mt-2 text-xs text-gray-400">
             「合并」按各自所属门店口径统计（同一人只算一次）；两家门店列各自含跨店授课的课时，
-            所以<b>两店相加不等于合并</b> —— 跨店老师在两店的工资表里各出现一次，这是规定口径，不是重复计算。
+            所以<b>两店相加不等于合并</b> ——
+            跨店老师在两店的工资表里各出现一次，这是规定口径，不是重复计算。
           </div>
         </div>
       </template>
@@ -128,7 +132,8 @@
                 <div class="text-2xl font-600">{{ media.dealRate }}%</div>
                 <div class="text-xs text-gray-400 mt-1">线上新客成交率</div>
                 <div class="text-xs text-gray-400 mt-1">
-                  {{ media.breakdown.validDealCount }} ÷ {{ media.breakdown.validVisitCount }}（分子分母同源）
+                  {{ media.breakdown.validDealCount }} ÷
+                  {{ media.breakdown.validVisitCount }}（分子分母同源）
                 </div>
               </div>
               <div>
@@ -145,7 +150,8 @@
               <ElDescriptionsItem label="有效到店人数">
                 {{ media.breakdown.validVisitCount }} 人
                 <span class="text-gray-400">
-                  （其中上月留资本月到店 {{ media.breakdown.validVisitsFromPrevMonth }} 人，已计入成交率分母）
+                  （其中上月留资本月到店
+                  {{ media.breakdown.validVisitsFromPrevMonth }} 人，已计入成交率分母）
                 </span>
               </ElDescriptionsItem>
               <ElDescriptionsItem label="有效成交人数">
@@ -165,15 +171,17 @@
 
             <div class="mt-3 text-xs text-gray-500">
               <div v-if="mediaRange.start">
-                取数区间：{{ mediaRange.start }} ~ {{ mediaRange.end }}（自然月至今，非上方近30天滚动窗口）
+                取数区间：{{ mediaRange.start }} ~
+                {{ mediaRange.end }}（自然月至今，非上方近30天滚动窗口）
               </div>
               <div>口径：{{ media.params.rule }}；线下渠道不计入。</div>
               <div>到店奖励 = {{ media.formula.visitReward }}</div>
               <div>成交率 = {{ media.formula.dealRate }}</div>
               <div>核销提成 = {{ media.formula.commission }}</div>
               <div v-if="media.breakdown.unpairedVisitCount > 0" class="text-warning mt-1">
-                另有 {{ media.breakdown.unpairedVisitCount }} 条到店记录因留资日期缺失无法核对时效，未计入；
-                请检查数据完整性。
+                另有
+                {{ media.breakdown.unpairedVisitCount }}
+                条到店记录因留资日期缺失无法核对时效，未计入； 请检查数据完整性。
               </div>
             </div>
           </template>
@@ -295,7 +303,9 @@
     <ElRow :gutter="16">
       <ElCol :xs="24" :md="12" class="mb-4">
         <ElCard shadow="never">
-          <template #header><span class="font-500">活跃度（最近三个自然月有签到的会员）</span></template>
+          <template #header
+            ><span class="font-500">活跃度（最近三个自然月有签到的会员）</span></template
+          >
           <div class="grid grid-cols-4 gap-3 text-center py-2">
             <div>
               <div class="text-2xl font-600">{{ attend.m3 }}</div>
@@ -314,7 +324,9 @@
               <div class="text-xs text-gray-400 mt-1">30天到店</div>
             </div>
           </div>
-          <div class="mt-2 text-xs text-gray-400">M1=最近完整月，M3=最早完整月。签到下降趋势用于出勤降低预警。</div>
+          <div class="mt-2 text-xs text-gray-400"
+            >M1=最近完整月，M3=最早完整月。签到下降趋势用于出勤降低预警。</div
+          >
         </ElCard>
       </ElCol>
       <ElCol :xs="24" :md="12" class="mb-4">
@@ -350,7 +362,9 @@
             </div>
             <div class="flex-cb text-sm">
               <span class="text-g-600">任务完成率</span>
-              <span class="font-600">{{ d.taskRate }}%（{{ d.doneTasks }}/{{ d.totalTasks }}）</span>
+              <span class="font-600"
+                >{{ d.taskRate }}%（{{ d.doneTasks }}/{{ d.totalTasks }}）</span
+              >
             </div>
             <div class="flex-cb text-sm">
               <span class="text-g-600">续费预警处理率</span>
@@ -454,7 +468,7 @@
       } else if (failed > 0) {
         payrollError.value = '部分门店薪酬数据读取失败，已显示其余部分'
       }
-    } catch (e) {
+    } catch {
       payrollRows.value = []
       payrollError.value = '薪酬数据加载失败，请稍后重试'
     }
@@ -462,7 +476,10 @@
 
   /** 金额千分位（与薪酬页一致，避免两处格式不同让人对不上账） */
   function money(v: number | undefined): string {
-    return Number(v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    return Number(v ?? 0).toLocaleString('zh-CN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    })
   }
 
   /** 新媒体线上运营业绩（到店奖励 + 核销提成）；后端未返回时为 undefined，页面显示「暂无数据」而非编造 0 */
@@ -573,16 +590,33 @@
   }
 
   const d = ref<Record<string, number>>({
-    totalCustomers: 0, totalMembers: 0, unassigned: 0,
-    assignRate: 0, closureRate: 0, renewalTasks: 0, renewalRate: 0,
-    taskRate: 0, doneTasks: 0, totalTasks: 0
+    totalCustomers: 0,
+    totalMembers: 0,
+    unassigned: 0,
+    assignRate: 0,
+    closureRate: 0,
+    renewalTasks: 0,
+    renewalRate: 0,
+    taskRate: 0,
+    doneTasks: 0,
+    totalTasks: 0
   })
 
   const metricList = computed(() => [
     { label: '客户总数', value: d.value.totalCustomers, hint: '含会员与公海/新客', warn: false },
     { label: '在册会员', value: d.value.totalMembers, hint: '排除未建档新客', warn: false },
-    { label: '待分配客户', value: d.value.unassigned, hint: '需要尽快指定负责人', warn: d.value.unassigned > 0 },
-    { label: '续费预警待处理', value: `${d.value.renewalTasks} 人`, hint: `已处理 ${d.value.renewalRate}%`, warn: d.value.renewalTasks > 0 }
+    {
+      label: '待分配客户',
+      value: d.value.unassigned,
+      hint: '需要尽快指定负责人',
+      warn: d.value.unassigned > 0
+    },
+    {
+      label: '续费预警待处理',
+      value: `${d.value.renewalTasks} 人`,
+      hint: `已处理 ${d.value.renewalRate}%`,
+      warn: d.value.renewalTasks > 0
+    }
   ])
 
   // ---------- 近30天留资走势（真实数据） ----------
@@ -591,8 +625,18 @@
 
   const lineDates = computed(() => trendData.value.map((x) => x.date))
   const lineSeries = computed(() => [
-    { name: '绿地店', data: trendData.value.map((x) => x['绿地店'] ?? 0), smooth: true, showAreaColor: true },
-    { name: '东部店', data: trendData.value.map((x) => x['东部店'] ?? 0), smooth: true, showAreaColor: true }
+    {
+      name: '绿地店',
+      data: trendData.value.map((x) => x['绿地店'] ?? 0),
+      smooth: true,
+      showAreaColor: true
+    },
+    {
+      name: '东部店',
+      data: trendData.value.map((x) => x['东部店'] ?? 0),
+      smooth: true,
+      showAreaColor: true
+    }
   ])
 
   // ---------- 来源分布（真实数据） ----------
@@ -638,7 +682,11 @@
         attendanceSummary: { m1: number; m2: number; m3: number }
       }>('/analytics/trends', { start, end })
       trendData.value = (t.daily ?? []).map((day) => {
-        const rec = day as unknown as { date: string; 绿地店?: { leads: number }; 东部店?: { leads: number } }
+        const rec = day as unknown as {
+          date: string
+          绿地店?: { leads: number }
+          东部店?: { leads: number }
+        }
         return {
           date: rec.date.slice(5),
           绿地店: rec['绿地店']?.leads ?? 0,
@@ -649,7 +697,10 @@
       trends.value = { visit30: t.visit30 ?? 0, activeCustomers: t.activeCustomers ?? 0 }
       // 新媒体业绩 + 分店拆分单独按自然月取（见 currentMonth() 注释：滚动窗口会跨月导致对不上账）
       await loadMedia()
-      const c = await apiGet<{ rows: { channel: string; leads: number }[]; total: number }>('/analytics/channels', { start, end })
+      const c = await apiGet<{ rows: { channel: string; leads: number }[]; total: number }>(
+        '/analytics/channels',
+        { start, end }
+      )
       channelRows.value = (c.rows ?? []).sort((a, b) => b.leads - a.leads)
     } catch (e) {
       // 区分「加载失败」与「无数据」，避免故障时 KPI 静默显示 0 误导决策

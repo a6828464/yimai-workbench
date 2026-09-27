@@ -37,7 +37,9 @@
             {{ bySource.bookingRecord.label }}
             <ElTag size="small" type="success" effect="dark" class="ml-1">计价口径</ElTag>
           </div>
-          <div class="source-card__value">{{ bySource.bookingRecord.sessions }}<span>课次</span></div>
+          <div class="source-card__value"
+            >{{ bySource.bookingRecord.sessions }}<span>课次</span></div
+          >
           <div class="source-card__foot">
             老师 {{ bySource.bookingRecord.teachers }} 人 · 来源 ky_bookings（已签到去重）
           </div>
@@ -53,7 +55,9 @@
             <template v-if="bySource.courseRecord.available">
               老师 {{ bySource.courseRecord.teachers }} 人 · 来源 getcoursesummaryrecordstat
             </template>
-            <span v-else class="text-danger">不可用：{{ bySource.courseRecord.error || '未知原因' }}</span>
+            <span v-else class="text-danger"
+              >不可用：{{ bySource.courseRecord.error || '未知原因' }}</span
+            >
           </div>
         </div>
 
@@ -135,10 +139,15 @@
         class="mt-3"
       >
         <template #title>
-          {{ bySource.excluded.notOpenedCount }} 位老师有课时记录但预约记录 0 行 → 按「未开课」不计课时费
+          {{ bySource.excluded.notOpenedCount }} 位老师有课时记录但预约记录 0 行 →
+          按「未开课」不计课时费
         </template>
         <div class="text-xs mt-1">{{ bySource.excluded.rule }}</div>
-        <div v-for="(e, i) in bySource.excluded.notOpened" :key="`${e.name}-${i}`" class="text-xs mt-1">
+        <div
+          v-for="(e, i) in bySource.excluded.notOpened"
+          :key="`${e.name}-${i}`"
+          class="text-xs mt-1"
+        >
           {{ e.name }}（{{ e.venue || '未建档' }}）：{{ e.reason }}
         </div>
       </ElAlert>
@@ -171,7 +180,8 @@
         </span>
       </div>
       <div class="text-xs mt-1">
-        请到随心瑜把课程名补成含 45Min / 60Min 的写法（如「VIP定制私教｜45Min」），补完后本提示自动消失。
+        请到随心瑜把课程名补成含 45Min / 60Min
+        的写法（如「VIP定制私教｜45Min」），补完后本提示自动消失。
       </div>
     </ElAlert>
 
@@ -289,7 +299,13 @@
       <ElTableColumn label="私教45" width="82" align="right">
         <template #default="{ row }">
           {{ row.private45 }}
-          <ElTag v-if="row.assumed60Count > 0" size="small" type="warning" effect="plain" class="ml-1">
+          <ElTag
+            v-if="row.assumed60Count > 0"
+            size="small"
+            type="warning"
+            effect="plain"
+            class="ml-1"
+          >
             估{{ row.assumed60Count }}
           </ElTag>
         </template>
@@ -375,7 +391,9 @@
     <ElDialog v-model="detailVisible" :title="detailRow?.name ?? '课时明细'" width="92%" top="6vh">
       <ElDescriptions v-if="detailRow" :column="1" border size="small">
         <ElDescriptionsItem label="门店">{{ detailRow.venue || '—' }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="身份标签">{{ detailRow.roleLabel || '未建档' }}</ElDescriptionsItem>
+        <ElDescriptionsItem label="身份标签">{{
+          detailRow.roleLabel || '未建档'
+        }}</ElDescriptionsItem>
         <ElDescriptionsItem label="出现过的名字">
           {{ detailRow.sourceNames?.join('、') || detailRow.name }}
         </ElDescriptionsItem>
@@ -401,8 +419,8 @@
           {{ detailRow.classCount }} 个课次 · {{ detailRow.bookingRows }} 行预约
         </ElDescriptionsItem>
         <ElDescriptionsItem label="课时记录（核验源）">
-          {{ detailRow.courseRecordSessions ?? '—' }} 节 ·
-          差额 {{ signed(detailRow.sourceDiff) }}（{{ leaderLabel(detailRow.sourceLeader) }}）
+          {{ detailRow.courseRecordSessions ?? '—' }} 节 · 差额
+          {{ signed(detailRow.sourceDiff) }}（{{ leaderLabel(detailRow.sourceLeader) }}）
           <div v-if="courseRecordKindEntries(detailRow).length" class="text-xs text-gray-500">
             课型分布：
             <span v-for="k in courseRecordKindEntries(detailRow)" :key="k.kind" class="mr-2">
@@ -574,15 +592,18 @@
       warnings.value = res.warnings ?? []
       bySource.value = res.bySource ?? null
       meta.value = { ...meta.value, ...(res.meta ?? {}) }
-      emit('source', bySource.value
-        ? {
-            bookingSessions: bySource.value.bookingRecord.sessions,
-            courseRecordSessions: bySource.value.courseRecord.sessions,
-            diff: bySource.value.diff.sessions,
-            available: bySource.value.courseRecord.available,
-            label: bySource.value.diff.label
-          }
-        : null)
+      emit(
+        'source',
+        bySource.value
+          ? {
+              bookingSessions: bySource.value.bookingRecord.sessions,
+              courseRecordSessions: bySource.value.courseRecord.sessions,
+              diff: bySource.value.diff.sessions,
+              available: bySource.value.courseRecord.available,
+              label: bySource.value.diff.label
+            }
+          : null
+      )
     } catch (e) {
       rows.value = []
       warnings.value = []
@@ -671,7 +692,9 @@
     }
     parts.push(`课次 ${row.classCount} · 预约行 ${row.bookingRows}`)
     if (row.sourceDiff) {
-      parts.push(`课时记录 ${row.courseRecordSessions} 节（${leaderLabel(row.sourceLeader)} ${signed(row.sourceDiff)}）`)
+      parts.push(
+        `课时记录 ${row.courseRecordSessions} 节（${leaderLabel(row.sourceLeader)} ${signed(row.sourceDiff)}）`
+      )
     }
     return parts.join('；')
   }

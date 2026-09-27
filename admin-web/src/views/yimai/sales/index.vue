@@ -5,7 +5,9 @@
       <div class="flex flex-wrap items-center gap-4">
         <div>
           <div class="font-500 mb-1">H5 分享页</div>
-          <span class="text-xs text-gray-400">手机竖屏版式 · 客户在微信内打开 · 草稿不影响已发布内容（阶段1引入发布版本隔离）</span>
+          <span class="text-xs text-gray-400"
+            >手机竖屏版式 · 客户在微信内打开 · 草稿不影响已发布内容（阶段1引入发布版本隔离）</span
+          >
         </div>
         <div class="flex-1" />
         <ElTag size="small" :type="sales.state.share.enabled ? 'success' : 'danger'">
@@ -32,7 +34,9 @@
           inactive-text="停用"
           @change="(v: string | number | boolean) => onShareToggle(Boolean(v))"
         />
-        <ElButton type="primary" :disabled="viewingOtherName !== null" @click="preview">预览 / 发送 H5</ElButton>
+        <ElButton type="primary" :disabled="viewingOtherName !== null" @click="preview"
+          >预览 / 发送 H5</ElButton
+        >
       </div>
     </ElCard>
 
@@ -148,7 +152,9 @@
     // 展示的是他人记录时不允许就地开关：这会让人以为在操作自己的分享。
     // 服务端也已收口（不带目标的 disable 只影响本人），前端必须在动手前就拦住。
     if (viewingOtherName.value !== null) {
-      ElMessage.warning(`当前展示的是 ${viewingOtherName.value} 的分享，请勿在此开关；如需处置请用运维入口指定链接`)
+      ElMessage.warning(
+        `当前展示的是 ${viewingOtherName.value} 的分享，请勿在此开关；如需处置请用运维入口指定链接`
+      )
       return
     }
     toggling.value = true

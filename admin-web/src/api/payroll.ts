@@ -421,7 +421,10 @@ export function createPayrollProfile(body: {
   note?: string
   aliases?: string[]
 }): Promise<{ profile: PayrollProfileRow }> {
-  return apiPost<{ profile: PayrollProfileRow }>('/payroll/profiles', body as Record<string, unknown>)
+  return apiPost<{ profile: PayrollProfileRow }>(
+    '/payroll/profiles',
+    body as Record<string, unknown>
+  )
 }
 
 /** 预填扫描结果里的一个人（来源说明他为什么进候选名单） */

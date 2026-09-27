@@ -13,16 +13,29 @@
             <div class="flex gap-1">
               <ElButton size="small" text :disabled="i === 0" @click="move(i, -1)">上移</ElButton>
               <ElButton size="small" text :disabled="i === 0" @click="top(i)">置顶</ElButton>
-              <ElButton size="small" text :disabled="i === list.length - 1" @click="move(i, 1)">下移</ElButton>
+              <ElButton size="small" text :disabled="i === list.length - 1" @click="move(i, 1)"
+                >下移</ElButton
+              >
             </div>
           </div>
         </template>
         <ElRow :gutter="10">
-          <ElCol :span="8"><ElFormItem label="姓名"><ElInput v-model="c.name" maxlength="6" /></ElFormItem></ElCol>
-          <ElCol :span="16"><ElFormItem label="职位"><ElInput v-model="c.title" maxlength="12" /></ElFormItem></ElCol>
+          <ElCol :span="8"
+            ><ElFormItem label="姓名"><ElInput v-model="c.name" maxlength="6" /></ElFormItem
+          ></ElCol>
+          <ElCol :span="16"
+            ><ElFormItem label="职位"><ElInput v-model="c.title" maxlength="12" /></ElFormItem
+          ></ElCol>
         </ElRow>
-        <ElFormItem label="能力标签"><ElInput :model-value="tagsText(c)" placeholder="逗号分隔，如：体态改善,核心床" @update:model-value="(v: string) => syncTags(c, v)" /></ElFormItem>
-        <ElFormItem label="简介"><ElInput v-model="c.intro" type="textarea" :rows="2" maxlength="60" show-word-limit /></ElFormItem>
+        <ElFormItem label="能力标签"
+          ><ElInput
+            :model-value="tagsText(c)"
+            placeholder="逗号分隔，如：体态改善,核心床"
+            @update:model-value="(v: string) => syncTags(c, v)"
+        /></ElFormItem>
+        <ElFormItem label="简介"
+          ><ElInput v-model="c.intro" type="textarea" :rows="2" maxlength="60" show-word-limit
+        /></ElFormItem>
         <div class="flex gap-2">
           <ElButton size="small" type="primary" @click="saveAll()">保存</ElButton>
           <ElButton size="small" text type="danger" @click="removeCoach(i)">删除</ElButton>
@@ -34,7 +47,7 @@
 
 <script setup lang="ts">
   import { useSalesStore } from '@/store/modules/sales'
-  import { ElMessage, ElTag } from 'element-plus'
+  import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'SalesCoaches' })
 
@@ -54,7 +67,10 @@
   }
 
   function syncTags(c: { tags: string[] }, v: string) {
-    c.tags = v.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+    c.tags = v
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
   }
 
   function move(i: number, dir: -1 | 1) {

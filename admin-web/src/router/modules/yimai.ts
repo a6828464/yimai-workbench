@@ -177,7 +177,12 @@ export const yimaiRoutes: AppRouteRecord[] = [
         path: '/yimai/payroll',
         name: 'YimaiPayroll',
         component: '/yimai/payroll',
-        meta: { title: '薪酬计算', icon: 'ri:money-cny-circle-line', roles: SUPER, keepAlive: false }
+        meta: {
+          title: '薪酬计算',
+          icon: 'ri:money-cny-circle-line',
+          roles: SUPER,
+          keepAlive: false
+        }
       },
       {
         path: '/yimai/sync',

@@ -151,7 +151,6 @@
   import { computed, onMounted, ref } from 'vue'
   import { fetchPayrollRoles, payrollErrorMessage, type PayrollRolesCatalog } from '@/api/payroll'
   import { useUserStore } from '@/store/modules/user'
-  import { useDevice } from '@/hooks/core/useDevice'
   import PayrollHoursPanel from './modules/hours-panel.vue'
   import PayrollProfilesPanel from './modules/profiles-panel.vue'
   import PayrollTeachersPanel from './modules/teachers-panel.vue'
@@ -163,7 +162,6 @@
   defineOptions({ name: 'YimaiPayroll' })
 
   const userStore = useUserStore()
-  const { isHandheld } = useDevice()
 
   /** 超管判定与路由 `meta.roles` 同源（都看 R_SUPER），不另立一套角色规则 */
   const isSuper = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_SUPER'))

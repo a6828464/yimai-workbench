@@ -1,9 +1,16 @@
 <template>
   <div class="list-page about-page mx-auto max-w-980">
     <!-- 封面 -->
-    <div class="rounded-2xl p-8 text-white mb-6" style="background: linear-gradient(135deg, #2f7d5d, #1d5c43)">
+    <div
+      class="rounded-2xl p-8 text-white mb-6"
+      style="background: linear-gradient(135deg, #2f7d5d, #1d5c43)"
+    >
       <div class="flex items-center gap-3 mb-3">
-        <img src="@imgs/yimai-logo.png" class="w-12 h-12 object-contain rounded-lg bg-white/90 p-1" alt="一麦" />
+        <img
+          src="@imgs/yimai-logo.png"
+          class="w-12 h-12 object-contain rounded-lg bg-white/90 p-1"
+          alt="一麦"
+        />
         <div>
           <h1 class="text-2xl font-600 leading-none">一麦管理工作台</h1>
           <p class="mt-1.5 text-sm opacity-80">一麦瑜伽 · 双店内部经营与服务执行平台</p>
@@ -40,7 +47,9 @@
     <!-- 功能模块 -->
     <ElCard shadow="never" class="!rounded-xl mb-6">
       <template #header><span class="font-500">功能模块</span></template>
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2 text-sm text-g-700">
+      <div
+        class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2 text-sm text-g-700"
+      >
         <p v-for="m in MODULES" :key="m" class="flex-c gap-2">
           <i class="ri-check-line text-theme" />
           {{ m }}

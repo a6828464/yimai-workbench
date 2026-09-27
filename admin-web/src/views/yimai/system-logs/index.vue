@@ -237,9 +237,12 @@
     showAllLogs.value ? records.value : records.value.slice(0, DEFAULT_CARD_LIMIT)
   )
 
-  watch([() => channel.value, () => filters.date, () => filters.level, () => filters.keyword], () => {
-    showAllLogs.value = false
-  })
+  watch(
+    [() => channel.value, () => filters.date, () => filters.level, () => filters.keyword],
+    () => {
+      showAllLogs.value = false
+    }
+  )
 
   /** 上下文文本：与表格列同一取数口径，保证卡片不丢信息 */
   function contextText(row: SystemLogRecord): string {

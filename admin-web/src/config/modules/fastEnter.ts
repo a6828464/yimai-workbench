@@ -70,7 +70,7 @@ const fastEnterConfig: FastEnterConfig = {
       name: '个人中心',
       enabled: true,
       order: 1,
-       routeName: 'YimaiProfile'
+      routeName: 'YimaiProfile'
     },
     {
       name: '模型配置',

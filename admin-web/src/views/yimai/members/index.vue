@@ -856,30 +856,21 @@
           ></ElFormItem
         >
         <ElFormItem label="炸弹会员(天)"
-          ><ElInputNumber
-            v-model="rulesForm.bombExpiredDays"
-            :min="30"
-            :max="3650"
-          /><span class="ml-2 text-xs text-gray-400"
+          ><ElInputNumber v-model="rulesForm.bombExpiredDays" :min="30" :max="3650" /><span
+            class="ml-2 text-xs text-gray-400"
             >卡已过期且最后一次出勤距今超过 N 天（默认 183 ≈ 6 个月）</span
           ></ElFormItem
         >
         <ElDivider content-position="left">新媒体业绩 · 算钱口径</ElDivider>
         <ElFormItem label="到店奖励(元/人)"
-          ><ElInputNumber
-            v-model="rulesForm.mediaVisitReward"
-            :min="0"
-            :max="1000"
-          /><span class="ml-2 text-xs text-gray-400"
+          ><ElInputNumber v-model="rulesForm.mediaVisitReward" :min="0" :max="1000" /><span
+            class="ml-2 text-xs text-gray-400"
             >时效内到店的线上新客，每人奖励金额</span
           ></ElFormItem
         >
         <ElFormItem label="时效(月)"
-          ><ElInputNumber
-            v-model="rulesForm.mediaValidMonths"
-            :min="1"
-            :max="12"
-          /><span class="ml-2 text-xs text-gray-400"
+          ><ElInputNumber v-model="rulesForm.mediaValidMonths" :min="1" :max="12" /><span
+            class="ml-2 text-xs text-gray-400"
             >留资月 + 之后 (n-1) 个自然月内到店/成交才算新媒体新客</span
           ></ElFormItem
         >
@@ -968,14 +959,7 @@
    * 全部清单键。判定口径**只在后端**（`helpers.php::computeMemberLists()`），
    * 本页只用它们做「按清单筛 id」「页签 → 清单」的映射，不重算任何判定。
    */
-  const LIST_KEYS: MemberListKey[] = [
-    '待续课',
-    '出勤降低',
-    'VIP',
-    '预流失',
-    '待复活',
-    '炸弹会员'
-  ]
+  const LIST_KEYS: MemberListKey[] = ['待续课', '出勤降低', 'VIP', '预流失', '待复活', '炸弹会员']
   const EVALUATION_STATUSES = ['未评估', '高机会', '重点培育', '风险修复', '已过期']
   const TAB_KEY_TO_LIST: Record<string, MemberListKey> = {
     renewal: '待续课',
@@ -1002,7 +986,8 @@
       key: 'bomb',
       label: '炸弹会员',
       tag: 'danger',
-      title: '正式会员，名下次卡仍有余额，该卡已过期超 6 个月，且最近一次到店已超 6 个月（钱收了、课没上、人没来）'
+      title:
+        '正式会员，名下次卡仍有余额，该卡已过期超 6 个月，且最近一次到店已超 6 个月（钱收了、课没上、人没来）'
     }
   ]
 
@@ -1328,7 +1313,9 @@
    * 这里只做**展示用**的过滤（与后端同条件），清单归属本身仍由后端 `memberListIds` 决定：
    * 前端过滤只影响这一列的文案，不影响「谁在清单里」。
    */
-  function bombCards(row: YimaiCustomer): { title: string; residue: number; deadline: string | null }[] {
+  function bombCards(
+    row: YimaiCustomer
+  ): { title: string; residue: number; deadline: string | null }[] {
     const expired = row.cardStats?.expiredCards
     if (!expired?.length) return []
 
@@ -1349,9 +1336,7 @@
     // 这里统一按本地日期字符串构造，避免边界日被时区推到 182/184。
     const [y, m, d] = String(card.deadline).split('-').map(Number)
     if (!y || !m || !d) return 0
-    const days = Math.floor(
-      (Date.now() - new Date(y, m - 1, d).getTime()) / 86400000
-    )
+    const days = Math.floor((Date.now() - new Date(y, m - 1, d).getTime()) / 86400000)
 
     return Math.max(0, days)
   }

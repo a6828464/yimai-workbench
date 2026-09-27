@@ -1,7 +1,12 @@
 <!-- 系统logo -->
 <template>
   <div class="flex-cc">
-    <img :style="logoStyle" src="@imgs/yimai-logo.png" alt="一麦" class="w-full h-full object-contain" />
+    <img
+      :style="logoStyle"
+      src="@imgs/yimai-logo.png"
+      alt="一麦"
+      class="w-full h-full object-contain"
+    />
   </div>
 </template>
 

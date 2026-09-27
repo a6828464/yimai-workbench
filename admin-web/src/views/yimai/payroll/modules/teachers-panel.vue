@@ -30,7 +30,9 @@
             <span class="text-xs text-gray-400">（{{ group.rows.length }} 人）</span>
           </span>
           <span class="text-xs text-gray-400">
-            在职 {{ group.activeCount }} 人<template v-if="group.pendingCount"> · 待完善 {{ group.pendingCount }} 人</template>
+            在职 {{ group.activeCount }} 人<template v-if="group.pendingCount">
+              · 待完善 {{ group.pendingCount }} 人</template
+            >
           </span>
         </div>
       </template>
@@ -67,9 +69,15 @@
           <ElDescriptionsItem label="有效人数">{{ importPreview.valid }}</ElDescriptionsItem>
           <ElDescriptionsItem label="有别名">{{ importPreview.aliasRows }} 人</ElDescriptionsItem>
           <ElDescriptionsItem label="门店分布">
-            {{ Object.entries(importPreview.byVenue).map(([v, n]) => `${v} ${n}`).join('、') }}
+            {{
+              Object.entries(importPreview.byVenue)
+                .map(([v, n]) => `${v} ${n}`)
+                .join('、')
+            }}
           </ElDescriptionsItem>
-          <ElDescriptionsItem label="双底薪例外">{{ importPreview.dualBase.join('、') || '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="双底薪例外">{{
+            importPreview.dualBase.join('、') || '—'
+          }}</ElDescriptionsItem>
           <ElDescriptionsItem label="资料缺口">
             缺手机 {{ importPreview.blanks['手机'] ?? 0 }} · 身份证
             {{ importPreview.blanks['身份证号'] ?? 0 }} · 银行卡
@@ -98,7 +106,13 @@
             <ElTag v-if="row.pendingReview" size="small" type="danger" effect="plain" class="ml-1">
               待完善
             </ElTag>
-            <ElTag v-if="row.status !== '有效'" size="small" type="info" effect="plain" class="ml-1">
+            <ElTag
+              v-if="row.status !== '有效'"
+              size="small"
+              type="info"
+              effect="plain"
+              class="ml-1"
+            >
               {{ row.status }}
             </ElTag>
           </template>
@@ -169,7 +183,10 @@
           :note="cardNote(row)"
           :actions="[
             row.bankCardNo
-              ? { text: revealed.has(row.id) ? '隐藏卡号' : '显示完整卡号', onClick: () => toggleReveal(row) }
+              ? {
+                  text: revealed.has(row.id) ? '隐藏卡号' : '显示完整卡号',
+                  onClick: () => toggleReveal(row)
+                }
               : { text: '到「课时与业绩」补卡号', onClick: () => emit('go-profiles') }
           ]"
         />
@@ -220,9 +237,15 @@
           <ElDescriptionsItem label="有效人数">{{ importPreview.valid }}</ElDescriptionsItem>
           <ElDescriptionsItem label="有别名">{{ importPreview.aliasRows }} 人</ElDescriptionsItem>
           <ElDescriptionsItem label="门店分布">
-            {{ Object.entries(importPreview.byVenue).map(([v, n]) => `${v} ${n}`).join('、') }}
+            {{
+              Object.entries(importPreview.byVenue)
+                .map(([v, n]) => `${v} ${n}`)
+                .join('、')
+            }}
           </ElDescriptionsItem>
-          <ElDescriptionsItem label="双底薪例外">{{ importPreview.dualBase.join('、') || '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="双底薪例外">{{
+            importPreview.dualBase.join('、') || '—'
+          }}</ElDescriptionsItem>
           <ElDescriptionsItem label="资料缺口">
             缺手机 {{ importPreview.blanks['手机'] ?? 0 }} · 身份证
             {{ importPreview.blanks['身份证号'] ?? 0 }} · 银行卡
@@ -252,8 +275,10 @@
     <!-- 口径说明 -->
     <div class="text-xs text-gray-400 foot-note">
       身份与银行卡信息来自人员主档导入（主档缺手机 41 人 / 身份证 40 人 / 银行卡 5 人）；
-      卡号默认掩码显示，点「显示」露出完整卡号；课时费列 45 分钟为生效值（未单独设置时按
-      60×{{ fee45Factor }} 折算）。发薪付款前仍需复核账户信息。
+      卡号默认掩码显示，点「显示」露出完整卡号；课时费列 45 分钟为生效值（未单独设置时按 60×{{
+        fee45Factor
+      }}
+      折算）。发薪付款前仍需复核账户信息。
     </div>
   </div>
 </template>
@@ -373,7 +398,9 @@
       importPreview.value = null
       const anyE = e as { response?: { data?: { message?: string } }; message?: string }
       importMessage.value =
-        anyE.response?.data?.message || anyE.message || '主档预览失败（检查文件是否为薪酬人员主档 xlsx）'
+        anyE.response?.data?.message ||
+        anyE.message ||
+        '主档预览失败（检查文件是否为薪酬人员主档 xlsx）'
       importOk.value = false
     } finally {
       importing.value = false
@@ -419,7 +446,10 @@
 
   function cardMetrics(row: PayrollProfileRow): MobileCardMetric[] {
     return [
-      { label: '私教 60/45', value: `${money(row.feePrivate60)} / ${money(row.feePrivate45Effective)}` },
+      {
+        label: '私教 60/45',
+        value: `${money(row.feePrivate60)} / ${money(row.feePrivate45Effective)}`
+      },
       { label: '小班/团课', value: `${money(row.feeSmall)} / ${money(row.feeGroup)}` },
       { label: '底薪', value: money(row.baseSalary) }
     ]

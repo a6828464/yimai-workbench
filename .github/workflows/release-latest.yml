@@ -53,6 +53,18 @@ jobs:
           pnpm exec vite build
           pnpm exec vue-tsc --noEmit
 
+      - name: Lint frontend
+        working-directory: admin-web
+        # 此前 CI 只跑 build + vue-tsc（类型级），不跑 lint ⇒ 337 个 eslint 错误
+        # （含一个 no-self-assign 导致的真实缺陷）一路进到已发布产物。补上行为级门禁。
+        run: pnpm exec eslint src
+
+      - name: Guard PII storage keys
+        working-directory: admin-web
+        # 该门禁脚本早已存在（package.json 的 check:pii-storage-keys），但从未被 CI 或
+        # husky 调用 ⇒ 已修好的 PII 清理口径没有护栏，随时可能回归。
+        run: pnpm run check:pii-storage-keys
+
   release:
     needs: test
     runs-on: ubuntu-latest

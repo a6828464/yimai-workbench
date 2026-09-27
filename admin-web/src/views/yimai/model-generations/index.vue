@@ -334,7 +334,11 @@
       if (modelText) tags.push({ text: modelText, effect: 'plain' })
 
       const metrics: MobileCardMetric[] = [
-        { label: '耗时', value: row.latencyMs == null ? '—' : row.latencyMs, unit: row.latencyMs == null ? '' : 'ms' },
+        {
+          label: '耗时',
+          value: row.latencyMs == null ? '—' : row.latencyMs,
+          unit: row.latencyMs == null ? '' : 'ms'
+        },
         {
           label: 'Token（入/出/总）',
           value: tokenSummary(row)
@@ -344,10 +348,23 @@
       // 失败时说清失败原因；成功时给结果预览。和表格同一取数口径（错误优先）
       const preview = row.errorMessage || row.outputPreview || ''
       const note = preview
-        ? { text: preview, label: row.errorMessage ? '错误' : '结果预览', danger: !!row.errorMessage }
+        ? {
+            text: preview,
+            label: row.errorMessage ? '错误' : '结果预览',
+            danger: !!row.errorMessage
+          }
         : null
 
-      return { id: row.id, featureType: row.featureType, createdAt: row.createdAt, operatorName: row.operatorName, operatorRole: row.operatorRole, tags, metrics, note }
+      return {
+        id: row.id,
+        featureType: row.featureType,
+        createdAt: row.createdAt,
+        operatorName: row.operatorName,
+        operatorRole: row.operatorRole,
+        tags,
+        metrics,
+        note
+      }
     })
   )
 

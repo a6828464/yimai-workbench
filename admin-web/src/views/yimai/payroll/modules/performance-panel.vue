@@ -44,13 +44,7 @@
         </div>
         <div class="perf-form__field perf-form__field--file">
           <label class="perf-form__label">业绩明细表</label>
-          <input
-            ref="fileRef"
-            type="file"
-            accept=".xlsx"
-            class="hidden"
-            @change="onPickFile"
-          />
+          <input ref="fileRef" type="file" accept=".xlsx" class="hidden" @change="onPickFile" />
           <ElButton class="perf-form__ctl" @click="fileRef?.click()">
             {{ pickedFile ? '重新选择文件' : '选择 .xlsx 文件' }}
           </ElButton>
@@ -64,20 +58,10 @@
       </div>
 
       <div class="perf-actions">
-        <ElButton
-          type="primary"
-          :loading="previewing"
-          :disabled="!canPreview"
-          @click="doPreview"
-        >
+        <ElButton type="primary" :loading="previewing" :disabled="!canPreview" @click="doPreview">
           上传并预览（不写入）
         </ElButton>
-        <ElButton
-          v-if="preview"
-          type="success"
-          :loading="committing"
-          @click="doCommit(false)"
-        >
+        <ElButton v-if="preview" type="success" :loading="committing" @click="doCommit(false)">
           确认导入
         </ElButton>
         <ElButton
@@ -106,7 +90,9 @@
       </template>
       <template v-if="summary.imported">
         <ElDescriptions :column="isHandheld ? 1 : 2" border size="small">
-          <ElDescriptionsItem label="源文件">{{ summary.sourceFileName || '—' }}</ElDescriptionsItem>
+          <ElDescriptionsItem label="源文件">{{
+            summary.sourceFileName || '—'
+          }}</ElDescriptionsItem>
           <ElDescriptionsItem label="导入时间">{{ summary.importedAt || '—' }}</ElDescriptionsItem>
           <ElDescriptionsItem label="归属条数">{{ summary.allocationCount }}</ElDescriptionsItem>
           <ElDescriptionsItem label="文件指纹">
@@ -122,7 +108,9 @@
             {{ yuan(summary.totals.raw.total) }}
           </ElDescriptionsItem>
           <ElDescriptionsItem label="其中 299 活动卡">
-            <span class="text-warning">{{ yuan(summary.totals.raw.activityCardAmount) }} 已剔除</span>
+            <span class="text-warning"
+              >{{ yuan(summary.totals.raw.activityCardAmount) }} 已剔除</span
+            >
           </ElDescriptionsItem>
         </ElDescriptions>
       </template>
@@ -155,7 +143,8 @@
         :title="`导入成功：写入 ${preview.counts.importedAllocations} 条归属`"
       >
         <div v-if="preview.replaced.rows > 0" class="text-xs">
-          已替换该门店该月原有 {{ preview.replaced.rows }} 条归属（按「门店+月份」全量替换，不是追加）。
+          已替换该门店该月原有
+          {{ preview.replaced.rows }} 条归属（按「门店+月份」全量替换，不是追加）。
         </div>
       </ElAlert>
 
@@ -174,11 +163,15 @@
           文件共解析出 {{ preview.counts.dataRows }} 行数据，但写入 0 条归属。
           <template v-if="preview.counts.skippedOutOfMonthRows > 0">
             其中 <b>{{ preview.counts.skippedOutOfMonthRows }} 行</b>因为「日期不在所选月份
-            {{ preview.month }}」被跳过 —— 请把上方「月份」改成文件实际所属的月份
-            （{{ preview.sourceFileName }}）后重新预览。
+            {{ preview.month }}」被跳过 —— 请把上方「月份」改成文件实际所属的月份 （{{
+              preview.sourceFileName
+            }}）后重新预览。
           </template>
           <template v-else>
-            另有 {{ preview.counts.skippedZeroAmountRows }} 行金额为 0、{{ preview.counts.exceptions }} 行异常。
+            另有 {{ preview.counts.skippedZeroAmountRows }} 行金额为 0、{{
+              preview.counts.exceptions
+            }}
+            行异常。
           </template>
         </div>
       </ElAlert>
@@ -191,7 +184,9 @@
 
         <div class="totals">
           <div class="totals__col totals__col--raw">
-            <div class="totals__title">① 原始归属口径<span class="totals__hint">含 299 活动卡</span></div>
+            <div class="totals__title"
+              >① 原始归属口径<span class="totals__hint">含 299 活动卡</span></div
+            >
             <div class="totals__row">
               <span>个人合计</span><b>{{ yuan(preview.totals.raw.personal) }}</b>
             </div>
@@ -237,8 +232,10 @@
         >
           <div class="text-xs">
             这 {{ preview.counts.skippedActivityCardRows }} 行金额<b>仍计入 ① 原始汇总</b>
-            （所以两个口径的差额正是 {{ yuan(preview.totals.raw.activityCardAmount) }}），
-            但<b>不计入个人提点与门店提成基数</b> —— 这是生产引擎的既定规则。
+            （所以两个口径的差额正是 {{ yuan(preview.totals.raw.activityCardAmount) }}）， 但<b
+              >不计入个人提点与门店提成基数</b
+            >
+            —— 这是生产引擎的既定规则。
           </div>
           <div class="text-xs mt-1">
             差额核对：{{ yuan(preview.totals.raw.personal) }} −
@@ -341,7 +338,11 @@
             v-for="p in preview.byPerson"
             :key="p.profileId"
             :title="p.resolvedName"
-            :subtitle="p.sourceName === p.resolvedName ? '表头列名与本名一致' : `表头列名「${p.sourceName}」→ ${p.resolvedName}`"
+            :subtitle="
+              p.sourceName === p.resolvedName
+                ? '表头列名与本名一致'
+                : `表头列名「${p.sourceName}」→ ${p.resolvedName}`
+            "
             :tags="personTags(p)"
             :metrics="personMetrics(p)"
             :note="`原始（含299）${yuan(p.rawAmount)} · 提点基数 ${yuan(p.commissionAmount)}`"
@@ -435,8 +436,7 @@
   const { isHandheld } = useDevice()
 
   // 表格高度自适应：异常行表与逐人归属表各持一个 ref（hook 按 ref 分别测量）
-  const { tableMaxHeight: exceptionTableMaxHeight, tableRef: exceptionTableRef } =
-    useTableHeight()
+  const { tableMaxHeight: exceptionTableMaxHeight, tableRef: exceptionTableRef } = useTableHeight()
   const { tableMaxHeight: personTableMaxHeight, tableRef: personTableRef } = useTableHeight()
 
   const form = ref({
@@ -606,7 +606,8 @@
 
   function personTags(p: PayrollPerformancePerson): MobileCardTag[] {
     const tags: MobileCardTag[] = []
-    if (p.sourceName !== p.resolvedName) tags.push({ text: '别名解析', type: 'warning', effect: 'plain' })
+    if (p.sourceName !== p.resolvedName)
+      tags.push({ text: '别名解析', type: 'warning', effect: 'plain' })
     if (p.role) tags.push({ text: p.role, effect: 'plain' })
     return tags
   }

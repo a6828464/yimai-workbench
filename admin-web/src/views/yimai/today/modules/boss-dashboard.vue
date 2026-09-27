@@ -86,7 +86,9 @@
     <!-- 新媒体运营 KPI -->
     <div class="text-sm font-500 mb-3 flex items-center gap-2">
       <span>新媒体运营</span>
-      <span class="text-xs font-400 text-gray-400">留资 · 到店 · 线上成交率（仅新媒体登记来源） · 核销</span>
+      <span class="text-xs font-400 text-gray-400"
+        >留资 · 到店 · 线上成交率（仅新媒体登记来源） · 核销</span
+      >
     </div>
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
       <YimaiKpiCard v-for="k in mediaKpis" :key="k.label" v-bind="k" />

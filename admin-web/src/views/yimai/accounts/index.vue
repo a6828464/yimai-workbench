@@ -304,7 +304,11 @@
   import type { AccountRow } from '@/api/auth'
   import { useDevice } from '@/hooks/core/useDevice'
   import { useTableHeight } from '@/hooks/core/useTableHeight'
-  import type { MobileCardAction, MobileCardMetric, MobileCardTag } from '@/components/business/mobile-card/types'
+  import type {
+    MobileCardAction,
+    MobileCardMetric,
+    MobileCardTag
+  } from '@/components/business/mobile-card/types'
   import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 
   defineOptions({ name: 'YimaiAccounts' })
@@ -567,7 +571,11 @@
       } else {
         tags.push({ text: '双店', effect: 'plain' })
       }
-      tags.push({ text: row.status, type: row.status === '启用' ? 'success' : 'info', effect: 'plain' })
+      tags.push({
+        text: row.status,
+        type: row.status === '启用' ? 'success' : 'info',
+        effect: 'plain'
+      })
       if (row.self) tags.push({ text: '本人', effect: 'plain' })
 
       const metrics: MobileCardMetric[] = []

@@ -59,7 +59,13 @@
       <ElTableColumn label="处置" width="230" fixed="right">
         <template #default="{ row }">
           <ElButton size="small" type="primary" plain @click="openReassign(row)">重新归属</ElButton>
-          <ElButton size="small" type="danger" plain :loading="busyId === row.id" @click="disable(row)">
+          <ElButton
+            size="small"
+            type="danger"
+            plain
+            :loading="busyId === row.id"
+            @click="disable(row)"
+          >
             停用
           </ElButton>
         </template>
@@ -132,7 +138,12 @@
     MobileCardMetric,
     MobileCardTag
   } from '@/components/business/mobile-card/types'
-  import { listOrphanShares, repairOrphanShare, type OrphanShareRow, type OrphanReason } from '@/api/yimai'
+  import {
+    listOrphanShares,
+    repairOrphanShare,
+    type OrphanShareRow,
+    type OrphanReason
+  } from '@/api/yimai'
   import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 
   defineOptions({ name: 'SalesOrphans' })
@@ -212,9 +223,7 @@
     } catch (e) {
       const status = (e as { response?: { status?: number } })?.response?.status
       error.value =
-        status === 403
-          ? '仅超管可查看归属异常清单'
-          : `清单读取失败：${String(e).slice(0, 80)}`
+        status === 403 ? '仅超管可查看归属异常清单' : `清单读取失败：${String(e).slice(0, 80)}`
     } finally {
       loading.value = false
     }

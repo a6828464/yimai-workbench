@@ -21,7 +21,9 @@
         <template #title>
           <div class="flex items-center gap-3 pr-4">
             <span class="font-500">{{ c.goal || `案例${i + 1}` }}</span>
-            <ElTag size="small" :type="c.authorized ? 'success' : 'danger'">{{ c.authorized ? '已授权' : '未授权·不展示' }}</ElTag>
+            <ElTag size="small" :type="c.authorized ? 'success' : 'danger'">{{
+              c.authorized ? '已授权' : '未授权·不展示'
+            }}</ElTag>
           </div>
         </template>
 
@@ -29,22 +31,42 @@
           <ElCol :xs="24" :md="8">
             <ElFormItem label="关联教练">
               <ElSelect v-model="c.coachId" clearable placeholder="未关联">
-                <ElOption v-for="co in sales.state.coaches" :key="co.id" :label="co.name" :value="co.id" />
+                <ElOption
+                  v-for="co in sales.state.coaches"
+                  :key="co.id"
+                  :label="co.name"
+                  :value="co.id"
+                />
               </ElSelect>
             </ElFormItem>
           </ElCol>
-          <ElCol :xs="24" :md="16"><ElFormItem label="训练目标"><ElInput v-model="c.goal" maxlength="30" /></ElFormItem></ElCol>
+          <ElCol :xs="24" :md="16"
+            ><ElFormItem label="训练目标"><ElInput v-model="c.goal" maxlength="30" /></ElFormItem
+          ></ElCol>
         </ElRow>
-        <ElFormItem label="案例说明"><ElInput v-model="c.desc" type="textarea" :rows="2" maxlength="120" show-word-limit /></ElFormItem>
-        <ElFormItem label="展示授权"><ElSwitch v-model="c.authorized" active-text="已取得会员授权" /></ElFormItem>
+        <ElFormItem label="案例说明"
+          ><ElInput v-model="c.desc" type="textarea" :rows="2" maxlength="120" show-word-limit
+        /></ElFormItem>
+        <ElFormItem label="展示授权"
+          ><ElSwitch v-model="c.authorized" active-text="已取得会员授权"
+        /></ElFormItem>
 
         <ElFormItem label="阶段节点">
           <div class="w-full flex flex-wrap items-center gap-2">
             <div v-for="(s, si) in c.stages" :key="si" class="flex items-center gap-1">
-              <ElTag size="small" effect="plain">{{ si === 0 ? '初始建档' : s.duration || `阶段${si}` }}</ElTag>
-              <ElIcon v-if="si > 0" class="cursor-pointer text-gray-400" @click="removeStage(c, si)"><CircleClose /></ElIcon>
+              <ElTag size="small" effect="plain">{{
+                si === 0 ? '初始建档' : s.duration || `阶段${si}`
+              }}</ElTag>
+              <ElIcon v-if="si > 0" class="cursor-pointer text-gray-400" @click="removeStage(c, si)"
+                ><CircleClose
+              /></ElIcon>
             </div>
-            <ElInput v-model="newStageDuration" size="small" class="!w-28" placeholder="如：第8周" />
+            <ElInput
+              v-model="newStageDuration"
+              size="small"
+              class="!w-28"
+              placeholder="如：第8周"
+            />
             <ElButton size="small" plain @click="addStage(c)">加阶段</ElButton>
           </div>
         </ElFormItem>
@@ -76,7 +98,14 @@
 
   function addCase() {
     const id = nextId()
-    list.value.push({ id, coachId: '', goal: '', desc: '', authorized: false, stages: [{ duration: '' }] })
+    list.value.push({
+      id,
+      coachId: '',
+      goal: '',
+      desc: '',
+      authorized: false,
+      stages: [{ duration: '' }]
+    })
     opened.value = String(id)
   }
 

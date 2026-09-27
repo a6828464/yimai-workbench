@@ -10,24 +10,36 @@
         <template #title>
           <div class="flex items-center gap-3 pr-4">
             <span class="font-500">{{ p.name || `产品${pi + 1}` }}</span>
-            <ElTag size="small" :type="p.showPrice ? 'success' : 'info'">{{ p.showPrice ? '展示价目' : '隐藏价目' }}</ElTag>
+            <ElTag size="small" :type="p.showPrice ? 'success' : 'info'">{{
+              p.showPrice ? '展示价目' : '隐藏价目'
+            }}</ElTag>
           </div>
         </template>
 
         <ElRow :gutter="12">
-          <ElCol :xs="24" :md="8"><ElFormItem label="产品名称"><ElInput v-model="p.name" maxlength="20" /></ElFormItem></ElCol>
-          <ElCol :xs="24" :md="16"><ElFormItem label="产品说明"><ElInput v-model="p.desc" /></ElFormItem></ElCol>
+          <ElCol :xs="24" :md="8"
+            ><ElFormItem label="产品名称"><ElInput v-model="p.name" maxlength="20" /></ElFormItem
+          ></ElCol>
+          <ElCol :xs="24" :md="16"
+            ><ElFormItem label="产品说明"><ElInput v-model="p.desc" /></ElFormItem
+          ></ElCol>
         </ElRow>
-        <ElFormItem label="价目开关"><ElSwitch v-model="p.showPrice" active-text="客户可见" inactive-text="隐藏" /></ElFormItem>
+        <ElFormItem label="价目开关"
+          ><ElSwitch v-model="p.showPrice" active-text="客户可见" inactive-text="隐藏"
+        /></ElFormItem>
 
-        <div class="border border-gray-100 dark:border-gray-700 rounded-lg p-3 mb-3 overflow-x-auto">
+        <div
+          class="border border-gray-100 dark:border-gray-700 rounded-lg p-3 mb-3 overflow-x-auto"
+        >
           <table class="price-table">
             <thead>
               <tr>
                 <th v-for="(c, ci) in p.cols" :key="'c' + ci">
                   <ElInput v-model="p.cols[ci]" size="small" placeholder="表头" />
                 </th>
-                <th class="w-10"><ElButton size="small" text type="danger" @click="removeCol(p)">−</ElButton></th>
+                <th class="w-10"
+                  ><ElButton size="small" text type="danger" @click="removeCol(p)">−</ElButton></th
+                >
               </tr>
             </thead>
             <tbody>
@@ -48,7 +60,14 @@
 
         <div class="flex gap-2">
           <ElButton type="primary" size="small" @click="saveAll()">保存</ElButton>
-          <ElButton size="small" text type="danger" :disabled="list.length <= 1" @click="removeProduct(pi)">删除此产品</ElButton>
+          <ElButton
+            size="small"
+            text
+            type="danger"
+            :disabled="list.length <= 1"
+            @click="removeProduct(pi)"
+            >删除此产品</ElButton
+          >
         </div>
       </ElCollapseItem>
     </ElCollapse>
@@ -76,7 +95,14 @@
       return
     }
     const id = nextId()
-    list.value.push({ id, name: '', desc: '', showPrice: true, cols: ['卡项', '次数', '标准价'], rows: [['', '', '']] })
+    list.value.push({
+      id,
+      name: '',
+      desc: '',
+      showPrice: true,
+      cols: ['卡项', '次数', '标准价'],
+      rows: [['', '', '']]
+    })
     opened.value = String(id)
   }
 
