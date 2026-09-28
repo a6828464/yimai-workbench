@@ -153,6 +153,43 @@ class LeadController extends Controller
         return $existingDealAt === null; // 主张 2：只在原来为空时补
     }
 
+    /**
+     * 列表排序：**按留资时间（`lead_date`）倒序**，同日按 id 倒序。
+     *
+     * ## 为什么排序必须由服务端拥有
+     *
+     * 列表是**服务端分页**的（`forPage`，一页 20/50/100/200 条）。前端 `ElTableColumn`
+     * 的 `sortable` 只在**当前页这几十条**里重排 —— 分页之后各页之间不可能有序，
+     * 用户点列头看到的是「这一页碰巧的顺序」，点出升序更是只把当前页反过来，
+     * 看起来像排好了。真正的排序只能在**分页之前**做，也就是这里。
+     *
+     * ## 为什么基准是 lead_date 而不是 id（历史实现）
+     *
+     * 历史实现写死 `orderByDesc('id')`，即**按录入先后**排。留资页的常态恰恰是
+     * **事后补录**（体测报告、团购券核销、老客资回填），补录一条 8 月的客资会排在最前，
+     * 而 9 月月底留的客户被挤到后面 —— 用户口径是「按留资时间排序」，两者在补录时背离。
+     *
+     * ## tie-break
+     *
+     * 同日多条必须再用 `id` 定序：MySQL 对 `ORDER BY` 相同值的返回顺序**不作保证**，
+     * 缺了这一级，翻页时同一行可能重复出现或被整段跳过。id 单调且唯一，能保证全序。
+     *
+     * ## 排序参数的边界
+     *
+     * `sortBy` 走**白名单**（当前只放行 `leadDate`）：未知值一律退回默认口径，
+     * 既不做列名拼接（那是注入面），也不报错 —— 前端传了个后端不认识的列名时，
+     * 退回默认顺序比 400 更合适。
+     */
+    private function applySort($q, Request $r)
+    {
+        // 白名单：请求字段名 => 库表列名。新增可排序列就在这加一行 —— 列名**绝不来自请求**。
+        $columns = ['leadDate' => 'lead_date'];
+        $order = strtolower((string) $r->query('sortOrder', 'descending')) === 'ascending' ? 'asc' : 'desc';
+        $column = $columns[(string) $r->query('sortBy', 'leadDate')] ?? $columns['leadDate'];
+
+        return $q->orderBy($column, $order)->orderBy('id', $order);
+    }
+
     /** GET /leads */
     public function index(Request $r)
     {
@@ -194,7 +231,7 @@ class LeadController extends Controller
         $current = max(1, (int) $r->query('current', 1));
         $size = min(5000, max(1, (int) $r->query('size', 20)));
         $total = (clone $q)->count();
-        $rows = $q->orderByDesc('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
+        $rows = $this->applySort($q, $r)->forPage($current, $size)->get()->map(fn ($x) => camel($x));
 
         return ok([
             'records' => $rows, 'total' => $total, 'current' => $current, 'size' => $size,

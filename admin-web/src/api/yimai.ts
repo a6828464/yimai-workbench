@@ -538,6 +538,9 @@ export function queryLeads(
     phone?: string
     dateFrom?: string
     dateTo?: string
+    /** 排序字段（后端白名单，当前只放行 leadDate）与方向（ascending/descending） */
+    sortBy?: string
+    sortOrder?: 'ascending' | 'descending'
   }
 ) {
   if (USE_BACKEND) {
@@ -578,7 +581,15 @@ export function queryLeads(
   }
   if (params.dateFrom) list = list.filter((l) => (l.leadDate ?? '') >= String(params.dateFrom))
   if (params.dateTo) list = list.filter((l) => (l.leadDate ?? '') <= String(params.dateTo))
-  const sorted = [...list].sort((x, y) => y.id - x.id)
+  // 排序口径与后端 LeadController::applySort 保持一致：默认按留资日期倒序、同日按 id 倒序。
+  // 演示模式也必须同口径，否则「本地演示好看、上线顺序变了」这类偏差不会在开发期暴露。
+  const asc = params.sortOrder === 'ascending'
+  const sorted = [...list].sort((x, y) => {
+    const a = x.leadDate ?? ''
+    const b = y.leadDate ?? ''
+    if (a !== b) return asc ? (a < b ? -1 : 1) : a > b ? -1 : 1
+    return asc ? x.id - y.id : y.id - x.id
+  })
   return Promise.resolve({
     records: paginate(sorted, params),
     total: sorted.length,

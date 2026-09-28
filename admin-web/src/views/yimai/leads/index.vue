@@ -65,6 +65,17 @@
         用 calc 传给 max-height 是 EP 支持的写法（style-helper 里
         `calc(${maxHeight} - ${headerHeight}px)`，已实测生效）。
       -->
+      <!--
+        排序
+        ------
+        列头是 `sortable="custom"` 而不是 `sortable`：本表**服务端分页**（一页 20~200 条），
+        而 EP 的普通 sortable 只在**当前页这几十条**里重排 —— 分页之后各页之间不可能有序，
+        用户点列头看到的是「这一页碰巧的顺序」，点出升序更是只把当前页反过来、看着像排好了。
+        真正生效的排序在**分页之前**（后端 LeadController::applySort），这里只负责表达意图：
+        `@sort-change` 把意图下推给后端并回到第 1 页重新取数。
+        `sort-orders` 只给升/降两档：EP 默认还带一个 null（第三下清空排序）—— 清空后箭头消失、
+        数据却仍是「留资日期倒序」，表头与数据会互相矛盾，索性去掉这一档。
+      -->
       <ElTable
         v-if="!isHandheld"
         ref="tableRef"
@@ -73,8 +84,16 @@
         border
         stripe
         :max-height="tableMaxHeight"
+        :default-sort="{ prop: 'leadDate', order: 'descending' }"
+        @sort-change="onSortChange"
       >
-        <ElTableColumn prop="leadDate" label="留资日期" width="100" sortable />
+        <ElTableColumn
+          prop="leadDate"
+          label="留资日期"
+          width="100"
+          sortable="custom"
+          :sort-orders="SORT_ORDERS"
+        />
         <ElTableColumn label="姓名 / 联系方式" min-width="150">
           <template #default="{ row }">
             <div class="font-500">{{ row.name }}</div>
@@ -708,6 +727,48 @@
   const list = ref<YimaiLead[]>([])
   const total = ref(0)
 
+  /**
+   * 「用户自己改了 current」的抑制标志：见 onSizeChange / onSortChange 的注释。
+   * 声明在两者之前——它们在 nextTick 里读写这个变量，提前声明避免依赖求值时序。
+   */
+  let suppressPageWatch = false
+
+  /**
+   * 排序状态（默认「留资日期倒序」）
+   *
+   * 必须与后端 `LeadController::applySort` 的默认口径一致 —— 两边不一致时，
+   * 首屏数据是后端默认排的、表头箭头却是前端默认指的，用户会以为箭头坏了。
+   * 取值用 EP 的 `ascending` / `descending` 原样透传，不做第二套枚举名。
+   */
+  const SORT_ORDERS: ('ascending' | 'descending')[] = ['ascending', 'descending']
+  const sort = ref<{ prop: string; order: 'ascending' | 'descending' }>({
+    prop: 'leadDate',
+    order: 'descending'
+  })
+
+  /**
+   * 列头排序下推（见模板处注释）
+   *
+   * 收到 null 时**不做任何事**：`sort-orders` 已去掉「清空」档，正常点击不会来 null；
+   * 若因版本差异仍来了 null，保持现有排序比清空更安全 —— 清空会让表头箭头与
+   * 数据顺序不一致（数据按留资日期排、箭头却没了）。
+   */
+  function onSortChange(payload: { prop: string | null; order: string | null }) {
+    if (!payload.order) return
+    sort.value = {
+      prop: payload.prop ?? 'leadDate',
+      order: payload.order === 'ascending' ? 'ascending' : 'descending'
+    }
+    // 排序变化必须回到第 1 页：第 3 页在第 41~60 条，换了顺序后「第 3 页」已完全是另一批数据，
+    // 留在原页码会让用户以为「还在原地」。理由同 onSizeChange。
+    suppressPageWatch = true
+    page.value.current = 1
+    nextTick(() => {
+      suppressPageWatch = false
+    })
+    load()
+  }
+
   // 表格高度自适应：减项（筛选条 / 提示行 / 分页器 / 卡片内边距）由 hook 运行时量出。
   // 这里不再写 `calc(var(--art-full-height) - 180px)` —— 那个 180 只是本页当时的
   // 实测值，筛选条加一个控件就又不准了，而且抄到别的页面必然是错的。
@@ -818,7 +879,10 @@
         dateFrom,
         dateTo,
         current: page.value.current,
-        size: page.value.size
+        size: page.value.size,
+        // 排序下推：后端在**分页之前**排序，前端不再对当前页做本地排序（见模板处注释）
+        sortBy: sort.value.prop,
+        sortOrder: sort.value.order
       })
       list.value = res.records
       total.value = res.total
@@ -854,8 +918,6 @@
    * 也是主流后台的通行做法。同时 current 从 N 变 1 会触发 watch —— 下面的
    * suppressPageWatch 标志用来吃掉这次以免重复请求。
    */
-  let suppressPageWatch = false
-
   function onSizeChange() {
     suppressPageWatch = true
     page.value.current = 1
