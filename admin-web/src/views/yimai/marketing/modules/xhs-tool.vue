@@ -454,71 +454,101 @@
     </ElDialog>
 
     <!-- 笔记库（收藏） -->
-    <ElDrawer v-model="favVisible" title="小红书笔记库" size="460px">
+    <ElDrawer v-model="favVisible" title="小红书笔记库" size="460px" @open="onFavoritesOpen">
+      <!-- 来源标注：读不到云端时明确说「显示本机缓存 / 本机无缓存」，绝不冒充「暂无收藏」 -->
       <ElAlert
-        title="收藏只保存标题 / 正文 / 标签（不含封面文案与首评）；发布前请回生成结果复制封面文案。"
+        v-if="favOrigin !== 'ok'"
+        :title="favOfflineText"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="mb-3"
+      />
+      <ElAlert
+        title="收藏内容会保存到门店服务端并可跨设备同步。请勿写入会员真实姓名、手机号、身体状况等隐私信息；含会员信息的案例文案建议先匿名化（如「一位 32 岁宝妈」而不是真实姓名）。"
         type="info"
         show-icon
         :closable="false"
         class="mb-3"
       />
-      <div v-if="cardListMode" class="m-card-list">
-        <template v-if="favorites.length">
-          <MobileCard
+      <div v-loading="favLoading">
+        <div v-if="cardListMode" class="m-card-list">
+          <template v-if="favorites.length">
+            <MobileCard
+              v-for="f in favorites"
+              :key="f.id"
+              :title="f.title || '未命名笔记'"
+              :subtitle="f.createdAt"
+              :tags="f.tags.slice(0, FAV_TAG_PREVIEW).map((t) => ({ text: t }))"
+              :actions="[
+                { text: '载入编辑', type: 'primary', onClick: () => loadFavorite(f) },
+                {
+                  text: '复制正文',
+                  onClick: () => copyText(`${f.title}\n\n${f.content}\n\n${f.tags.join(' ')}`)
+                },
+                {
+                  text: '复制封面',
+                  show: !!f.coverText,
+                  onClick: () => copyText(f.coverText || '')
+                },
+                { text: '复制首评', show: !!f.reply, onClick: () => copyText(f.reply || '') },
+                { text: '删除', type: 'danger', onClick: () => onRemoveFavorite(f.id) }
+              ]"
+            >
+              <!-- 封面文案 / 首评独立呈现（老收藏缺失时不显示空壳） -->
+              <div v-if="f.coverText" class="mk-fav-cover">封面：{{ f.coverText }}</div>
+              <p class="mk-card-text">{{ f.content }}</p>
+              <div v-if="f.reply" class="mk-fav-reply">💬 {{ f.reply }}</div>
+            </MobileCard>
+          </template>
+          <div v-else class="m-card-list__empty">收藏的笔记会出现在这里</div>
+        </div>
+
+        <div v-else-if="favorites.length">
+          <div
             v-for="f in favorites"
             :key="f.id"
-            :title="f.title || '未命名笔记'"
-            :subtitle="f.createdAt"
-            :tags="f.tags.slice(0, FAV_TAG_PREVIEW).map((t) => ({ text: t }))"
-            :actions="[
-              { text: '载入编辑', type: 'primary', onClick: () => loadFavorite(f) },
-              {
-                text: '复制',
-                onClick: () => copyText(`${f.title}\n\n${f.content}\n\n${f.tags.join(' ')}`)
-              },
-              { text: '删除', type: 'danger', onClick: () => removeFavorite(f.id) }
-            ]"
+            class="mb-3 p-3 rounded-lg border border-gray-100 dark:border-gray-700"
           >
-            <p class="mk-card-text">{{ f.content }}</p>
-          </MobileCard>
-        </template>
-        <div v-else class="m-card-list__empty">收藏的笔记会出现在这里</div>
-      </div>
-
-      <div v-else-if="favorites.length">
-        <div
-          v-for="f in favorites"
-          :key="f.id"
-          class="mb-3 p-3 rounded-lg border border-gray-100 dark:border-gray-700"
-        >
-          <div class="flex-cb mb-1">
-            <span class="text-sm font-500 truncate">{{ f.title }}</span>
-            <ElIcon
-              class="cursor-pointer shrink-0 ml-2"
-              color="#f56c6c"
-              @click="removeFavorite(f.id)"
-              ><Delete
-            /></ElIcon>
-          </div>
-          <div class="text-xs text-gray-400 mb-1">{{ f.createdAt }}</div>
-          <div class="text-sm leading-5 whitespace-pre-wrap line-clamp-3">{{ f.content }}</div>
-          <div v-if="f.tags.length" class="mt-1 flex flex-wrap gap-1">
-            <span v-for="t in f.tags.slice(0, FAV_TAG_PREVIEW)" :key="t" class="mk-tag-pill">{{
-              t
-            }}</span>
-          </div>
-          <div class="mt-2 flex gap-2">
-            <ElButton link type="primary" size="small" @click="loadFavorite(f)">载入编辑</ElButton>
-            <ElButton
-              link
-              size="small"
-              @click="copyText(`${f.title}\n\n${f.content}\n\n${f.tags.join(' ')}`)"
-              >复制</ElButton
-            >
+            <div class="flex-cb mb-1">
+              <span class="text-sm font-500 truncate">{{ f.title }}</span>
+              <ElIcon
+                class="cursor-pointer shrink-0 ml-2"
+                color="#f56c6c"
+                @click="onRemoveFavorite(f.id)"
+                ><Delete
+              /></ElIcon>
+            </div>
+            <div class="text-xs text-gray-400 mb-1">{{ f.createdAt }}</div>
+            <div v-if="f.coverText" class="mk-fav-cover">封面：{{ f.coverText }}</div>
+            <div class="text-sm leading-5 whitespace-pre-wrap line-clamp-3">{{ f.content }}</div>
+            <div v-if="f.reply" class="mk-fav-reply">💬 {{ f.reply }}</div>
+            <div v-if="f.tags.length" class="mt-1 flex flex-wrap gap-1">
+              <span v-for="t in f.tags.slice(0, FAV_TAG_PREVIEW)" :key="t" class="mk-tag-pill">{{
+                t
+              }}</span>
+            </div>
+            <div class="mt-2 flex gap-2">
+              <ElButton link type="primary" size="small" @click="loadFavorite(f)"
+                >载入编辑</ElButton
+              >
+              <ElButton
+                link
+                size="small"
+                @click="copyText(`${f.title}\n\n${f.content}\n\n${f.tags.join(' ')}`)"
+                >复制正文</ElButton
+              >
+              <ElButton v-if="f.coverText" link size="small" @click="copyText(f.coverText || '')"
+                >复制封面</ElButton
+              >
+              <ElButton v-if="f.reply" link size="small" @click="copyText(f.reply || '')"
+                >复制首评</ElButton
+              >
+            </div>
           </div>
         </div>
+        <ElEmpty v-else-if="!cardListMode" description="收藏的笔记会出现在这里" />
       </div>
-      <ElEmpty v-else-if="!cardListMode" description="收藏的笔记会出现在这里" />
     </ElDrawer>
 
     <!-- 历史生成记录（按账号云端保存，最近300条） -->
@@ -639,6 +669,7 @@
     fetchMarketingHistory,
     removeMarketingHistory
   } from '@/api/my'
+  import { useMarketingFavorites } from './marketing-favorites'
   import { useAiConfigStore } from '@/store/modules/ai-config'
   import { useDevice } from '@/hooks/core/useDevice'
   import { Delete } from '@element-plus/icons-vue'
@@ -657,7 +688,6 @@
   const cardListMode = computed(() => isHandheld.value)
 
   const aiStore = useAiConfigStore()
-  const { removeFavorite } = aiStore
   const favorites = computed(() =>
     aiStore.marketing.favorites.filter((f) => f.platform === '小红书')
   )
@@ -962,26 +992,70 @@
    * 收藏：`ai-config` 的 FavoriteItem 只有 title/content/tags（无 coverText / reply 字段），
    * 因此收藏不含封面文案与首评 —— 这一点已在笔记库抽屉顶部明确写出，不做静默丢弃的假象。
    */
-  function saveOneFavorite(n: XhsNote, index: number) {
+  /**
+   * 收藏这篇笔记：**先写服务端，成功才落缓存**（store 负责）。
+   * 封面文案与首评都作为独立字段入库（服务端已有 reply / coverText 列），
+   * 因此「载入编辑」能还原完整五件套；老收藏缺这两个字段时界面不显示空壳。
+   * 失败不在此提示 —— api 层已按错误类型给出（上限类透出后端原文），避免同一错误弹两次。
+   */
+  async function saveOneFavorite(n: XhsNote, index: number) {
     if (!n.title && !n.content) return
-    aiStore.addFavorite({
+    const ok = await saveFavorite({
       platform: '小红书',
       title:
         notes.value.length > 1
           ? `方案${index + 1} · ${n.title}`
           : n.title || n.content.slice(0, 20),
       content: n.content,
+      coverText: n.coverText,
+      reply: n.reply,
       tags: n.tags
     })
-    ElMessage.success(`已收藏方案 ${index + 1}（不含封面文案与首评）`)
+    if (ok) ElMessage.success(`已收藏方案 ${index + 1}`)
   }
 
-  function loadFavorite(f: { title: string; content: string; tags: string[] }) {
-    notes.value = [{ title: f.title, coverText: '', content: f.content, tags: f.tags, reply: '' }]
+  // 服务端缺失字段为 null，老数据可能连键都没有 —— 这里统一收成 ''，不让 null 进模板
+  function loadFavorite(f: {
+    title: string
+    content: string
+    tags: string[]
+    coverText?: string | null
+    reply?: string | null
+  }) {
+    notes.value = [
+      {
+        title: f.title,
+        coverText: f.coverText ?? '',
+        content: f.content,
+        tags: f.tags,
+        reply: f.reply ?? ''
+      }
+    ]
     source.value = 'fallback'
     report.value = null
     promptMessages.value = []
     favVisible.value = false
+  }
+
+  // ==================== 收藏的服务端同步（拉取 / 旧收藏导入 / 反馈） ====================
+
+  const {
+    loading: favLoading,
+    origin: favOrigin,
+    offlineText: favOfflineText,
+    refresh: refreshFavorites,
+    saveFavorite
+  } = useMarketingFavorites()
+
+  /** 打开抽屉：强制对齐云端 + 跑一次可见反馈的旧收藏导入（辅触发） */
+  async function onFavoritesOpen() {
+    await refreshFavorites()
+  }
+
+  /** 删除：失败时列表保持不动（store 已 console.warn），不弹错误打扰用户 */
+  async function onRemoveFavorite(id: number) {
+    const ok = await aiStore.removeFavorite(id)
+    if (ok) ElMessage.success('已删除')
   }
 
   // ==================== 历史（封面文案在 content 首行，可回看） ====================

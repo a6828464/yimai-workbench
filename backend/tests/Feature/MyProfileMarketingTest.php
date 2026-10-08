@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\MarketingPost;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Sanctum\Sanctum;
@@ -96,6 +97,38 @@ class MyProfileMarketingTest extends TestCase
     {
         Sanctum::actingAs($this->user('teacher-a', '张老师', 'R_TEACHER', '绿地店'));
         $this->postJson('/api/marketing/history', ['platform' => '抖音', 'content' => 'x'])->assertStatus(422);
+    }
+
+    // ───────── 输入健壮性：畸形 id 与正文字节溢出（RV4 R1/R2 收口；与收藏侧同口径） ─────────
+
+    /** R1：`DELETE /marketing/history/{id}` 收到畸形 id 必须是 404，而不是 TypeError 的 500 */
+    public function test_history_delete_with_malformed_id_returns_404_not_500(): void
+    {
+        Sanctum::actingAs($this->user('teacher-a', '张老师', 'R_TEACHER', '绿地店'));
+
+        foreach (['abc', '12abc', '999999999999999999999999'] as $bad) {
+            $this->deleteJson("/api/marketing/history/{$bad}")->assertStatus(404);
+        }
+
+        // 合法数字 id 的既有语义不变：不存在 → 200 幂等 ok
+        $this->deleteJson('/api/marketing/history/99999998')->assertOk()->assertJsonPath('data.ok', true);
+    }
+
+    /**
+     * R2：`POST /marketing/history` 的正文按声明上限 20000 字符（20000 个 emoji = 80000 字节）
+     * 必须存得下 —— 与收藏侧同口径（两张表的 content 一起加宽到 mediumText）。
+     * sqlite 上此用例恒过（TEXT 无字节上限），真实列宽由 MySQL 复跑证明，见 MarketingFavoriteTest。
+     */
+    public function test_history_content_at_char_limit_with_emoji_is_accepted(): void
+    {
+        Sanctum::actingAs($this->user('teacher-a', '张老师', 'R_TEACHER', '绿地店'));
+
+        $content = str_repeat('😀', 20000);
+        $this->assertSame(80000, strlen($content));
+
+        $id = $this->postJson('/api/marketing/history', ['platform' => '小红书', 'content' => $content])
+            ->assertOk()->json('data.id');
+        $this->assertSame(80000, strlen(MarketingPost::find($id)->content));
     }
 
     private function user(string $username, string $name, string $role, ?string $venue): User

@@ -49,6 +49,7 @@
 <script setup lang="ts">
   import MomentsTool from './modules/moments-tool.vue'
   import XhsTool from './modules/xhs-tool.vue'
+  import { useMarketingFavorites } from './modules/marketing-favorites'
   import { useAiConfigStore } from '@/store/modules/ai-config'
   import { useUserStore } from '@/store/modules/user'
   import { ChatDotRound, EditPen } from '@element-plus/icons-vue'
@@ -59,6 +60,18 @@
   const aiStore = useAiConfigStore()
   const userStore = useUserStore()
   const isSuper = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_SUPER'))
+
+  /**
+   * 收藏同步的主触发（规格 §5.5）：登录态就绪后**静默**拉一次云端收藏并跑旧收藏导入。
+   *
+   * 为什么不能只靠「打开收藏抽屉」：升级后本机若有尚未导入服务端的旧收藏，
+   * 用户在打开抽屉之前登出，PII 清理会把它们永久抹掉。主触发把窗口压到秒级。
+   * 静默 = 不弹 toast、失败也不打扰；标记未写入则下次登录自动重试（去重键保证幂等）。
+   */
+  const { syncOnLogin } = useMarketingFavorites()
+  onMounted(() => {
+    void syncOnLogin()
+  })
 
   const bannerText = computed(() =>
     aiStore.isReady()
@@ -351,6 +364,24 @@
     color: var(--el-color-warning);
     background: var(--el-color-warning-light-9);
     border-radius: 8px;
+  }
+
+  // 收藏卡上的首评 / 封面文案（老收藏缺这两个字段时不渲染，不留空壳）
+  .mk-marketing .mk-fav-reply {
+    padding: 4px 8px;
+    margin-top: 6px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--art-gray-600);
+    background: var(--art-gray-100);
+    border-radius: 6px;
+  }
+
+  .mk-marketing .mk-fav-cover {
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--art-gray-600);
   }
 
   // 小红书标签胶囊

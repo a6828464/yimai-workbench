@@ -4,6 +4,7 @@
  * - 演示模式：回退 localStorage
  */
 import { ref } from 'vue'
+import type { HttpError } from '@/utils/http/error'
 import { USE_BACKEND, apiGet, apiPut, apiPost, apiDelete } from './backend'
 
 export interface MomentsPersonaPrefs {
@@ -288,4 +289,132 @@ export async function removeMarketingHistory(id: number): Promise<void> {
   }
   const list = readLocalHistory().filter((h) => h.id !== id)
   localStorage.setItem('yimai-marketing-history', JSON.stringify(list))
+}
+
+// ---------- 收藏（服务端持久化；本地仅缓存） ----------
+//
+// 规格：docs/营销工具/06-收藏服务端持久化-设计规格.md §4.1-§4.4
+// 与「生成历史」的关键差别：**收藏是劳动成果、不可再生**，所以这里不做任何静默兜底 ——
+// 读不到返回 null（区别于「云端 0 条」），写失败返回 null 且**不落本地**
+// （落本地会让「本机有、云端无」，正是这次要修的跨设备不一致 bug 的同型复现）。
+
+/** 收藏项（与服务端 GET /marketing/favorites 的 data 元素同构） */
+export interface MarketingFavoriteItem {
+  id: number
+  platform: string
+  title: string
+  content: string
+  /** 首评/置顶评论（朋友圈收藏用）。服务端缺失时返回 null，老数据（改造前）可能连键都没有 */
+  reply?: string | null
+  /** 封面文案（小红书收藏用）。同上：服务端缺失为 null，老数据可能无键 */
+  coverText?: string | null
+  tags: string[]
+  createdAt: string
+}
+
+/** 新增收藏入参（无 id / createdAt / user_id —— 三者都由服务端决定） */
+export interface MarketingFavoriteInput {
+  platform: string
+  title?: string
+  content: string
+  reply?: string
+  coverText?: string
+  tags?: string[]
+}
+
+/**
+ * 读：失败/离线/未登录返回 `null`（让调用方区分「云端确实 0 条」与「读不到」）。
+ * 返回 `[]` 会把两者混为一谈 —— 那正是「收藏看起来没了」的体感 bug 的来源。
+ */
+export async function fetchMarketingFavorites(
+  platform?: string
+): Promise<MarketingFavoriteItem[] | null> {
+  if (!USE_BACKEND) {
+    // 演示模式：没有云端可读。收藏真源是 ai-config store 的本地持久化缓存
+    // （规格 §4.2「演示模式必须完整保留既有行为」），故这里返回 null 表示「无服务端」，
+    // 由 store 在演示模式下直接以本地缓存为准，不调用本函数。
+    return null
+  }
+  try {
+    return await apiGet<MarketingFavoriteItem[]>('/marketing/favorites', { platform })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 写失败的原因（供上层决定提示文案：422 上限类要原样透出后端中文提示）。
+ *
+ * 为什么不用 `null` 表示失败：`null` 会丢家庭「是网络失败还是超上限」，
+ * 而 §4.4 要求这两者文案不同；同时**这一层不能弹提示** ——
+ * api 层一旦 import element-plus，SSR 冒烟门禁（`pnpm check:ai-smoke`）会在
+ * `document is not defined` 处直接红掉（element-plus 在导入期就摸 document）。
+ * 所以失败原因作为数据上抛，提示由视图层单点给出（`useMarketingFavorites().saveFavorite`），
+ * 天然满足 §4.7「同一错误不弹两次」。
+ */
+export interface MarketingFavoriteWriteError {
+  status?: number
+  message: string
+}
+
+export type MarketingFavoriteSaveResult =
+  | { ok: true; id: number }
+  | { ok: false; error: MarketingFavoriteWriteError }
+
+/**
+ * 把写失败的原始异常归一成可展示原因。**两套 HTTP 栈的真实形状都要认**：
+ *
+ * - 项目自研栈 `utils/http` 的 `HttpError`：`{ code, data: { message }, message }`
+ *   （`code` 就是 HTTP 状态码，见 `error.ts:75`）—— 仅用 `import type` 引入类型，
+ *   不做运行期导入：`error.ts` 引了 element-plus，运行期导入会打挂 SSR 冒烟门禁；
+ * - `api/backend.ts` 的 axios 直连：`AxiosError { response: { status, data: { message } } }`。
+ *
+ * 两者都不匹配时回落到 `error.message`，保证「失败原因」永不静默丢失。
+ */
+export function toFavoriteWriteError(e: unknown): MarketingFavoriteWriteError {
+  const err = e as Partial<HttpError> & {
+    message?: string
+    response?: { status?: number; data?: { message?: string } }
+  }
+  const status = typeof err?.code === 'number' ? err.code : err?.response?.status
+  const dataMessage =
+    (err?.data as { message?: string } | undefined)?.message ?? err?.response?.data?.message
+  return { status, message: dataMessage ?? err?.message ?? '' }
+}
+
+/**
+ * 写：成功返回服务端 id；失败返回 `{ ok: false, error }` 且**不落本地**（见上方说明）。
+ *
+ * 与规格 §4.1 的差异（有意的）：规格写的是 `{id} | null`，但 `null` 无法承载
+ * 「422 上限 → 透出后端原文 / 其余 → 通用文案」所需的区分度（§4.4 明列），
+ * 故改为可判别联合；调用点用 `res.ok` 分支即可，语义与 `null` 判定等价。
+ */
+export async function saveMarketingFavorite(
+  item: MarketingFavoriteInput
+): Promise<MarketingFavoriteSaveResult> {
+  if (!USE_BACKEND) {
+    return { ok: false, error: { message: '演示模式无服务端收藏' } }
+  }
+  try {
+    const data = await apiPost<{ id: number }>('/marketing/favorites', {
+      platform: item.platform,
+      title: item.title ?? '',
+      content: item.content,
+      reply: item.reply ?? '',
+      coverText: item.coverText ?? '',
+      tags: item.tags ?? []
+    })
+    return { ok: true, id: data.id }
+  } catch (e) {
+    return { ok: false, error: toFavoriteWriteError(e) }
+  }
+}
+
+/**
+ * 删：幂等；失败时**向调用方抛错但不弹提示**（§4.4「删失败静默」＝不打扰用户）。
+ * 由 store 捕获后 `console.warn` 并保持列表不动 —— 服务端幂等，下次拉取会自动对齐。
+ */
+export async function removeMarketingFavorite(id: number): Promise<void> {
+  if (!USE_BACKEND) return
+  await apiDelete(`/marketing/favorites/${id}`)
 }

@@ -470,48 +470,75 @@
     </ElDialog>
 
     <!-- 朋友圈库（收藏） -->
-    <ElDrawer v-model="favVisible" title="朋友圈库" size="440px">
-      <!-- 手持端：一条收藏一张卡（复用项目统一降级范式 MobileCard） -->
-      <div v-if="cardListMode" class="m-card-list">
-        <template v-if="favorites.length">
-          <MobileCard
+    <ElDrawer v-model="favVisible" title="朋友圈库" size="440px" @open="onFavoritesOpen">
+      <!-- 来源标注：读不到云端时明确说「显示本机缓存 / 本机无缓存」，绝不冒充「暂无收藏」 -->
+      <ElAlert
+        v-if="favOrigin !== 'ok'"
+        :title="favOfflineText"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="mb-3"
+      />
+      <ElAlert
+        title="收藏内容会保存到门店服务端并可跨设备同步。请勿写入会员真实姓名、手机号、身体状况等隐私信息；含会员信息的案例文案建议先匿名化（如「一位 32 岁宝妈」而不是真实姓名）。"
+        type="info"
+        show-icon
+        :closable="false"
+        class="mb-3"
+      />
+      <div v-loading="favLoading">
+        <!-- 手持端：一条收藏一张卡（复用项目统一降级范式 MobileCard） -->
+        <div v-if="cardListMode" class="m-card-list">
+          <template v-if="favorites.length">
+            <MobileCard
+              v-for="f in favorites"
+              :key="f.id"
+              :title="f.title || '未命名文案'"
+              :subtitle="f.createdAt"
+              :actions="[
+                { text: '载入编辑', type: 'primary', onClick: () => loadFavorite(f) },
+                { text: '复制正文', onClick: () => copyText(f.content) },
+                { text: '复制首评', show: !!f.reply, onClick: () => copyText(f.reply || '') },
+                { text: '删除', type: 'danger', onClick: () => onRemoveFavorite(f.id) }
+              ]"
+            >
+              <p class="mk-card-text">{{ f.content }}</p>
+              <!-- 首评独立呈现（缺失时不显示空壳） -->
+              <div v-if="f.reply" class="mk-fav-reply">💬 {{ f.reply }}</div>
+            </MobileCard>
+          </template>
+          <div v-else class="m-card-list__empty">收藏的文案会出现在这里，可反复复用</div>
+        </div>
+
+        <!-- 桌面端：保持原有紧凑列表，逐值不变 -->
+        <div v-else-if="favorites.length">
+          <div
             v-for="f in favorites"
             :key="f.id"
-            :title="f.title || '未命名文案'"
-            :subtitle="f.createdAt"
-            :actions="[
-              { text: '载入编辑', type: 'primary', onClick: () => loadFavorite(f) },
-              { text: '复制', onClick: () => copyText(f.content) },
-              { text: '删除', type: 'danger', onClick: () => removeFavorite(f.id) }
-            ]"
+            class="mb-3 p-3 rounded-lg border border-gray-100 dark:border-gray-700"
           >
-            <p class="mk-card-text">{{ f.content }}</p>
-          </MobileCard>
-        </template>
-        <div v-else class="m-card-list__empty">收藏的文案会出现在这里，可反复复用</div>
-      </div>
-
-      <!-- 桌面端：保持原有紧凑列表，逐值不变 -->
-      <div v-else-if="favorites.length">
-        <div
-          v-for="f in favorites"
-          :key="f.id"
-          class="mb-3 p-3 rounded-lg border border-gray-100 dark:border-gray-700"
-        >
-          <div class="flex-cb mb-1">
-            <span class="text-xs text-gray-400">{{ f.createdAt }} · {{ f.title }}</span>
-            <ElIcon class="cursor-pointer" color="#f56c6c" @click="removeFavorite(f.id)"
-              ><Delete
-            /></ElIcon>
-          </div>
-          <div class="text-sm leading-5 whitespace-pre-wrap line-clamp-4">{{ f.content }}</div>
-          <div class="mt-2 flex gap-2">
-            <ElButton link type="primary" size="small" @click="loadFavorite(f)">载入编辑</ElButton>
-            <ElButton link size="small" @click="copyText(f.content)">复制</ElButton>
+            <div class="flex-cb mb-1">
+              <span class="text-xs text-gray-400">{{ f.createdAt }} · {{ f.title }}</span>
+              <ElIcon class="cursor-pointer" color="#f56c6c" @click="onRemoveFavorite(f.id)"
+                ><Delete
+              /></ElIcon>
+            </div>
+            <div class="text-sm leading-5 whitespace-pre-wrap line-clamp-4">{{ f.content }}</div>
+            <div v-if="f.reply" class="mk-fav-reply">💬 {{ f.reply }}</div>
+            <div class="mt-2 flex gap-2">
+              <ElButton link type="primary" size="small" @click="loadFavorite(f)"
+                >载入编辑</ElButton
+              >
+              <ElButton link size="small" @click="copyText(f.content)">复制正文</ElButton>
+              <ElButton v-if="f.reply" link size="small" @click="copyText(f.reply || '')"
+                >复制首评</ElButton
+              >
+            </div>
           </div>
         </div>
+        <ElEmpty v-else-if="!cardListMode" description="收藏的文案会出现在这里，可反复复用" />
       </div>
-      <ElEmpty v-else-if="!cardListMode" description="收藏的文案会出现在这里，可反复复用" />
     </ElDrawer>
 
     <!-- 历史生成记录（按账号云端保存，最近300条） -->
@@ -581,6 +608,7 @@
 
 <script setup lang="ts">
   import AntiFoldTool from './anti-fold-tool.vue'
+  import { useMarketingFavorites } from './marketing-favorites'
   import {
     AUDIENCE_OPTIONS,
     BRAND_CITY,
@@ -657,7 +685,6 @@
   const cardListMode = computed(() => isHandheld.value)
 
   const aiStore = useAiConfigStore()
-  const { removeFavorite } = aiStore
   const favorites = computed(() =>
     aiStore.marketing.favorites.filter((f) => f.platform === '朋友圈')
   )
@@ -1040,22 +1067,53 @@
     )
   }
 
-  function saveOneFavorite(d: MktDraftRow) {
+  /**
+   * 收藏到朋友圈库：**先写服务端，成功才落缓存**（store 负责）。
+   * 失败时不提示 —— 提示已由 api 层按错误类型给出（上限类透出后端原文），
+   * 这里再弹一次会变成同一错误弹两次。
+   */
+  async function saveOneFavorite(d: MktDraftRow) {
     if (!d.content.trim()) return
-    aiStore.addFavorite({
+    const ok = await saveFavorite({
       platform: '朋友圈',
       title: drafts.value.length > 1 ? `${currentTitle()} · ${d.label}` : currentTitle(),
-      content: d.reply ? `${d.content}\n\n——首条回复——\n${d.reply}` : d.content,
+      content: d.content,
+      // 首评独立入库（服务端已有 reply 列）；老收藏没有该字段时界面不显示空壳
+      reply: d.reply,
       tags: []
     })
-    ElMessage.success(`已收藏「${d.label}」到朋友圈库`)
+    if (ok) ElMessage.success(`已收藏「${d.label}」到朋友圈库`)
   }
 
-  function loadFavorite(f: { content: string }) {
-    drafts.value = [{ key: 'loaded-1', label: '收藏文案', content: f.content, reply: '' }]
+  // 服务端缺失字段为 null，老数据可能连键都没有 —— 这里统一收成 ''，不让 null 进模板
+  function loadFavorite(f: { content: string; reply?: string | null }) {
+    drafts.value = [
+      { key: 'loaded-1', label: '收藏文案', content: f.content, reply: f.reply ?? '' }
+    ]
     source.value = 'fallback'
     report.value = null
     promptMessages.value = []
     favVisible.value = false
+  }
+
+  // ==================== 收藏的服务端同步（拉取 / 旧收藏导入 / 反馈） ====================
+
+  const {
+    loading: favLoading,
+    origin: favOrigin,
+    offlineText: favOfflineText,
+    refresh: refreshFavorites,
+    saveFavorite
+  } = useMarketingFavorites()
+
+  /** 打开抽屉：强制对齐云端 + 跑一次可见反馈的旧收藏导入（辅触发） */
+  async function onFavoritesOpen() {
+    await refreshFavorites()
+  }
+
+  /** 删除：失败时列表保持不动（store 已 console.warn），不弹错误打扰用户 */
+  async function onRemoveFavorite(id: number) {
+    const ok = await aiStore.removeFavorite(id)
+    if (ok) ElMessage.success('已删除')
   }
 </script>

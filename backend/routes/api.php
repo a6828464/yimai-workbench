@@ -12,6 +12,7 @@ use App\Http\Controllers\CustomerController;
 use App\Http\Controllers\KyController;
 use App\Http\Controllers\LeadController;
 use App\Http\Controllers\MarketingController;
+use App\Http\Controllers\MarketingFavoriteController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PayrollController;
 use App\Http\Controllers\PostClassReviewController;
@@ -33,6 +34,29 @@ use Illuminate\Support\Facades\Route;
 | 全局业务辅助函数在 app/Support/helpers.php（composer autoload.files 加载）。
 */
 
+/*
+|--------------------------------------------------------------------------
+| 全局路由参数约束：{id} 只接受纯数字，且不超过 18 位
+|--------------------------------------------------------------------------
+| 为什么必须有：所有 `{id}` 控制器的形参都是 `int $id`（照抄既有先例）。PHP 会把纯数字
+| 字符串强转成 int，但「非数字」（abc / 12abc）与「超出 int64 的纯数字」（19 位以上，
+| 如 9999999999999999999 > PHP_INT_MAX）都会抛 TypeError → **500**。这是本该 404 的输入，
+| 却会在日志里刷真实异常（RV4 R1）。
+|
+| 为什么是 `{1,18}` 而不是 `[0-9]+`：`[0-9]+` 只挡字母；19 位以上纯数字仍会强转失败，
+| 依旧 500。18 位上限（≤1e18）远在 int64 之内，而自增 id 距 1e18 还有若干数量级。
+|
+| 口径（全仓一致，不是只修营销两条）：畸形 id 不匹配任何 `{id}` 路由 → **404**；
+| 合法数字 id 的语义完全不变 —— `DELETE /marketing/{history,favorites}/{id}` 对
+| 「他人的 id / 不存在的 id」依旧一律 200 `{ok:true}`。防枚举红线未被触碰：
+| 畸形 id 不可能对应任何人的记录，404 不泄露任何存在性。
+|
+| ⚠️ 路由自带的 where() 会**覆盖**这里的全局约束（Router::addWhereClausesToRoute 是
+| array_merge(全局, 路由级)）—— 所以不要再给 `{id}` 单独写 `->whereNumber('id')`
+| （`[0-9]+` 会放过 19 位纯数字，把 500 拽回来）。
+*/
+Route::pattern('id', '[0-9]{1,18}');
+
 Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
 Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
 
@@ -49,6 +73,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/marketing/history', [MarketingController::class, 'history']);
     Route::post('/marketing/history', [MarketingController::class, 'saveHistory']);
     Route::delete('/marketing/history/{id}', [MarketingController::class, 'deleteHistory']);
+
+    // ---------- 营销工具收藏（按账号持久化，跨设备同步；超限拒绝新增，不做静默裁剪） ----------
+    Route::get('/marketing/favorites', [MarketingFavoriteController::class, 'index']);
+    Route::post('/marketing/favorites', [MarketingFavoriteController::class, 'store']);
+    Route::delete('/marketing/favorites/{id}', [MarketingFavoriteController::class, 'destroy']);
 
     // ---------- 会员/客户（options/list-counts 必须先于 /customers/{id} 注册） ----------
     Route::get('/customers/options', [CustomerController::class, 'options']);
@@ -109,11 +138,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ---------- 训练计划（按人持久化，逐条读写） ----------
     // 注意：/training-plans/bulk 必须注册在 /training-plans/{id} 之前，否则会被当作 id 捕获
+    // `{id}` 的数字约束由文件头的 Route::pattern 统一提供（原先这里各写一份 ->whereNumber('id')
+    // 是 `[0-9]+`，会覆盖全局约束、放过 19 位以上纯数字把 TypeError 500 拽回来，故删除）
     Route::get('/training-plans', [TrainingPlanController::class, 'index']);
     Route::post('/training-plans', [TrainingPlanController::class, 'store']);
     Route::put('/training-plans/bulk', [TrainingPlanController::class, 'bulkSave']);
-    Route::put('/training-plans/{id}', [TrainingPlanController::class, 'update'])->whereNumber('id');
-    Route::delete('/training-plans/{id}', [TrainingPlanController::class, 'destroy'])->whereNumber('id');
+    Route::put('/training-plans/{id}', [TrainingPlanController::class, 'update']);
+    Route::delete('/training-plans/{id}', [TrainingPlanController::class, 'destroy']);
 
     // ---------- 体测报告（门店智能魔镜报告解析与归档） ----------
     Route::post('/body-test-reports/parse', [BodyTestReportController::class, 'parse'])->middleware('throttle:30,1');
