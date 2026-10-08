@@ -18,7 +18,8 @@
     "prepare": "husky",
     "commit": "git-cz",
     "clean:dev": "tsx scripts/clean-dev.ts",
-    "check:pii-storage-keys": "tsx scripts/check-pii-storage-keys.ts"
+    "check:pii-storage-keys": "tsx scripts/check-pii-storage-keys.ts",
+    "check:ai-smoke": "tsx scripts/ai-smoke.mts"
   },
   "config": {
     "commitizen": {

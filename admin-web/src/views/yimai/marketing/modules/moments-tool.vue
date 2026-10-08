@@ -5,8 +5,10 @@
       <template #header>
         <div class="mk-card-head">
           <span class="font-500">个人发圈人设</span>
-          <div class="flex-c gap-3">
-            <span class="text-xs text-gray-400">品牌固定「一麦」· 城市固定「宁波」</span>
+          <div class="flex-c gap-3 flex-wrap">
+            <span class="text-xs text-gray-400"
+              >品牌固定「{{ BRAND_NAME }}」· 城市固定「{{ BRAND_CITY }}」</span
+            >
             <ElButton
               size="small"
               type="primary"
@@ -81,99 +83,161 @@
     <ElCard shadow="never" class="mb-4">
       <template #header><span class="font-500">本条朋友圈设置</span></template>
       <ElRow :gutter="12">
-        <ElCol :xs="24" :md="6"
-          ><ElFormItem :label-position="formLabelPosition" label="灵感分类"
-            ><ElSelect v-model="category" @change="topic = ''"
-              ><ElOption
-                v-for="(v, k) in MOMENTS_CATEGORIES"
-                :key="k"
-                :label="k"
-                :value="k" /></ElSelect></ElFormItem
-        ></ElCol>
-        <ElCol :xs="24" :md="8"
-          ><ElFormItem :label-position="formLabelPosition" label="主题模板"
-            ><ElSelect v-model="topic" filterable allow-create
-              ><ElOption
-                v-for="t in topics"
-                :key="t"
-                :label="t"
-                :value="t" /></ElSelect></ElFormItem
-        ></ElCol>
-        <ElCol :xs="12" :md="5"
-          ><ElFormItem :label-position="formLabelPosition" label="语气"
-            ><ElSelect v-model="tone"
-              ><ElOption
-                v-for="v in MOMENT_TONES"
-                :key="v"
-                :label="v"
-                :value="v" /></ElSelect></ElFormItem
-        ></ElCol>
-        <ElCol :xs="12" :md="5"
-          ><ElFormItem :label-position="formLabelPosition" label="目标"
-            ><ElSelect v-model="goal"
-              ><ElOption
-                v-for="v in MOMENT_GOALS"
-                :key="v"
-                :label="v"
-                :value="v" /></ElSelect></ElFormItem
-        ></ElCol>
-        <ElCol :xs="12" :md="5"
-          ><ElFormItem :label-position="formLabelPosition" label="表达方式"
-            ><ElSelect v-model="expression"
-              ><ElOption
-                v-for="v in MOMENT_EXPRESSIONS"
-                :key="v"
-                :label="v"
-                :value="v" /></ElSelect></ElFormItem
-        ></ElCol>
-        <ElCol :xs="12" :md="6"
-          ><ElFormItem :label-position="formLabelPosition" label="内容长度"
-            ><ElSelect v-model="lengthLabel"
-              ><ElOption
-                v-for="v in MOMENT_LENGTHS"
-                :key="v.label"
-                :label="v.label"
-                :value="v.label" /><ElOption
-                :label="MOMENT_LENGTH_CUSTOM"
-                :value="MOMENT_LENGTH_CUSTOM" /></ElSelect></ElFormItem
-        ></ElCol>
-        <ElCol :xs="12" :md="4"
-          ><ElFormItem :label-position="formLabelPosition" label="多分行"
-            ><ElSwitch v-model="multiLine" /></ElFormItem
-        ></ElCol>
-        <ElCol :xs="12" :md="9"
-          ><ElFormItem :label-position="formLabelPosition" label="表情符号"
-            ><ElSelect v-model="emojiLevel"
-              ><ElOption
-                v-for="v in EMOJI_LEVELS"
-                :key="v"
-                :label="v"
-                :value="v" /></ElSelect></ElFormItem
-        ></ElCol>
+        <ElCol :xs="24" :md="6">
+          <ElFormItem :label-position="formLabelPosition" label="灵感主题">
+            <ElSelect v-model="groupId">
+              <ElOption v-for="g in inspirationGroups" :key="g.id" :label="g.label" :value="g.id" />
+            </ElSelect>
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="24" :md="8">
+          <ElFormItem :label-position="formLabelPosition" label="案例/选题类型">
+            <ElSelect v-model="inspirationId" filterable placeholder="选择案例/选题（带写作方向）">
+              <ElOption
+                v-for="it in inspirationItems"
+                :key="it.id"
+                :label="it.label"
+                :value="it.id"
+              />
+            </ElSelect>
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="12" :md="5">
+          <ElFormItem :label-position="formLabelPosition" label="语气">
+            <ElSelect v-model="tone">
+              <ElOption v-for="v in MOMENT_TONES" :key="v" :label="v" :value="v" />
+            </ElSelect>
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="12" :md="5">
+          <ElFormItem :label-position="formLabelPosition" label="目标（含销售强度）">
+            <ElSelect v-model="goalId">
+              <ElOption v-for="g in goalOptions" :key="g.id" :label="g.label" :value="g.id" />
+            </ElSelect>
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="12" :md="5">
+          <ElFormItem :label-position="formLabelPosition" label="表达方式">
+            <ElSelect v-model="expression">
+              <ElOption v-for="v in MOMENT_EXPRESSIONS" :key="v" :label="v" :value="v" />
+            </ElSelect>
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="12" :md="6">
+          <ElFormItem :label-position="formLabelPosition" label="内容长度（单条）">
+            <ElSelect v-model="lengthId">
+              <ElOption v-for="l in lengthOptions" :key="l.id" :label="l.label" :value="l.id" />
+              <ElOption :label="MOMENT_LENGTH_CUSTOM" :value="MOMENT_LENGTH_CUSTOM" />
+            </ElSelect>
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="12" :md="5">
+          <ElFormItem :label-position="formLabelPosition" label="生成条数">
+            <ElRadioGroup v-model="draftCount">
+              <ElRadioButton v-for="n in draftCountOptions" :key="n" :value="n">
+                {{ n }} 条
+              </ElRadioButton>
+            </ElRadioGroup>
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="12" :md="4">
+          <ElFormItem :label-position="formLabelPosition" label="多分行">
+            <ElSwitch v-model="multiLine" />
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="24" :md="5">
+          <ElFormItem :label-position="formLabelPosition" label="表情符号">
+            <ElSelect v-model="emojiModeId">
+              <ElOption v-for="m in emojiModes" :key="m.id" :label="m.label" :value="m.id" />
+            </ElSelect>
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="24" :md="6">
+          <ElFormItem :label-position="formLabelPosition" label="生成期防折叠">
+            <ElSwitch v-model="antiFoldEnabled" />
+          </ElFormItem>
+        </ElCol>
       </ElRow>
+
+      <!-- 口径说明：让「这一档到底约束了什么」在界面上可辨，而不是靠猜 -->
+      <div class="mk-hint-block">
+        <div v-if="lengthHint"><b>字数口径：</b>{{ lengthHint }}</div>
+        <div v-if="emojiHint"><b>表情口径：</b>{{ emojiHint }}</div>
+        <div v-if="goalHint"><b>目标口径：</b>{{ goalHint }}</div>
+        <div v-if="inspirationHint"><b>写作方向：</b>{{ inspirationHint }}</div>
+      </div>
+
+      <!-- 立场铁律 / 优先级链 / 去 AI 味：来自 api 层常量，只读展示 -->
+      <ElCollapse v-if="ruleBlocks.length" class="mk-rule-collapse">
+        <ElCollapseItem
+          :title="`生成铁律（${ruleBlocks.length} 条，来自 api 层常量）`"
+          name="rules"
+        >
+          <div v-for="r in ruleBlocks" :key="r.label" class="mk-rule-item">
+            <div class="mk-rule-item__label">{{ r.label }}</div>
+            <div class="mk-rule-item__body">{{ r.text }}</div>
+          </div>
+        </ElCollapseItem>
+      </ElCollapse>
+
       <ElRow v-if="isCustomLength" :gutter="12">
-        <ElCol :xs="12" :md="6"
-          ><ElFormItem :label-position="formLabelPosition" label="最少字数"
-            ><ElInputNumber
+        <ElCol :xs="12" :md="6">
+          <ElFormItem :label-position="formLabelPosition" label="最少字数">
+            <ElInputNumber
               v-model="customLengthMin"
               :min="10"
               :max="490"
               :step="10"
               controls-position="right"
-              class="!w-full" /></ElFormItem
-        ></ElCol>
-        <ElCol :xs="12" :md="6"
-          ><ElFormItem :label-position="formLabelPosition" label="最多字数"
-            ><ElInputNumber
+              class="!w-full"
+            />
+          </ElFormItem>
+        </ElCol>
+        <ElCol :xs="12" :md="6">
+          <ElFormItem :label-position="formLabelPosition" label="最多字数">
+            <ElInputNumber
               v-model="customLengthMax"
               :min="20"
               :max="500"
               :step="10"
               controls-position="right"
-              class="!w-full" /></ElFormItem
-        ></ElCol>
+              class="!w-full"
+            />
+          </ElFormItem>
+        </ElCol>
       </ElRow>
-      <ElFormItem :label-position="formLabelPosition" label="我想说">
+
+      <!-- 图片素材：最多 3 张 + 每张一句说明（说明进提示词，图片本身仅本地预览、不上传） -->
+      <div class="mk-sub-title">图片素材（最多 {{ maxImages }} 张）</div>
+      <div class="text-xs text-g-500 leading-5 mb-2">
+        图片仅用于让 AI 知道本条要配什么图（生成内容必须与图关联）；只在本机预览，不会上传服务器。
+      </div>
+      <div class="mk-image-row">
+        <ElUpload
+          v-model:file-list="uploadFileList"
+          :auto-upload="false"
+          list-type="picture-card"
+          accept="image/*"
+          :limit="maxImages"
+          :on-exceed="onImageExceed"
+        >
+          <div class="mk-image-add">
+            <i class="ri-add-line" />
+            <span class="text-xs">加图</span>
+          </div>
+        </ElUpload>
+      </div>
+      <div v-if="uploadFileList.length" class="mk-image-notes">
+        <div v-for="(img, i) in uploadFileList" :key="img.uid" class="mk-image-note">
+          <span class="mk-image-note__idx">图{{ i + 1 }}</span>
+          <ElInput
+            v-model="imageNotes[img.uid ?? -1]"
+            placeholder="这张图是什么（如：学员体态对比照）"
+          />
+        </div>
+      </div>
+
+      <ElFormItem :label-position="formLabelPosition" label="我想说" class="mt-2">
         <ElInput
           v-model="userInput"
           type="textarea"
@@ -182,26 +246,23 @@
         />
       </ElFormItem>
       <div class="mk-btn-row">
-        <ElButton type="primary" :loading="generating" @click="generate">生成朋友圈</ElButton>
+        <ElButton type="primary" :loading="generating" @click="generate()">生成朋友圈</ElButton>
         <ElButton @click="openHistory">历史生成记录</ElButton>
         <ElButton @click="favVisible = true">朋友圈库（{{ favorites.length }}）</ElButton>
       </div>
     </ElCard>
 
-    <!-- 生成结果：朋友圈预览卡片 -->
-    <ElCard v-if="result || warning || generating" shadow="never" class="mb-4">
+    <!-- 生成结果 -->
+    <ElCard v-if="hasResult || warning || generating" shadow="never" class="mb-4">
       <template #header>
         <div class="mk-card-head">
-          <span class="font-500">生成结果</span>
-          <div class="flex-c gap-3">
-            <ElButton
-              v-if="result"
-              link
-              size="small"
-              :type="editMode ? 'primary' : 'info'"
-              @click="editMode = !editMode"
-            >
-              {{ editMode ? '预览' : '编辑' }}
+          <span class="font-500">生成结果（{{ drafts.length }} 条）</span>
+          <div class="flex-c gap-3 flex-wrap">
+            <ElButton v-if="report" link size="small" @click="reportVisible = true">
+              质检报告{{ report.passed ? '' : `（${failedCount} 项待改）` }}
+            </ElButton>
+            <ElButton v-if="promptMessages.length" link size="small" @click="promptVisible = true">
+              查看本次提示词
             </ElButton>
             <ElTag size="small" :type="source === 'llm' ? 'success' : 'warning'">{{
               source === 'llm' ? '大模型生成' : '本地模板草稿'
@@ -218,62 +279,195 @@
         class="mb-3"
       />
       <div v-loading="generating">
-        <!-- 编辑模式 -->
-        <template v-if="editMode">
-          <ElInput v-model="result" type="textarea" :rows="8" resize="none" class="mb-3" />
-          <div class="text-xs text-gray-400 mb-1">首条回复建议（发布后自己评论）</div>
-          <ElInput v-model="reply" type="textarea" :rows="3" resize="none" />
-        </template>
-        <!-- 朋友圈样式预览 -->
-        <template v-else>
-          <div
-            class="rounded-lg border border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-[#0d0d0d]"
-          >
-            <div class="flex items-center gap-3">
-              <div class="w-10 h-10 rounded-lg overflow-hidden shrink-0 bg-theme/10 flex-c">
-                <img
-                  v-if="my.avatar"
-                  :src="my.avatar"
-                  class="w-full h-full object-cover"
-                  alt="avatar"
-                />
-                <i v-else class="ri-user-smile-line text-xl text-theme" />
+        <div v-if="drafts.length" class="mk-result-list">
+          <div v-for="(d, i) in drafts" :key="d.key" class="mk-result-card">
+            <div class="mk-result-card__head">
+              <span class="mk-result-card__title">{{ d.label }}</span>
+              <!--
+                三态：本卡有质检项才谈「通过 / 不通过」；一项都没匹配到就如实说没有，
+                不要用「质检通过」冒充（那是把「没数据」说成「没问题」）。
+              -->
+              <template v-if="draftChecks(i).length">
+                <span v-if="draftFailedCount(i)" class="mk-result-card__warn"
+                  >{{ draftFailedCount(i) }} 项不匹配</span
+                >
+                <span v-else class="mk-result-card__ok">质检通过</span>
+              </template>
+              <span v-else class="mk-result-card__none">
+                无质检数据（未匹配到{{ draftKey(i) }}）
+              </span>
+            </div>
+
+            <!-- 朋友圈样式预览 -->
+            <div class="mk-moment-preview">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-lg overflow-hidden shrink-0 bg-theme/10 flex-c">
+                  <img
+                    v-if="my.avatar"
+                    :src="my.avatar"
+                    class="w-full h-full object-cover"
+                    alt="avatar"
+                  />
+                  <i v-else class="ri-user-smile-line text-xl text-theme" />
+                </div>
+                <div>
+                  <div class="text-sm font-600 text-g-900">{{
+                    my.name || persona.role || '我'
+                  }}</div>
+                  <div class="text-xs text-g-500 mt-0.5">刚刚 · 来自一麦</div>
+                </div>
               </div>
-              <div>
-                <div class="text-sm font-600 text-g-900">{{ my.name || persona.role || '我' }}</div>
-                <div class="text-xs text-g-500 mt-0.5">刚刚 · 来自一麦</div>
+              <p class="mk-moment-preview__body">{{ d.content }}</p>
+              <div class="mt-3 flex items-center gap-4 text-xs text-g-500">
+                <span class="flex-c gap-1"><i class="ri-heart-line" /> 赞</span>
+                <span class="flex-c gap-1"><i class="ri-chat-1-line" /> 评论</span>
               </div>
             </div>
-            <p class="mt-3 text-[15px] leading-[1.8] text-g-800 whitespace-pre-wrap break-all">{{
-              result
-            }}</p>
-            <div class="mt-3 flex items-center gap-4 text-xs text-g-500">
-              <span class="flex-c gap-1"><i class="ri-heart-line" /> 赞</span>
-              <span class="flex-c gap-1"><i class="ri-chat-1-line" /> 评论</span>
+
+            <!-- 单选一张卡：这条的首评跟着这条走（不串位） -->
+            <div v-if="d.reply" class="mk-reply-card">
+              <div class="flex-cb mb-1">
+                <span class="text-xs font-500 text-g-600"
+                  ><i class="ri-chat-3-line mr-1" />评论区首条回复建议</span
+                >
+                <ElButton link type="primary" size="small" @click="copyText(d.reply)"
+                  >复制回复</ElButton
+                >
+              </div>
+              <p class="text-sm leading-6 text-g-700 whitespace-pre-wrap">{{ d.reply }}</p>
+            </div>
+
+            <!-- 质检明细：数据来自 api 层质检函数，视图只渲染；外层只按本卡 checks 判定 -->
+            <div v-if="draftChecks(i).length" class="mk-check-list">
+              <div
+                v-for="c in draftChecks(i)"
+                :key="c.label"
+                class="mk-check-item"
+                :class="{ 'is-fail': !c.passed }"
+              >
+                <span class="mk-check-item__label">{{ c.label }}</span>
+                <span class="mk-check-item__detail">{{ c.detail || c.status }}</span>
+              </div>
+            </div>
+
+            <div class="mk-btn-row mt-3">
+              <ElButton type="primary" plain @click="copyDraft(d)">复制文案</ElButton>
+              <ElButton plain @click="saveOneFavorite(d)">收藏这条</ElButton>
+              <ElButton text @click="openDraftEditor(i)">载入编辑</ElButton>
             </div>
           </div>
-          <div
-            v-if="reply"
-            class="mt-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-600 p-3"
-          >
-            <div class="flex-cb mb-1">
-              <span class="text-xs font-500 text-g-600"
-                ><i class="ri-chat-3-line mr-1" />评论区首条回复建议</span
-              >
-              <ElButton link type="primary" size="small" @click="copyText(reply)"
-                >复制回复</ElButton
-              >
-            </div>
-            <p class="text-sm leading-6 text-g-700 whitespace-pre-wrap">{{ reply }}</p>
-          </div>
-        </template>
+        </div>
+        <div v-else-if="!generating" class="mk-result-empty">
+          还没有结果。选择主题与目标后点「生成朋友圈」。
+        </div>
         <div class="mk-btn-row mt-3">
-          <ElButton type="primary" plain @click="copyAll">复制全文</ElButton>
-          <ElButton plain @click="saveFavorite">收藏到朋友圈库</ElButton>
-          <ElButton text @click="generate()">重新生成</ElButton>
+          <ElButton v-if="drafts.length" @click="copyAll">复制全部</ElButton>
+          <ElButton v-if="drafts.length" text @click="generate()">重新生成</ElButton>
         </div>
       </div>
     </ElCard>
+
+    <!-- 质检报告（api 层 auditMomentsResult：提示词层 12 项 + 成稿层每条的 6 项） -->
+    <ElDrawer v-model="reportVisible" title="质检报告 · 提示词与成稿匹配度" size="520px">
+      <template v-if="report">
+        <ElAlert
+          :title="`${report.statusText}${report.summary ? ` · ${report.summary}` : ''}`"
+          :type="report.passed ? 'success' : 'warning'"
+          show-icon
+          :closable="false"
+          class="mb-3"
+        />
+        <div class="mk-sub-title">提示词层（前端选择是否真的进了提示词）</div>
+        <div
+          v-for="c in promptChecks"
+          :key="`p-${c.label}`"
+          class="mk-check-item"
+          :class="{ 'is-fail': !c.passed }"
+        >
+          <span class="mk-check-item__label">{{ c.label }}</span>
+          <span class="mk-check-item__detail">{{ c.detail || c.status }}</span>
+        </div>
+        <div class="mk-sub-title mt-3">成稿层（每条单独校验）</div>
+        <div v-if="cardListMode" class="m-card-list">
+          <MobileCard
+            v-for="cd in draftCheckGroups"
+            :key="cd.label"
+            :title="cd.label"
+            :subtitle="`${cd.checks.filter((c) => c.passed).length}/${cd.checks.length} 项通过`"
+            :tags="[
+              {
+                text: cd.checks.every((c) => c.passed) ? '全部通过' : '存在不匹配',
+                type: cd.checks.every((c) => c.passed) ? 'success' : 'danger'
+              }
+            ]"
+          >
+            <div
+              v-for="c in cd.checks"
+              :key="c.label"
+              class="mk-check-item"
+              :class="{ 'is-fail': !c.passed }"
+            >
+              <span class="mk-check-item__label">{{ c.label }}</span>
+              <span class="mk-check-item__detail">{{ c.detail || c.status }}</span>
+            </div>
+          </MobileCard>
+        </div>
+        <div v-else>
+          <div v-for="cd in draftCheckGroups" :key="cd.label" class="mb-3">
+            <div class="text-xs font-500 text-g-700 mb-1">{{ cd.label }}</div>
+            <div
+              v-for="c in cd.checks"
+              :key="c.label"
+              class="mk-check-item"
+              :class="{ 'is-fail': !c.passed }"
+            >
+              <span class="mk-check-item__label">{{ c.label }}</span>
+              <span class="mk-check-item__detail">{{ c.detail || c.status }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-if="report.issues.length" class="mk-sub-title mt-3">问题清单</div>
+        <ul v-if="report.issues.length" class="mk-issue-list">
+          <li v-for="(s, i) in report.issues" :key="i">{{ s }}</li>
+        </ul>
+      </template>
+      <div v-else class="mk-result-empty">本次生成没有质检数据。</div>
+    </ElDrawer>
+
+    <!-- 查看本次提示词：内容取自 api 层返回的 prompt，视图不另抄一份 -->
+    <ElDrawer v-model="promptVisible" title="本次下发的提示词" size="520px">
+      <ElAlert
+        title="这是本次真正提交给模型的提示词原文（只读）。"
+        type="info"
+        show-icon
+        :closable="false"
+        class="mb-3"
+      />
+      <div v-for="(m, i) in promptMessages" :key="i" class="mk-prompt-block">
+        <div class="mk-prompt-block__role">{{ m.role }}</div>
+        <pre class="mk-prompt-block__body">{{ m.content }}</pre>
+        <ElButton link type="primary" size="small" @click="copyText(m.content)">复制这段</ElButton>
+      </div>
+    </ElDrawer>
+
+    <!-- 单条载入编辑 -->
+    <ElDialog
+      v-model="draftEditVisible"
+      title="编辑这一条"
+      :width="isHandheld ? '92%' : '620px'"
+      align-center
+    >
+      <div class="text-xs text-gray-400 mb-1">正文</div>
+      <ElInput v-model="draftEdit.content" type="textarea" :rows="8" resize="none" class="mb-3" />
+      <div class="text-xs text-gray-400 mb-1">首条回复（发布后自己评论）</div>
+      <ElInput v-model="draftEdit.reply" type="textarea" :rows="3" resize="none" />
+      <template #footer>
+        <div class="mk-btn-row">
+          <ElButton @click="draftEditVisible = false">取消</ElButton>
+          <ElButton type="primary" @click="applyDraftEdit">保存并重算质检</ElButton>
+        </div>
+      </template>
+    </ElDialog>
 
     <!-- 朋友圈库（收藏） -->
     <ElDrawer v-model="favVisible" title="朋友圈库" size="440px">
@@ -381,27 +575,50 @@
     </ElDrawer>
 
     <!-- 朋友圈防折叠（同一条文案换号发布时避免被折叠成相似内容） -->
-    <AntiFoldTool :latest-result="result" />
+    <AntiFoldTool :latest-result="latestResultContent" />
   </div>
 </template>
 
 <script setup lang="ts">
   import AntiFoldTool from './anti-fold-tool.vue'
   import {
-    MOMENTS_CATEGORIES,
-    MOMENT_TONES,
-    MOMENT_GOALS,
+    AUDIENCE_OPTIONS,
+    BRAND_CITY,
+    BRAND_NAME,
+    DEFAULT_EMOJI_USAGE_ID,
+    EMOJI_USAGE_MODES,
     MOMENT_EXPRESSIONS,
+    MOMENT_GOALS_V2,
     MOMENT_LENGTHS,
     MOMENT_LENGTH_CUSTOM,
-    EMOJI_LEVELS,
+    MOMENT_TONES,
+    MOMENTS_ANTI_FOLD_RULES,
+    MOMENTS_CATALOG,
+    MOMENTS_DE_AI_RULE,
+    MOMENTS_MAX_IMAGES,
+    MOMENTS_PRIORITY_CHAIN,
+    MOMENTS_STANCE_RULE,
     PERSONA_ROLES,
     SPECIALTY_OPTIONS,
-    AUDIENCE_OPTIONS,
-    BRAND_NAME,
-    BRAND_CITY,
-    generateMomentsCopy
-  } from '@/api/ai'
+    auditMomentsResult,
+    composeImageSummary,
+    findEmojiUsageMode,
+    findMomentGoal,
+    findMomentLength,
+    findMomentsInspiration,
+    generateMomentsCopy,
+    toAuditDrafts,
+    toDraftRows
+  } from './marketing-api-bridge'
+  import type {
+    DraftCheck,
+    MktDraftRow,
+    MomentsInput,
+    MomentsMatchReport,
+    MomentsCategoryItem,
+    PromptCheck,
+    PromptLayer
+  } from './marketing-api-bridge'
   import type { MarketingHistoryItem, MyProfile } from '@/api/my'
   import {
     defaultMyProfile,
@@ -414,24 +631,28 @@
   import { useDevice } from '@/hooks/core/useDevice'
   import { Delete } from '@element-plus/icons-vue'
   import { ElMessage, ElTag } from 'element-plus'
+  import type { UploadUserFile } from 'element-plus'
 
   defineOptions({ name: 'MomentsTool' })
 
-  const { isMobile, isHandheld } = useDevice()
+  const { isHandheld } = useDevice()
 
   /**
-   * 表单 label 位置：手机端改到控件上方。
+   * 表单 label 位置：手持端（≤768，与 handheld-only 同一档）改到控件上方。
    *
    * 本文件所有 ElFormItem 都没有外层 ElForm（全文件 0 个 ElForm），
    * 所以 label-position 只能写在 form-item 自己身上，无法靠 form 继承。
-   * 手机端 label 在左会把控件压到 48px 宽（实测「身份角色」「从业年限」「表达方式」），
+   * label 在左时「身份角色」「从业年限」「表达方式」等控件的可用宽度只剩 48px 量级，
    * 改成 top 后控件拿回整行宽度；桌面端保持原样（undefined = 不覆盖 EP 默认 right）。
+   * 断点与 index.vue 的 handheld-only 保持一致，避免「样式已降级、label 还没降级」的错位。
    */
-  const formLabelPosition = computed<'top' | undefined>(() => (isMobile.value ? 'top' : undefined))
+  const formLabelPosition = computed<'top' | undefined>(() =>
+    isHandheld.value ? 'top' : undefined
+  )
 
   /**
    * 「朋友圈库 / 历史生成记录」这类**一条记录一张卡**的列表，手持端改用 MobileCard。
-   * 表单区不用卡片：那里是输入控件，塞进卡片只会把可用宽度再压窄（本轮要修的就是这个）。
+   * 表单区不用卡片：那里是输入控件，塞进卡片只会把可用宽度再压窄。
    */
   const cardListMode = computed(() => isHandheld.value)
 
@@ -480,31 +701,183 @@
     }
   }
 
-  const category = ref<string>('课堂日常')
-  const topics = computed(() => [...(MOMENTS_CATEGORIES[category.value] ?? []), '自定义'])
-  const topic = ref('')
+  // ==================== 本条设置：选项口径全部直接引用 api 层常量 ====================
+
+  /** 选题目录（api 层单一事实来源：组 id / 项 id / promptHint） */
+  const inspirationGroups = MOMENTS_CATALOG
+  const groupId = ref(MOMENTS_CATALOG[0].id)
+  const inspirationId = ref(MOMENTS_CATALOG[0].items[0].id)
+
+  const currentGroup = computed(
+    () => inspirationGroups.find((g) => g.id === groupId.value) ?? inspirationGroups[0]
+  )
+  const inspirationItems = computed<MomentsCategoryItem[]>(() => currentGroup.value.items)
+  /** 选中选题（api 查表：未命中回落「客户案例」首项，返回带 groupId/groupLabel 的完整项） */
+  const currentInspiration = computed(() => findMomentsInspiration(inspirationId.value))
+  const inspirationHint = computed(() => currentInspiration.value.promptHint)
+  watch(groupId, () => {
+    if (!currentGroup.value.items.some((it) => it.id === inspirationId.value)) {
+      inspirationId.value = currentGroup.value.items[0].id
+    }
+  })
+
   const tone = ref(MOMENT_TONES[0])
-  const goal = ref(MOMENT_GOALS[0])
   const expression = ref(MOMENT_EXPRESSIONS[0])
-  const lengthLabel = ref(MOMENT_LENGTHS[1].label)
-  const isCustomLength = computed(() => lengthLabel.value === MOMENT_LENGTH_CUSTOM)
+
+  /** 长度档（api 层 MOMENT_LENGTHS：id 绑定 + label 展示；自定义档见 MOMENT_LENGTH_CUSTOM） */
+  const lengthOptions = MOMENT_LENGTHS
+  const isCustomLength = computed(() => lengthId.value === MOMENT_LENGTH_CUSTOM)
+  const lengthId = ref<string>(MOMENT_LENGTHS[1].id)
+  /** api 查表解析长度档：id → label → 数值范围（兼容历史 label），未命中回落标准版 */
+  const currentLength = computed(() => findMomentLength(lengthId.value))
   const customLengthMin = ref(60)
   const customLengthMax = ref(100)
-  const multiLine = ref(true)
-  const emojiLevel = ref(EMOJI_LEVELS[0])
-  const userInput = ref('')
+  const lengthHint = computed(() => {
+    if (isCustomLength.value) {
+      return `自定义 ${customLengthMin.value}-${customLengthMax.value} 字，按**每条**独立计算，不是多条合计。`
+    }
+    const l = currentLength.value
+    return `「${l.label}」按**每条**独立计算（${l.min}-${l.max} 字），不是多条合计。`
+  })
 
+  const multiLine = ref(true)
+
+  /** emoji 四档（api 层 EMOJI_USAGE_MODES，含 charsPerSymbol；解析走 findEmojiUsageMode） */
+  const emojiModes = EMOJI_USAGE_MODES
+  const emojiModeId = ref<string>(DEFAULT_EMOJI_USAGE_ID)
+  const currentEmoji = computed(() => findEmojiUsageMode(emojiModeId.value))
+  const emojiHint = computed(() => {
+    const m = currentEmoji.value
+    return m.charsPerSymbol
+      ? `${m.label} · 平均每 ${m.charsPerSymbol} 字 1 个 · ${m.desc}`
+      : `${m.label} · ${m.desc}`
+  })
+
+  /** 目标（含销售强度三件套）：api 层 MOMENT_GOALS_V2 + findMomentGoal */
+  const goalOptions = MOMENT_GOALS_V2
+  const goalId = ref<string>(MOMENT_GOALS_V2[0].id)
+  const currentGoal = computed(() => findMomentGoal(goalId.value))
+  const goalHint = computed(() => {
+    const g = currentGoal.value
+    return `销售强度 ${g.salesLevelId} · 转化动作 ${g.conversionActionId} · 结尾行动指令 ${
+      g.actionInstruction || '无（不加行动指令）'
+    } · ${g.promptHint}`
+  })
+
+  /** 生成条数：1 条或 3 条（3 条时 api 层按「真实日常 / 专业信任 / 转化表达」差异化输出） */
+  const draftCountOptions = [1, 3]
+  const draftCount = ref(3)
+
+  /** 生成期防折叠（api 层 MomentsInput.antiFoldEnabled） */
+  const antiFoldEnabled = ref(false)
+
+  // ==================== 图片素材（≤3 张 + 每张一句说明） ====================
+
+  const maxImages = MOMENTS_MAX_IMAGES
+  /**
+   * 图片素材：只在本机预览（`auto-upload=false`，不上传服务器）。
+   * 交给 ElUpload 自己维护列表（`v-model:file-list`），说明文字另用 uid → note 的映射保存，
+   * 生成时再拼成 api 层要的 `imageSummary`（张数 + 说明），避免两处各维护一份列表。
+   */
+  const uploadFileList = ref<UploadUserFile[]>([])
+  const imageNotes = ref<Record<number, string>>({})
+
+  function onImageExceed() {
+    ElMessage.warning(
+      `一条朋友圈最多配 ${maxImages} 张图（上限来自 api 层 MOMENTS_MAX_IMAGES），已忽略多余的图片`
+    )
+  }
+
+  const imageSummary = computed(() =>
+    composeImageSummary(
+      uploadFileList.value.map((f) => ({
+        name: f.name ?? '',
+        note: imageNotes.value[f.uid ?? -1] ?? ''
+      }))
+    )
+  )
+
+  // ==================== 生成铁律（api 层常量，只读展示） ====================
+
+  /**
+   * 立场铁律 / 优先级链 / 去 AI 味三条常量由 api 层导出（规格 §1.1 / §1.2 / §1.8）。
+   * 这里只**展示**原文，视图不复制文本、不重新组装规则，避免与提示词口径漂移。
+   */
+  const ruleBlocks = computed(() => {
+    const blocks = [
+      { label: '立场铁律', text: MOMENTS_STANCE_RULE },
+      { label: '优先级链', text: MOMENTS_PRIORITY_CHAIN },
+      { label: '去 AI 味', text: MOMENTS_DE_AI_RULE }
+    ]
+    // 生成期防折叠开关打开时，把 api 层那 5 条规则原文一并展示（仍是只读引用）
+    if (antiFoldEnabled.value) {
+      blocks.push({ label: '生成期防折叠', text: MOMENTS_ANTI_FOLD_RULES.join('\n') })
+    }
+    return blocks
+  })
+
+  // ==================== 生成 ====================
+
+  const userInput = ref('')
   const generating = ref(false)
-  const result = ref('')
-  const reply = ref('')
+  const drafts = ref<MktDraftRow[]>([])
   const source = ref<'llm' | 'fallback'>('fallback')
-  const editMode = ref(false)
   const warning = ref('')
+  const report = ref<MomentsMatchReport | null>(null)
+  const promptMessages = ref<PromptLayer[]>([])
   const favVisible = ref(false)
+  const reportVisible = ref(false)
+  const promptVisible = ref(false)
 
   const historyVisible = ref(false)
   const historyLoading = ref(false)
   const history = ref<MarketingHistoryItem[]>([])
+
+  const hasResult = computed(() => drafts.value.length > 0)
+  const latestResultContent = computed(() => drafts.value[0]?.content ?? '')
+  const promptText = computed(() =>
+    promptMessages.value.map((m) => `[${m.role}]\n${m.content}`).join('\n\n')
+  )
+  const promptChecks = computed<PromptCheck[]>(() => report.value?.promptChecks ?? [])
+  const failedCount = computed(
+    () =>
+      [...promptChecks.value, ...(report.value?.draftChecks ?? [])].filter((c) => !c.passed).length
+  )
+
+  /** 成稿层检查按「第N条」前缀归组（api 层返回的是扁平数组） */
+  const draftCheckGroups = computed(() => {
+    const groups: { label: string; checks: DraftCheck[] }[] = []
+    for (const c of report.value?.draftChecks ?? []) {
+      const m = c.label.match(/^(第[0-9一二三四五六]+条[^ ]*?)\s*([^\s]*)$/)
+      const key = m ? m[1] : '全部成稿'
+      let g = groups.find((x) => x.label === key)
+      if (!g) {
+        g = { label: key, checks: [] }
+        groups.push(g)
+      }
+      g.checks.push(m && m[2] ? { ...c, label: m[2] } : c)
+    }
+    return groups
+  })
+
+  /** 本卡在 api 报告里的检查项前缀（api 层固定用「第N条」，见 ai.ts 的 `${n}字数` 等） */
+  function draftKey(index: number): string {
+    return `第${index + 1}条`
+  }
+
+  /**
+   * 取本卡的质检项：**按 v-for 的 index 取**，不按 draft.id 反查 ——
+   * 草稿 id 是 api 的语义 id（real/pro/convert），历史记录与收藏载入时并不存在，
+   * 按下标取才不会出现「载入历史后卡片显示不到质检项」的错位。
+   */
+  function draftChecks(index: number): DraftCheck[] {
+    const key = draftKey(index)
+    return (report.value?.draftChecks ?? []).filter((c) => c.label.startsWith(key))
+  }
+
+  function draftFailedCount(index: number): number {
+    return draftChecks(index).filter((c) => !c.passed).length
+  }
 
   async function openHistory() {
     historyVisible.value = true
@@ -522,12 +895,14 @@
   }
 
   function loadHistory(h: MarketingHistoryItem) {
-    result.value = h.content
-    reply.value = h.reply || ''
+    drafts.value = [
+      { key: 'loaded-1', label: '历史记录', content: h.content, reply: h.reply || '' }
+    ]
     source.value = h.source === 'llm' ? 'llm' : 'fallback'
     historyVisible.value = false
     warning.value = ''
-    editMode.value = false
+    report.value = null
+    promptMessages.value = []
   }
 
   function buildPersona() {
@@ -544,9 +919,49 @@
     }
   }
 
+  /**
+   * 把界面选择组装成 api 层入参。
+   *
+   * 返回类型就是 api 的 `MomentsInput`：字段名/类型漂移由 `vue-tsc` 在编译期暴露，
+   * 不再有 `Record<string, unknown>` 那种「签名放宽后静默错传」的余地。
+   * id 口径（goalId / lengthId / emojiUsageId / inspirationId）**恒定下发**：
+   * api 层优先用 id 解析，label 仅作历史兼容与展示，因此改文案不会退回字符串匹配。
+   */
+  function buildPayload(): MomentsInput {
+    const goal = currentGoal.value
+    const emoji = currentEmoji.value
+    const inspiration = currentInspiration.value
+    const payload: MomentsInput = {
+      persona: buildPersona(),
+      category: currentGroup.value.label,
+      topic: inspiration.label,
+      tone: tone.value,
+      goal: goal.label,
+      expression: expression.value,
+      lengthLabel: isCustomLength.value ? MOMENT_LENGTH_CUSTOM : currentLength.value.label,
+      multiLine: multiLine.value,
+      emojiLevel: emoji.label,
+      userInput: userInput.value,
+      goalId: goal.id,
+      emojiUsageId: emoji.id,
+      inspirationId: inspiration.id,
+      antiFoldEnabled: antiFoldEnabled.value,
+      imageCount: uploadFileList.value.length,
+      draftCount: draftCount.value
+    }
+    if (isCustomLength.value) {
+      payload.customLength = { min: customLengthMin.value, max: customLengthMax.value }
+    } else {
+      payload.lengthId = currentLength.value.id
+    }
+    // 图片说明只在真有图时下发（api 层据此注入「图片信息」行）
+    if (payload.imageCount) payload.imageSummary = imageSummary.value
+    return payload
+  }
+
   async function generate() {
-    if (!userInput.value.trim() && !topic.value.trim()) {
-      ElMessage.warning('请先选择主题或在输入框写下想表达的内容')
+    if (!userInput.value.trim() && !inspirationId.value) {
+      ElMessage.warning('请先选择案例/选题，或在输入框写下想表达的内容')
       return
     }
     if (isCustomLength.value && customLengthMax.value <= customLengthMin.value) {
@@ -556,29 +971,44 @@
     generating.value = true
     warning.value = ''
     try {
-      const res = await generateMomentsCopy({
-        persona: buildPersona(),
-        category: category.value,
-        topic: topic.value === '自定义' ? '' : topic.value,
-        tone: tone.value,
-        goal: goal.value,
-        expression: expression.value,
-        lengthLabel: lengthLabel.value,
-        customLength: isCustomLength.value
-          ? { min: customLengthMin.value, max: customLengthMax.value }
-          : undefined,
-        multiLine: multiLine.value,
-        emojiLevel: emojiLevel.value,
-        userInput: userInput.value
-      })
-      result.value = res.content
-      reply.value = res.reply
+      const payload = buildPayload()
+      const res = await generateMomentsCopy(payload)
+      drafts.value = toDraftRows(res.drafts)
       source.value = res.source
       warning.value = res.warning ?? ''
-      editMode.value = false
+      promptMessages.value = res.prompt
+      report.value = auditMomentsResult(payload, promptText.value, res.drafts)
     } finally {
       generating.value = false
     }
+  }
+
+  /** 编辑某条后重算质检：仍走 api 层，不在视图里自算 */
+  function recount() {
+    report.value = auditMomentsResult(buildPayload(), promptText.value, toAuditDrafts(drafts.value))
+  }
+
+  const draftEditVisible = ref(false)
+  const draftEditIndex = ref(0)
+  const draftEdit = ref({ content: '', reply: '' })
+
+  function openDraftEditor(index: number) {
+    draftEditIndex.value = index
+    draftEdit.value = {
+      content: drafts.value[index]?.content ?? '',
+      reply: drafts.value[index]?.reply ?? ''
+    }
+    draftEditVisible.value = true
+  }
+
+  function applyDraftEdit() {
+    const d = drafts.value[draftEditIndex.value]
+    if (d) {
+      d.content = draftEdit.value.content
+      d.reply = draftEdit.value.reply
+    }
+    draftEditVisible.value = false
+    recount()
   }
 
   async function copyText(text: string) {
@@ -590,24 +1020,42 @@
     }
   }
 
-  function copyAll() {
-    copyText(reply.value ? `${result.value}\n\n——评论区首条回复——\n${reply.value}` : result.value)
+  function copyDraft(d: MktDraftRow) {
+    copyText(d.reply ? `${d.content}\n\n——评论区首条回复——\n${d.reply}` : d.content)
   }
 
-  function saveFavorite() {
-    if (!result.value.trim()) return
+  function copyAll() {
+    const parts = drafts.value.map((d) => {
+      const body = d.reply ? `${d.content}\n\n——评论区首条回复——\n${d.reply}` : d.content
+      return `【${d.label}】\n${body}`
+    })
+    copyText(parts.join('\n\n'))
+  }
+
+  function currentTitle() {
+    return (
+      inspirationItems.value.find((it) => it.id === inspirationId.value)?.label ||
+      userInput.value.slice(0, 16) ||
+      '自由创作'
+    )
+  }
+
+  function saveOneFavorite(d: MktDraftRow) {
+    if (!d.content.trim()) return
     aiStore.addFavorite({
       platform: '朋友圈',
-      title: topic.value || userInput.value.slice(0, 16) || '自由创作',
-      content: result.value,
+      title: drafts.value.length > 1 ? `${currentTitle()} · ${d.label}` : currentTitle(),
+      content: d.reply ? `${d.content}\n\n——首条回复——\n${d.reply}` : d.content,
       tags: []
     })
-    ElMessage.success('已收藏到朋友圈库')
+    ElMessage.success(`已收藏「${d.label}」到朋友圈库`)
   }
 
   function loadFavorite(f: { content: string }) {
-    result.value = f.content
+    drafts.value = [{ key: 'loaded-1', label: '收藏文案', content: f.content, reply: '' }]
     source.value = 'fallback'
+    report.value = null
+    promptMessages.value = []
     favVisible.value = false
   }
 </script>

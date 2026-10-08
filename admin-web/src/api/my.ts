@@ -16,7 +16,13 @@ export interface XhsPersonaPrefs {
   accountName: string
   role: string
   audiences: string[]
+  /** 单选表达风格（历史字段，保留不动；新数据同时写 styles） */
   style: string
+  /**
+   * 多选表达风格（营销工具小红书侧用；上限见 api/ai.ts 的 XHS_STYLE_MAX）。
+   * 可选字段：老账号数据没有该键，读取时回落为 [style]，因此不影响历史数据。
+   */
+  styles?: string[]
   conversion: string
   localFocus: boolean
 }
@@ -64,6 +70,7 @@ export const MY_PROFILE_DEFAULTS = {
     role: '全职老师',
     audiences: ['零基础女性', '久坐肩颈人群'],
     style: '真实接地气',
+    styles: ['真实接地气'] as string[],
     conversion: '评论区留言',
     localFocus: true
   }
@@ -106,7 +113,7 @@ function mergeProfile(cur: MyProfile, patch: Partial<MyProfile>): MyProfile {
     ...cur,
     ...patch,
     persona: { ...cur.persona, ...(patch.persona ?? {}) },
-    xhs: { ...cur.xhs, ...(patch.xhs ?? {}) }
+    xhs: normalizeXhsPrefs({ ...cur.xhs, ...(patch.xhs ?? {}) })
   }
 }
 
@@ -161,8 +168,19 @@ function normalizeProfile(d: MyProfileResponse): MyProfile {
       ? d.profile.specialties
       : clone(MY_PROFILE_DEFAULTS.specialties),
     persona: { ...clone(MY_PROFILE_DEFAULTS.persona), ...(d.profile?.persona ?? {}) },
-    xhs: { ...clone(MY_PROFILE_DEFAULTS.xhs), ...(d.profile?.xhs ?? {}) }
+    xhs: normalizeXhsPrefs({ ...clone(MY_PROFILE_DEFAULTS.xhs), ...(d.profile?.xhs ?? {}) })
   }
+}
+
+/**
+ * 小红书人设兜底：老账号数据只有单选 `style`、没有 `styles`，
+ * 读取时回落为 `[style]`（不丢用户已选的风格）；两者都没有时用默认值。
+ */
+function normalizeXhsPrefs(xhs: XhsPersonaPrefs): XhsPersonaPrefs {
+  const styles = Array.isArray(xhs.styles) ? xhs.styles.filter(Boolean) : []
+  if (styles.length) return { ...xhs, styles, style: xhs.style || styles[0] }
+  const fallback = xhs.style || MY_PROFILE_DEFAULTS.xhs.style
+  return { ...xhs, style: fallback, styles: [fallback] }
 }
 
 // ---------- 我的资料 ----------

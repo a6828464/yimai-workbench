@@ -97,3 +97,10 @@
     if (!silent) ElMessage.success('教练信息已保存')
   }
 </script>
+
+<style scoped lang="scss">
+  /* 移动端触控目标 ≥44px：置顶 / 上移 / 下移 / 保存 / 删除 都是高频点击 */
+  :deep(.el-button) {
+    min-height: 44px;
+  }
+</style>

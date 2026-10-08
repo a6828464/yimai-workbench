@@ -1,0 +1,62 @@
+// ============================================================================
+// 谈单工具 · 视觉模板 token 的样式实现（**唯一定义**）
+//
+// 消费方（两处，缺一不可）：
+//   - views/yimai/sales/index.vue      管理端「即时预览」小样
+//   - views/sales-share/index.vue      客户侧 H5 / 网页版分享页
+//
+// token 值本身定义在 store/modules/sales.ts 的 SALES_TEMPLATES（toneClass / buttonStyle）：
+//   新增一套模板 = ①在 SALES_TEMPLATES 加一项 ②在此加一条同名 token 规则。
+// 只加 JSON 不加样式会是「选了没反应」，所以两处必须一起改。
+//
+// 为什么做成 mixin 而不是全局样式：两个消费方都是 `<style scoped>`，mixin 展开后
+// 由各自的作用域属性收口，不会泄漏到其它页面。样式只解释 token，**不携带任何文案**
+// （模板红线：模板只控制视觉，展示文字全部来自门店填写）。
+// ============================================================================
+
+/// 色调：主视觉渐变（`hero*Url` 为空时的兜底；将来补图后仍作为加载失败的底色）
+@mixin sales-template-tone {
+  .tone-therapy {
+    background: linear-gradient(135deg, #2f7d5d, #1d5c43);
+  }
+
+  .tone-warm {
+    background: linear-gradient(135deg, #c99a6a, #8a5a3b);
+  }
+
+  .tone-cool {
+    background: linear-gradient(135deg, #4a6b8a, #26384b);
+  }
+
+  .tone-wood {
+    background: linear-gradient(135deg, #7a6a4f, #3f3527);
+  }
+}
+
+/// 按钮风格：只改形状/描边，不改文字与颜色语义
+@mixin sales-template-button {
+  .btn-pill {
+    border-radius: 999px;
+  }
+
+  .btn-slant {
+    border-radius: 4px 18px 4px 18px;
+  }
+
+  .btn-coolline {
+    color: #26384b;
+    background: #fff;
+    border: 1px solid #26384b;
+    border-radius: 2px;
+  }
+
+  .btn-touch {
+    border-radius: 14px;
+  }
+}
+
+/// 两块一起展开（消费方通常两者都要）
+@mixin sales-template-visuals {
+  @include sales-template-tone;
+  @include sales-template-button;
+}

@@ -14,6 +14,13 @@
       :closable="false"
       class="mb-4"
     />
+    <ElAlert
+      title="「训练目标」是自由文本，在分享页会作为案例卡主标题，并成为客户可按的筛选标签 —— 目标写得越具体、彼此不重复，客户筛选越好用（未关联教练时按此筛选）。"
+      type="success"
+      show-icon
+      :closable="false"
+      class="mb-4"
+    />
     <ElButton type="primary" plain class="mb-3" @click="addCase">新增案例</ElButton>
 
     <ElCollapse v-model="opened" accordion>
@@ -57,9 +64,16 @@
               <ElTag size="small" effect="plain">{{
                 si === 0 ? '初始建档' : s.duration || `阶段${si}`
               }}</ElTag>
-              <ElIcon v-if="si > 0" class="cursor-pointer text-gray-400" @click="removeStage(c, si)"
-                ><CircleClose
-              /></ElIcon>
+              <!-- 删除阶段改成 44×44 的按钮：原来是一个裸图标（约 14px），手机点不中 -->
+              <button
+                v-if="si > 0"
+                type="button"
+                class="stage-del"
+                :aria-label="`删除第${si}个阶段`"
+                @click="removeStage(c, si)"
+              >
+                <ElIcon><CircleClose /></ElIcon>
+              </button>
             </div>
             <ElInput
               v-model="newStageDuration"
@@ -132,3 +146,26 @@
     if (!silent) ElMessage.success('案例已保存（仅已授权案例进入分享页）')
   }
 </script>
+
+<style scoped lang="scss">
+  /* 移动端触控目标 ≥44px：阶段节点的删除按钮与各按钮都要点得中 */
+  .stage-del {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    color: var(--el-text-color-secondary);
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+  }
+
+  :deep(.el-button) {
+    min-height: 44px;
+  }
+
+  :deep(.el-input__wrapper) {
+    min-height: 44px;
+  }
+</style>
