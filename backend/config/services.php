@@ -58,6 +58,12 @@ return [
     // AI 大模型代理（共用一把 key，按账号日配额限制成本滥用）
     'ai' => [
         'daily_quota' => env('AI_DAILY_QUOTA', 200),
+        // 单张图片 base64 解码后的字节上限（默认 1.5MB，与前端压缩口径配套）。
+        // 调大前先确认 PHP post_max_size 与前置代理的 body 限制够用。
+        'max_image_bytes' => env('AI_MAX_IMAGE_BYTES', 1572864),
+        // 多图合计（解码后）字节上限（默认 4MB）。单张 ×3 的 base64 膨胀后约 6MB，
+        // 已在默认 post_max_size=8M 的 75%，这条是应用层唯一能提前拦下的地方。
+        'max_total_image_bytes' => env('AI_MAX_TOTAL_IMAGE_BYTES', 4194304),
     ],
 
     // 自助注册（默认关闭；开启后请同时设置 REGISTRATION_CODE 邀请码兜底）

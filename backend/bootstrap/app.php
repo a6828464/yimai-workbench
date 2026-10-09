@@ -2,10 +2,12 @@
 
 use App\Http\Middleware\EnsureUserIsEnabled;
 use App\Http\Middleware\LogApiRequest;
+use App\Support\VisionAttachments;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Exceptions\PostTooLargeException;
 use Illuminate\Http\Request;
 
 // 全局业务辅助函数（app/Support/helpers.php）。
@@ -37,4 +39,9 @@ return Application::configure(basePath: dirname(__DIR__))
                 return response()->json(['message' => 'Unauthenticated.'], 401);
             }
         });
+        // 请求体超过 PHP post_max_size：全局 ValidatePostSize 中间件在本控制器之前就抛出，
+        // 框架默认只回英文「The POST data is too large.」。这里换成可照做的中文 413。
+        // 仅当 renderPostTooLarge() 返回非 null 时才接管（它只认 /api/*），
+        // 其它路径返回 null → 交回框架默认渲染，网页入口行为不变。
+        $exceptions->render(fn (PostTooLargeException $e, Request $request) => VisionAttachments::renderPostTooLarge($request));
     })->create();

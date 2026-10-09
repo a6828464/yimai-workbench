@@ -92,7 +92,15 @@
         </ElCol>
         <ElCol :xs="24" :md="8">
           <ElFormItem :label-position="formLabelPosition" label="案例/选题类型">
-            <ElSelect v-model="inspirationId" filterable placeholder="选择案例/选题（带写作方向）">
+            <!--
+              「带写作方向」这句只在超管下成立（写作方向已随口径块收敛到超管）；
+              非超管若还写着会指向一个看不到的东西，故按角色给两种文案（可用性不变）。
+            -->
+            <ElSelect
+              v-model="inspirationId"
+              filterable
+              :placeholder="isSuper ? '选择案例/选题（带写作方向）' : '选择案例/选题'"
+            >
               <ElOption
                 v-for="it in inspirationItems"
                 :key="it.id"
@@ -126,7 +134,13 @@
         <ElCol :xs="12" :md="6">
           <ElFormItem :label-position="formLabelPosition" label="内容长度（单条）">
             <ElSelect v-model="lengthId">
-              <ElOption v-for="l in lengthOptions" :key="l.id" :label="l.label" :value="l.id" />
+              <!-- 非超管看不到档位里的字数区间（展示层去数字，常量仍喂提示词） -->
+              <ElOption
+                v-for="l in lengthOptions"
+                :key="l.id"
+                :label="momentsLengthLabel(l.label, isSuper)"
+                :value="l.id"
+              />
               <ElOption :label="MOMENT_LENGTH_CUSTOM" :value="MOMENT_LENGTH_CUSTOM" />
             </ElSelect>
           </ElFormItem>
@@ -148,7 +162,13 @@
         <ElCol :xs="24" :md="5">
           <ElFormItem :label-position="formLabelPosition" label="表情符号">
             <ElSelect v-model="emojiModeId">
-              <ElOption v-for="m in emojiModes" :key="m.id" :label="m.label" :value="m.id" />
+              <!-- 非超管看不到「每 N 字 1 个」的检验口径 -->
+              <ElOption
+                v-for="m in emojiModes"
+                :key="m.id"
+                :label="emojiUsageLabel(m.label, isSuper)"
+                :value="m.id"
+              />
             </ElSelect>
           </ElFormItem>
         </ElCol>
@@ -159,16 +179,20 @@
         </ElCol>
       </ElRow>
 
-      <!-- 口径说明：让「这一档到底约束了什么」在界面上可辨，而不是靠猜 -->
-      <div class="mk-hint-block">
+      <!--
+        口径说明：让「这一档到底约束了什么」在界面上可辨，而不是靠猜。
+        v-if="isSuper"：字数/表情/目标口径与写作方向属**提示词内部口径**，普通用户前台不渲染
+        （用 v-if 而非 disabled —— 不需要用户看见一个点不动的灰块）。
+      -->
+      <div v-if="isSuper" class="mk-hint-block">
         <div v-if="lengthHint"><b>字数口径：</b>{{ lengthHint }}</div>
         <div v-if="emojiHint"><b>表情口径：</b>{{ emojiHint }}</div>
         <div v-if="goalHint"><b>目标口径：</b>{{ goalHint }}</div>
         <div v-if="inspirationHint"><b>写作方向：</b>{{ inspirationHint }}</div>
       </div>
 
-      <!-- 立场铁律 / 优先级链 / 去 AI 味：来自 api 层常量，只读展示 -->
-      <ElCollapse v-if="ruleBlocks.length" class="mk-rule-collapse">
+      <!-- 立场铁律 / 优先级链 / 去 AI 味：来自 api 层常量，只读展示（仅超管可见，同口径说明） -->
+      <ElCollapse v-if="isSuper && ruleBlocks.length" class="mk-rule-collapse">
         <ElCollapseItem
           :title="`生成铁律（${ruleBlocks.length} 条，来自 api 层常量）`"
           name="rules"
@@ -207,10 +231,15 @@
         </ElCol>
       </ElRow>
 
-      <!-- 图片素材：最多 3 张 + 每张一句说明（说明进提示词，图片本身仅本地预览、不上传） -->
+      <!--
+        图片素材：最多 3 张 + 每张一句说明。
+        图片**真的会被大模型看到**：选图即在本机压缩成 dataURL 并随本次生成下发，
+        所以下面这句文案必须如实写清「会发送给模型服务商 / 不落本系统」（旧文案的
+        「只在本机预览，不会上传服务器」在真读图实现后就是假话，已一并改掉）。
+      -->
       <div class="mk-sub-title">图片素材（最多 {{ maxImages }} 张）</div>
       <div class="text-xs text-g-500 leading-5 mb-2">
-        图片仅用于让 AI 知道本条要配什么图（生成内容必须与图关联）；只在本机预览，不会上传服务器。
+        图片会随本次生成发送给「模型配置」里所选的大模型服务商用于识别，<b>不会</b>保存到本系统；请勿上传含会员隐私（人脸/姓名/手机号/病历）的照片。
       </div>
       <div class="mk-image-row">
         <ElUpload
@@ -220,12 +249,17 @@
           accept="image/*"
           :limit="maxImages"
           :on-exceed="onImageExceed"
+          :on-change="onImageChange"
+          :on-remove="onImageRemove"
         >
           <div class="mk-image-add">
             <i class="ri-add-line" />
             <span class="text-xs">加图</span>
           </div>
         </ElUpload>
+      </div>
+      <div v-if="compressingCount" class="text-xs text-g-500 leading-5 mt-2">
+        <i class="ri-loader-4-line" /> 正在压缩 {{ compressingCount }} 张图片…
       </div>
       <div v-if="uploadFileList.length" class="mk-image-notes">
         <div v-for="(img, i) in uploadFileList" :key="img.uid" class="mk-image-note">
@@ -258,10 +292,15 @@
         <div class="mk-card-head">
           <span class="font-500">生成结果（{{ drafts.length }} 条）</span>
           <div class="flex-c gap-3 flex-wrap">
-            <ElButton v-if="report" link size="small" @click="reportVisible = true">
+            <ElButton v-if="isSuper && report" link size="small" @click="reportVisible = true">
               质检报告{{ report.passed ? '' : `（${failedCount} 项待改）` }}
             </ElButton>
-            <ElButton v-if="promptMessages.length" link size="small" @click="promptVisible = true">
+            <ElButton
+              v-if="isSuper && promptMessages.length"
+              link
+              size="small"
+              @click="promptVisible = true"
+            >
               查看本次提示词
             </ElButton>
             <ElTag size="small" :type="source === 'llm' ? 'success' : 'warning'">{{
@@ -270,6 +309,15 @@
           </div>
         </div>
       </template>
+      <!-- 读图能力提醒：内容完全来自引擎返回值（视图不重算模型能力判定） -->
+      <ElAlert
+        v-if="visionHint"
+        :title="visionHint"
+        type="warning"
+        show-icon
+        :closable="false"
+        class="mb-3"
+      />
       <ElAlert
         v-if="warning"
         :title="warning"
@@ -286,16 +334,19 @@
               <!--
                 三态：本卡有质检项才谈「通过 / 不通过」；一项都没匹配到就如实说没有，
                 不要用「质检通过」冒充（那是把「没数据」说成「没问题」）。
+                质检徽标属「系统生成口径」的派生面（失败项名与阈值同源），非超管整块不渲染。
               -->
-              <template v-if="draftChecks(i).length">
-                <span v-if="draftFailedCount(i)" class="mk-result-card__warn"
-                  >{{ draftFailedCount(i) }} 项不匹配</span
-                >
-                <span v-else class="mk-result-card__ok">质检通过</span>
+              <template v-if="isSuper">
+                <template v-if="draftChecks(i).length">
+                  <span v-if="draftFailedCount(i)" class="mk-result-card__warn"
+                    >{{ draftFailedCount(i) }} 项不匹配</span
+                  >
+                  <span v-else class="mk-result-card__ok">质检通过</span>
+                </template>
+                <span v-else class="mk-result-card__none">
+                  无质检数据（未匹配到{{ draftKey(i) }}）
+                </span>
               </template>
-              <span v-else class="mk-result-card__none">
-                无质检数据（未匹配到{{ draftKey(i) }}）
-              </span>
             </div>
 
             <!-- 朋友圈样式预览 -->
@@ -337,8 +388,9 @@
               <p class="text-sm leading-6 text-g-700 whitespace-pre-wrap">{{ d.reply }}</p>
             </div>
 
-            <!-- 质检明细：数据来自 api 层质检函数，视图只渲染；外层只按本卡 checks 判定 -->
-            <div v-if="draftChecks(i).length" class="mk-check-list">
+            <!-- 质检明细：数据来自 api 层质检函数，视图只渲染；外层只按本卡 checks 判定。
+                 明细里逐条印着阈值口径（如「单条字数 50-120字」），故整块仅超管可见。 -->
+            <div v-if="isSuper && draftChecks(i).length" class="mk-check-list">
               <div
                 v-for="c in draftChecks(i)"
                 :key="c.label"
@@ -367,8 +419,15 @@
       </div>
     </ElCard>
 
-    <!-- 质检报告（api 层 auditMomentsResult：提示词层 12 项 + 成稿层每条的 6 项） -->
-    <ElDrawer v-model="reportVisible" title="质检报告 · 提示词与成稿匹配度" size="520px">
+    <!-- 质检报告（api 层 auditMomentsResult：提示词层 12 项 + 成稿层每条的 6 项）
+         抽屉内逐条列着阈值口径，与已 gated 的「字数/表情/目标口径」块逐字等价，
+         因此整块仅超管渲染（非超管不渲染，而非 disabled）。 -->
+    <ElDrawer
+      v-if="isSuper"
+      v-model="reportVisible"
+      title="质检报告 · 提示词与成稿匹配度"
+      size="520px"
+    >
       <template v-if="report">
         <ElAlert
           :title="`${report.statusText}${report.summary ? ` · ${report.summary}` : ''}`"
@@ -434,8 +493,8 @@
       <div v-else class="mk-result-empty">本次生成没有质检数据。</div>
     </ElDrawer>
 
-    <!-- 查看本次提示词：内容取自 api 层返回的 prompt，视图不另抄一份 -->
-    <ElDrawer v-model="promptVisible" title="本次下发的提示词" size="520px">
+    <!-- 查看本次提示词：内容取自 api 层返回的 prompt，视图不另抄一份（仅超管可见） -->
+    <ElDrawer v-if="isSuper" v-model="promptVisible" title="本次下发的提示词" size="520px">
       <ElAlert
         title="这是本次真正提交给模型的提示词原文（只读）。"
         type="info"
@@ -630,11 +689,14 @@
     SPECIALTY_OPTIONS,
     auditMomentsResult,
     composeImageSummary,
+    compressMomentImage,
     findEmojiUsageMode,
     findMomentGoal,
     findMomentLength,
     findMomentsInspiration,
     generateMomentsCopy,
+    emojiUsageLabel,
+    momentsLengthLabel,
     toAuditDrafts,
     toDraftRows
   } from './marketing-api-bridge'
@@ -656,6 +718,7 @@
     removeMarketingHistory
   } from '@/api/my'
   import { useAiConfigStore } from '@/store/modules/ai-config'
+  import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
   import { Delete } from '@element-plus/icons-vue'
   import { ElMessage, ElTag } from 'element-plus'
@@ -664,6 +727,17 @@
   defineOptions({ name: 'MomentsTool' })
 
   const { isHandheld } = useDevice()
+
+  /**
+   * 超管判定：与全仓既有范式一致（`marketing/index.vue:62`、`views/yimai/tasks/index.vue` 等）。
+   *
+   * 只读 `userStore.getUserInfo.roles`（登录态来自服务端下发的用户信息），
+   * **不接受** URL query / localStorage 等外部可写来源覆盖 —— 否则任何人加个
+   * `?super=1` 就能把提示词原文与内部口径看出来，等于没有控制。
+   * 非超管直接**不渲染**（而不是 disabled）：这些内容本就不属于前台用户。
+   */
+  const userStore = useUserStore()
+  const isSuper = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_SUPER'))
 
   /**
    * 表单 label 位置：手持端（≤768，与 handheld-only 同一档）改到控件上方。
@@ -798,22 +872,83 @@
   /** 生成期防折叠（api 层 MomentsInput.antiFoldEnabled） */
   const antiFoldEnabled = ref(false)
 
-  // ==================== 图片素材（≤3 张 + 每张一句说明） ====================
+  // ==================== 图片素材（≤3 张 + 每张一句说明 + 真读图载荷） ====================
 
   const maxImages = MOMENTS_MAX_IMAGES
   /**
-   * 图片素材：只在本机预览（`auto-upload=false`，不上传服务器）。
-   * 交给 ElUpload 自己维护列表（`v-model:file-list`），说明文字另用 uid → note 的映射保存，
-   * 生成时再拼成 api 层要的 `imageSummary`（张数 + 说明），避免两处各维护一份列表。
+   * 图片素材：选图即在本机压缩成 JPEG dataURL（`compressMomentImage`，定义见 api-bridge），
+   * 生成时随 `MomentsInput.imageUrls` 一起下发，模型才真的看得到图。
+   *
+   * 列表本体仍交给 ElUpload 维护（`v-model:file-list`）；另有两份视图状态：
+   * - `imageUrlsByUid`：uid → dataURL（压缩成功后写入；失败/超限的图会在下方被移出列表，不留空洞）
+   * - `imageNotes`：uid → 每张图的一句说明（进提示词的 `imageSummary`）
+   * 张数与说明的对应关系都按 uid 关联，避免「删中间一张后说明整体错位」。
    */
   const uploadFileList = ref<UploadUserFile[]>([])
   const imageNotes = ref<Record<number, string>>({})
+  /** 压缩产物：uid → dataURL（仅压缩成功的图有键） */
+  const imageUrlsByUid = ref<Record<number, string>>({})
+  /** 正在压缩的张数：>0 时禁止生成（否则会把「还没压完的图」静默漏掉） */
+  const compressingCount = ref(0)
 
   function onImageExceed() {
     ElMessage.warning(
       `一条朋友圈最多配 ${maxImages} 张图（上限来自 api 层 MOMENTS_MAX_IMAGES），已忽略多余的图片`
     )
   }
+
+  /** 把某张图移出列表（压缩失败 / 超限时调用），顺手回收 ElUpload 建的 blob: 预览 URL */
+  function dropUploadFile(uid: number) {
+    const target = uploadFileList.value.find((f) => f.uid === uid)
+    if (target?.url?.startsWith('blob:')) URL.revokeObjectURL(target.url)
+    uploadFileList.value = uploadFileList.value.filter((f) => f.uid !== uid)
+    const nextNotes = { ...imageNotes.value }
+    delete nextNotes[uid]
+    imageNotes.value = nextNotes
+    const nextUrls = { ...imageUrlsByUid.value }
+    delete nextUrls[uid]
+    imageUrlsByUid.value = nextUrls
+  }
+
+  /**
+   * 选图回调：ElUpload 已经把文件放进列表（`auto-upload=false`，此时 status=ready），
+   * 这里立刻本地读图 → 压缩 → 存 dataURL；任何失败路径都**把该图移出列表**并如实提示，
+   * 绝不留下「列表里看得见、但模型看不到」的静默漏图。
+   */
+  async function onImageChange(file: UploadUserFile) {
+    const uid = file.uid ?? -1
+    const raw = file.raw
+    if (uid < 0 || !raw) return
+    compressingCount.value += 1
+    try {
+      const res = await compressMomentImage(raw)
+      if (!res.ok) {
+        dropUploadFile(uid)
+        ElMessage.warning(res.message)
+        return
+      }
+      imageUrlsByUid.value = { ...imageUrlsByUid.value, [uid]: res.dataUrl }
+    } finally {
+      compressingCount.value -= 1
+    }
+  }
+
+  /** 移除回调：把该张的 dataURL / 说明一起删掉（删的是哪张就删哪张，不按序位移） */
+  function onImageRemove(file: UploadUserFile) {
+    dropUploadFile(file.uid ?? -1)
+  }
+
+  /**
+   * 本次随生成下发的图片载荷：**按 `uploadFileList` 的顺序**取 dataURL，
+   * 与界面上的「图1/图2/图3」编号严格同序（顺序即用户看到的顺序）。
+   * 用 computed 而不是手动维护的数组，是为了不可能出现「列表删过一张后载荷错位」。
+   */
+  const imageUrls = computed(() =>
+    uploadFileList.value
+      .map((f) => imageUrlsByUid.value[f.uid ?? -1] ?? '')
+      .filter((u) => !!u)
+      .slice(0, maxImages)
+  )
 
   const imageSummary = computed(() =>
     composeImageSummary(
@@ -852,6 +987,8 @@
   const warning = ref('')
   const report = ref<MomentsMatchReport | null>(null)
   const promptMessages = ref<PromptLayer[]>([])
+  /** 引擎返回的「当前模型可能不读图」如实提醒（有图才可能非空，视图不重算） */
+  const visionHint = ref('')
   const favVisible = ref(false)
   const reportVisible = ref(false)
   const promptVisible = ref(false)
@@ -930,6 +1067,8 @@
     warning.value = ''
     report.value = null
     promptMessages.value = []
+    // 载入历史不是一次带图生成，上一条的读图提醒不能留在屏幕上误导用户
+    visionHint.value = ''
   }
 
   function buildPersona() {
@@ -983,6 +1122,12 @@
     }
     // 图片说明只在真有图时下发（api 层据此注入「图片信息」行）
     if (payload.imageCount) payload.imageSummary = imageSummary.value
+    /**
+     * 真读图载荷：仅在**确实有已压缩好的图**时才加 `imageUrls` 键。
+     * 无图时连键都不出现（api 层的多模态分支因此完全不触发，请求体与旧版逐字节一致）。
+     */
+    const attached = imageUrls.value
+    if (attached.length) payload.imageUrls = [...attached]
     return payload
   }
 
@@ -995,14 +1140,22 @@
       ElMessage.warning('自定义字数范围无效：最多字数需大于最少字数')
       return
     }
+    // 还有图在压缩：此时生成会静默漏图（界面有预览、模型收不到），必须先等压缩结束
+    if (compressingCount.value) {
+      ElMessage.warning('图片还在压缩，请稍等一下再生成')
+      return
+    }
     generating.value = true
     warning.value = ''
+    visionHint.value = ''
     try {
       const payload = buildPayload()
       const res = await generateMomentsCopy(payload)
       drafts.value = toDraftRows(res.drafts)
       source.value = res.source
       warning.value = res.warning ?? ''
+      // 引擎返回的「当前模型可能不读图」提醒：视图只转发，不自己重算能力判定
+      visionHint.value = res.visionHint ?? ''
       promptMessages.value = res.prompt
       report.value = auditMomentsResult(payload, promptText.value, res.drafts)
     } finally {
@@ -1093,6 +1246,7 @@
     source.value = 'fallback'
     report.value = null
     promptMessages.value = []
+    visionHint.value = ''
     favVisible.value = false
   }
 

@@ -1,5 +1,6 @@
 import { useAiConfigStore, SERVER_CONFIGURED_PLACEHOLDER } from '@/store/modules/ai-config'
 import { useYimaiStore } from '@/store/modules/yimai'
+import { useUserStore } from '@/store/modules/user'
 import { saveMarketingHistory } from './my'
 import { USE_BACKEND, API_BASE, getBackendToken, apiGet, apiPost } from './backend'
 
@@ -824,6 +825,87 @@ export const MOMENTS_MAX_IMAGES = 3
 export const MOMENTS_IMAGE_RULE =
   '图片强制要求：用户上传的图片是本条朋友圈要发布时搭配的图片，生成内容必须和图片内容有关联；不能把图片当成无关素材。'
 
+/** 有图但该张没填说明时的逐图占位（不编造图片内容） */
+export const MOMENTS_IMAGE_NO_NOTE = '用户上传图片，未填说明'
+
+/**
+ * 读图（多模态）模型能力词表（**单一事实来源**）：命中即「看起来支持读图」。
+ * 口径：只认显式能力词/型号，不做模糊猜测 —— 猜错会让用户误以为图片已被识别。
+ * 大小写不敏感；新增服务商/型号时只改这一处，不在调用点散写 if。
+ */
+export const MOMENTS_VISION_MODEL_TOKENS: RegExp[] = [
+  /(?:^|[-_.\s])vl\d*(?:[-_.\s]|$)/i, // qwen3-vl-max / deepseek-vl2 / mimo-vl
+  /internvl/i,
+  /minicpm-v/i,
+  /step-1v/i,
+  /qwen[\w.]*-vl/i, // qwen-vl / qwen3-vl / qwen2.5-vl（含无分隔写的形态）
+  /glm-4(?:\.\d+)?v/i, // glm-4v / glm-4.5v / glm-4.1v
+  /vision/i, // yi-vision / hunyuan-vision / doubao-1.5-vision / gpt-4-vision
+  /seed-[\w.]*-vision/i, // doubao-seed-1.6-vision
+  /(?:^|[-_.\s])vl\b/i,
+  /gpt-4o/i,
+  /gpt-4\.1/i,
+  /gpt-4-turbo/i,
+  /gpt-5/i, // gpt-5 / gpt-5-mini / gpt-5-chat
+  /(?:^|[-_.\s])o[34](?:[-_.\s]|$)/i, // o3 / o4-mini（推理系含视觉）
+  /claude/i, // claude-3 / claude-4 / claude-sonnet-4 / claude-opus-4
+  /sonnet/i,
+  /opus/i,
+  /gemini/i,
+  /moonshot[\w.-]*vision/i,
+  /kimi[\w.-]*vl/i,
+  /llava/i,
+  /pixtral/i
+]
+
+/** 模型是否看起来能读图（供「本次带了图但模型可能不看图」的如实提醒使用） */
+export function resolveMomentsVisionModel(model: string): { supportsVision: boolean } {
+  const name = String(model ?? '').trim()
+  return { supportsVision: !!name && MOMENTS_VISION_MODEL_TOKENS.some((re) => re.test(name)) }
+}
+
+// ---------- 非超管展示用的「去数字」档位名 ----------
+//
+// 背景（t8 修复轮，**真浏览器取证**才发现）：`MOMENT_LENGTHS[].label` 形如「标准版 50-120字」、
+// `EMOJI_USAGE_MODES[].label` 形如「中频使用：50 个字一个」、`XHS_LENGTHS[].display` 形如
+// 「标准内容 · 300-500字」。这些常量**同时喂提示词**（`build*Messages` 用 `len.display` /
+// `mode.label`），所以不能改常量本身 —— 改了会同时改变下发给模型的文案。
+// 但它们经 `<ElOption :label="...">` 渲染后会作为**下拉框当前选中值**出现在界面上，
+// 把「系统按多少字生成」直接摊开；静态扫 `.vue` 源码一个字也扫不到（数字在常量里）。
+//
+// 做法：**只在展示层**给出等价档位名；超管仍看原 label（口径全量可见）。
+// 判据：「N 字区间 / 每 N 字 1 个 emoji」属门控面，而「用户自己选了什么」用不带数值的档位名同样表达。
+
+/** 去掉档位名里的数值区间（如「标准版 50-120字」→「标准版」），保留可辨识的档位名 */
+function stripNumericRange(text: string): string {
+  return (
+    String(text ?? '')
+      // 「标准版 50-120字」「标准内容 · 300-500字」
+      .replace(/[·\s]*\d+\s*[-~至]\s*\d+\s*字/g, '')
+      // 「中频使用：50 个字一个」「低频使用：100 个字一个」
+      .replace(/[：:]\s*\d+\s*个字一个/g, '')
+      // 「（约每50字1个）」
+      .replace(/[（(]\s*约?每\s*\d+\s*字\s*1?\s*个?\s*[)）]/g, '')
+      .replace(/\s*[·:：]\s*$/g, '')
+      .trim()
+  )
+}
+
+/** 朋友圈「内容长度」档位名：非超管看不到字数区间（超管原样） */
+export function momentsLengthLabel(label: string, isSuper: boolean): string {
+  return isSuper ? String(label ?? '') : stripNumericRange(label) || String(label ?? '')
+}
+
+/** 表情符号档位名：非超管看不到「每 N 字 1 个」（超管原样）。朋友圈与小红书共用同一常量与口径 */
+export function emojiUsageLabel(label: string, isSuper: boolean): string {
+  return isSuper ? String(label ?? '') : stripNumericRange(label) || String(label ?? '')
+}
+
+/** 小红书「正文长度」档位名：非超管看不到字数区间（超管原样） */
+export function xhsLengthLabel(display: string, isSuper: boolean): string {
+  return isSuper ? String(display ?? '') : stripNumericRange(display) || String(display ?? '')
+}
+
 // ---------- 成稿与结果类型 ----------
 
 export type MomentsDraftId = 'real' | 'pro' | 'convert'
@@ -861,6 +943,11 @@ export interface MomentsResult {
   drafts: MomentsDraft[]
   source: 'llm' | 'fallback'
   warning?: string
+  /**
+   * 本次随图生成、但当前模型看起来不读图时的**如实**提醒（例：当前模型 deepseek-chat 可能不支持读图…）。
+   * 口径：只说明「可能不会被识别」，不承诺「已识别」；无图或模型支持读图时为空。
+   */
+  visionHint?: string
   /** 本次实际提交给模型的提示词，供运营只读查看 */
   prompt: PromptLayer[]
   /**
@@ -940,6 +1027,11 @@ export interface MomentsInput {
   imageSummary?: string
   /** 已上传图片张数，仅用于校验上限 3 */
   imageCount?: number
+  /**
+   * 随请求真正下发给大模型的图片载荷（dataURL，≤ `MOMENTS_MAX_IMAGES`）。
+   * 后端模式下经 `/ai/chat` 的 `attachments` 字段透传；为空/缺省时请求体不变。
+   */
+  imageUrls?: string[]
   /** 一次生成的成稿条数：1 或 3（默认 3） */
   draftCount?: number
 }
@@ -1798,16 +1890,56 @@ export function resolveMomentLength(input: {
   return findMomentLength(input.lengthId ?? input.lengthLabel)
 }
 
-function momentsImageLines(input: MomentsInput): string[] {
+/**
+ * 图片素材统一口径（提示词组装 / 强关联声明 / 生成后质检共用一处，避免三处各算一套）：
+ * - `attached`：真实随请求下发的大模型图片张数（`imageUrls`，即本次 payload 里的 dataURL）
+ * - `declared`：只声明了张数、没带图片载荷的旧调用口径（`imageCount`）
+ * - `count`：提示词里对外说的张数，优先真实载荷，上限 `MOMENTS_MAX_IMAGES`
+ * - `notes`：逐图说明（按「；」切分 `imageSummary` 并剥掉 `图N：` 前缀；缺说明用占位，不编造）
+ */
+function resolveMomentsImagePlan(input: MomentsInput): {
+  attached: number
+  declared: number
+  count: number
+  summary: string
+  notes: string[]
+} {
   const summary = (input.imageSummary ?? '').trim()
-  const count = Number(input.imageCount ?? 0)
-  if (count > 0 || summary) {
-    return [
-      `图片信息：${summary || `已上传${Math.min(count, MOMENTS_MAX_IMAGES)}张图片（无文字说明）`}`,
-      MOMENTS_IMAGE_RULE
-    ]
+  const attached = (input.imageUrls ?? []).filter((u) => !!u).length
+  const rawDeclared = Number(input.imageCount ?? 0)
+  const declared = Number.isFinite(rawDeclared) && rawDeclared > 0 ? Math.trunc(rawDeclared) : 0
+  const count = Math.min(attached || declared, MOMENTS_MAX_IMAGES)
+  const segments = summary
+    ? summary.split(/[；;\n]+/).map((s) => s.replace(/^\s*图\s*\d+\s*[：:]\s*/, '').trim())
+    : []
+  const notes = Array.from({ length: count }, (_, i) => segments[i] || MOMENTS_IMAGE_NO_NOTE)
+  return { attached, declared, count, summary, notes }
+}
+
+/** 「图片信息」行（逐图列出）+ 图片强关联铁律；无图时保持「图片信息：无」 */
+function momentsImageLines(input: MomentsInput): string[] {
+  const plan = resolveMomentsImagePlan(input)
+  if (plan.count > 0) {
+    const perImage = plan.notes.map((note, i) => `图${i + 1}：${note}`).join('；')
+    return [`图片信息：共${plan.count}张。${perImage}`, MOMENTS_IMAGE_RULE]
   }
+  // 有文字说明但没声明张数（旧调用/手工拼提示词）：原样带出，不假装有图
+  if (plan.summary) return [`图片信息：${plan.summary}`, MOMENTS_IMAGE_RULE]
   return ['图片信息：无']
+}
+
+/**
+ * 有图时追加进 user 消息的强关联声明。
+ * - 真实附带图片载荷 → 「本次已随请求附带 N 张图片…」
+ * - 只声明了张数、没带载荷（旧调用）→ 同样要求强关联，但**不谎称**已附带图片
+ * - 无图 → 空串（`.filter(Boolean)` 掉）
+ */
+function momentsImageUserNote(input: MomentsInput): string {
+  const { attached, count } = resolveMomentsImagePlan(input)
+  if (attached > 0) {
+    return `本次已随请求附带 ${Math.min(attached, MOMENTS_MAX_IMAGES)} 张图片，正文必须与该图片内容强关联。`
+  }
+  return count > 0 ? `本次配图 ${count} 张，正文必须与该图片内容强关联。` : ''
 }
 
 /** 朋友圈提示词组装（供生成与质检共用；段落顺序：最高优先级 → 立场铁律 → 人设层 → 内容层 → 本次硬约束） */
@@ -1879,6 +2011,7 @@ export function buildMomentsMessages(input: MomentsInput): PromptLayer[] {
     '【本次选择回显】',
     `内容层：${input.category}${input.topic ? ` / ${input.topic}` : ''}｜语气：${input.tone}｜目标：${goal.label}｜表达方式：${input.expression}`,
     `硬约束：单条 ${len.min}-${len.max} 字｜emoji ${mode.label}｜井号键 1-3 次｜${count === 3 ? '3 条' : '1 条'}｜首条回复必须输出（${FIRST_REPLY_MARKER}）`,
+    momentsImageUserNote(input),
     input.userInput && `我想表达的内容：${input.userInput}`
   ]
     .filter(Boolean)
@@ -1964,13 +2097,111 @@ interface ChatMessage {
 }
 
 /**
+ * 上游失败的可判别标记：挂在 Error 实例上（api/** 不 import 任何 UI/视图依赖 —— O-15）。
+ * 调用方（引擎）据此分「模型不支持读图」与「其它上游异常」两类，给出可分辨的提示。
+ */
+export interface VisionUnsupportedError extends Error {
+  visionUnsupported?: boolean
+  /**
+   * **纯业务文案**（不含 `AI_HTTP_422: ` 这类机器前缀）：给用户看的 warning 用它。
+   * `message` 仍保留前缀供开发者排查，两者分工不同、不要互相替代。
+   */
+  businessMessage?: string
+}
+
+/**
+ * 从失败响应体里提取**业务文案**（F3）：
+ * 后端代理回的是 `{code, message}`，直连上游回的是 OpenAI 的 `{error:{message}}`。
+ * 优先取这两个字段，而不是 `Error.toString()`（那会带上 `AI_HTTP_422: ` 前缀，
+ * 80 字截断后恰好把中文指引的后半句切掉 —— t5 实测切在「…切换到读图模型」中间）。
+ * 只有在解析不出业务文案时才退回原始文本，并且**兜底截断仍然是最后手段**。
+ */
+function extractUpstreamMessage(text: string, fallback: string): string {
+  const raw = String(text ?? '').trim()
+  if (raw) {
+    try {
+      const obj = JSON.parse(raw) as {
+        message?: unknown
+        error?: { message?: unknown }
+      }
+      const business =
+        (typeof obj?.message === 'string' && obj.message) ||
+        (typeof obj?.error?.message === 'string' && obj.error.message) ||
+        ''
+      if (business) return business.trim()
+    } catch {
+      /* 非 JSON：下面按原始文本兜底 */
+    }
+  }
+  return fallback
+}
+
+/**
+ * 构造「本次失败能否归因到读图」的错误对象：
+ * `visionUnsupported=true` 由后端 422 视觉分支显式下发（机器人可判）；
+ * 直连模式下上游若不认 `image_url` 也会在报错文本里提到图片，做一次保守兜底识别。
+ */
+function buildUpstreamError(
+  statusLabel: string,
+  text: string,
+  opts?: { hadAttachments?: boolean }
+): VisionUnsupportedError {
+  const business = extractUpstreamMessage(text, text.slice(0, 200))
+  // message 带机器前缀（供开发者排查），businessMessage 是给用户看的那一句。
+  const err = new Error(
+    business ? `${statusLabel}: ${business}` : statusLabel
+  ) as VisionUnsupportedError
+  err.businessMessage = business
+  // 只认结构化标记，或在「本次确实带了图」时正文里明确说读不了图 —— 避免把
+  // 「图片尺寸不合规」之类的偶发参数错误误报成「模型不支持读图」。
+  let flagged = false
+  try {
+    const obj = JSON.parse(String(text ?? '')) as { visionUnsupported?: unknown }
+    flagged = obj?.visionUnsupported === true
+  } catch {
+    /* 非 JSON：看下面 */
+  }
+  if (!flagged && opts?.hadAttachments) {
+    flagged = /(image|vision|multimodal|图片)/i.test(String(text ?? ''))
+  }
+  if (flagged) err.visionUnsupported = true
+  return err
+}
+
+/** 该失败是否归因于「当前模型不支持读图」（供引擎分流提示） */
+export function isVisionUnsupportedError(e: unknown): boolean {
+  return (e as VisionUnsupportedError | undefined)?.visionUnsupported === true
+}
+
+/**
+ * 取「能给人看的业务说明」（F3）：优先 Error.message（上游 4xx 已被 extractUpstreamMessage
+ * 换成业务文案），其次对象里的 message 字段，最后才 String(e) 兜底。
+ * 80 字截断只作最后手段 —— 正常路径下不该走到那里（否则又会切在中文指引中间）。
+ */
+function businessMessageOf(e: unknown): string {
+  // 优先「纯业务文案」（buildUpstreamError 已剥离 AI_HTTP_/LLM_HTTP_ 前缀）
+  const business = (e as VisionUnsupportedError | undefined)?.businessMessage
+  if (typeof business === 'string' && business.trim()) return business.trim().slice(0, 160)
+  const direct = (e as { message?: unknown } | undefined)?.message
+  if (typeof direct === 'string' && direct.trim()) return direct.trim().slice(0, 160)
+  if (e instanceof Error && e.message.trim()) return e.message.trim().slice(0, 160)
+  return String(e).slice(0, 80)
+}
+
+/**
  * 大模型调用统一入口
  * - 后端模式：经 Laravel /ai/chat 代理转发，流式输出（中转站对 stream 请求才结算 token）
  * - 演示模式：浏览器直连（仅对支持CORS的服务商可用）
+ * - `attachments`：随请求附带的多模态图片载荷（dataURL，≤3 张）。两条路径**同构**下发同名字段；
+ *   为空时请求体保持不变（不多带 `attachments` 键）。
  */
-async function callLLM(messages: ChatMessage[], featureType = 'chat'): Promise<string> {
+async function callLLM(
+  messages: ChatMessage[],
+  featureType = 'chat',
+  attachments?: string[]
+): Promise<string> {
   if (USE_BACKEND) {
-    return chatLLMStream(messages, { featureType })
+    return chatLLMStream(messages, { featureType, attachments })
   }
   await initAiConfig()
   const store = useAiConfigStore()
@@ -1986,12 +2217,15 @@ async function callLLM(messages: ChatMessage[], featureType = 'chat'): Promise<s
     body: JSON.stringify({
       model: c.model,
       messages,
-      temperature: c.temperature
+      temperature: c.temperature,
+      ...(attachments && attachments.length ? { attachments } : {})
     })
   })
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
-    throw new Error(`LLM_HTTP_${resp.status}: ${text.slice(0, 200)}`)
+    throw buildUpstreamError(`LLM_HTTP_${resp.status}`, text, {
+      hadAttachments: !!(attachments && attachments.length)
+    })
   }
   const data = await resp.json()
   const content = data?.choices?.[0]?.message?.content
@@ -2005,7 +2239,13 @@ async function callLLM(messages: ChatMessage[], featureType = 'chat'): Promise<s
  */
 export async function chatLLMStream(
   messages: ChatMessage[],
-  opts?: { onDelta?: (t: string) => void; maxTokens?: number; featureType?: string }
+  opts?: {
+    onDelta?: (t: string) => void
+    maxTokens?: number
+    featureType?: string
+    /** 多模态图片载荷（dataURL，≤3 张）；空数组/缺省时请求体不带该键 */
+    attachments?: string[]
+  }
 ): Promise<string> {
   await initAiConfig()
   const store = useAiConfigStore()
@@ -2023,7 +2263,8 @@ export async function chatLLMStream(
       temperature: c.temperature,
       maxTokens: opts?.maxTokens,
       featureType: opts?.featureType ?? 'chat',
-      stream: true
+      stream: true,
+      ...(opts?.attachments && opts.attachments.length ? { attachments: opts.attachments } : {})
     })
   })
   return readSse(resp, opts?.onDelta)
@@ -2033,7 +2274,7 @@ export async function chatLLMStream(
 async function readSse(resp: Response, onDelta?: (t: string) => void): Promise<string> {
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
-    throw new Error(`AI_HTTP_${resp.status}: ${text.slice(0, 200)}`)
+    throw buildUpstreamError(`AI_HTTP_${resp.status}`, text)
   }
   const reader = resp.body?.getReader()
   if (!reader) throw new Error('AI_NO_STREAM')
@@ -2437,39 +2678,78 @@ function pickLegacyDraft(drafts: MomentsDraft[], input: MomentsInput): MomentsDr
 }
 
 /**
+ * 当前登录者是否为超管。
+ *
+ * 用途：**运行时拼装文案**里的口径数值（如「本地模板草稿」告警中的字数档区间）按角色分流。
+ * 与展示层 `momentsLengthLabel(label, isSuper)` 同一范式（超管全量可见 / 非超管隐去数值），
+ * 区别是那批处理的是**常量档位名**，这里处理的是**运行时拼出来的整段文案**（t11 的常量层
+ * 门禁覆盖不到这一层，故 t12 补运行时门禁）。
+ *
+ * 保守兜底：store 未就绪（极早期调用 / 测试环境）时按**非超管**处理 —— 漏判只会少露口径，
+ * 反向（误判超管）才会泄漏，故兜底方向必须是「不显示」。
+ */
+function isSuperViewer(): boolean {
+  try {
+    return (useUserStore().getUserInfo?.roles ?? []).includes('R_SUPER')
+  } catch {
+    return false
+  }
+}
+
+/**
  * 本地模板草稿的**字数如实性说明**：本地模板不按档位生成（不强行凑字数，避免更差的文案），
  * 因此不能假装满足字数硬约束 —— 这里给出实测字数，让用户一眼看出「这是草稿」。
+ *
+ * 口径分流（t12）：字数档区间属**生成口径数值**，只对超管可见；非超管换成
+ * 「所选档位区间」这类不含数值的等价说法。**如实性三类信息一条不减**：
+ * ① 这是本地模板草稿 ② 字数可能不落在所选档位区间 ③ 实测 N 字（用户自己内容的事实）。
+ * 超管侧输出与改动前**逐字节一致**（见 ai-smoke §26 的对拍断言）。
  */
 function localTemplateNote(drafts: MomentsDraft[], input: MomentsInput): string {
   const len = resolveMomentLength(input)
   const chars = drafts.map((d) => Array.from(d.content.replace(/\s/g, '')).length)
   const detail = drafts.map((d, i) => `${d.label} ${chars[i]} 字`).join('、')
   const outside = chars.some((c) => c < len.min || c > len.max)
+  if (isSuperViewer()) {
+    return outside
+      ? `本地模板草稿：字数不保证落在所选 ${len.min}-${len.max} 字区间（实测 ${detail}），请以此为草稿再编辑`
+      : `本地模板草稿：实测 ${detail}（所选 ${len.min}-${len.max} 字），仍建议以此为草稿再编辑`
+  }
   return outside
-    ? `本地模板草稿：字数不保证落在所选 ${len.min}-${len.max} 字区间（实测 ${detail}），请以此为草稿再编辑`
-    : `本地模板草稿：实测 ${detail}（所选 ${len.min}-${len.max} 字），仍建议以此为草稿再编辑`
+    ? `本地模板草稿：字数不保证落在所选档位区间（实测 ${detail}），请以此为草稿再编辑`
+    : `本地模板草稿：实测 ${detail}（所选档位），仍建议以此为草稿再编辑`
 }
 
-/** 小红书本地模板草稿的字数如实性说明（同一口径） */
+/** 小红书本地模板草稿的字数如实性说明（同一口径；超管侧逐字节不变，非超管隐去档位区间） */
 function localXhsTemplateNote(notes: XhsNote[], input: XhsInput): string {
   const len = findXhsLength(input.lengthId)
   const chars = notes.map((n) => Array.from(n.content.replace(/\s/g, '')).length)
-  return `本地模板草稿：正文字数不保证落在所选「${len.display}」区间（实测 ${chars.join('/')} 字），请以此为草稿再编辑`
+  const tail = `（实测 ${chars.join('/')} 字），请以此为草稿再编辑`
+  return isSuperViewer()
+    ? `本地模板草稿：正文字数不保证落在所选「${len.display}」区间${tail}`
+    : `本地模板草稿：正文字数不保证落在所选档位区间${tail}`
 }
 
 export async function generateMomentsCopy(input: MomentsInput): Promise<MomentsResult> {
   const store = useAiConfigStore()
   const messages = buildMomentsMessages(input)
   const count = input.draftCount === 1 ? 1 : 3
+  /** 真实下发给模型的图片载荷（dataURL，≤3 张）；无图时为空数组 → 请求体不带 attachments */
+  const attachments = (input.imageUrls ?? []).filter((u) => !!u).slice(0, MOMENTS_MAX_IMAGES)
   let drafts: MomentsDraft[] = []
   let source: 'llm' | 'fallback' = 'fallback'
   let warning: string | undefined
+  let visionHint: string | undefined
   if (input.imageCount && input.imageCount > MOMENTS_MAX_IMAGES) {
     warning = `最多支持 ${MOMENTS_MAX_IMAGES} 张图片，第 ${MOMENTS_MAX_IMAGES + 1} 张起未纳入本次生成`
   }
   if (store.isReady()) {
+    // 本次真的带了图、但当前模型看起来不读图 → 如实提醒（不承诺「已识别」）
+    if (attachments.length && !resolveMomentsVisionModel(store.config.model).supportsVision) {
+      visionHint = `当前模型 ${store.config.model} 可能不支持读图，请在「模型配置」切换到读图模型，否则图片不会被识别`
+    }
     try {
-      const raw = await callLLM(messages, 'marketing_moments')
+      const raw = await callLLM(messages, 'marketing_moments', attachments)
       drafts = parseMomentsDraftsLoose(raw, count)
       if (!drafts.length) throw new Error('JSON_PARSE_FAIL')
       source = 'llm'
@@ -2488,10 +2768,19 @@ export async function generateMomentsCopy(input: MomentsInput): Promise<MomentsR
       const fbReply = fallbackMomentsDrafts(input)[0].reply
       drafts = drafts.map((d) => (d.reply ? d : { ...d, reply: fbReply }))
     } catch (e) {
-      warning = appendWarning(
-        warning,
-        `大模型调用失败，已用本地模板生成（${String(e).slice(0, 80)}）`
-      )
+      // 失败分两类，用户必须能分辨（F2）：
+      //  · 模型不支持读图 → 复用 visionHint 同一个 UI 槽位（不新增第 N 个提示位）；
+      //  · 其它上游异常 → 如实说「模型服务异常」，绝不冒充「模型不支持图片」。
+      if (isVisionUnsupportedError(e)) {
+        visionHint =
+          '当前模型不支持图片输入，请在「模型配置」切换到支持读图的模型后重试（本次文案已改用本地模板，未参考你上传的图片）'
+        warning = appendWarning(warning, '当前模型不支持图片输入，本次已改用本地模板生成')
+      } else {
+        warning = appendWarning(
+          warning,
+          `模型服务异常，已用本地模板生成（${businessMessageOf(e)}）`
+        )
+      }
       drafts = fallbackMomentsDrafts(input)
       warning = appendWarning(warning, localTemplateNote(drafts, input))
     }
@@ -2526,7 +2815,15 @@ export async function generateMomentsCopy(input: MomentsInput): Promise<MomentsR
     }).catch(() => undefined)
   }
   const legacy = pickLegacyDraft(drafts, input)
-  return { drafts, source, warning, prompt: messages, content: legacy.content, reply: legacy.reply }
+  return {
+    drafts,
+    source,
+    warning,
+    visionHint,
+    prompt: messages,
+    content: legacy.content,
+    reply: legacy.reply
+  }
 }
 
 // ==================== 朋友圈防折叠改写（同文案换号发布，避免被折叠成相似内容） ====================
@@ -3100,7 +3397,7 @@ export async function generateAntiFoldCopy(input: AntiFoldInput): Promise<AntiFo
       notes: variants[0]?.notes ?? ''
     }
   } catch (e) {
-    const warning = `大模型调用失败（${String(e).slice(0, 80)}）`
+    const warning = `模型服务异常（${businessMessageOf(e)}）`
     if (USE_BACKEND) {
       apiPost('/model-generations/fallback', {
         featureType: 'marketing_anti_fold',
@@ -3152,10 +3449,7 @@ export async function generateXhsNote(input: XhsInput): Promise<XhsResult> {
         )
       }
     } catch (e) {
-      warning = appendWarning(
-        warning,
-        `大模型调用失败，已用本地模板生成（${String(e).slice(0, 80)}）`
-      )
+      warning = appendWarning(warning, `模型服务异常，已用本地模板生成（${businessMessageOf(e)}）`)
       notes = fallbackXhsNotes(input)
       warning = appendWarning(warning, localXhsTemplateNote(notes, input))
     }
@@ -3346,7 +3640,7 @@ export async function generateTrainingPlan(
       }
       source = 'llm'
     } catch (e) {
-      warning = `大模型调用失败，已用本地模板生成（${String(e).slice(0, 80)}）`
+      warning = `模型服务异常，已用本地模板生成（${businessMessageOf(e)}）`
       content = fallbackTraining(input)
     }
   } else {
@@ -3420,6 +3714,43 @@ function buildMatchReport(
     issues,
     issuePreview: issues.slice(0, 4).join('\n')
   }
+}
+
+/**
+ * 质检「图片信息」项：三态各自有明确判据（偏严但不误报）
+ * ① 无图 → 提示词须含 `图片信息：无`
+ * ② 有图且有逐图说明 → 提示词须含这些说明（逐图归位后整段不再是连续子串，故按**单图说明**核对）
+ * ③ 有图但未填说明 → 提示词须含 `共N张`（逐图占位口径）即通过
+ * 另有兼容态：只给了说明、没给张数（旧调用）→ 按说明本身核对，不强制 `共N张`
+ */
+function momentsImageCheck(input: MomentsInput, text: string): PromptCheck {
+  const plan = resolveMomentsImagePlan(input)
+  const total = `共${plan.count}张`
+  if (plan.count > 0) {
+    const notes = plan.notes.filter((n) => n !== MOMENTS_IMAGE_NO_NOTE)
+    const hasNotes = notes.length > 0 && notes.every((n) => text.includes(n))
+    const hasTotal = text.includes(total)
+    const detail = hasNotes
+      ? `${plan.count} 张｜已带入说明：${notes.join('；').slice(0, 60)}`
+      : hasTotal
+        ? `${plan.count} 张｜未填说明，按「${total}」核对`
+        : `${plan.count} 张｜提示词里既无逐图说明也无「${total}」`
+    return mkCheck('图片信息', hasNotes || hasTotal, detail)
+  }
+  if (plan.summary) {
+    const hasSummary = text.includes(plan.summary)
+    return mkCheck(
+      '图片信息',
+      hasSummary,
+      hasSummary ? '仅文字说明（未声明张数）' : '仅文字说明（未声明张数），提示词里未带入'
+    )
+  }
+  const hasNone = text.includes('图片信息：无')
+  return mkCheck(
+    '图片信息',
+    hasNone,
+    hasNone ? '未上传图片' : '未上传图片，但提示词缺「图片信息：无」'
+  )
 }
 
 /** 朋友圈生成后自检：12 项提示词断言 + 每条成稿 5-6 项硬约束核对 */
@@ -3496,11 +3827,7 @@ export function auditMomentsResult(
       !input.userInput || text.includes(input.userInput),
       input.userInput ? '已带入' : '未填写'
     ),
-    mkCheck(
-      '图片信息',
-      !input.imageSummary || text.includes(input.imageSummary),
-      input.imageSummary || '未填写'
-    )
+    momentsImageCheck(input, text)
   ]
 
   const draftChecks: DraftCheck[] = []

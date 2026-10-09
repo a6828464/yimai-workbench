@@ -6,9 +6,15 @@
         <ElTag size="small" type="info">同一条文案换号再发，避免被折叠</ElTag>
       </div>
     </template>
+    <!--
+      前半「会把相似内容折叠 / 会按版本数改写 + 逐版校验」是「这个功能在做什么」的用户说明，保留；
+      后半 `thresholdText`（开头必换 / 相同句 ≤40% / 连续 10 字 / 篇幅 ±20%）是**逐字的提示词口径**，
+      非超管不渲染。拆法与 xhs「客户画像超限提示」同范式：说明留两角色，内部口径门控。
+    -->
     <div class="text-xs text-g-500 leading-5 mb-2">
       微信会把高度相似的朋友圈内容折叠成「一条相似内容」。把会被折叠的文案粘贴进来，AI
-      会按选定版本数各改写一遍：{{ thresholdText }}。每个版本都会逐项校验。
+      会按选定版本数各改写一遍<span v-if="isSuper">：{{ thresholdText }}</span
+      >。每个版本都会逐项校验。
     </div>
     <ElFormItem label="会被折叠的文案" :label-position="formLabelPosition">
       <ElInput
@@ -25,7 +31,9 @@
       <ElRadioGroup v-model="versions">
         <ElRadioButton v-for="n in versionOptions" :key="n" :value="n">{{ n }} 版</ElRadioButton>
       </ElRadioGroup>
-      <div class="text-xs text-g-500 mt-1 leading-5">
+      <!-- 整段是「系统怎么生成」的说明（互校验阈值 + 版本上限），非超管不渲染。
+           「N 版」按钮本身是用户输入约束（保留），这里的阈值说明不放。 -->
+      <div v-if="isSuper" class="text-xs text-g-500 mt-1 leading-5">
         一次产出多版方便挑一版发；版本之间也会互相校验（不得出现连续
         {{ ANTI_FOLD_THRESHOLDS.maxCommonSubstring }} 字相同）。上限
         {{ ANTI_FOLD_MAX_VERSIONS }} 版。
@@ -50,9 +58,17 @@
     />
     <div v-if="variants.length || generating" v-loading="generating" class="mt-3">
       <div class="flex-cb flex-wrap gap-2 mb-2">
-        <span class="text-xs text-g-500">共 {{ variants.length }} 个版本 · 逐版质检如下</span>
+        <!-- 「共 N 个版本」是用户数据事实（保留）；「逐版质检如下」指向下面的口径面，非超管不渲染 -->
+        <span class="text-xs text-g-500"
+          >共 {{ variants.length }} 个版本<span v-if="isSuper"> · 逐版质检如下</span></span
+        >
         <div class="flex-c gap-2 flex-wrap">
-          <ElButton v-if="promptMessages.length" link size="small" @click="promptVisible = true">
+          <ElButton
+            v-if="isSuper && promptMessages.length"
+            link
+            size="small"
+            @click="promptVisible = true"
+          >
             查看本次提示词
           </ElButton>
           <ElButton link size="small" @click="generate()">重新改写</ElButton>
@@ -63,16 +79,20 @@
         <div v-for="(v, i) in variants" :key="v.id" class="mk-result-card">
           <div class="mk-result-card__head">
             <span class="mk-result-card__title">{{ v.label }}</span>
-            <!-- 三态：有质检项才谈通过与否，没有就如实说没有 -->
-            <template v-if="v.checks.length">
-              <span v-if="v.passed" class="mk-result-card__ok">全部通过</span>
-              <span v-else class="mk-result-card__warn">{{ failCount(v) }} 项不通过</span>
+            <!-- 三态：有质检项才谈通过与否，没有就如实说没有。
+                 质检徽标属「系统生成口径」的派生面，非超管整块不渲染。 -->
+            <template v-if="isSuper">
+              <template v-if="v.checks.length">
+                <span v-if="v.passed" class="mk-result-card__ok">全部通过</span>
+                <span v-else class="mk-result-card__warn">{{ failCount(v) }} 项不通过</span>
+              </template>
+              <span v-else class="mk-result-card__none">无质检数据</span>
             </template>
-            <span v-else class="mk-result-card__none">无质检数据</span>
           </div>
 
-          <!-- 逐版质检数据（api 层 auditAntiFold + auditVariantDiversity；遍历渲染，不写死 4 项） -->
-          <div v-if="v.checks.length" class="mk-check-list">
+          <!-- 逐版质检数据（api 层 auditAntiFold + auditVariantDiversity；遍历渲染，不写死 4 项）。
+               明细逐条印着阈值口径，故整块仅超管可见。 -->
+          <div v-if="isSuper && v.checks.length" class="mk-check-list">
             <div
               v-for="c in v.checks"
               :key="c.label"
@@ -115,8 +135,8 @@
       </div>
     </div>
 
-    <!-- 查看本次提示词（api 层返回的 prompt 原文，只读） -->
-    <ElDrawer v-model="promptVisible" title="本次下发的提示词（首轮）" size="520px">
+    <!-- 查看本次提示词（api 层返回的 prompt 原文，只读；仅超管可见） -->
+    <ElDrawer v-if="isSuper" v-model="promptVisible" title="本次下发的提示词（首轮）" size="520px">
       <ElAlert
         title="这里展示首轮提示词原文；若「版本间差异」不达标，引擎还会追加一轮定向修复（含共享片段的修复指令），那一轮的提示词不在本次展示范围内。"
         type="info"
@@ -145,6 +165,7 @@
   } from './marketing-api-bridge'
   import type { AntiFoldInput, AntiFoldVariant, PromptLayer } from './marketing-api-bridge'
   import { ElMessage } from 'element-plus'
+  import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
 
   defineOptions({ name: 'AntiFoldTool' })
@@ -153,6 +174,10 @@
   defineProps<{ latestResult?: string }>()
 
   const { isHandheld } = useDevice()
+
+  /** 超管判定：同 `marketing/index.vue` 既有范式，只读服务端下发的 roles（外部不可覆盖） */
+  const userStore = useUserStore()
+  const isSuper = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_SUPER'))
 
   /**
    * 表单 label 位置：手持端（≤768）改到控件上方。

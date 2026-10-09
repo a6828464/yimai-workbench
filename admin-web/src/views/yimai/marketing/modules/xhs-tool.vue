@@ -43,7 +43,11 @@
                 按角色建议：{{ ipSuggestionLabel }}
               </ElButton>
             </div>
-            <div v-if="currentIpDesc" class="text-xs text-g-500 mt-1 leading-5">
+            <!--
+              IP 定位自带的写作方向说明（`XHS_IP_TYPES[].desc`）：属「这条会怎么写」的口径，
+              属 captain 所指「下拉选项自带的提示」，非超管不渲染；单选控件本身不受影响。
+            -->
+            <div v-if="isSuper && currentIpDesc" class="text-xs text-g-500 mt-1 leading-5">
               {{ currentIpDesc }}
             </div>
           </ElFormItem>
@@ -62,7 +66,8 @@
         <ElCol :xs="12" :md="4">
           <ElFormItem :label-position="formLabelPosition" label="同城属性">
             <ElSwitch v-model="profile.localFocus" />
-            <div class="text-xs text-g-500 mt-1 leading-5">
+            <!-- 同城处理结论：属「系统会怎么生成」，非超管不渲染（开关本身仍在，用户照常能选） -->
+            <div v-if="isSuper" class="text-xs text-g-500 mt-1 leading-5">
               {{ localScenario ? '本次按同城账号处理' : '本次不强化同城' }}
             </div>
           </ElFormItem>
@@ -106,12 +111,18 @@
             >
               <ElOption v-for="a in AUDIENCE_OPTIONS" :key="a" :label="a" :value="a" />
             </ElSelect>
-            <!-- 选到上限后再加：明确提示，绝不静默丢弃（规格 X-05 / Captain 裁定） -->
+            <!--
+              选到上限后再加：明确提示，绝不静默丢弃（规格 X-05 / Captain 裁定）。
+              **分两半**：前半（超出的 3 项不生效 + 一键修剪按钮）是用户的数据完整性提示，
+              任何角色都要留 —— 藏起来会变成「我明明存了 6 项，为什么没生效」的静默丢数据；
+              括注里的「提示词只取前 N 项」是生成口径，非超管不渲染。
+            -->
             <div v-if="audienceOverflow" class="mk-overflow-tip">
               已保存 {{ profile.audiences.length }} 项，超出上限的
               {{ profile.audiences.length - XHS_AUDIENCE_MAX }}
-              项<b>不会进入本次生成</b>（提示词只取前
-              {{ XHS_AUDIENCE_MAX }} 项）。请删掉用不到的项。
+              项<b>不会进入本次生成</b
+              ><span v-if="isSuper">（提示词只取前 {{ XHS_AUDIENCE_MAX }} 项）</span
+              >。请删掉用不到的项。
               <ElButton link type="danger" size="small" @click="trimAudiences">
                 只保留前 {{ XHS_AUDIENCE_MAX }} 项
               </ElButton>
@@ -138,7 +149,7 @@
               保存后重开仍在；style 单选字段同步写第一项，老账号数据读取时回落 [style]。
             -->
             <div class="text-xs text-g-500 mt-1 leading-5">
-              多选会随人设一起保存（api 层 styles 优先于单选 style）。
+              多选会随人设一起保存<span v-if="isSuper">（api 层 styles 优先于单选 style）</span>。
             </div>
           </ElFormItem>
         </ElCol>
@@ -152,9 +163,16 @@
         <ElCol :xs="24" :md="12">
           <ElFormItem :label-position="formLabelPosition" label="表情符号">
             <ElSelect v-model="emojiModeId">
-              <ElOption v-for="m in EMOJI_USAGE_MODES" :key="m.id" :label="m.label" :value="m.id" />
+              <!-- 非超管看不到「每 N 字 1 个」的检验口径（与朋友圈同一常量与口径） -->
+              <ElOption
+                v-for="m in EMOJI_USAGE_MODES"
+                :key="m.id"
+                :label="emojiUsageLabel(m.label, isSuper)"
+                :value="m.id"
+              />
             </ElSelect>
-            <div class="text-xs text-g-500 mt-1 leading-5">{{ emojiHint }}</div>
+            <!-- emoji 档位说明（每 N 字 1 个的检验口径）：属生成规则口径，非超管不渲染 -->
+            <div v-if="isSuper" class="text-xs text-g-500 mt-1 leading-5">{{ emojiHint }}</div>
           </ElFormItem>
         </ElCol>
       </ElRow>
@@ -187,9 +205,16 @@
         <ElCol :xs="24" :md="8">
           <ElFormItem :label-position="formLabelPosition" label="正文长度">
             <ElSelect v-model="lengthId">
-              <ElOption v-for="l in XHS_LENGTHS" :key="l.id" :label="l.display" :value="l.id" />
+              <!-- 非超管看不到档位里的字数区间（展示层去数字，常量仍喂提示词） -->
+              <ElOption
+                v-for="l in XHS_LENGTHS"
+                :key="l.id"
+                :label="xhsLengthLabel(l.display, isSuper)"
+                :value="l.id"
+              />
             </ElSelect>
-            <div class="text-xs text-g-500 mt-1 leading-5">
+            <!-- 字数口径（区间 + 上限）：与朋友圈口径块同类，非超管不渲染 -->
+            <div v-if="isSuper" class="text-xs text-g-500 mt-1 leading-5">
               {{ currentLength.min }}-{{ currentLength.max }} 字（上限 {{ XHS_BODY_MAX_CHARS }} 字）
             </div>
           </ElFormItem>
@@ -200,11 +225,16 @@
           </ElFormItem>
         </ElCol>
       </ElRow>
-      <div v-if="topicHint || topicGuide" class="mk-hint-block">
+      <!--
+        以下两块都是**生成口径**（选题写作方向 / 本组写法 / 生成数量 / 标题封面 / 话题标签），
+        文案里的数字直接来自提示词常量；属「解释系统会怎么生成」，非超管不渲染。
+        与朋友圈 tab 的口径块保持同一判据（整页口径收敛，用户只要结果）。
+      -->
+      <div v-if="isSuper && (topicHint || topicGuide)" class="mk-hint-block">
         <div v-if="topicHint"><b>选题写作方向：</b>{{ topicHint }}</div>
         <div v-if="topicGuide"><b>本组写法：</b>{{ topicGuide }}</div>
       </div>
-      <div class="mk-hint-block">
+      <div v-if="isSuper" class="mk-hint-block">
         <div>
           <b>生成数量：</b>一次产出 {{ XHS_NOTE_COUNT }} 篇（风格要明显不同），每篇都是「封面文案 +
           标题 + 正文 + 话题标签 + 首评」完整五件套。
@@ -232,10 +262,15 @@
         <div class="mk-card-head">
           <span class="font-500">生成结果（{{ notes.length }} 篇）</span>
           <div class="flex-c gap-3 flex-wrap">
-            <ElButton v-if="report" link size="small" @click="reportVisible = true">
+            <ElButton v-if="isSuper && report" link size="small" @click="reportVisible = true">
               质检报告{{ report.passed ? '' : `（${failedCount} 项待改）` }}
             </ElButton>
-            <ElButton v-if="promptMessages.length" link size="small" @click="promptVisible = true">
+            <ElButton
+              v-if="isSuper && promptMessages.length"
+              link
+              size="small"
+              @click="promptVisible = true"
+            >
               查看本次提示词
             </ElButton>
             <ElTag size="small" :type="source === 'llm' ? 'success' : 'warning'">{{
@@ -257,16 +292,19 @@
           <div v-for="(n, i) in notes" :key="`n${i + 1}`" class="mk-result-card">
             <div class="mk-result-card__head">
               <span class="mk-result-card__title">方案 {{ i + 1 }}</span>
-              <!-- 三态：本卡有质检项才谈通过与否；没有就如实说没有 -->
-              <template v-if="noteChecks(i).length">
-                <span v-if="noteFailedCount(i)" class="mk-result-card__warn"
-                  >{{ noteFailedCount(i) }} 项不匹配</span
-                >
-                <span v-else class="mk-result-card__ok">质检通过</span>
+              <!-- 三态：本卡有质检项才谈通过与否；没有就如实说没有。
+                   质检徽标属「系统生成口径」的派生面，非超管整块不渲染。 -->
+              <template v-if="isSuper">
+                <template v-if="noteChecks(i).length">
+                  <span v-if="noteFailedCount(i)" class="mk-result-card__warn"
+                    >{{ noteFailedCount(i) }} 项不匹配</span
+                  >
+                  <span v-else class="mk-result-card__ok">质检通过</span>
+                </template>
+                <span v-else class="mk-result-card__none">
+                  无质检数据（未匹配到方案 {{ i + 1 }}）
+                </span>
               </template>
-              <span v-else class="mk-result-card__none">
-                无质检数据（未匹配到方案 {{ i + 1 }}）
-              </span>
             </div>
 
             <!-- 封面文案：独立可见、可单独复制（规格 X-07） -->
@@ -298,8 +336,12 @@
                 <span v-for="tag in n.tags.slice(0, XHS_TAG_MAX)" :key="tag" class="mk-tag-pill">
                   {{ tag }}
                 </span>
+                <!-- 用户数据事实（共 N 个）保留：标签多到被截断，用户需要知道原因方向。
+                     括注里的「建议 N-N 个」是生成口径阈值（与质检报告同源），非超管不渲染。 -->
                 <span v-if="n.tags.length > XHS_TAG_MAX" class="text-xs text-g-500 self-center">
-                  …共 {{ n.tags.length }} 个（建议 {{ XHS_TAG_MIN }}-{{ XHS_TAG_MAX }} 个）
+                  …共 {{ n.tags.length }} 个<span v-if="isSuper"
+                    >（建议 {{ XHS_TAG_MIN }}-{{ XHS_TAG_MAX }} 个）</span
+                  >
                 </span>
               </div>
             </div>
@@ -316,8 +358,9 @@
               <p class="text-sm leading-6 text-g-700 whitespace-pre-wrap">{{ n.reply }}</p>
             </div>
 
-            <!-- 质检明细：来自 api 层 auditXhsResult；外层只按本卡 checks 判定 -->
-            <div v-if="noteChecks(i).length" class="mk-check-list">
+            <!-- 质检明细：来自 api 层 auditXhsResult；外层只按本卡 checks 判定。
+                 明细逐条印着阈值口径，故整块仅超管可见。 -->
+            <div v-if="isSuper && noteChecks(i).length" class="mk-check-list">
               <div
                 v-for="c in noteChecks(i)"
                 :key="c.label"
@@ -345,8 +388,13 @@
       </div>
     </ElCard>
 
-    <!-- 质检报告 -->
-    <ElDrawer v-model="reportVisible" title="质检报告 · 笔记与前端选择匹配度" size="520px">
+    <!-- 质检报告：抽屉内逐条列着阈值口径（字数/标签数/标题上限），故整块仅超管渲染 -->
+    <ElDrawer
+      v-if="isSuper"
+      v-model="reportVisible"
+      title="质检报告 · 笔记与前端选择匹配度"
+      size="520px"
+    >
       <template v-if="report">
         <ElAlert
           :title="`${report.statusText}${report.summary ? ` · ${report.summary}` : ''}`"
@@ -412,8 +460,8 @@
       <div v-else class="mk-result-empty">本次生成没有质检数据。</div>
     </ElDrawer>
 
-    <!-- 查看本次提示词（api 层返回的 prompt 原文，只读） -->
-    <ElDrawer v-model="promptVisible" title="本次下发的提示词" size="520px">
+    <!-- 查看本次提示词（api 层返回的 prompt 原文，只读；仅超管可见） -->
+    <ElDrawer v-if="isSuper" v-model="promptVisible" title="本次下发的提示词" size="520px">
       <ElAlert
         title="这是本次真正提交给模型的提示词原文（只读）。"
         type="info"
@@ -651,7 +699,9 @@
     generateXhsNote,
     isXhsLocalScenario,
     noteSnippet,
-    resolveXhsIpType
+    emojiUsageLabel,
+    resolveXhsIpType,
+    xhsLengthLabel
   } from './marketing-api-bridge'
   import type {
     PromptCheck,
@@ -671,6 +721,7 @@
   } from '@/api/my'
   import { useMarketingFavorites } from './marketing-favorites'
   import { useAiConfigStore } from '@/store/modules/ai-config'
+  import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
   import { Delete } from '@element-plus/icons-vue'
   import { ElMessage, ElTag } from 'element-plus'
@@ -678,6 +729,10 @@
   defineOptions({ name: 'XhsTool' })
 
   const { isHandheld } = useDevice()
+
+  /** 超管判定：同 `marketing/index.vue` 既有范式，只读服务端下发的 roles（外部不可覆盖） */
+  const userStore = useUserStore()
+  const isSuper = computed(() => (userStore.getUserInfo.roles ?? []).includes('R_SUPER'))
 
   /** 表单 label 位置：手持端（≤768）改到控件上方（本页无外层 ElForm，只能写在 form-item 上） */
   const formLabelPosition = computed<'top' | undefined>(() =>
