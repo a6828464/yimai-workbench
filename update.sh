@@ -7,12 +7,39 @@ SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SITE_ROOT="${SITE_ROOT:-$SCRIPT_ROOT}"
 APP_ROOT="$SITE_ROOT/backend"
 WORK_ROOT="${WORK_ROOT:-$SITE_ROOT/.update-work}"
-# 只用固定可信发布 URL，不采用 Gitee release API 动态返回的 browser_download_url，
+STATE_FILE="$SITE_ROOT/.update-state.json"
+
+# ── 通道表（v3.8.0 起：manifest 驱动的多通道，参照一麦GOS 手册 3.1/3.2）─────────
+# 三个通道都是「固定可信发布 URL」，不采用 release API 动态返回的 browser_download_url，
 # 避免 release 仓库被接管时资产 URL 被投毒（curl 侧 SSRF）。
+# 优先级设计（国内服务器实测教训）：
+#   ① gitee          —— 国内服务器访问稳定、秒级，永远第一优先（历史教训：GitHub 优先时
+#                        国内先撞墙 12 秒才轮到 Gitee，后台才显示「均不可达」的假象）
+#   ② github_mirror  —— 自建 Cloudflare 反代（github.shunan.fun），GitHub 被墙但 CF 可达时救场
+#   ③ github         —— GitHub 直连，海外服务器/网络好时走这条
+# manifest.json 由 CI 生成（version/updated/sha256/notes），发布时随包上传到双平台
+# auto-latest release —— 它是「服务器知不知道有新版、该下哪个包、哈希是多少」的唯一依据。
+MANIFEST_SOURCES="gitee github_mirror github"
+GITEE_MANIFEST_URL="https://gitee.com/meng-taoo/yimai-workbench/releases/download/auto-latest/manifest.json"
 GITEE_PACKAGE_URL="https://gitee.com/meng-taoo/yimai-workbench/releases/download/auto-latest/yimai-workbench-latest.zip"
+MIRROR_MANIFEST_URL="https://github.shunan.fun/a6828464/yimai-workbench/releases/download/auto-latest/manifest.json"
+MIRROR_PACKAGE_URL="https://github.shunan.fun/a6828464/yimai-workbench/releases/download/auto-latest/yimai-workbench-latest.zip"
+GITHUB_MANIFEST_URL="https://github.com/a6828464/yimai-workbench/releases/download/auto-latest/manifest.json"
 GITHUB_PACKAGE_URL="https://github.com/a6828464/yimai-workbench/releases/download/auto-latest/yimai-workbench-latest.zip"
-# 期望 sha256（发布方在受控配置中提供；为空则跳过强校验并告警，可经 RELEASE_SHA256 注入）
+# 期望 sha256：优先读 manifest（发布侧权威）；也可经 RELEASE_SHA256 显式注入覆盖。
+# 为空（无 manifest 且未注入）则跳过强校验并告警。
 EXPECTED_SHA256="${RELEASE_SHA256:-}"
+LAST_OK_SOURCE=""
+if [ -f "$STATE_FILE" ] && command -v python3 >/dev/null 2>&1; then
+  # 通道记忆（手册 3.2-①）：上次下载成功的通道提到最前，检查与下载同源。
+  # 落在站点根 .update-state.json（不入 git、不在 backend/ 内，rsync 不会碰它）。
+  # 路径当参数传而不是拼进源码：STATE_FILE 里可能出现引号/空格，拼源码会被注入。
+  LAST_OK_SOURCE="$(python3 -c "
+import json,sys
+try: print(json.load(open(sys.argv[1])).get('source',''))
+except Exception: print('')
+" "$STATE_FILE" 2>/dev/null || true)"
+fi
 
 if [ ! -d "$APP_ROOT" ]; then
   # 变量名用 ${} 括起来：后面紧跟的全角「（」是多字节字符，bash 会把首字节并进变量名，
@@ -50,24 +77,138 @@ rm -rf "$WORK_ROOT"
 mkdir -p "$WORK_ROOT"
 trap 'rm -rf "$WORK_ROOT"' EXIT
 
-echo "── 下载发行包：GitHub auto-latest（优先）；Gitee auto-latest（兜底）"
+echo "── 下载发行包：Gitee（优先）→ GitHub 反代（兜底）→ GitHub 直连（末选）"
 
-download_ok=0
-for url in "$GITHUB_PACKAGE_URL" "$GITEE_PACKAGE_URL"; do
-  echo "  尝试: $url"
+# 通道记忆（手册 3.2-①）：上次成功的通道提到队首。gitee 本来就第一，无需重排。
+if [ -n "$LAST_OK_SOURCE" ] && [ "$LAST_OK_SOURCE" != "gitee" ]; then
+  MANIFEST_SOURCES="$LAST_OK_SOURCE $(echo "$MANIFEST_SOURCES" | tr ' ' '\n' | grep -v "^$LAST_OK_SOURCE$" | tr '\n' ' ')"
+  echo "  通道记忆：上次经 [$LAST_OK_SOURCE] 下载成功，本次优先该通道"
+fi
+
+curl_fetch() {  # $1=url $2=输出文件 $3=超时秒  $4=额外说明
   # 仅 HTTPS、强制 TLS1.2+、禁止降级到非 https 的内网跳转，杜绝供应链/SSRF 投毒
-  if curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-    --retry 3 --retry-delay 3 --connect-timeout 15 --max-time 600 \
-    -o "$WORK_ROOT/release.zip" "$url"; then
+  # 时间戳破 CDN 缓存（手册 3.2-②）：GitHub/Gitee 对同名 Release 资产有 CDN 缓存，
+  # 删旧建新后可能仍吐旧文件 —— URL 加 ?t=now 强制回源。
+  local url="$1" out="$2" tmo="$3"
+  local sep="?"
+  case "$url" in *\?*) sep="&";; esac
+  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    --retry 2 --retry-delay 3 --connect-timeout 10 --max-time "$tmo" \
+    -o "$out" "${url}${sep}t=$(date +%s)"
+}
+
+source_label() {  # 通道的人类可读名（前端「经 Gitee / 经 GitHub 反代」同口径，手册 3.4）
+  case "$1" in
+    gitee)         echo "Gitee";;
+    github_mirror) echo "GitHub 反代";;
+    github)        echo "GitHub 直连";;
+    *)             echo "$1";;
+  esac
+}
+
+manifest_url_of() {
+  case "$1" in
+    gitee)         echo "$GITEE_MANIFEST_URL";;
+    github_mirror) echo "$MIRROR_MANIFEST_URL";;
+    github)        echo "$GITHUB_MANIFEST_URL";;
+  esac
+}
+package_url_of() {
+  case "$1" in
+    gitee)         echo "$GITEE_PACKAGE_URL";;
+    github_mirror) echo "$MIRROR_PACKAGE_URL";;
+    github)        echo "$GITHUB_PACKAGE_URL";;
+  esac
+}
+
+# ── 第一步：逐通道拉 manifest.json（拿到权威 version/sha256/notes）──────────
+# 逐通道错误透出（手册 3.2-③）：失败时用户看到「gitee：HTTP 404；github：超时 10s」
+# 而不是一句无法诊断的「均不可达」。manifest 全挂时仍可走纯包下载（降级，
+# 丢失 sha256 校验），不会让更新整体失败 —— manifest 是校验增强，不是硬依赖。
+FETCH_ERRORS=""
+MANIFEST_JSON=""
+MANIFEST_SOURCE=""
+for src in $MANIFEST_SOURCES; do
+  murl="$(manifest_url_of "$src")"
+  echo "  尝试清单: $murl"
+  if curl_fetch "$murl" "$WORK_ROOT/manifest.json" 15 "manifest"; then
+    if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$WORK_ROOT/manifest.json" 2>/dev/null; then
+      MANIFEST_SOURCE="$src"
+      MANIFEST_JSON="$(cat "$WORK_ROOT/manifest.json")"
+      echo "  ✓ 清单经 [$(source_label "$src")] 获取成功"
+      break
+    else
+      FETCH_ERRORS="${FETCH_ERRORS}${src}：清单格式异常（非合法 JSON）；"
+      echo "  清单格式异常，尝试下一个通道..."
+    fi
+  else
+    rc=$?
+    FETCH_ERRORS="${FETCH_ERRORS}${src}：清单下载失败（curl 退出码 ${rc}）；"
+    echo "  清单下载失败，尝试下一个通道..."
+  fi
+done
+
+# 从 manifest 提取字段（已确认是合法 JSON 才进来）
+manifest_field() {  # $1=json 键名
+  test -z "$MANIFEST_JSON" && return 0
+  printf '%s' "$MANIFEST_JSON" | python3 -c "
+import json,sys
+try:
+    obj = json.load(sys.stdin)
+    v = obj.get(sys.argv[1], '')
+    print(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False))
+except Exception:
+    print('')
+" "$1" 2>/dev/null
+}
+
+if [ -n "$MANIFEST_SOURCE" ]; then
+  # manifest 的 sha256 是发布侧权威值；显式注入的 RELEASE_SHA256 优先级更高（人工覆盖）
+  M_SHA256="$(manifest_field sha256)"
+  if [ -n "$M_SHA256" ] && [ -z "$EXPECTED_SHA256" ]; then
+    EXPECTED_SHA256="$M_SHA256"
+  fi
+  M_VERSION="$(manifest_field version)"
+  M_UPDATED="$(manifest_field updated)"
+  [ -n "$M_VERSION" ] && echo "  远端版本：v${M_VERSION}（发布于 ${M_UPDATED:-未知}）"
+  # 通道记忆（手册 3.2-①）：成功后落盘，下次检查与下载同源
+  printf '{"source":"%s","version":"%s","at":"%s"}\n' \
+    "$MANIFEST_SOURCE" "${M_VERSION:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_FILE" 2>/dev/null \
+    || echo "  提示：通道记忆写入失败（不影响本次更新）"
+fi
+
+# ── 第二步：下载发行包 ─────────────────────────────────────────
+# 下载通道策略：与 manifest 同源优先（检查与下载同源，避免「清单读的 A、包装的 B」
+# 的错位）；manifest 通道失败则按默认序降级。manifest 全挂时按默认序直接下包。
+download_ok=0
+DOWNLOAD_SOURCE=""
+DL_ERRORS=""
+if [ -n "$MANIFEST_SOURCE" ]; then
+  # 与清单同源的通道排最前，其余按默认序跟随后面
+  DL_SOURCES="$MANIFEST_SOURCE $(echo "$MANIFEST_SOURCES" | tr ' ' '\n' | grep -v "^$MANIFEST_SOURCE$" | tr '\n' ' ')"
+else
+  DL_SOURCES="$MANIFEST_SOURCES"
+fi
+if [ -z "$FETCH_ERRORS" ]; then :; else
+  echo "  ⚠ 清单获取：${FETCH_ERRORS}"
+fi
+
+for src in $DL_SOURCES; do
+  purl="$(package_url_of "$src")"
+  echo "  尝试下载: $purl"
+  if curl_fetch "$purl" "$WORK_ROOT/release.zip" 600; then
     download_ok=1
+    DOWNLOAD_SOURCE="$src"
+    echo "  ✓ 发行包经 [$(source_label "$src")] 下载成功"
     break
   else
+    DL_ERRORS="${DL_ERRORS}${src}：包下载失败；"
     echo "  下载失败，尝试下一个来源..."
   fi
 done
 
 if [ "$download_ok" -ne 1 ]; then
-  echo "致命错误：发行包下载失败（GitHub 与 Gitee 均不可达）。请检查服务器外网连通性后重试。"
+  echo "致命错误：发行包下载失败（各通道明细：${DL_ERRORS:-无}）。请检查服务器外网连通性后重试。"
   exit 1
 fi
 
@@ -75,13 +216,22 @@ test -s "$WORK_ROOT/release.zip" || { echo "致命错误：下载的发行包为
 
 if [ -n "$EXPECTED_SHA256" ]; then
   ACTUAL_SHA256="$(sha256sum "$WORK_ROOT/release.zip" | awk '{print $1}')"
-  echo "  校验 sha256：期望 ${EXPECTED_SHA256} 实际 ${ACTUAL_SHA256}"
+  echo "  校验 sha256（经 $(source_label "$DOWNLOAD_SOURCE")）：期望 ${EXPECTED_SHA256} 实际 ${ACTUAL_SHA256}"
   if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
     echo "致命错误：发行包 sha256 校验失败，已中止更新（请确认发布包与校验值一致）。"
+    echo "  提示：若怀疑 CDN 缓存吐旧包（发布刚刷新），等 1-2 分钟后重试；"
+    echo "        持续失败请核对 release 附件与 manifest.json 里的 sha256 是否一致。"
     exit 1
   fi
 else
-  echo "  警告：未提供 RELEASE_SHA256，本次跳过强完整性校验。建议发布侧提供预期 sha256 注入。"
+  echo "  警告：无 manifest 且未提供 RELEASE_SHA256，本次跳过强完整性校验。"
+fi
+
+# 下载成功后把通道记忆更新为实际下载通道（下载通道才是「真正走通」的证据）
+if [ -n "$DOWNLOAD_SOURCE" ]; then
+  printf '{"source":"%s","version":"%s","at":"%s"}\n' \
+    "$DOWNLOAD_SOURCE" "${M_VERSION:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_FILE" 2>/dev/null \
+    || echo "  提示：通道记忆写入失败（不影响本次更新）"
 fi
 
 unzip -q "$WORK_ROOT/release.zip" -d "$WORK_ROOT/unpacked"

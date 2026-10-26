@@ -217,11 +217,19 @@ nginx/PHP 都没拦；若返回 **413** 才是被体积上限拒掉。
 
 发行包命名：版本号取自 `CHANGELOG.md` 首个版本标题（如 `v3.1.8`），安装包为 `yimai-workbench-v3.1.8.zip`，并额外生成 `yimai-workbench-latest.zip` 供 `update.sh` 固定名下载；Release 标题/备注含版本号与更新日志。
 
-Gitee Release 自动发布需要在 GitHub 仓库配置 Actions Secret：`GITEE_TOKEN`。Token 至少需要仓库 Release 的创建和上传权限。Token 只用于创建发行包，不写入代码。服务器更新脚本**优先读取 GitHub `auto-latest` 的 `yimai-workbench-latest.zip`，GitHub 不可用时回退到 Gitee `auto-latest`**（以 `update.sh` 里 `GITHUB_PACKAGE_URL` / `GITEE_PACKAGE_URL` 的顺序为准）。
+Gitee Release 自动发布需要在 GitHub 仓库配置 Actions Secret：`GITEE_TOKEN`。Token 至少需要仓库 Release 的创建和上传权限。Token 只用于创建发行包，不写入代码。
+
+**在线更新通道（v3.8.0 起，参照《GitHub镜像推送与国内服务器在线更新-参考手册》多通道设计）**：
+
+- 服务器 `update.sh` 按三通道顺序下载：**Gitee `auto-latest`（优先，国内秒级）→ 自建 GitHub 反代 `github.shunan.fun`（兜底，GitHub 被墙但 Cloudflare 可达时救场）→ GitHub 直连（末选）**。
+- 每次发布 CI 会生成 `manifest.json`（version / updated / sha256 / commit / notes）随包上传到双平台 `auto-latest` Release；`update.sh` 先拉清单（带 `?t=` 时间戳破 CDN 缓存）、拿到权威 sha256 后再下包强校验。
+- 通道记忆：上次下载成功的通道记在站点根 `.update-state.json`，下次优先走同一条（检查与下载同源）；逐通道失败明细会打在更新日志里（`gitee：HTTP 404；github_mirror：超时`），不再是一句「均不可达」。
+- 后台「版本更新」页的检查也走同一条 manifest 通道（`GET /system/version`），带 1 小时成功缓存与 24 小时通道记忆；三通道全挂时回退旧的 Gitee/GitHub API 查 HEAD SHA，并展示「上次成功检查」的兜底快照。
+- 开发本机推送 GitHub 用 `./sync.sh`（或 `sync.ps1`）：固定 `-c http.proxy=` 清掉本会话代理 + 显式镜像 URL + 三次抖动重试（间隔 20 秒）+ HTTP/1.1 降级，两端 `ls-remote` SHA 一致才算同步完成。
 
 配置 Secret：GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret，名称填 `GITEE_TOKEN`。配置后重新推送一次 `main`，或在 Actions 中手动运行工作流，Gitee 会出现对应 Release 和发布包。
 
-如果没有配置 `GITEE_TOKEN`，工作流会跳过 Gitee 发布（不影响 GitHub 发行包），服务器会直接用 GitHub `auto-latest`。
+如果没有配置 `GITEE_TOKEN`，工作流会跳过 Gitee 发布（不影响 GitHub 发行包），服务器会直接走 GitHub 直连 / 反代通道。
 
 更新脚本位于安装目录 `app/update.sh`，会自动以自身目录为站点根。生产服务器不安装 Node.js、不运行前端构建，也不通过 Web 请求直接执行任意 Shell 命令。
 

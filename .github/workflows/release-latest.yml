@@ -145,6 +145,22 @@ jobs:
           cd ../installer-stage
           zip -qr "../yimai-workbench-installer-v${VERSION}.zip" app -x '*.DS_Store'
           cp "../yimai-workbench-installer-v${VERSION}.zip" "../yimai-workbench-installer-latest.zip"
+          cd ..
+
+          # manifest.json（v3.8.0 起）：服务器在线更新的「唯一权威元数据」。
+          # 字段口径与 update.sh 的 manifest_field() / 后端 systemVersionInfo() 对齐：
+          #   version —— CHANGELOG 首个版本号（不带 v 前缀，与安装包名同口径）
+          #   updated —— 本次发布时间（UTC ISO）
+          #   sha256  —— yimai-workbench-latest.zip 的内容哈希（下载后强校验的唯一依据；
+          #              只对静态附件通道校验：本仓不走 codeload 实时归档，无字节漂移问题）
+          #   commit  —— 构建来源提交（排障用，不参与版本比对）
+          #   notes   —— 与 release 说明同文（前端「最新发行」卡片可直读，不必调 release API）
+          NOTES="$(awk 'BEGIN{n=0} /^## /{n++; if(n==1) next; if(n==2) exit} n==1{print}' CHANGELOG.md | sed '/^[[:space:]]*$/d')"
+          SHA256_LATEST="$(sha256sum yimai-workbench-latest.zip | awk '{print $1}')"
+          # manifest.json（v3.8.0 起）via 单行 python：YAML block scalar 内不允许出现
+          # 零缩进的续行（会把整个 workflow 干崩），所以 python -c 必须压成一行
+          printf '%s' "$NOTES" | python3 -c 'import json,sys,datetime; v,s,c=sys.argv[1],sys.argv[2],sys.argv[3]; n=sys.stdin.read().strip(); print(json.dumps({"version":v,"updated":datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),"sha256":s,"commit":c,"notes":n},ensure_ascii=False,indent=2))' "$VERSION" "$SHA256_LATEST" "$GITHUB_SHA" > manifest.json
+          cat manifest.json
 
       - name: Publish auto-latest release
         env:
@@ -155,7 +171,8 @@ jobs:
           # 取首个版本标题下的更新日志正文（到下一个版本标题为止）
           NOTES="$(awk 'BEGIN{n=0} /^## /{n++; if(n==1) next; if(n==2) exit} n==1{print}' CHANGELOG.md | sed '/^[[:space:]]*$/d')"
           gh release delete auto-latest --yes 2>/dev/null || true
-          gh release create auto-latest yimai-workbench-latest.zip yimai-workbench-installer-latest.zip \
+          # manifest.json 随包上传：服务器 update.sh 的清单通道读的就是这份
+          gh release create auto-latest yimai-workbench-latest.zip yimai-workbench-installer-latest.zip manifest.json \
             --target "$GITHUB_SHA" \
             --title "一麦工作台 v${VERSION}" \
             --notes "$(printf '%s' "$NOTES")"

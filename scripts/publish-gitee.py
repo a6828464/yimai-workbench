@@ -420,7 +420,7 @@ def main():
             failed += 1
 
     # ------------------------------------------------------------ auto-latest
-    log("\n── 3/4 刷新 auto-latest（服务器 update.sh 的回退下载源）")
+    log("\n── 3/4 刷新 auto-latest（服务器 update.sh 的主下载源）")
     arid = ensure_release(releases, "auto-latest", "一麦工作台（最新）", body)
     if arid:
         # 先判断是否已经是本版本的包：内容一致就别动，避免「删了旧的、新的又传失败」
@@ -442,6 +442,17 @@ def main():
                 # 固定名包是服务器 update.sh 的回退下载源，传不上去必须让人知道
                 failed += 1
 
+            # manifest.json（v3.8.0 起）：服务器在线更新的权威元数据（version/sha256/notes）。
+            # update.sh 的通道表把 gitee 排第一，这份 manifest 就是国内服务器「知道有新版、
+            # 该下哪个包、哈希是多少」的主通道，传失败同样计入 failed（不能静默）。
+            manifest_path = os.path.join(PKG_DIR, "manifest.json")
+            if os.path.exists(manifest_path):
+                if not upload(arid, "manifest.json", "manifest.json（v{}）".format(version)):
+                    failed += 1
+            else:
+                warn("本地缺少 manifest.json（CI assemble 步骤应生成），跳过清单上传")
+                failed += 1
+
             # 收尾：确保每个固定名**只留一份**（保留 id 最大的，即刚传的）。
             #
             # 为什么必须做：Gitee 在同名附件存在时，下载地址会解析到其中一份 —— 实测
@@ -456,6 +467,9 @@ def main():
                 delete_asset(arid, a.get("id"), f"auto-latest/{LATEST}（同名旧附件，只保留最新一份）")
             for a in after.get(LATEST_INSTALLER, []):
                 delete_asset(arid, a.get("id"), f"auto-latest/{LATEST_INSTALLER}（不再维护，清掉省配额）")
+            # manifest.json 同理只留最新一份（同组规则）
+            for a in after.get("manifest.json", [])[:-1]:
+                delete_asset(arid, a.get("id"), "auto-latest/manifest.json（同名旧附件，只保留最新一份）")
 
     # ---------------------------------------------------------------- 汇总
     #

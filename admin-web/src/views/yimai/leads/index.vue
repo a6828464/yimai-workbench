@@ -332,8 +332,20 @@
           </ElCol>
           <ElCol :span="12">
             <ElFormItem label="来源" required>
-              <ElSelect v-model="dialog.form.source" placeholder="选择来源渠道" class="!w-full">
-                <ElOption v-for="s in sourceOptions" :key="s" :label="s" :value="s" />
+              <!-- 新增用精简清单（v3.8.0：全量 15 项里近重复项太多，收敛到日常录入
+                   真实发生的主项）；编辑用全量 sourceOptions（历史值可回显） -->
+              <ElSelect
+                v-model="dialog.form.source"
+                placeholder="选择来源渠道"
+                class="!w-full"
+                :filterable="!dialog.isCreate"
+              >
+                <template v-if="dialog.isCreate">
+                  <ElOption v-for="s in createSourceOptions" :key="s" :label="s" :value="s" />
+                </template>
+                <template v-else>
+                  <ElOption v-for="s in sourceOptions" :key="s" :label="s" :value="s" />
+                </template>
               </ElSelect>
             </ElFormItem>
           </ElCol>
@@ -671,6 +683,44 @@
    */
   const sourceOptions = ref<string[]>([...FALLBACK_LEAD_ENUMS.sources])
   const platformOptions = ref<string[]>([...FALLBACK_LEAD_ENUMS.orderPlatforms])
+
+  /**
+   * 新增留资下拉的「精简清单」（v3.8.0）。
+   *
+   * 背景：全量枚举 15 项里有大量**近重复项**——`抖音`/`抖音直播`/`抖音私信`/`抖音周年庆直播`
+   * 四项、`转介绍`/`会员转介绍`/`老会员转介绍` 三项、`自然到店`/`到店` 两项——录入的人
+   * 要在一堆近似选项里找半天，还容易选错口径。
+   *
+   * 精简原则：
+   *   1. 只保留**日常录入会真实发生**的来源（约一半）；
+   *   2. 近重复项收敛到主项（`抖音`一个入口足够，细分直播/私信对留资无统计意义
+   *      —— 抖音系在统计端由 `isOnlineLead()` 按「抖音」关键词整体命中，不受影响）；
+   *   3. 保留 `转介绍`（三个变体里最常用的口径，介绍人字段由 isReferralSource 匹配）。
+   *
+   * ⚠️ **只影响新增下拉，不影响数据层**：
+   *   - 写入侧：选中的值都在后端 `LEAD_SOURCES` 枚举内，写路径校验不受影响；
+   *   - 编辑侧：编辑弹窗仍用全量 `sourceOptions`（历史数据可能带精简清单外的值，
+   *     如 `抖音私信`，原样带回必须能正常显示与保存 —— 见 channelRules 的「改动才校验」注释）；
+   *   - 枚举纪律：`LEAD_SOURCES` 只增不减的纪律不变，这里只是「新增表单推荐项」。
+   */
+  const CREATE_SOURCE_SHORTLIST = [
+    '美团',
+    '大众点评',
+    '抖音',
+    '视频号',
+    '小红书',
+    '电话咨询',
+    '转介绍',
+    '自然到店',
+    '潜客激活'
+  ] as const
+
+  /** 新增留资下拉用精简清单；编辑用全量（历史值可回显可回流）。列表来自后端下发，兜底用常量 */
+  const createSourceOptions = computed(() => {
+    const backend = new Set(sourceOptions.value)
+    // 后端下发的枚举里存在才推荐：防止后端将来删项时前端还在推荐已非法的值
+    return CREATE_SOURCE_SHORTLIST.filter((s) => backend.has(s))
+  })
 
   /**
    * 是否为「转介绍」类来源 —— 决定表单是否显示「介绍人」输入框。

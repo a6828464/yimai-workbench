@@ -2599,6 +2599,118 @@ function runShell(string $script, int $timeout = 180): array
     ];
 }
 
+/**
+ * manifest 通道表（v3.8.0 起，参照一麦GOS《GitHub镜像推送与国内服务器在线更新-参考手册》3.1）。
+ *
+ * 优先级：gitee（国内服务器稳定秒级）→ github_mirror（自建 Cloudflare 反代救场）→ github（直连）。
+ * 历史教训：此前远端检查只走 Gitee API → GitHub API 两级且 GitHub 排后，国内网络先撞墙
+ * 20 秒才轮到 Gitee；现在三条通道都是静态 Release 资产（不依赖 API 配额、不动态返回 URL）。
+ *
+ * 每个通道两 URL：manifest（version/sha256/notes 元数据）+ 无 API 依赖。
+ * manifest.json 由 CI 生成并随包上传到双平台 auto-latest release。
+ */
+function updateManifestSources(): array
+{
+    return [
+        'gitee' => [
+            'manifest' => 'https://gitee.com/meng-taoo/yimai-workbench/releases/download/auto-latest/manifest.json',
+        ],
+        'github_mirror' => [
+            'manifest' => 'https://github.shunan.fun/a6828464/yimai-workbench/releases/download/auto-latest/manifest.json',
+        ],
+        'github' => [
+            'manifest' => 'https://github.com/a6828464/yimai-workbench/releases/download/auto-latest/manifest.json',
+        ],
+    ];
+}
+
+/**
+ * 逐通道拉 manifest.json（带通道记忆 + 逐通道错误透出 + 时间戳破 CDN 缓存）。
+ *
+ * 机制（手册 3.2 四件套，缺一不可）：
+ *  ① 通道记忆：上次成功的通道提最前（Cache 24h），检查与下载同源；
+ *  ② 时间戳破缓存：URL 加 ?t=now，绕过 GitHub/Gitee 对同名资产的 CDN 缓存；
+ *  ③ 逐通道错误透出：失败明细按通道分列，而不是一句「均不可达」；
+ *  ④ 成功结果缓存 1 小时 + 失败时返回上次成功检查的远端信息（兜底展示）。
+ *
+ * 返回 [manifest|null, source, errors[]]：manifest 为 null 表示三通道全挂。
+ */
+function fetchUpdateManifest(): array
+{
+    $sources = updateManifestSources();
+    $errors = [];
+
+    // ① 通道记忆：上次成功的通道提到最前（gitee 本来就第一，跳过重排）
+    $lastOk = (string) Cache::get('yimai_update_manifest_source');
+    if ($lastOk !== '' && $lastOk !== 'gitee' && isset($sources[$lastOk])) {
+        $sources = [$lastOk => $sources[$lastOk]] + $sources;
+    }
+
+    foreach ($sources as $source => $urls) {
+        // ② 时间戳破 CDN 缓存：删旧建新后同名资产可能仍吐旧文件
+        $url = $urls['manifest'].'?t='.time();
+        try {
+            $resp = Http::timeout(10)->get($url);
+            if ($resp->failed()) {
+                $errors[] = $source.'：HTTP '.$resp->status();
+                continue;
+            }
+            $data = $resp->json();
+            if (! is_array($data) || empty($data['version'])) {
+                $errors[] = $source.'：HTTP 200 但清单格式异常（缺 version 键）';
+                continue;
+            }
+            // ① 成功后记忆通道 + ④ 成功结果缓存 1 小时（清单本体）
+            Cache::put('yimai_update_manifest_source', $source, now()->addDay());
+            Cache::put('yimai_update_manifest', $data, now()->addHour());
+
+            return [$data, $source, $errors];
+        } catch (Throwable $e) {
+            $errors[] = $source.'：'.mb_substr($e->getMessage(), 0, 120);
+        }
+    }
+
+    return [null, '', $errors];
+}
+
+/** manifest 通道名 → 前端可读标签（「经 Gitee / 经 GitHub 反代」，手册 3.4 同口径） */
+function updateSourceLabel(string $source): string
+{
+    return match ($source) {
+        'gitee' => '经 Gitee',
+        'github_mirror' => '经 GitHub 反代',
+        'github' => '经 GitHub',
+        default => $source,
+    };
+}
+
+/**
+ * 拉取远端清单（带 1 小时成功缓存；全挂时回退上次成功检查的快照做兜底展示）。
+ * 返回 [manifest|null, source, errors[], fromCache(bool)]。
+ */
+function remoteUpdateManifest(): array
+{
+    $cached = Cache::get('yimai_update_manifest');
+    if (is_array($cached) && ! empty($cached['version'])) {
+        $source = (string) Cache::get('yimai_update_manifest_source');
+        // 命中缓存：直接用（时间戳取缓存写入时刻无法精读，标记 fromCache 让前端可区分）
+        return [$cached, $source, [], true];
+    }
+
+    [$manifest, $source, $errors] = fetchUpdateManifest();
+    if ($manifest !== null) {
+        return [$manifest, $source, $errors, false];
+    }
+
+    // ④ 全挂时兜底：返回上次成功检查的远端版本信息（无则空），用户至少知道远端理论版本
+    $lastGood = Cache::get('yimai_update_manifest_lastgood');
+    if (is_array($lastGood) && ! empty($lastGood['version'])) {
+        return [$lastGood, (string) ($lastGood['_source'] ?? ''), $errors, true];
+    }
+
+    return [null, '', $errors, false];
+}
+
 /** 本地 + 远程版本信息 */
 function systemVersionInfo(): array
 {
@@ -2635,34 +2747,94 @@ function systemVersionInfo(): array
         ];
     }
 
-    // 远端 main 最新提交：优先 Gitee，失败时回退 GitHub
+    // 远端版本（v3.8.0 起）：优先走 manifest 多通道（gitee → 反代 → github 直连，
+    // 带通道记忆/缓存/逐通道错误透出，见 fetchUpdateManifest）。manifest 拿不到时
+    // 保留旧路径（Gitee API → GitHub API 查 main HEAD SHA）作为二级回退 ——
+    // 老版本部署上没有 manifest 资产时（首个带 manifest 的 release 发布前的过渡期），
+    // 版本检查仍可用。
+    $remote = [
+        'commit' => '', 'error' => '', 'source' => '', 'sourceLabel' => '',
+        'version' => '', 'updated' => '', 'fromCache' => false, 'errors' => [],
+    ];
+    [$manifest, $mSource, $mErrors, $fromCache] = remoteUpdateManifest();
     $remoteSha = '';
     $remoteErr = '';
-    $giteeToken = (string) config('services.gitee.token');
-    try {
-        $resp = Http::timeout(20)->get(
-            'https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/commits/main',
-            $giteeToken !== '' ? ['access_token' => $giteeToken] : []
-        );
-        if ($resp->successful() && ($resp->json('sha') ?? false)) {
-            $remoteSha = (string) $resp->json('sha');
-        } else {
-            $fallback = Http::timeout(20)->get('https://api.github.com/repos/a6828464/yimai-workbench/commits/main');
-            if ($fallback->successful() && ($fallback->json('sha') ?? false)) {
-                $remoteSha = (string) $fallback->json('sha');
-            } else {
-                $remoteErr = 'Gitee/GitHub API 均不可达';
-            }
+
+    if (is_array($manifest) && ! empty($manifest['version'])) {
+        $remote['version'] = (string) $manifest['version'];
+        $remote['updated'] = (string) ($manifest['updated'] ?? '');
+        $remote['commit'] = (string) ($manifest['commit'] ?? '');
+        $remote['source'] = $mSource;
+        $remote['sourceLabel'] = updateSourceLabel($mSource);
+        $remote['fromCache'] = $fromCache;
+        $remote['errors'] = $mErrors;
+        $remoteSha = $remote['commit'];
+        // 成功检查（非缓存命中）时存「上次成功」快照，供全挂时兜底展示
+        if (! $fromCache) {
+            Cache::put('yimai_update_manifest_lastgood', $manifest + ['_source' => $mSource], now()->addDay());
         }
-    } catch (Throwable $e) {
-        $remoteErr = mb_substr($e->getMessage(), 0, 200);
+        // 版本比对：本地 version.json 与 manifest 都带 commit —— 优先 commit 精确比对
+        // （manifest 的 commit 由 CI 写入构建 SHA，与 version.json 的 HEAD 同源）；
+        // commit 缺失（理论不该发生）则退化为版本号比对（CHANGELOG 首标题 vs manifest.version）
+        if ($remoteSha !== '') {
+            $upToDate = str_starts_with($local['commit'], $remoteSha);
+        } else {
+            $localVersion = localSemver();
+            $upToDate = $localVersion !== '' && version_compare($localVersion, $remote['version'], '>=');
+        }
+    } else {
+        // 二级回退：Gitee API → GitHub API（旧路径，过渡期兼容）
+        $giteeToken = (string) config('services.gitee.token');
+        try {
+            $resp = Http::timeout(20)->get(
+                'https://gitee.com/api/v5/repos/meng-taoo/yimai-workbench/commits/main',
+                $giteeToken !== '' ? ['access_token' => $giteeToken] : []
+            );
+            if ($resp->successful() && ($resp->json('sha') ?? false)) {
+                $remoteSha = (string) $resp->json('sha');
+            } else {
+                $fallback = Http::timeout(20)->get('https://api.github.com/repos/a6828464/yimai-workbench/commits/main');
+                if ($fallback->successful() && ($fallback->json('sha') ?? false)) {
+                    $remoteSha = (string) $fallback->json('sha');
+                } else {
+                    $remoteErr = '清单与仓库 API 均不可达';
+                }
+            }
+        } catch (Throwable $e) {
+            $remoteErr = mb_substr($e->getMessage(), 0, 200);
+        }
+        // 逐通道错误透出：manifest 失败明细 + API 错误一起给前端（排障省一半口水）
+        $remote['commit'] = $remoteSha;
+        $remote['error'] = $remoteErr;
+        $remote['errors'] = array_merge($mErrors, $remoteErr !== '' ? ["api：{$remoteErr}"] : []);
+        $remote['source'] = 'api';
+        $remote['sourceLabel'] = '经仓库 API';
+        $upToDate = $remoteSha !== '' && str_starts_with($local['commit'], $remoteSha);
     }
 
     return [
         'local' => $local,
-        'remote' => ['commit' => $remoteSha, 'error' => $remoteErr],
-        'upToDate' => $remoteSha !== '' && str_starts_with($local['commit'], $remoteSha),
+        'remote' => $remote,
+        'upToDate' => $upToDate ?? false,
     ];
+}
+
+/**
+ * 本地语义化版本号（x.y.z）：从 CHANGELOG.md 首个版本标题取。
+ * version.json 不带版本号（只有 commit），manifest 版本比对时用它。
+ * 取不到返回 ''（调用方负责退化处理，不在这里编造值）。
+ */
+function localSemver(): string
+{
+    $cl = base_path().'/CHANGELOG.md';
+    if (! is_file($cl)) {
+        return '';
+    }
+    if (preg_match('/v(\d+\.\d+\.\d+)/', (string) file_get_contents($cl), $m) === 1) {
+        return $m[1];
+    }
+
+    return '';
 }
 
 function latestReleaseNotes(): array

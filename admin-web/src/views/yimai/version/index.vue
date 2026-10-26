@@ -33,8 +33,32 @@
             <ElTag v-if="remoteError" type="danger" size="small">远端不可达</ElTag>
             <ElTag v-else-if="upToDate" type="success" size="small">已是最新</ElTag>
             <ElTag v-else type="warning" size="small">有可用更新</ElTag>
+            <!-- 来源标签（v3.8.0）：一眼知道检查走的哪条通道；缓存命中会标出 -->
+            <ElTag v-if="remoteSourceLabel" size="small" type="info" effect="plain">
+              {{ remoteSourceLabel }}{{ fromCache ? '（缓存）' : '' }}
+            </ElTag>
+          </div>
+          <div v-if="remoteVersion" class="flex-c gap-2">
+            <span class="text-g-500 w-20 shrink-0">远端版本</span>
+            <span class="font-mono">v{{ remoteVersion }}</span>
+            <span v-if="remoteUpdated" class="text-xs text-g-500">{{ remoteUpdated }}</span>
           </div>
         </div>
+
+        <!-- 逐通道失败明细：清单与 API 全挂时才出现；排障时「哪个通道挂了、为什么」一眼可见 -->
+        <ElAlert
+          v-if="channelErrors.length && remoteError"
+          type="info"
+          :closable="false"
+          class="mt-3"
+        >
+          <template #title>更新通道逐项明细</template>
+          <template #default>
+            <ul class="list-disc pl-5 leading-6">
+              <li v-for="(e, i) in channelErrors" :key="i">{{ e }}</li>
+            </ul>
+          </template>
+        </ElAlert>
 
         <div class="mt-3 p-3 bg-g-300/50 rounded text-sm text-g-700">
           {{ version.local.message }}
@@ -123,7 +147,18 @@
 
   interface VersionInfo {
     local: { branch: string; commit: string; message: string; date: string }
-    remote: { commit: string; error: string }
+    /** remote 扩展（v3.8.0 manifest 多通道）：source/sourceLabel/errors/version/updated/fromCache
+     *  由后端 systemVersionInfo 新增；旧字段 commit/error 保留（API 回退路径仍用它们） */
+    remote: {
+      commit: string
+      error: string
+      source?: string
+      sourceLabel?: string
+      version?: string
+      updated?: string
+      fromCache?: boolean
+      errors?: string[]
+    }
     upToDate: boolean
   }
   const loading = ref(true)
@@ -139,6 +174,15 @@
 
   const remoteError = computed(() => version.value?.remote.error || '')
   const upToDate = computed(() => version.value?.upToDate ?? true)
+  /** 更新检查走哪条通道（「经 Gitee / 经 GitHub 反代 / 经 GitHub」）——排障时省一半口水 */
+  const remoteSourceLabel = computed(() => version.value?.remote.sourceLabel || '')
+  /** 远端版本号（manifest 通道才有；API 回退路径为空） */
+  const remoteVersion = computed(() => version.value?.remote.version || '')
+  const remoteUpdated = computed(() => version.value?.remote.updated || '')
+  /** 逐通道失败明细（清单三通道 + API 全挂时才有内容；成功通道排前面的失败明细不展示） */
+  const channelErrors = computed(() => version.value?.remote.errors ?? [])
+  /** 是否命中 1 小时缓存（区分「刚检查」与「缓存值」，提示用户强刷） */
+  const fromCache = computed(() => version.value?.remote.fromCache ?? false)
 
   function short(sha?: string): string {
     return sha ? sha.slice(0, 7) : '-'

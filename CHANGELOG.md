@@ -1,5 +1,55 @@
 # 更新日志
 
+## 2026-10-26 ｜ feat: v3.8.0 在线更新改多通道 manifest 架构（Gitee 优先 + GitHub 反代兜底 + sha256 强校验）+ 留资新增来源精简 + 双平台推送脚本
+
+**为什么做这一版**：参照一麦GOS 插件 2026-10-26 排障沉淀的《GitHub镜像推送与国内服务器在线更新-参考手册》，
+把本项目的镜像推送与在线更新机制升级到同一套打法。旧机制有两个结构性短板：
+① 服务器 `update.sh` 的下载顺序是 **GitHub 优先、Gitee 兜底** —— 国内服务器每次先撞墙 12-20 秒才轮到 Gitee；
+② 没有 manifest 元数据，sha256 校验依赖人工注入 `RELEASE_SHA256`（实际从未注入过，等于从未强校验）。
+同时把「新增留资」的来源下拉从 15 项近重复枚举精简到 9 项日常主项。
+
+### 新增
+
+- **manifest.json 发布元数据**：CI 构建时生成（`version` / `updated` / `sha256` / `commit` / `notes`），
+  随包上传到 GitHub 与 Gitee 双平台 `auto-latest` Release。它是服务器「知道有新版、该下哪个包、
+  哈希是多少」的唯一权威依据。`sha256` 对 `yimai-workbench-latest.zip` 内容取值，下载后强校验。
+- **`update.sh` 三通道下载**（Gitee → 自建反代 `github.shunan.fun` → GitHub 直连），四件套机制齐活：
+  - **通道记忆**：上次成功通道记在站点根 `.update-state.json`，下次优先同通道（检查与下载同源）；
+  - **时间戳破 CDN 缓存**：所有请求 URL 加 `?t=now`，绕过 GitHub/Gitee 同名资产的 CDN 缓存
+    （删旧建新后可能仍吐旧文件）；
+  - **逐通道错误透出**：失败明细按通道分列（`gitee：HTTP 404；github_mirror：超时`），
+    不再是一句无法诊断的「均不可达」；
+  - **sha256 强校验**：从 manifest 读权威哈希（`RELEASE_SHA256` 显式注入优先级更高），校验失败中止更新。
+  manifest 三通道全挂时自动降级为纯包下载（跳过校验并告警），不让更新整体失败。
+- **后端 `systemVersionInfo()` 走 manifest 多通道**：`gitee → 反代 → github` 带通道记忆（24h）+
+  成功缓存（1h）+ 全挂时「上次成功检查」兜底快照 + 逐通道错误透出。manifest 拿不到时回退旧的
+  Gitee/GitHub API 查 HEAD SHA（过渡期兼容：老站点没有 manifest 资产时版本检查仍可用）。
+  版本比对优先 commit SHA 精确比对，commit 缺失退化为版本号比对（CHANGELOG 首标题 vs manifest.version）。
+- **「版本更新」页来源标签**：远端状态旁展示「经 Gitee / 经 GitHub 反代 / 经 GitHub（缓存）」，
+  远端版本号与发布时间一并列出；通道全挂时显示逐项明细清单 —— 排障时省一半口水。
+- **`sync.sh`（macOS/Linux）双平台推送脚本**：`-c http.proxy=` 清掉本会话代理 + 显式镜像 URL
+  （避免 insteadOf 二次重写）+ 三次抖动重试（间隔 20 秒，Cloudflare 反代间歇抖动属正常）+
+  HTTP/1.1 与 500MB postBuffer 降级档，推送后 `ls-remote` 双端 SHA 一致才算完成。
+  `sync.ps1` 同步升级为五步（Gitee 权威源必推 + GitHub 镜像尽力推 + 双端 SHA 验证）。
+
+### 优化
+
+- **留资「新增」来源下拉精简**：15 项 → 9 项日常主项（`美团 / 大众点评 / 抖音 / 视频号 / 小红书 /
+  电话咨询 / 转介绍 / 自然到店 / 潜客激活`）。近重复项收敛：`抖音直播/抖音私信/抖音周年庆直播` →
+  `抖音`（统计端 `isOnlineLead()` 按关键词整体命中，细分口径不受影响）；`转介绍/会员转介绍/老会员转介绍`
+  → `转介绍`（介绍人字段按 `includes('转介绍')` 匹配不受影响）；`自然到店/到店` → `自然到店`。
+  **编辑弹窗仍用全量枚举**（历史数据可能带精简清单外的值，必须能回显、能原样带回保存），
+  后端 `LEAD_SOURCES` 只增不减纪律不变 —— 精简的只是「新增表单推荐项」，不是数据层枚举。
+
+### 技术说明
+
+- CI 里 manifest 生成用单行 `python3 -c`：YAML block scalar 内不允许零缩进续行
+  （多行 heredoc 会把整个 workflow 干崩），这是本次改造里唯一的环境坑。
+- `update.sh` 的 `manifest_field()` 用「路径/键名当参数」而不是拼进 Python 源码串，
+  避免 `STATE_FILE` 路径里出现引号/空格时的注入面。
+- Gitee `auto-latest` 的 manifest.json 上传纳入 `publish-gitee.py` 统管（同名旧附件只留最新一份），
+  上传失败计入非零退出（不再静默）。
+
 ## 2026-10-09 ｜ feat: v3.7.0 朋友圈「图片素材」真正读图（配图随请求送达大模型）+ 生成口径/提示词查看收归超管
 
 **为什么做这一版（原始投诉场景）**：用户在营销工具 → 朋友圈上传配图后，生成出来的文案**跟加不加图没有关系**。
