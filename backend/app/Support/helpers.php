@@ -3116,13 +3116,24 @@ function updateSourceLabel(string $source): string
  * 拉取远端清单（带 1 小时成功缓存；全挂时回退上次成功检查的快照做兜底展示）。
  * 返回 [manifest|null, source, errors[], fromCache(bool)]。
  */
-function remoteUpdateManifest(): array
+/**
+ * 拉取远端清单（带 1 小时成功缓存；全挂时回退上次成功检查的快照做兜底展示）。
+ *
+ * ⚠️ 缓存正是「更新日志已显示新版、版本检查还看不到」的根因：
+ * 更新日志（latestReleaseNotes）实时调 Gitee API 无缓存，而 manifest 有 1 小时缓存。
+ * CI 构建完成后的 1 小时内点「检查更新」，读到的可能还是旧 manifest。
+ *
+ * @param bool $force true=跳过应用缓存，强制重新拉取（用户主动点「检查更新」时用）
+ */
+function remoteUpdateManifest(bool $force = false): array
 {
-    $cached = Cache::get('yimai_update_manifest');
-    if (is_array($cached) && ! empty($cached['version'])) {
-        $source = (string) Cache::get('yimai_update_manifest_source');
-        // 命中缓存：直接用（时间戳取缓存写入时刻无法精读，标记 fromCache 让前端可区分）
-        return [$cached, $source, [], true];
+    if (! $force) {
+        $cached = Cache::get('yimai_update_manifest');
+        if (is_array($cached) && ! empty($cached['version'])) {
+            $source = (string) Cache::get('yimai_update_manifest_source');
+            // 命中缓存：直接用（时间戳取缓存写入时刻无法精读，标记 fromCache 让前端可区分）
+            return [$cached, $source, [], true];
+        }
     }
 
     [$manifest, $source, $errors] = fetchUpdateManifest();
@@ -3140,7 +3151,7 @@ function remoteUpdateManifest(): array
 }
 
 /** 本地 + 远程版本信息 */
-function systemVersionInfo(): array
+function systemVersionInfo(bool $force = false): array
 {
     // 本地版本：优先读取打包时生成的 version.json（生产部署非 git 仓库）
     $vFile = base_path().'/version.json';
@@ -3184,7 +3195,7 @@ function systemVersionInfo(): array
         'commit' => '', 'error' => '', 'source' => '', 'sourceLabel' => '',
         'version' => '', 'updated' => '', 'fromCache' => false, 'errors' => [],
     ];
-    [$manifest, $mSource, $mErrors, $fromCache] = remoteUpdateManifest();
+    [$manifest, $mSource, $mErrors, $fromCache] = remoteUpdateManifest($force);
     $remoteSha = '';
     $remoteErr = '';
 

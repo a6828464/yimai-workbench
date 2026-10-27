@@ -188,8 +188,9 @@
     return sha ? sha.slice(0, 7) : '-'
   }
 
-  async function loadVersion() {
-    version.value = await apiGet<VersionInfo>('/system/version')
+  /** force=1：跳过后端 1 小时 manifest 缓存，用户主动检查时强制拉最新 */
+  async function loadVersion(force = false) {
+    version.value = await apiGet<VersionInfo>(`/system/version${force ? '?force=1' : ''}`)
   }
 
   async function loadChangelog() {
@@ -215,7 +216,7 @@
   async function checkUpdate() {
     checking.value = true
     try {
-      await loadVersion()
+      await loadVersion(true)
       if (!remoteError.value) {
         ElMessage.success(upToDate.value ? '已是最新版本' : '发现新版本')
       }

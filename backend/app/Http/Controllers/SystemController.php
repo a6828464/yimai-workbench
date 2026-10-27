@@ -6,10 +6,10 @@ use Illuminate\Http\Request;
 
 final class SystemController extends Controller
 {
-    /** GET /system/version */
+    /** GET /system/version（?force=1 跳过 manifest 缓存强刷） */
     public function version(Request $r)
     {
-        return ok(systemVersionInfo());
+        return ok(systemVersionInfo((string) $r->query('force') === '1'));
     }
 
     /** GET /system/logs */
