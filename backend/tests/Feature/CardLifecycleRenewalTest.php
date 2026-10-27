@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\AppSetting;
 use App\Models\Customer;
+use App\Models\KyBooking;
 use App\Models\User;
 use App\Services\KyMemberSyncService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -640,6 +641,22 @@ class CardLifecycleRenewalTest extends TestCase
         $c = $this->member('今日待办-临期', [
             $this->card('年卡', '2', '5', 0, $this->inDays(20), ['id' => 'todo-1', 'residue_days' => 20]),
             $this->card('私教20次', '1', '5', 8, $this->inDays(200), ['id' => 'todo-2']),
+        ]);
+        // renewals 新口径：只展示「待续课 && 今天约课」的会员，补一节今天的课
+        KyBooking::create([
+            'source_key' => uniqid('t-'),
+            'venue' => '绿地店',
+            'booking_type' => '私教',
+            'member_id' => 'm-'.md5('今日待办-临期'),
+            'member_name' => '今日待办-临期',
+            'phone' => $c->phone,
+            'start_at' => now()->startOfDay()->addHours(9),
+            'course_name' => '普拉提私教',
+            'teacher_name' => '小周',
+            'status_raw' => '',
+            'status' => 'booked',
+            'is_trial' => false,
+            'raw' => ['course_type' => '2'],
         ]);
 
         $rows = $this->getJson('/api/today/todo')->assertOk()->json('data.renewals');

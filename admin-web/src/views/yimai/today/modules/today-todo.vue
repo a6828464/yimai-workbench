@@ -32,8 +32,35 @@
       </div>
     </template>
 
-    <!-- 概要模式（工作台）：分组统计 + 待处理样例，点击进入完整待办页 -->
+    <!-- 概要模式（工作台）：今日三件事聚合 + 分组统计，点击进入完整待办页 -->
     <div v-if="variant === 'summary'" v-loading="loading" class="min-h-20">
+      <!-- 今日三件事（P0-1）：三个黄金窗口的优先级聚合，回答「今天最重要的 3 件事」 -->
+      <div class="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div
+          v-for="item in top3Items"
+          :key="item.key"
+          class="cursor-pointer rounded-lg border border-gray-200 bg-gray-50 p-3 transition hover:shadow-md dark:border-gray-700 dark:bg-gray-800"
+          :class="{
+            'border-red-300 bg-red-50 dark:border-red-500/50 dark:bg-red-500/10': item.urgent
+          }"
+          @click="$router.push({ path: '/yimai/todo', query: { group: item.tab } })"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-1">
+            <span class="text-sm font-500">{{ item.title }}</span>
+            <ElTag size="small" :type="item.urgent ? 'danger' : 'info'" effect="plain">
+              {{ item.urgencyLabel }}
+            </ElTag>
+          </div>
+          <div
+            class="mt-1 text-2xl font-600"
+            :class="item.count > 0 ? 'text-primary' : 'text-gray-300'"
+          >
+            {{ item.count }}
+          </div>
+          <div class="mt-0.5 truncate text-xs text-gray-400">{{ item.detail }}</div>
+        </div>
+      </div>
+
       <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         <div
           v-for="tab in visibleTabs"
@@ -48,6 +75,7 @@
             {{ pendingCounts[tab.key] }}
           </div>
           <div class="mt-0.5 text-xs text-gray-500">{{ tab.label }}</div>
+          <div class="mt-0.5 text-xs text-gray-400">{{ tab.timeWindow }}</div>
           <div class="mt-1 h-4 truncate text-xs text-gray-400">
             {{ pendingNames(tab.key) || '暂无' }}
           </div>
@@ -622,15 +650,15 @@
   /** 过期有余额回溯窗（同一份阈值来源；它只影响 P3 提示，不再影响待续费） */
   const expiredBalanceText = computed(() => expiredBalanceWindowText(activeRules.value))
 
-  const allTabs: { key: TabKey; label: string }[] = [
-    { key: 'bookings', label: '今日预约' },
-    { key: 'renewals', label: '待续费' },
-    { key: 'churnRisks', label: '流失风险' },
-    { key: 'birthdays', label: '生日关怀' },
-    { key: 'trials', label: '体验课' },
-    { key: 'reviews', label: '课后分析' },
-    { key: 'newLeads', label: '新客首响' },
-    { key: 'tasks', label: '今日任务' }
+  const allTabs: { key: TabKey; label: string; timeWindow: string }[] = [
+    { key: 'bookings', label: '今日预约', timeWindow: '⏰ 今日' },
+    { key: 'renewals', label: '待续费', timeWindow: '⏰ 今日到店' },
+    { key: 'churnRisks', label: '流失风险', timeWindow: '⚡ 持续监控' },
+    { key: 'birthdays', label: '生日关怀', timeWindow: '📅 7 天窗口' },
+    { key: 'trials', label: '体验课', timeWindow: '⏰ 今日' },
+    { key: 'reviews', label: '课后分析', timeWindow: '⏰ 今日课后' },
+    { key: 'newLeads', label: '新客首响', timeWindow: '⚡ 5 分钟规则' },
+    { key: 'tasks', label: '今日任务', timeWindow: '⏰ 今日到期' }
   ]
   // 新媒体只看客资相关；服务老师（会籍顾问）不排训练，看不到「课后分析」
   const visibleTabs = computed(() => {
@@ -813,6 +841,70 @@
     return out
   })
 
+  /* ---------- 今日三件事（P0-1）：三个黄金窗口的优先级聚合 ---------- */
+
+  /** 留资距今时长文案（小时级，超 24h 显示天数） */
+  function leadAgoText(lead: TodayTodoLeadItem): string {
+    if (!lead.createdAt) return '刚留资'
+    const hours = (Date.now() - new Date(lead.createdAt).getTime()) / 3_600_000
+    if (hours < 1) return '刚留资'
+    if (hours < 24) return `已等 ${Math.floor(hours)} 小时`
+    return `已等 ${Math.floor(hours / 24)} 天`
+  }
+
+  /**
+   * 今日三件事：回答「今天最重要的 3 件事是什么」。
+   * 三个黄金窗口分别对应 5 分钟规则、到店当面聊续费、体验课 24h 内跟进。
+   */
+  const top3Items = computed(() => {
+    const leadPending = pendingItems(newLeads.value)
+    const renewalPending = pendingItems(renewals.value)
+    const trialPending = pendingItems(trials.value)
+    const staleCount = leadPending.filter((l) => l.stale).length
+
+    return [
+      {
+        key: 'top-new-leads',
+        tab: 'newLeads' as TabKey,
+        title: '新客首响',
+        count: leadPending.length,
+        detail:
+          leadPending.length > 0
+            ? `${leadPending[0].name} ${leadAgoText(leadPending[0])}`
+            : '暂无待首响新客资',
+        urgent: staleCount > 0,
+        urgencyLabel: staleCount > 0 ? `${staleCount} 条超 24h` : '5 分钟规则'
+      },
+      {
+        key: 'top-renewals',
+        tab: 'renewals' as TabKey,
+        title: '待续费会员（今天到店）',
+        count: renewalPending.length,
+        detail:
+          renewalPending.length > 0
+            ? renewalPending
+                .slice(0, 2)
+                .map((r) => r.name)
+                .join('、')
+            : '今天没有待续费会员到店约课',
+        urgent: renewalPending.some((r) => r.urgent),
+        urgencyLabel: renewalPending.some((r) => r.urgent) ? '有 7 天内到期' : '到店当面聊'
+      },
+      {
+        key: 'top-trials',
+        tab: 'trials' as TabKey,
+        title: '体验课跟进',
+        count: trialPending.length,
+        detail:
+          trialPending.length > 0
+            ? `${trialPending[0].name} ${trialPending[0].time || ''}`.trim()
+            : '今天暂无体验课',
+        urgent: trialPending.length > 0,
+        urgencyLabel: '24h 黄金窗口'
+      }
+    ]
+  })
+
   const pendingNames = (group: TabKey): string =>
     pendingItems(groupRows.value[group] ?? [])
       .slice(0, 2)
@@ -820,16 +912,21 @@
       .filter(Boolean)
       .join('、')
 
-  const emptyText: Record<TabKey, string> = {
-    bookings: '今天暂无预约课程',
-    renewals: '暂无待续费会员',
-    churnRisks: '暂无流失风险会员',
-    birthdays: '近期没有会员生日',
-    trials: '今天暂无体验课',
+  const emptyText = computed<Record<TabKey, string>>(() => ({
+    bookings: '今天暂无预约课程（可去「约课管理」查看未来预约）',
+    // 待续费 tab 已收敛为「今天约课且待续课」：全量还有待续费会员、只是今天没人约课时，
+    // 提示店长去会员管理看全量，而不是误以为没有待续费
+    renewals:
+      Object.keys(renewalSources.value).length > 0
+        ? `今天没有待续费会员到店约课（待续费共 ${Object.keys(renewalSources.value).length} 人，可去「会员管理 → 待续课」查看全量）`
+        : '暂无待续费会员',
+    churnRisks: '今天暂无流失风险会员（可去「会员管理 → 预流失」查看全量）',
+    birthdays: '近期没有会员生日（可去「会员管理 → 生日关怀」查看全量）',
+    trials: '今天暂无体验课（可去「营销工具 → 体验课」查看排期）',
     reviews: '今天没有待填写的课后分析',
-    newLeads: '暂无待首响新客资',
+    newLeads: '暂无待首响新客资（5 分钟规则：新留资产生后 5 分钟内首联）',
     tasks: '今天没有到期任务'
-  }
+  }))
 
   /** 每组可执行的动作：action=文案；flow=额外业务流转（打开对应表单/更新留资状态） */
   const actionMenus: Record<

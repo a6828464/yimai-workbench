@@ -475,6 +475,8 @@ final class TodayController extends Controller
         // ---- 今日预约（随心瑜预约事实，排除已取消/爽约） ----
         $bookings = [];
         $bookingTrialCount = 0;
+        // 今天约课的会员 id 集合：待续费 tab 只展示「待续课 && 今天约课」的人
+        $todayBookedCustomerIds = [];
         if (! $isMedia) {
             $bookingQ = KyBooking::query()
                 ->whereBetween('start_at', [$today->copy(), $today->copy()->endOfDay()])
@@ -506,6 +508,9 @@ final class TodayController extends Controller
                     'lists' => $customer ? $serviceFlags($customer) : [],
                     'birthdayToday' => $customer ? isBirthdayToday($customer['birthday'] ?? null) : false,
                 ] + $doneInfo('booking:'.$b->id);
+                if ($customer !== null) {
+                    $todayBookedCustomerIds[(int) $customer['id']] = true;
+                }
                 if ($b->is_trial) {
                     $bookingTrialCount++;
                 }
@@ -519,7 +524,8 @@ final class TodayController extends Controller
         $renewals = [];
         if (! $isMedia) {
             $renewals = $scopedCustomers
-                ->filter(fn ($c) => in_array('待续课', $listMap[$c['id']] ?? [], true))
+                ->filter(fn ($c) => in_array('待续课', $listMap[$c['id']] ?? [], true)
+                    && isset($todayBookedCustomerIds[(int) $c['id']]))
                 ->map(function ($c) use ($daysBetween, $listMap, $doneInfo, $renewalWatch) {
                     $expireDays = $daysBetween($c['expireDate']);
                     $meta = $renewalWatch[$c['id']] ?? [];
@@ -710,6 +716,8 @@ final class TodayController extends Controller
                     'serviceTeacher' => (string) $l->service_teacher,
                     'leadDate' => (string) $l->lead_date,
                     'stale' => $l->created_at && $l->created_at->diffInHours(now()) >= 24,
+                    // 留资距今时长（前端「今日三件事」聚合卡用它显示紧迫度）
+                    'createdAt' => $l->created_at?->toIso8601String(),
                     'remark' => (string) $l->remark,
                 ] + $doneInfo('lead:'.$l->id);
             }

@@ -3551,6 +3551,8 @@ export interface TodayTodoLeadItem extends TodayTodoDoneInfo {
   leadDate: string
   /** 超 24 小时未首响 */
   stale: boolean
+  /** 留资创建时间（ISO8601），「今日三件事」聚合卡用它计算距今时长 */
+  createdAt?: string | null
   remark: string
 }
 

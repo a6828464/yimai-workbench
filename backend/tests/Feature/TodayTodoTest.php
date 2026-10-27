@@ -91,16 +91,17 @@ class TodayTodoTest extends TestCase
         Customer::create(array_merge($this->customerAttributes('东部到期', '13800000012', [
             'main_card' => '私教卡', 'remain_times' => 3, 'attend_m3' => 2,
         ]), ['venue' => '东部店']));
-        $this->booking('东部客人', '13800000012', '08:00', 'booked', ['course_type' => '2'], false, '东部店');
+        $this->booking('绿地客人', '13800000011', '08:00', 'booked', ['course_type' => '2'], false, '绿地店');
+        $this->booking('东部客人', '13800000012', '08:30', 'booked', ['course_type' => '2'], false, '东部店');
 
         $res = $this->getJson('/api/today/todo')->assertOk()->json('data');
-        $this->assertSame(0, $res['counts']['bookings']);
+        $this->assertSame(1, $res['counts']['bookings']);
         $this->assertSame(1, $res['counts']['renewals']);
         $this->assertSame('绿地到期', $res['renewals'][0]['name']);
 
         Sanctum::actingAs($this->user('super', '超管', 'R_SUPER', null));
         $res = $this->getJson('/api/today/todo')->assertOk()->json('data');
-        $this->assertSame(1, $res['counts']['bookings']);
+        $this->assertSame(2, $res['counts']['bookings']);
         $this->assertSame(2, $res['counts']['renewals']);
     }
 

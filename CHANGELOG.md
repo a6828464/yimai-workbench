@@ -1,5 +1,61 @@
 # 更新日志
 
+## 2026-10-27 ｜ feat: v3.10.0 今日待办「今日三件事」聚合卡 + 待续费 tab 收敛为「今天约课」口径 + 空态文案统一
+
+**为什么做这一版**：馆主反馈工作台「信息显示没有重心，不知道经营的下一个动作着重点在什么地方」。
+经全面审计（工作台全貌结构梳理 + 瑜伽普拉提行业基准调研 + 逐标签审计，报告见 `docs/reports/`），
+根因不是功能缺失，而是**信息层级缺失**：8 个 tab 平铺，没有一个视图回答「今天最重要的 3 件事是什么」。
+
+### 新增（P0 优化，来自运营分析报告路线图）
+
+- **「今日三件事」聚合卡**（工作台概要模式顶部）：聚合三个黄金窗口——
+  ①新客首响（5 分钟规则，超 24h 标红）②待续费会员·今天到店（7 天内到期标红）
+  ③体验课跟进（24h 黄金窗口）。让馆主/店长每天打开工作台第一眼就知道重心在哪。
+  点击卡片直接跳转 `/yimai/todo?group=xxx` 对应 tab。
+- **tab 时间窗口标签**：每个 tab 显示时效性小标签（⏰ 今日 / ⏰ 今日到店 / ⚡ 持续监控 /
+  📅 7 天窗口 / ⏰ 今日课后 / ⚡ 5 分钟规则 / ⏰ 今日到期），一眼识别哪个 tab 时效性最强。
+- **留资「距今 N 小时」可见性**：后端 `/today/todo` 的 newLeads 新增 `createdAt` 字段，
+  前端显示新留资已等待时长（刚留资 / 已等 N 小时 / 已等 N 天）。
+
+### 口径变化（会改变现有名单，不是回归）
+
+- **待续费 tab 从「全量待续课」收敛为「今天约课且待续课」**：
+  - 后端 `TodayController::todo()`：bookings 组装阶段收集 `$todayBookedCustomerIds`
+    （matchCustomer 匹配到的会员 id），renewals 的 filter 从「in 待续课」收敛为
+    「in 待续课 ∧ 今天约课」。isMedia 分支（renewals 恒为空数组）保持不变。
+  - 前端 `today-todo.vue`：`emptyText` 改 computed——renewals 空态时区分两种情况：
+    全量待续费 > 0 →「今天没有待续费会员到店约课（待续费共 N 人，可去会员管理看全量）」；
+    全量 = 0 →「暂无待续费会员」。
+  - **设计意图**：到店聊远比电话聊值钱。把顾问的注意力从「全量待续费清单」（可能几百人）
+    收敛到「今天能面对面聊的人」（可能几个人），这正是「重心」的具体化。
+
+### 修复
+
+- 空态文案统一句式为「今天没有 + [去哪里看全量]」，消除「暂无」的静默误导。
+  （bookings/churnRisks/birthdays/trials/newLeads/tasks 均已统一。）
+
+### 涉及文件
+
+| 文件 | 改动 |
+|---|---|
+| `backend/app/Http/Controllers/TodayController.php` | +9/-1：newLeads 加 createdAt；renewals 加 todayBookedCustomerIds 交集过滤 |
+| `admin-web/src/views/yimai/today/modules/today-todo.vue` | +115/-18：今日三件事聚合卡 + tab 时间窗口标签 + 空态文案统一 |
+| `admin-web/src/api/yimai.ts` | +2：TodayTodoLeadItem 加 createdAt |
+| `admin-web/.env` / `.env.production` | VITE_VERSION 升至 3.10.0 |
+| `backend/tests/Feature/TodayTodoTest.php` | +4/-3：补今天约课断言 |
+| `backend/tests/Feature/CardLifecycleRenewalTest.php` | +17：补 KyBooking 今天约课 |
+
+### 验证
+
+- 后端：完整套件 885 tests / 6369 assertions 全部通过（21 skipped 与本次改动无关）。
+- 前端：`vue-tsc --noEmit` 无错误；eslint 改动文件无问题。
+
+### 升级步骤
+
+1. `php artisan migrate --force`（本次无新表；如版本跨度大仍建议执行）。
+2. 随心瑜同步一次（全量或等 05:30 自动同步）——`cards_list` v2 只有同步后才写入。
+3. `php artisan rebuild:layers` 重算 P0–P5（同步完成后也会自动重算）。
+
 ## 2026-10-27 ｜ feat: v3.9.0 「待续费」改为卡项实例生命周期判定（旧年卡误报 / 年卡漏判双修）+ 过期有余额 P3 + 逐卡证据
 
 **为什么做这一版**：用户报「老会员续了新年卡，系统把已到期的旧年卡加进待续费，新卡反而不计算」。
