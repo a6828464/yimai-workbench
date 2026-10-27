@@ -108,10 +108,11 @@ class SnapshotReconciliationV39Test extends TestCase
         ], JSON_UNESCAPED_UNICODE)."\n");
 
         $this->assertSame(1560, $total, '会员-门店行数（去重后）');
-        $this->assertSame(190, $in, '待续费人数不得漂移');
-        $this->assertSame(190, $layers['P0'] ?? 0, 'P0 = 命中数（出勤置空时）');
+        // 192：修复 parseDate 的 UTC 时区 bug 后的正确值（修复前 UTC 解析少算一天 = 190）
+        $this->assertSame(192, $in, '待续费人数不得漂移');
+        $this->assertSame(192, $layers['P0'] ?? 0, 'P0 = 命中数（出勤置空时）');
         $this->assertSame(63, $layers['P3'] ?? 0, 'P3 过期有余额');
-        $this->assertSame(542, $layers['P4'] ?? 0, 'P4');
+        $this->assertSame(540, $layers['P4'] ?? 0, 'P4');
         $this->assertSame(765, $layers['P5'] ?? 0, 'P5（只持体验/赠品卡）');
         $this->assertArrayNotHasKey('P1', $layers, '出勤置空时不应有 P1');
         $this->assertArrayNotHasKey('P2', $layers, '出勤置空时不应有 P2');

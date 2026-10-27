@@ -60,7 +60,12 @@ final class CardLifecycle
                 return null;
             }
             if ($number > 1000000000) {
-                return CarbonImmutable::createFromTimestamp($number)->toDateString();
+                // timestamp 是绝对时刻；转日期必须用应用时区（Asia/Shanghai）。
+                // createFromTimestamp 默认按 UTC 解析：上海凌晨 00:00-08:00 期间
+                // UTC 日期比上海日期少一天，距到期天数会少算一天（凌晨跑测试/CI 挂的根因）。
+                return CarbonImmutable::createFromTimestamp($number)
+                    ->setTimezone(date_default_timezone_get())
+                    ->toDateString();
             }
             $text = (string) $number;
             if (strlen($text) === 8) {
