@@ -19,12 +19,18 @@ use Throwable;
  * 之所以要单独做命令而不是「迁移里写一段 SQL」：分层规则会随阈值调整而变，
  * 写死在迁移里的 SQL 只对上线那一刻的数据有效，之后每次改阈值都会重新漂移。
  * 唯一口径来源是 helpers 的 customerDecision()，命令与迁移都只调它。
+ *
+ * 缓存（A-05）：`recalculateMemberLayers()` 刻意不写 `updated_at`，因此
+ * `memberListCache()` 的指纹不会变化 —— 手工重算后最多 120 秒内，
+ * `analytics` 命名空间里按 `layer` 聚合的看板仍会读到旧值。命令成功写库后
+ * 必须显式 `invalidateBusinessCaches()`。
+ * 注：五清单本身现算 `customerDecision()`、经营分层页直读 `layer` 列，都不受影响。
  */
 class RecalculateMemberLayers extends Command
 {
     protected $signature = 'rebuild:layers {--dry-run : 只统计将要变化的行数，不写库}';
 
-    protected $description = '重算会员经营分层（P0-P5）并落库；--dry-run 只预演不写入';
+    protected $description = '重算会员经营分层（P0-P5）并落库并失效业务缓存；--dry-run 只预演不写入';
 
     public function handle(): int
     {
@@ -66,6 +72,13 @@ class RecalculateMemberLayers extends Command
         $after = $dryRun ? $before : $this->distribution();
         $this->info(($dryRun ? '预计变化' : '实际更新')." {$changed} 行");
         $this->line('重算后：'.$this->format($after));
+
+        if (! $dryRun) {
+            // A-05：layer 列是派生数据但 recalculateMemberLayers() 不写 updated_at，
+            // 缓存指纹不会变 → 必须显式失效，否则按 layer 聚合的 analytics 会旧 ≤120s。
+            invalidateBusinessCaches();
+            $this->line('业务缓存已失效（member_lists / analytics）');
+        }
 
         return self::SUCCESS;
     }

@@ -38,10 +38,17 @@ class BombMemberTest extends TestCase
 {
     use RefreshDatabase;
 
-    /** 冻结基线（captain 实测，严格 > 183） */
-    private const BASELINE_MEMBERS = 302;
-    private const BASELINE_CARDS = 393;
-    private const BASELINE_SECTIONS = 2509;
+    /**
+     * 冻结基线（严格 > 183 天）。
+     *
+     * v3.9 / S11：炸弹输入 `expiredCards` 排除退卡(29)与停卡(39) —— 冻结基线生成于
+     * v3.8（当时只按 type=1 + 有余额 + 有到期日），因此这里把基线中的 29/39 卡过滤后
+     * 重算期望值：302/393/2509 → **300/390/2463**（少 2 人 / 3 张 / 46 节）。
+     * 这不是回归，是规范明确要求的口径修正（A10）。
+     */
+    private const BASELINE_MEMBERS = 300;
+    private const BASELINE_CARDS = 390;
+    private const BASELINE_SECTIONS = 2463;
 
     /** 严格「超过」6 个月：deadline 必须早于「今天 − 183 天」 */
     private const SIX_MONTHS_DAYS = 183;
@@ -379,6 +386,23 @@ class BombMemberTest extends TestCase
         $this->assertIsArray($cards, '冻结卡样本必须可解析');
         $this->assertIsArray($expected, '冻结基线必须可解析');
 
+        // S11：基线文件生成于 v3.8，未排除 29/39；按新口径先过滤再比对。
+        $expected = (function (array $rows): array {
+            $out = [];
+            foreach ($rows as $memberId => $row) {
+                $kept = array_values(array_filter(
+                    (array) ($row['cards'] ?? []),
+                    fn ($c) => ! in_array((string) ($c['status'] ?? ''), ['29', '39'], true)
+                ));
+                if ($kept === []) {
+                    continue;
+                }
+                $out[$memberId] = ['cards' => $kept, 'sections' => array_sum(array_map(fn ($c) => (int) ($c['residue'] ?? 0), $kept))];
+            }
+
+            return $out;
+        })($expected);
+
         // 冻结时钟到基线生成日。基线落盘于 2026-09-24（见文件名），断言的是「截至该日
         // 过期天数 > 183」的绝对张数（302/393/2509）。若用真实 today()，每有一张卡跨过
         // 183 天边界，命中数就单调膨胀 —— 实测 2026-09-27 已从 393 变成 394
@@ -461,6 +485,56 @@ class BombMemberTest extends TestCase
     // ─────────────────────────────────────── 6. watch 明细 + 接口层
 
     /** watch 明细字段：供前端展示「哪张卡、多久、多少节」 */
+    /**
+     * A10 / S11：退卡(29) 与停卡(39) **永不**计入炸弹会员。
+     *
+     * 旧实现 `expiredCards` 收 29/39 且不要求「已过期」，靠下游二次过滤才没误报；
+     * v3.9 在同步侧收窄 + 消费点双保险。停卡且 deadline 在未来的更不该进。
+     */
+    public function test_refunded_and_suspended_cards_are_never_bombs(): void
+    {
+        $c = $this->member('退卡停卡非炸弹', [
+            $this->card(['card_title' => '退掉的私教', 'status' => '29', 'residue_amount' => '30',
+                'deadline' => $this->tsForDaysAgo(400)]),
+            $this->card(['card_title' => '停卡的私教', 'status' => '39', 'residue_amount' => '20',
+                'deadline' => $this->tsForDaysAgo(400)]),
+        ], 'P4', 'ky:bomb-29-39', 'never');
+
+        $decision = customerDecision($c->fresh(), $this->rules());
+        $this->assertFalse($decision['bomb']['in'], '29/39 不得计入炸弹会员');
+        $this->assertSame(0, $decision['bomb']['sections'], '沉睡节数不得包含退卡/停卡的残余');
+        $this->assertNotContains($c->id, $this->bombIds());
+
+        // 双保险：即使 expiredCards 由旧版本写出（含 29/39），消费点也必须再过滤一次
+        $stats = (array) $c->fresh()->card_stats;
+        $stats['expiredCards'] = [
+            ['title' => '退掉的私教', 'residue' => 30, 'deadline' => $this->daysAgoDate(400), 'status' => '29', 'type' => '1'],
+            ['title' => '停卡的私教', 'residue' => 20, 'deadline' => $this->daysAgoDate(400), 'status' => '39', 'type' => '1'],
+        ];
+        $legacy = $c->fresh();
+        $legacy->card_stats = $stats;
+        $recomputed = customerDecision($legacy, $this->rules());
+        $this->assertFalse($recomputed['bomb']['in'], '旧保留区含 29/39 时消费点必须再次过滤');
+    }
+
+    /** 停卡且 deadline 在未来的实例不得计入炸弹（冻结中的权益不是沉睡余额） */
+    public function test_suspended_card_with_future_deadline_is_not_a_bomb(): void
+    {
+        $c = $this->member('停卡未过期', [
+            $this->card(['card_title' => '停卡私教', 'status' => '39', 'residue_amount' => '20',
+                'deadline' => (string) CarbonImmutable::today()->addDays(30)->timestamp]),
+        ], 'P4', 'ky:bomb-39-future', 'never');
+
+        $this->assertFalse(customerDecision($c->fresh(), $this->rules())['bomb']['in']);
+        $this->assertNotContains($c->id, $this->bombIds());
+    }
+
+    /** Y-m-d 形式的「N 天前」（供手工构造 expiredCards 用） */
+    private function daysAgoDate(int $days): string
+    {
+        return CarbonImmutable::today()->subDays($days)->toDateString();
+    }
+
     public function test_bomb_watch_payload_carries_detail(): void
     {
         $c = $this->member('明细会员', [$this->card()]);

@@ -18,6 +18,7 @@ use App\Models\StaffAlias;
 use App\Models\Task;
 use App\Models\User;
 use App\Services\KyMemberSyncService;
+use App\Support\CardLifecycle;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -1518,6 +1519,16 @@ function renewalEvaluationContext(Customer $customer): array
         'renewalBucket' => $renewal['bucket'],
         'renewalWhy' => $renewal['why'],
         'renewalDegraded' => $renewal['degraded'],
+        // v3.9 新增（只增不改）：评估页要能解释「为什么在/不在清单」，以及过期余额的独立结论。
+        'renewalWhyCodes' => $renewal['whyCodes'],
+        'renewalHits' => $renewal['hits'],
+        'expiredWithBalance' => $decision['expiredWithBalance'],
+        'expiredBalanceWhy' => $decision['expiredBalance']['why'],
+        'mainCard' => $decision['display']['mainCard'],
+        'mainCardState' => $decision['display']['mainCardState'],
+        'expireDateState' => $decision['display']['expireDateState'],
+        'usableCount' => $decision['display']['usableCount'],
+        'displayCount' => $decision['display']['displayCount'],
         'layer' => $decision['layer'],
         'latest' => $latest ? camel($latest) : null,
     ];
@@ -1736,7 +1747,20 @@ function rules(): array
         'renewalExpirePercent' => 0,
         // 已过期但仍有余额的卡，只回溯最近 N 天（决策 D4）：
         // 陈年过期卡每天都挂在待续费清单里，会把清单训练成「不用看」。
+        //
+        // v3.9：本键**不再影响 renewal.in**（过期实例永不命中），只作为
+        // `expiredBalanceWindowDays` 的回退来源（§6.3）。保存时双写，回滚到旧版本行为一致；
+        // 两个发布周期后且 dataVersion>=2 占比 100% 时删除。
         'renewalExpiredBackfillDays' => 90,
+        // 过期有余额展示窗（天；0=关闭）。只影响 P3 与「过期有余额」筛选标签，
+        // 不影响待续费命中（§3.4）。
+        'expiredBalanceWindowDays' => 90,
+        // 储值卡余额阈值（元；0=关闭）。单位是元，永不与节/天比较（I5）。
+        // 真实样本仅 4 张（3 张已过期），默认关闭以免制造无统计依据的命中。
+        'renewalStoredValueThreshold' => 0,
+        // 体验/赠品卡标题关键词（PCRE 片段，用竖线分隔）。同步与判定共用同一份配置，
+        // 消除「同步层硬编码一份、判定层再写一份」的第二口径（D10-④）。
+        'tasteTitlePattern' => CardLifecycle::DEFAULT_TASTE_PATTERN,
         'vipAmountThreshold' => 30000,
         'declineMode' => 'strict',
         'predropMin' => 15,
@@ -1923,28 +1947,30 @@ function computeMemberListIds(array $rules): array
 function layerDefinitions(): array
 {
     return [
-        'P0' => ['label' => '续费窗口', 'desc' => '命中续费判定（课时尾段 / 临期 / 已过期但有余量）'],
+        'P0' => ['label' => '续费窗口', 'desc' => '命中续费判定（课时尾段 / 当前卡临期）'],
         'P1' => ['label' => '高资产低活跃', 'desc' => '停练超过 reviveDays 阈值、或人工标记待复活（有卡项资产）'],
         'P2' => ['label' => '频次下降', 'desc' => '仍在出勤、近三档 30 天窗口逐月下降（M1>M2>M3 且 M3>0，优先于待复活落层）；停练的递减者不在此层'],
-        'P3' => ['label' => '过期有余额', 'desc' => '到期日已过、仍有余量，但**超出** renewalExpiredBackfillDays 回溯窗（未命中待续费）'],
+        // S8/S9：P3 的判据从「超出回溯窗」改为「有过期实例且仍有余额」——
+        // 旧文案描述的是一个已不存在的行为（窗内过期进 P0），必须与行为一起改（§9.2 #9）。
+        'P3' => ['label' => '过期有余额', 'desc' => '有过期实例且仍有余额（未命中待续费）'],
         'P4' => ['label' => '可升级', 'desc' => '有卡项资产、未命中以上任何一层'],
         'P5' => ['label' => '新客转化', 'desc' => '无卡项资产（前端客资/留资）'],
     ];
 }
 
 /**
- * 单会员判定唯一入口：五清单、经营分层、续费评估三处共用同一份结论。
+ * 单会员判定唯一入口（v3.9）：五清单、经营分层、续费评估三处共用同一份结论。
  *
- * 这是 C4「口径分裂」的治本修法——此前会员管理页签（`computeMemberListIds`）与
- * 续费评估（`renewalEvaluationContext`）各自实现一套阈值判断，同一个会员能同时
- * 得到「在待续课清单里」和「续费窗口 0 分」两个相反结论。现在只有一个实现。
+ * 判定模型从「会员级汇总 + status 白名单」改为「卡项实例级生命周期 + 当前权益」：
+ *  1. 实例分类唯一走 CardLifecycle::state()（`deadline < 今天` 一律 history）；
+ *  2. 有效余量唯一走 CardLifecycle（期限卡只由 deadline 推导，residue_amount 不读）；
+ *  3. 命中域只由 CURRENT 构造 —— 历史实例**结构上**无法产生 why（§4.3）；
+ *  4. 过期实例只作为「过期有余额」(P3) 与「炸弹会员」的证据，永不进待续费。
  *
- * @return array{
- *   hasAsset:bool, m1:int, m2:int, m3:int, lastVisitDays:?int, expireDays:?int,
- *   revive:bool, preLoss:bool, declining:bool, vip:bool,
- *   hasBalance:bool, expiredWithBalance:bool, layer:string,
- *   renewal:array{in:bool, why:string[], bucket:string, urgent:bool, revive:bool, degraded:string[]}
- * }
+ * 返回键只增不改：旧消费方（今日待办 / 会员管理 / 续费评估）读的
+ * `hasAsset` / `renewal{in,why,whyCodes,deadlineHit,bucket,urgent,revive,degraded}` 全部保留。
+ *
+ * @return array<string,mixed>
  */
 function customerDecision(Customer $c, ?array $rules = null): array
 {
@@ -1953,9 +1979,13 @@ function customerDecision(Customer $c, ?array $rules = null): array
     $countPercent = (int) ($rules['renewalCountPercent'] ?? 0);
     $expireDaysRule = (int) ($rules['renewalExpireDays'] ?? 30);
     $expirePercent = (int) ($rules['renewalExpirePercent'] ?? 0);
-    // 已过期但仍有余额的卡：只回溯最近 N 天（决策 D4）。再久远的过期卡属于
-    // 「陈年旧账」，每天出现在待续费清单里会训练店长忽略这个清单。
-    $backfillDays = (int) ($rules['renewalExpiredBackfillDays'] ?? 90);
+    // 过期有余额展示窗（0=关闭）。读取顺序 new → legacy → 90（§6.3），逐键用
+    // array_key_exists 判断，**不得**用 `?? 默认值` 把合法的 0 吞掉。
+    $balanceWindow = CardLifecycle::expiredBalanceWindow($rules);
+    // 储值卡余额阈值（元；0=关闭）。单位是元，永不与节/天比较（I5）。
+    $storedValueThreshold = (int) ($rules['renewalStoredValueThreshold'] ?? 0);
+    $tastePattern = CardLifecycle::tastePattern($rules);
+    $bombDays = (int) ($rules['bombExpiredDays'] ?? 183);
     $vip = (float) ($rules['vipAmountThreshold'] ?? 30000);
     $reviveDays = (int) ($rules['reviveDays'] ?? 30);
     $predropMin = (int) ($rules['predropMin'] ?? 15);
@@ -1966,362 +1996,631 @@ function customerDecision(Customer $c, ?array $rules = null): array
     $m3 = (int) $c->attend_m3;
     $dd = $c->last_visit ? (int) ((time() - strtotime((string) $c->last_visit)) / 86400) : null;
     $mainCard = $c->main_card;
-    $expireDays = $c->expire_date ? (int) now()->startOfDay()->diffInDays($c->expire_date, false) : null;
+    $expireDays = $c->expire_date ? CardLifecycle::daysUntilDate((string) $c->expire_date) : null;
     $paid = (float) ($c->card_paid_amount ?? 0);
 
     $stats = (array) ($c->card_stats ?? []);
-    $countBound = (int) ($stats['countBound'] ?? 0);
-    $daysLeft = $stats['daysLeft'] ?? null;
-    $daysTotal = (int) ($stats['daysTotal'] ?? 0);
+    $dataVersion = (int) ($stats['dataVersion'] ?? 1);
+    // cards_list 为 null = 从未同步的旧行；为 [] = 已同步但名下无卡。两者必须区分：
+    // §3.2 的 `cards_list == null ∧ card_paid_amount > 0` 兜底只对前者成立。
+    $cardsMissing = $c->cards_list === null;
     $cards = is_array($c->cards_list) ? $c->cards_list : [];
-    // 过期卡保留区（card_stats.expiredCards，由 KyMemberSyncService 写入）。
-    // ⚠️ 它**只服务于「炸弹会员」清单**，绝不参与待续费判定：
-    // 待续费的分类循环只读 $cards（= cards_list），而保留区的卡**不在** cards_list 里。
+    $historyRows = is_array($stats['historyCards'] ?? null) ? $stats['historyCards'] : [];
+    $excludedRows = is_array($stats['excludedCards'] ?? null) ? $stats['excludedCards'] : [];
+    $historySynced = array_key_exists('historyCards', $stats);
     $expiredCards = is_array($stats['expiredCards'] ?? null) ? $stats['expiredCards'] : [];
 
     $why = [];
     $whyCodes = [];
     $degraded = [];
+    $degradedCodes = [];
+    $addDegraded = function (string $code, string $message) use (&$degraded, &$degradedCodes): void {
+        if (! in_array($code, $degradedCodes, true)) {
+            $degradedCodes[] = $code;
+            $degraded[] = $message;
+        }
+    };
     $bucket = '—';
-    $liveCount = $liveTime = [];
-    // 到期/过期类命中：**结构化标记**，供 $urgent 读取。
-    // 不能用「在 $why 文案里找『到期/过期』字样」来判定——$why 内嵌卡名，
-    // 一张叫「到期提醒卡」的卡即使 deadline 远在窗外，也会让会员被误判为紧急。
-    // 文案是给人看的，判定必须看标记。
+    // 到期/过期类命中：**结构化标记**，供 $urgent 读取。禁止用文案匹配（卡名可能含「到期」）。
     $deadlineHit = false;
 
-    // ── 分类必须放在判定 $hasAsset **之前**：cards_list 也是资产证据（见下） ──
-    // 分类：用完的卡 / 未开卡 / 余额未知（C2 + C3 + C7）
-    //
-    // ⚠️ 这个循环是卡项状态的**唯一分派点**。下游任何「某类卡项存不存在」的判断
-    // 都必须由这里派生（计数/集合），**不得再逐类列举状态名** —— 见下面两处证据集的注释。
-    $unactivated = [];
-    $unknownResidue = [];
-    $exhaustedCount = false;
-    foreach ($cards as $card) {
-        if (! empty($card['unactivated'])) {
-            $unactivated[] = $card;
+    // ── 实例归一化（唯一入口，同步/判定同一份 CardLifecycle）───────────
+    $instances = [];
+    foreach (array_merge($cards, $historyRows) as $row) {
+        if (is_array($row)) {
+            $instances[] = CardLifecycle::normalize($row, $tastePattern);
+        }
+    }
+    // 去重：同一实例可能同时出现在 cards_list 与 historyCards（跨版本数据），后出现的覆盖。
+    // ⚠️ 只对**可确定身份**（id / cardNo）去重；hash 身份本来就只用于「缺身份」的降级场景，
+    // 两张无身份卡可能恰好字段相同，合并它们会凭空吞掉一张卡（A15/R12 的降级形态）。
+    $seenIdentity = [];
+    $dedupedInstances = [];
+    foreach ($instances as $instance) {
+        $key = (string) $instance['identity'];
+        if (str_starts_with($key, 'hash:')) {
+            $dedupedInstances[] = $instance;
 
             continue;
         }
-        $isTime = array_key_exists('type', $card)
-            ? (string) $card['type'] === '2'
-            : (($card['unit'] ?? '节') === '天');
-        $residue = $card['residue'] ?? null;
-        if ($residue === null) {
-            // 「余额未知」≠「余额为 0」。上游没返回 residue_amount 时不能断言课时已用完，
-            // 更不能据此判紧急——那是在用缺失数据下结论。单独收集，走 degraded 显式告知。
-            $unknownResidue[] = $card;
+        if (isset($seenIdentity[$key])) {
+            $dedupedInstances[$seenIdentity[$key]] = $instance;
 
             continue;
         }
-        if ((int) $residue <= 0) {
-            // 只有**确认** residue === 0（有数值）才算「课时已耗尽」
-            if (! $isTime) {
-                $exhaustedCount = true;
+        $seenIdentity[$key] = count($dedupedInstances);
+        $dedupedInstances[] = $instance;
+    }
+    $instances = array_values($dedupedInstances);
+
+    // 被排除的体验/赠品卡（state=excluded）：不参与命中/权益，**也不计入 hasAnyCard**
+    // （§3.6 明确「排除体验/测试」；它们只在 degraded 里留痕，供运营核对是否误杀）。
+    // 依据：快照复算里 765 名「只有礼包/体验卡」的会员必须落 P5（captain 参考实现）。
+
+    // 系列归因（§4.4 / A-01）：把「唯一实例键 + 系列序号」直接挂到实例上。
+    // 不再用 identity 做 map 键 —— 缺 id/card_no 时 identity 是 hash，同字段多卡会撞键，
+    // 导致系列序号全写成同一个、过期余额被折叠。
+    $instances = CardLifecycle::annotateSeries($instances);
+
+    // 集合（互斥且穷尽，判定表 K0–K6 的唯一输入，§3.1）
+    $all = [];
+    $current = $unactivated = $history = $usable = $exhausted = $unknown = [];
+    foreach ($instances as $instance) {
+        if ($instance['state'] === 'excluded') {
+            continue;
+        }
+        $all[] = $instance;
+        if ($instance['state'] === 'current') {
+            $current[] = $instance;
+            if (CardLifecycle::isUsable($instance)) {
+                $usable[] = $instance;
+            } elseif (CardLifecycle::isExhausted($instance)) {
+                $exhausted[] = $instance;
+            } elseif (CardLifecycle::isUnknown($instance)) {
+                $unknown[] = $instance;
             }
-
-            continue;
+        } elseif ($instance['state'] === 'unactivated') {
+            $unactivated[] = $instance;
+        } else {
+            $history[] = $instance;
         }
-        $isTime ? $liveTime[] = $card : $liveCount[] = $card;
-    }
-    if ($unknownResidue !== []) {
-        $titles = implode('、', array_slice(array_map(fn ($x) => (string) ($x['title'] ?? '卡项'), $unknownResidue), 0, 3));
-        $degraded[] = "「{$titles}」未返回剩余量，该卡不参与「课时耗尽/剩余量」判定（可能漏提醒）";
-    }
-    // 已耗次数推导不出的卡：分母只含剩余节数 → 占比**偏高**（少报尾段，不会误报）。
-    // 这是显式降级：用户调了「次卡剩余占比」却看不到命中时，必须能查到原因，
-    // 否则又是一次「阈值可调但无效」。**不允许**为此凭空补一个已耗次数。
-    if ((int) ($stats['countBoundUnderivable'] ?? 0) > 0) {
-        $degraded[] = '部分次卡未返回单次折算价与已耗次数，剩余占比按「仅剩余节数」保守计算（可能少报尾段）';
     }
 
-    // ── 有无卡项资产：**单点派生**，不列举卡项状态 ──
+    // ── 降级（§5.3）：必须能回答「为什么阈值调了没反应」───────────────────
+    // degraded 保留**人类可读文案**（旧接口契约），degradedCodes 是结构化枚举（新增）。
+    $degradedMessages = [
+        'time_card_no_deadline' => fn (array $i) => "「{$i['title']}」期限卡缺到期日，剩余天数未知，不参与到期/占比判定",
+        'time_card_residue_ignored' => fn (array $i) => "「{$i['title']}」期限卡返回值与到期日不一致，剩余天数已按到期日计算",
+        'count_residue_unknown' => fn (array $i) => "「{$i['title']}」未返回剩余量，该卡不参与「课时耗尽/剩余量」判定（可能漏提醒）",
+        'status_missing' => fn (array $i) => "「{$i['title']}」未返回状态，按未过期处理（可能误判在册）",
+        'status_label_only' => fn (array $i) => '卡项只有中文状态，已按状态映射表还原（建议重新同步）',
+        'identity_missing' => fn (array $i) => "部分卡项缺实例编号/卡号/发卡日，同名卡只能按到期日区分",
+        'valid_days_missing' => fn (array $i) => "「{$i['title']}」缺有效期总天数，有效期占比规则未生效",
+        'unactivated_expired' => fn (array $i) => "「{$i['title']}」未开卡但到期日已过，按历史处理",
+        'history_without_deadline' => fn (array $i) => "「{$i['title']}」历史卡缺到期日，无法计入过期有余额",
+        'taste_legacy_fallback' => fn (array $i) => '按标题关键词识别体验/赠品卡',
+    ];
+    foreach ($instances as $instance) {
+        foreach ($instance['degraded'] as $code) {
+            if ($code === 'valid_days_missing' && $expirePercent <= 0) {
+                continue;
+            }
+            $message = isset($degradedMessages[$code])
+                ? $degradedMessages[$code]($instance)
+                : $code;
+            $addDegraded($code, $message);
+        }
+    }
+    foreach ($excludedRows as $row) {
+        if (is_array($row) && ($row['tasteReason'] ?? null) === 'pattern') {
+            $addDegraded('taste_excluded_by_pattern', '已按标题关键词排除疑似体验/赠品卡「'.(string) ($row['title'] ?? '').'」');
+        }
+    }
+    // 已耗次数推导不出的卡：分母只含剩余节数 → 占比偏高（少报尾段，不会误报）。
+    // 这是显式降级：用户调了「次卡剩余占比」却看不到命中时，必须能查到原因。
+    if ((int) ($stats['countBoundUnderivable'] ?? 0) > 0) {
+        $addDegraded('count_bound_underivable', '部分次卡未返回单次折算价与已耗次数，剩余占比按「仅剩余节数」保守计算（可能少报尾段）');
+    }
+    if ($dataVersion < CardLifecycle::DATA_VERSION) {
+        $addDegraded('data_version_stale', '卡项快照为旧版本（dataVersion<2），过期有余额/同名归因不可用；请执行一次全量同步');
+    }
+    if (! $historySynced && $dataVersion < CardLifecycle::DATA_VERSION) {
+        $addDegraded('history_not_synced', '未同步历史卡明细，过期有余额与炸弹会员只能按旧保留区估算');
+    }
+    if ($cardsMissing && $all === []) {
+        $addDegraded('legacy_summary_fallback', '无卡项明细，已退回汇总口径判定（剩余占比规则未生效，请先执行一次同步）');
+    }
+    if (in_array('mirror_row_deduped', (array) ($stats['syncDegraded'] ?? []), true)) {
+        $addDegraded('mirror_row_deduped', '存在跨馆重复卡行，已去重');
+    }
+
+    // ── 有无卡项资产（§3.2 K0 的唯一输入）────────────────────────────────
     //
-    // `cards_list` 非空 ⟺ 名下至少有一张有效卡（它映射自 KyMemberSyncService 的 `$active`），
-    // 所以「明细非空」本身就是「有资产」的充要证据。汇总字段 `main_card` 只作为**兜底**：
-    // 老数据/未同步行的 cards_list 为 NULL 而 main_card 有值，那些会员必须仍算有资产。
-    //
-    // ⚠️ 为什么不再逐类列举（这正是 t19-F1 → t24-F1 → t24-F2 连续三轮的根因）：
-    // 此处曾写作 `$hasAssetFromSummary || $liveCount !== [] || $liveTime !== [] || $unknownResidue !== []`。
-    // 那种写法要求**每次给分类循环加一种卡项状态，都要回来同步这份枚举**——
-    // t23 补了 liveCount/liveTime/unknownResidue，却漏了 unactivated，于是
-    // 「未开卡·有标题」→ hasAsset=true，而「未开卡·无标题」（main_card 为空串）→ hasAsset=false → 落 P5。
-    // 仅差一个 card_title 就让同一张未开卡卡项的结论翻转，且落 P5 会把它当成前端客资（PII 面）。
-    // 现在改为「明细非空 或 汇总有卡名」：**新增任何卡项状态都不需要再改这里**，
-    // 因为任何新状态都出现在 cards_list 里，cards_list 非空即已覆盖。
-    //
-    // 授权面不变（P5 只可能变窄，不会变宽）——依据是一条已验证的不变量：
-    //   `main_card === '—'` 只在 `$active` 为空时出现，而 cards_list 同样映射自 `$active`，
-    //   故 `main_card='—'` **必然蕴含** cards_list 为空 → 两个析取项都为 false → hasAsset 仍为 false。
-    // 即：本判定只可能在「确实有卡」时把会员从 P5 **拉出来**，绝不会把真客资推进 P5。
-    // 真客资（无卡、main_card='—'）依旧落 P5，`scopeLeadOnlyCustomers()` 的授权面不变。
+    // hasAnyCard = 「曾经或现在有卡」（含过期/停卡/退卡，**排除体验/测试**，§3.6）。
+    // 证据链按优先级：
+    //   ① 实例非空（含历史）—— 体验/赠品卡在 state() 里已判为 excluded，不进 $all；
+    //   ② 汇总主卡名非占位；
+    //   ③ 汇总剩余节数 > 0；
+    //   ④ 旧行（cards_list=null）有实收金额（同时记 asset_from_paid_amount）。
+    // **P5 只会变窄不会变宽**：严格超集只来自 ②③④ 三条汇总兜底；体验/赠品卡在旧口径
+    // 同样被排除（§4.3），所以 ① 不是超集来源。
+    // 规范依据：§3.6 + §8.2 A11（只有礼包/体验卡 → 无资产 → P5）。
     $hasAssetFromSummary = $mainCard !== null && ! in_array($mainCard, ['', '—', '待同步卡项'], true);
-    $hasAsset = $cards !== [] || $hasAssetFromSummary;
+    $summaryResidue = array_key_exists('countResidue', $stats) ? $stats['countResidue'] : $c->remain_times;
+    $hasAnyCard = $all !== []
+        || $hasAssetFromSummary
+        || ($summaryResidue !== null && (int) $summaryResidue > 0)
+        || ($cardsMissing && $paid > 0);
+    if ($cardsMissing && $paid > 0 && $all === []) {
+        $addDegraded('asset_from_paid_amount', '无卡项明细，按实收金额推断该会员曾有卡项');
+    }
+    $hasActiveEntitlement = $current !== [] || $unactivated !== [];
+    $hasUsableEntitlement = $usable !== [];
+
+    // ── 过期有余额（§3.4）：唯一判定 ────────────────────────────────────
+    // 只认 expired / expired_by_clock；期限卡残余恒 0；必须有 deadline 且在展示窗内；
+    // 退卡(29)/停卡(39) 永不参与（D10）。
+    //
+    // A-01：这里**追加**而不是按 identity 建 map —— hash 身份下三张同字段旧卡会共用一个
+    // identity，用 map 会折叠成一张（余额少算、明细丢卡）。
+    $expiredBalance = [];
+    foreach ($history as $instance) {
+        $residual = CardLifecycle::residualBalance($instance);
+        if (in_array($instance['historyReason'], ['expired', 'expired_by_clock'], true)
+            && $residual > 0
+            && $instance['deadline'] !== null
+            && CardLifecycle::withinExpiredWindow($instance, $balanceWindow)) {
+            $expiredBalance[] = $instance;
+        }
+    }
+    // 旧数据（dataVersion<2，无 historyCards）只能按 expiredCards 的 type=1 子集估算。
+    if (! $historySynced) {
+        foreach ($expiredCards as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $instance = CardLifecycle::normalize($row, $tastePattern);
+            if ($instance['type'] !== CardLifecycle::TYPE_COUNT
+                || in_array($instance['statusCode'], ['29', '39'], true)
+                || $instance['isTaste']
+                || CardLifecycle::residualBalance($instance) <= 0
+                || ! CardLifecycle::withinExpiredWindow($instance, $balanceWindow)) {
+                continue;
+            }
+            $expiredBalance[] = $instance;
+        }
+        $addDegraded('history_not_synced', '未同步历史卡明细，过期有余额仅覆盖次卡（期限卡/储值卡需重新同步）');
+    }
+    // 更老的汇总行（cards_list=null）连 expiredCards 都没有：只能按 expire_date + 剩余节数估算。
+    $legacyExpiredWithBalance = false;
+    if ($all === [] && $expireDays !== null && $expireDays < 0
+        && ($summaryResidue !== null && (int) $summaryResidue > 0)
+        && $balanceWindow > 0 && (-$expireDays) <= $balanceWindow) {
+        $legacyExpiredWithBalance = true;
+    }
+    $expiredWithBalance = $hasAnyCard && ($expiredBalance !== [] || $legacyExpiredWithBalance);
 
     // m1/m2/m3 是三个连续且等长的 30 天滚动窗口（再前30天 / 前30天 / 近30天）：
     // 三档等长才使下面的「逐档下降」比较有意义。
-    $revive = (bool) $c->in_revive || ($dd !== null && $dd > $reviveDays && $hasAsset);
+    $revive = (bool) $c->in_revive || ($dd !== null && $dd > $reviveDays && $hasAnyCard);
     $preLoss = ! $revive && $dd !== null && (($m2 > 0 && $m3 === 0) || ($dd >= $predropMin && $dd <= $predropMax));
     // 「出勤降低」必须读配置里的 declineMode（用户可调），否则就是「可调但无效」的阈值。
-    // HEAD 原本就读它，t6 一度硬编码成 strict —— 那是回归，已改回。
-    // 分层 P2 仍固定用 strict（见下面 $decliningForLayer）：分层表达的是「趋势」，
-    // 不应该因为店长调了「清单阈值」而换层，两者是不同用途，故用两个变量。
+    // 分层 P2 仍固定用 strict：分层表达的是「趋势」，不应因店长调清单阈值而换层。
     $declineStrict = ($rules['declineMode'] ?? 'strict') === 'strict';
     $declining = ! $revive && ! $preLoss
         && ($declineStrict ? ($m1 > $m2 && $m2 > $m3) : ($m2 > $m3));
 
-    if (! $hasAsset) {
-        // 无卡项资产：不进任何续费判定（P5 前端客资/留资）
+    $hits = [];
+    $suppressedCodes = [];
+    $whyTruncated = false;
+
+    if (! $hasAnyCard) {
+        // K0：只有「从未有卡」才允许 P5 / 无资产
         $bucket = '无资产';
     } else {
+        $suffixOf = fn (array $i) => CardLifecycle::suffix($i);
 
-        if ($cards === []) {
-            // ── 老数据/未同步：无卡项明细，退回汇总口径，占比规则**明确降级** ──
-            // C9：此前这里的分支表达式 `(string) $c->remain_times !== null` 恒为真（死代码），
-            // 且占比类规则在 card_stats 为 NULL 时静默失效——用户调了阈值「没反应」却查不到原因。
-            // 现在把「哪条规则没生效」写进 degraded，由接口显式返回。
-            // 汇总口径优先取 card_stats.countResidue（同步写入），仅在完全没有快照时才用
-            // remain_times（更老的单主卡字段）。
-            $countResidue = array_key_exists('countResidue', $stats) ? $stats['countResidue'] : $c->remain_times;
-            if ($countPercent > 0 && $countBound <= 0) {
-                $degraded[] = '无卡项汇总快照，剩余占比规则未生效（请先执行一次同步）';
-            }
-            if ($expirePercent > 0 && ($daysLeft === null || $daysTotal <= 0)) {
-                $degraded[] = '无期限卡汇总快照，有效期占比规则未生效（请先执行一次同步）';
-            }
-            if ($countResidue !== null && $countResidue <= $threshold) {
-                $why[] = "次卡剩余合计 {$countResidue} 节 ≤ {$threshold}";
-            } elseif ($countPercent > 0 && $countBound > 0 && $countResidue !== null
-                && $countResidue / $countBound * 100 <= $countPercent) {
-                $why[] = '次卡剩余占比 '.round($countResidue / $countBound * 100, 1)."% ≤ {$countPercent}%（余 {$countResidue} 节）";
-            }
-        } else {
-            // ── 在用次卡：合计口径（4a）+ 逐卡尾段（4b）并存（决策 D2） ──
-            if ($liveCount !== []) {
-                $residueSum = array_sum(array_map(fn ($x) => (int) $x['residue'], $liveCount));
-                $boundSum = array_sum(array_map(fn ($x) => (int) ($x['bound'] ?? $x['residue']), $liveCount));
-                if ($residueSum <= $threshold) {
-                    $why[] = "在用次卡合计余 {$residueSum} 节 ≤ {$threshold}";
-                } elseif ($countPercent > 0 && $boundSum > 0 && $residueSum / $boundSum * 100 <= $countPercent) {
-                    $why[] = '在用次卡合计占比 '.round($residueSum / $boundSum * 100, 1)."% ≤ {$countPercent}%（余 {$residueSum} 节）";
-                }
-                // 逐卡：合计口径会掩盖「一张卡已到尾段」（合计 52 节，但其中一张只剩 2 节）
-                foreach ($liveCount as $card) {
-                    $cardResidue = (int) $card['residue'];
-                    $cardBound = (int) ($card['bound'] ?? $cardResidue);
-                    $title = (string) ($card['title'] ?? '卡项');
-                    if ($cardResidue <= $threshold) {
-                        $why[] = "单卡「{$title}」仅余 {$cardResidue} 节 ≤ {$threshold}（合计仍有 {$residueSum} 节）";
+        // 到期/余量阈值类命中的候选集（每条命中保留内部排序键，末尾统一裁剪）
+        $deadlineHits = $cardLowHits = $cardPctHits = $validityHits = $storedHits = [];
+        $usableCountCards = 0;
+        $usableCountTotal = 0.0;
+        $usableBoundTotal = 0.0;
 
-                        break;
-                    }
-                    if ($countPercent > 0 && $cardBound > 0 && $cardResidue / $cardBound * 100 <= $countPercent) {
-                        $why[] = "单卡「{$title}」占比 ".round($cardResidue / $cardBound * 100, 1)."% ≤ {$countPercent}%（余 {$cardResidue} 节）";
-
-                        break;
-                    }
-                }
-            }
-            // 次卡课时已耗尽（无在用次卡，但**确认**有次卡 residue=0 在册）：
-            // 卡在、课没了，正是该续课的时候。
-            // 注意这里用 $exhaustedCount（只有 residue === 0 才算），
-            // 不用「有次卡但余额未知」——那是拿缺失数据下结论。
-            if ($liveCount === [] && $exhaustedCount) {
-                $why[] = '在用次卡课时已耗尽（无剩余课时）';
-                $whyCodes[] = 'count_exhausted';
-            }
-            // ── 待开卡：**确实只有未开卡卡项**时才算（C7） ──
-            //
-            // ⚠️ 这里刻意**不列举**卡项状态（不再写「没有 liveCount、没有 liveTime、
-            // 没有 unknownResidue、没有 exhaustedCount」）。那种写法要求每次给分类循环
-            // 新增一种状态都回来补一格，而**漏补不会报错、只会静默改变判定**：
-            // t19-F1 补了 unknownResidue、t24-F1 又发现漏了 exhaustedCount —— 同一处连续两轮漏项。
-            //
-            // 现在改为**计数断言**：「$cards 里每一项都进了 $unactivated」。
-            // 分类循环对每张卡必然二选一（进 $unactivated，或进其余某类），
-            // 所以 `count($unactivated) === count($cards)` ⟺ 除未开卡外没有任何其他卡项。
-            // **新增任何卡项状态都不需要改这里**：新状态必然不是 unactivated，
-            // 于是计数不再相等、自动退出待开卡分支。
-            //
-            // 实测漏判（修复前）：未开卡次卡 + 一张「已确认耗尽·到期+5天」的次卡
-            //   → 旧 guard 漏看 $exhaustedCount，判「待开卡」→ 下行的
-            //     `$in = $hasAsset && $why !== [] && $bucket !== '待开卡'` 把 why 里
-            //     **已经算出的**「在用次卡课时已耗尽」整个否决 → in=false/P4，
-            //     而「只有那张已耗尽次卡」时是 in=true/P0 —— 加一张未开卡卡项就把信号抹掉。
-            if ($unactivated !== [] && count($unactivated) === count($cards)) {
-                // D5：不新增第 6 个清单页签，只在 reason 里说明。
-                $bucket = '待开卡';
+        foreach ($current as $instance) {
+            if ($instance['type'] === CardLifecycle::TYPE_COUNT && CardLifecycle::isUsable($instance)) {
+                $usableCountCards++;
+                $usableCountTotal += $instance['remaining'];
+                $usableBoundTotal += $instance['bound'] ?? $instance['remaining'];
             }
         }
 
-        if ($bucket !== '待开卡') {
-            // ── 逐卡到期提醒（C3）：只看**还有余量**的卡，不再用全局最早 expire_date ──
-            foreach (array_merge($liveCount, $liveTime) as $card) {
-                $days = $card['deadline']
-                    ? (int) now()->startOfDay()->diffInDays($card['deadline'], false)
-                    : null;
-                if ($days === null) {
-                    continue;
+        if ($all === []) {
+            // ── 老数据/未同步：无卡项明细，退回汇总口径（无法归因，规则仍生效）──
+            // 占比规则在无逐卡快照时无法计算 —— 这一条已在上方 `legacy_summary_fallback`
+            // 的 degraded 里说明，这里不再重复登记（同 code 只保留首条）。
+            $countResidue = $summaryResidue;
+            $countBoundSum = (int) ($stats['countBound'] ?? 0);
+            if ($countResidue !== null && (int) $countResidue <= $threshold) {
+                $hits[] = [
+                    'code' => 'count_total_low',
+                    'instanceId' => null,
+                    'cardNo' => null,
+                    'title' => null,
+                    'type' => null,
+                    'unit' => '节',
+                    'expr' => "countResidue({$countResidue}) <= threshold({$threshold})",
+                    'values' => ['remaining' => (int) $countResidue, 'threshold' => $threshold, 'unit' => '节'],
+                    'why' => "当前可用次卡合计余 {$countResidue} 节 ≤ {$threshold} 节（汇总口径，无逐卡明细）",
+                ];
+            } elseif ($countPercent > 0 && $countBoundSum > 0 && $countResidue !== null
+                && $countResidue / $countBoundSum * 100 <= $countPercent) {
+                $pct = round($countResidue / $countBoundSum * 100, 1);
+                $hits[] = [
+                    'code' => 'count_total_percent_low',
+                    'instanceId' => null,
+                    'cardNo' => null,
+                    'title' => null,
+                    'type' => null,
+                    'unit' => '节',
+                    'expr' => "countResidue({$countResidue}) / countBound({$countBoundSum}) * 100 <= {$countPercent}",
+                    'values' => ['remaining' => (int) $countResidue, 'bound' => $countBoundSum, 'percent' => $pct],
+                    'why' => "当前可用次卡合计占比 {$pct}% ≤ {$countPercent}%（余 {$countResidue} 节，汇总口径）",
+                ];
+            }
+            if ($expireDays !== null && $expireDays >= 0 && $expireDays <= $expireDaysRule) {
+                $hits[] = [
+                    'code' => 'deadline_near',
+                    'instanceId' => null,
+                    'cardNo' => null,
+                    'title' => null,
+                    'type' => null,
+                    'unit' => '天',
+                    'expr' => "0 <= expireDays({$expireDays}) <= {$expireDaysRule}",
+                    'values' => ['daysUntil' => $expireDays, 'unit' => '天'],
+                    'why' => "到期日临近（{$expireDays} 天后，汇总口径）",
+                ];
+            }
+        } else {
+            // ── 逐实例求值（只作用于 CURRENT；HISTORY/UNACTIVATED 不在命中域）──
+            foreach ($current as $instance) {
+                $suffix = $suffixOf($instance);
+                $type = $instance['type'];
+                $days = $instance['daysUntil'];
+
+                // R-T1（期限卡）/ R-D1（次卡）：deadlineEligible 已含「次卡必须有余量」与
+                // 「期限卡最后一天放行」两个边界（§2.4）。
+                if (in_array($type, [CardLifecycle::TYPE_COUNT, CardLifecycle::TYPE_TIME], true)
+                    && CardLifecycle::deadlineEligible($instance, $expireDaysRule)) {
+                    $qty = $instance['remaining'] === null ? null : CardLifecycle::fmtQty($instance['remaining'], $instance['unit']);
+                    $whyText = match (true) {
+                        $instance['remaining'] === null => "「{$instance['title']}」{$days} 天后到期（该卡未返回剩余量，按到期日判定）{$suffix}",
+                        $days === 0 => "「{$instance['title']}」今日到期（剩余 {$qty}）{$suffix}",
+                        default => "「{$instance['title']}」{$days} 天后到期（剩余 {$qty}）{$suffix}",
+                    };
+                    $deadlineHits[] = [
+                        'code' => 'deadline_near',
+                        'instanceId' => $instance['id'],
+                        'cardNo' => $instance['cardNo'],
+                        'title' => $instance['title'],
+                        'type' => $type,
+                        'unit' => $instance['unit'],
+                        'expr' => "state=current ∧ type={$type} ∧ 0 <= daysUntil({$days}) <= {$expireDaysRule} ∧ (usable ∨ lastDay)",
+                        'values' => ['daysUntil' => $days, 'remaining' => $instance['remaining'], 'unit' => $instance['unit']],
+                        'why' => $whyText,
+                        '_sort' => [$days, (int) ($instance['remaining'] ?? 0), (string) ($instance['cardNo'] ?? '')],
+                    ];
                 }
-                $title = (string) ($card['title'] ?? '卡项');
-                $unit = (string) ($card['unit'] ?? '节');
-                if ($days >= 0 && $days <= $expireDaysRule) {
-                    $why[] = "「{$title}」{$days} 天后到期（仍余 {$card['residue']}{$unit}）";
-                    $whyCodes[] = 'deadline_near';
-                    $deadlineHit = true;
-                } elseif ($days < 0 && $days >= -$backfillDays) {
-                    // C8：已过期但仍有余额——卡里的课还能上（或需补偿），此前完全漏判
-                    $why[] = "「{$title}」已过期 ".abs($days)." 天，仍余 {$card['residue']}{$unit}";
-                    $whyCodes[] = 'deadline_expired';
-                    $deadlineHit = true;
+
+                // R-T2：期限卡有效期占比（逐卡，不再是汇总）
+                if ($type === CardLifecycle::TYPE_TIME && CardLifecycle::isUsable($instance)
+                    && $expirePercent > 0 && $instance['validDays'] !== null && $instance['validDays'] > 0) {
+                    $pct = $instance['remaining'] / $instance['validDays'] * 100;
+                    if ($pct <= $expirePercent) {
+                        $validityHits[] = [
+                            'code' => 'validity_percent',
+                            'instanceId' => $instance['id'],
+                            'cardNo' => $instance['cardNo'],
+                            'title' => $instance['title'],
+                            'type' => $type,
+                            'unit' => '天',
+                            'expr' => "remaining({$instance['remaining']}) / validDays({$instance['validDays']}) * 100 <= {$expirePercent}",
+                            'values' => ['remaining' => $instance['remaining'], 'validDays' => $instance['validDays'], 'percent' => round($pct, 1)],
+                            'why' => "「{$instance['title']}」有效期仅剩 {$instance['remaining']} 天（".round($pct, 1)."% ≤ {$expirePercent}%）{$suffix}",
+                            '_sort' => [(int) $pct, (int) $instance['remaining'], (string) ($instance['cardNo'] ?? '')],
+                        ];
+                    }
+                }
+
+                // R-C1 / R-C2：次卡尾段（绝对值优先于占比，同一实例只出一条）
+                if ($type === CardLifecycle::TYPE_COUNT && CardLifecycle::isUsable($instance)) {
+                    if ($instance['remaining'] <= $threshold) {
+                        $cardLowHits[] = [
+                            'code' => 'count_card_low',
+                            'instanceId' => $instance['id'],
+                            'cardNo' => $instance['cardNo'],
+                            'title' => $instance['title'],
+                            'type' => $type,
+                            'unit' => '节',
+                            'expr' => "remaining(".((int) $instance['remaining']).") <= threshold({$threshold})",
+                            'values' => ['remaining' => (int) $instance['remaining'], 'threshold' => $threshold, 'usableSum' => (int) $usableCountTotal],
+                            'why' => "「{$instance['title']}」仅余 ".CardLifecycle::fmtQty($instance['remaining'], '节')." ≤ {$threshold} 节（当前可用合计 ".((int) $usableCountTotal)." 节）{$suffix}",
+                            '_sort' => [(int) $instance['remaining'], (string) ($instance['cardNo'] ?? '')],
+                        ];
+                    } elseif ($countPercent > 0 && ($instance['bound'] ?? 0) > 0
+                        && $instance['remaining'] / $instance['bound'] * 100 <= $countPercent) {
+                        $pct = round($instance['remaining'] / $instance['bound'] * 100, 1);
+                        $cardPctHits[] = [
+                            'code' => 'count_card_percent_low',
+                            'instanceId' => $instance['id'],
+                            'cardNo' => $instance['cardNo'],
+                            'title' => $instance['title'],
+                            'type' => $type,
+                            'unit' => '节',
+                            'expr' => "remaining(".((int) $instance['remaining']).") / bound(".(int) $instance['bound'].") * 100 <= {$countPercent}",
+                            'values' => ['remaining' => (int) $instance['remaining'], 'bound' => (int) $instance['bound'], 'percent' => $pct],
+                            'why' => "「{$instance['title']}」剩余占比 {$pct}% ≤ {$countPercent}%（".((int) $instance['remaining']).'/'.((int) $instance['bound'])." 节）{$suffix}",
+                            '_sort' => [(int) $pct, (int) $instance['remaining'], (string) ($instance['cardNo'] ?? '')],
+                        ];
+                    }
+                }
+
+                // R-S1：储值卡低余额（元；阈值 0=关闭；永不与节/天比较）
+                if ($type === CardLifecycle::TYPE_STORED && CardLifecycle::isUsable($instance)
+                    && $storedValueThreshold > 0 && $instance['remaining'] <= $storedValueThreshold) {
+                    $storedHits[] = [
+                        'code' => 'stored_value_low',
+                        'instanceId' => $instance['id'],
+                        'cardNo' => $instance['cardNo'],
+                        'title' => $instance['title'],
+                        'type' => $type,
+                        'unit' => '元',
+                        'expr' => "remaining({$instance['remaining']}) <= renewalStoredValueThreshold({$storedValueThreshold})",
+                        'values' => ['remaining' => $instance['remaining'], 'threshold' => $storedValueThreshold, 'unit' => '元'],
+                        'why' => "「{$instance['title']}」余额 ".CardLifecycle::fmtQty($instance['remaining'], '元')." ≤ {$storedValueThreshold} 元{$suffix}",
+                        '_sort' => [(int) $instance['remaining'], (string) ($instance['cardNo'] ?? '')],
+                    ];
                 }
             }
-            // ── 余额未知的**期限卡**：不能静默。
-            // 期限卡的价值在于「有效期」，即使上游没给剩余天数，只要 deadline 在窗外，
-            // 仍应按到期日单独判——这正是 R6 指出的漏提醒路径。
-            foreach ($unknownResidue as $card) {
-                if (! (array_key_exists('type', $card) ? (string) $card['type'] === '2' : ($card['unit'] ?? '节') === '天')) {
-                    continue; // 次卡余额未知：已进 degraded，不猜
-                }
-                $days = $card['deadline']
-                    ? (int) now()->startOfDay()->diffInDays($card['deadline'], false)
-                    : null;
-                if ($days === null) {
-                    continue;
-                }
-                $title = (string) ($card['title'] ?? '卡项');
-                if ($days >= 0 && $days <= $expireDaysRule) {
-                    $why[] = "「{$title}」{$days} 天后到期（该卡未返回剩余量，按到期日判定）";
-                    $whyCodes[] = 'deadline_near';
-                    $deadlineHit = true;
-                } elseif ($days < 0 && $days >= -$backfillDays) {
-                    $why[] = "「{$title}」已过期 ".abs($days).' 天（该卡未返回剩余量，按到期日判定）';
-                    $whyCodes[] = 'deadline_expired';
-                    $deadlineHit = true;
+
+            // 排序 + 上限（deadline 2 条、逐卡规则各 2 条）
+            $sortHits = function (array $list): array {
+                usort($list, fn ($a, $b) => ($a['_sort'] ?? []) <=> ($b['_sort'] ?? []));
+
+                return $list;
+            };
+            foreach ([
+                [$sortHits($deadlineHits), 2],
+                [$sortHits($cardLowHits), 2],
+                [$sortHits($cardPctHits), 2],
+                [$sortHits($validityHits), 2],
+            ] as [$list, $limit]) {
+                foreach (array_slice($list, 0, $limit) as $hit) {
+                    $hits[] = $hit;
                 }
             }
-            // 汇总口径的到期日（无卡项明细时的唯一依据；有明细时作为补充）
-            if ($cards === [] && $expireDays !== null) {
-                if ($expireDays >= 0 && $expireDays <= $expireDaysRule) {
-                    $why[] = "到期日临近（{$expireDays} 天后）";
-                    $whyCodes[] = 'deadline_near';
-                    $deadlineHit = true;
-                } elseif ($expireDays < 0 && $expireDays >= -$backfillDays) {
-                    $why[] = '到期日已过 '.abs($expireDays).' 天';
-                    $whyCodes[] = 'deadline_expired';
-                    $deadlineHit = true;
+
+            // R-C3 / R-C4：合计口径（至少 2 张在用次卡，避免与 R-C1 同义重复）
+            if ($usableCountCards >= 2) {
+                if ($usableCountTotal <= $threshold) {
+                    $hits[] = [
+                        'code' => 'count_total_low',
+                        'instanceId' => null,
+                        'cardNo' => null,
+                        'title' => null,
+                        'type' => CardLifecycle::TYPE_COUNT,
+                        'unit' => '节',
+                        'expr' => "Σremaining(".((int) $usableCountTotal).") <= threshold({$threshold}) ∧ usableCards({$usableCountCards}) >= 2",
+                        'values' => ['remaining' => (int) $usableCountTotal, 'threshold' => $threshold, 'cards' => $usableCountCards],
+                        'why' => '当前可用次卡合计余 '.((int) $usableCountTotal)." 节 ≤ {$threshold} 节（{$usableCountCards} 张在用次卡）",
+                    ];
+                } elseif ($countPercent > 0 && $usableBoundTotal > 0
+                    && $usableCountTotal / $usableBoundTotal * 100 <= $countPercent) {
+                    $pct = round($usableCountTotal / $usableBoundTotal * 100, 1);
+                    $hits[] = [
+                        'code' => 'count_total_percent_low',
+                        'instanceId' => null,
+                        'cardNo' => null,
+                        'title' => null,
+                        'type' => CardLifecycle::TYPE_COUNT,
+                        'unit' => '节',
+                        'expr' => "Σremaining(".((int) $usableCountTotal).") / Σbound(".((int) $usableBoundTotal).") * 100 <= {$countPercent}",
+                        'values' => ['remaining' => (int) $usableCountTotal, 'bound' => (int) $usableBoundTotal, 'percent' => $pct, 'cards' => $usableCountCards],
+                        'why' => '当前可用次卡合计占比 '.$pct."% ≤ {$countPercent}%（".((int) $usableCountTotal).'/'.((int) $usableBoundTotal)." 节，{$usableCountCards} 张）",
+                    ];
                 }
             }
-            // ── 有效期占比（汇总口径，保持 daysLeft/daysTotal 的「在用期限卡合计」语义） ──
-            if ($expirePercent > 0 && $daysLeft !== null && $daysTotal > 0
-                && $daysLeft / $daysTotal * 100 <= $expirePercent) {
-                $why[] = '在用期限卡有效期仅剩 '.round($daysLeft / $daysTotal * 100, 1).'%';
-                $whyCodes[] = 'validity_percent';
+
+            // R-S1 汇总上限 1 条
+            foreach (array_slice($sortHits($storedHits), 0, 1) as $hit) {
+                $hits[] = $hit;
             }
+
+            // R-X1：整库可用为 0 且存在确认耗尽的次卡（C3/F3：仅 type=1 且确认 0）
+            if ($usable === [] && $exhausted !== []) {
+                $hits[] = [
+                    'code' => 'count_exhausted',
+                    'instanceId' => null,
+                    'cardNo' => null,
+                    'title' => null,
+                    'type' => CardLifecycle::TYPE_COUNT,
+                    'unit' => '节',
+                    'expr' => 'USABLE = ∅ ∧ EXHAUSTED ≠ ∅',
+                    'values' => ['usable' => 0, 'exhaustedCards' => count($exhausted)],
+                    'why' => '在用次卡课时已耗尽（当前可用 0 节，'.count($exhausted).' 张次卡已用完）',
+                ];
+            }
+        }
+
+        // 全局最多 5 条 why（§4.2）；超出部分只留 diagnostics
+        if (count($hits) > 5) {
+            $whyTruncated = true;
+            $hits = array_slice($hits, 0, 5);
+        }
+
+        $deadlineHit = false;
+        foreach ($hits as $hit) {
+            if ($hit['code'] === 'deadline_near') {
+                $deadlineHit = true;
+            }
+        }
+
+        // ── bucket（§3.2 唯一判定表；K1 优先于 K2 → 口径翻转 C7）──────────
+        if ($usable === [] && $unactivated !== []) {
+            $bucket = '待开卡';
+            // K1 命中时 why 必须重建：只由未开卡实例与历史证据生成。
+            // 点亮的 count_exhausted 等只进 diagnostics（$suppressedCodes），不得拼进 why，
+            // 否则「待开卡」成员身上会出现「课时已耗尽」的自相矛盾（§3.3）。
+            $suppressedCodes = array_values(array_unique(array_column($hits, 'code')));
+            $target = $unactivated;
+            usort($target, fn ($a, $b) => CardLifecycle::sortKey($a) <=> CardLifecycle::sortKey($b));
+            $first = $target[0];
+            $suffix = $suffixOf($first);
+            if ($history !== []) {
+                $why[] = "「{$first['title']}」尚未开卡；另有 ".count($history)." 张已过期卡（不计入待续费）{$suffix}";
+                $whyCodes[] = 'unactivated_with_history';
+            } else {
+                $why[] = "「{$first['title']}」尚未开卡，开卡后开始计算有效期{$suffix}";
+            }
+            $whyCodes = array_values(array_unique(array_merge(['unactivated_open'], $whyCodes)));
+            $hits = [];
+        } elseif ($hits !== []) {
+            $urgentCandidate = $m3 > 0 || $deadlineHit;
+            $bucket = $urgentCandidate ? '待续费·紧急' : '待续费·观察';
+            foreach ($hits as $hit) {
+                $why[] = $hit['why'];
+                $whyCodes[] = $hit['code'];
+            }
+            $whyCodes = array_values(array_unique($whyCodes));
         }
     }
 
-    $in = $hasAsset && $why !== [] && $bucket !== '待开卡';
-    // 出勤不再是门槛，只决定紧急度（C4）。
-    // 「到期/过期」类命中即使近 30 天没来也必须紧急——卡马上要作废，等会员自己回来就来不及了。
-    // 这里读**结构化标记** $deadlineHit，不做文案匹配：$why 里内嵌卡名，
-    // 一张叫「到期提醒卡」的卡会把 str_contains 命中，让观察态误升为紧急态。
+    $in = $hasAnyCard && $hits !== [] && ! in_array($bucket, ['待开卡', '无资产'], true);
+    // 出勤只决定紧急度（C4）；deadline 类命中即使近 30 天没来也必须紧急。
     $urgent = $in && ($m3 > 0 || $deadlineHit);
     if ($in) {
         $bucket = $urgent ? '待续费·紧急' : '待续费·观察';
-    } elseif ($bucket !== '待开卡' && $bucket !== '无资产') {
+    } elseif (! in_array($bucket, ['待开卡', '无资产'], true)) {
         $bucket = '—';
     }
 
-    // 有余额（用于 P3 过期有余额、以及 C8 的「过期但还有课」判断）
-    $hasBalance = ($liveCount !== [] || $liveTime !== [])
+    // 有余额（保留键；P3 判据已改为 expiredWithBalance，不再依赖此值）
+    $hasBalance = $usable !== []
         || (int) ($c->remain_times ?? 0) > 0
-        || ($daysLeft !== null && (int) $daysLeft > 0);
-    $expiredWithBalance = $hasAsset && $expireDays !== null && $expireDays < 0 && $hasBalance;
+        || ((int) ($stats['daysLeft'] ?? 0)) > 0;
 
-    // ── 炸弹会员（用户新增需求 2026-09-24；2026-09-25 补第 5 条）──────────
-    // 口径（五条必须同时成立）：
-    //   1. 正式会员 —— 由**查询侧**的 scopeMemberCustomers() 保证（见 computeMemberLists），
-    //      本函数只看卡项，不重复判「是不是客资」：那是授权面的事，两处各判一次必然分叉。
-    //   2. 持有次卡（type=1，排除 is_taste / 体验·员工·测试）
-    //   3. 该卡有余额（residue > 0）
-    //   4. 已过期且超过 6 个月（deadline < 今天 − 183 天）
-    //   5. 超过 6 个月没有出勤记录（用户 2026-09-25 补充口径）：
-    //      last_visit 为 null（从未到店）视为满足；有 last_visit 但距今未超过
-    //      $bombDays 天的排除。口径与卡过期同用 $bombDays（用户定义里都是「6 个月」）。
-    //      注意是「最近一次出勤距今超 6 个月」，不是「从未出勤」——人只要 184 天前
-    //      来过一次就永远不再算炸弹，除非中间又来一次把计时刷新。
-    //
-    // 为什么「卡有余额 + 已过期」不会同时进待续费：过期卡（status≠4/5/7）不参与
-    // ACTIVE_CARD_STATUSES，因此不在 cards_list、不参与任何续费分支；
-    // 它们**只**出现在 card_stats.expiredCards 保留区里，专供本判定消费。
-    //
-    // deadline 是 Unix 时间戳 —— 由 KyMemberSyncService::date() 统一转成了 Y-m-d，
-    // 这里再解析成日期（**不要**直接当字符串比大小）。
-    $bombDays = (int) ($rules['bombExpiredDays'] ?? 183);
+    // ── 炸弹会员（S11）：输入优先 expiredCards（兼容），缺失时回退 HISTORY 过滤 ──
+    // 双保险：即使 expiredCards 由旧版本写出（含 29/39），消费点也再过滤一遍。
+    $bombSource = [];
+    if ($expiredCards !== []) {
+        foreach ($expiredCards as $row) {
+            if (is_array($row)) {
+                $bombSource[] = CardLifecycle::normalize($row, $tastePattern);
+            }
+        }
+    } else {
+        $bombSource = $history;
+    }
     $bombCards = [];
-    $bombSections = 0;
-    foreach ($expiredCards as $card) {
-        $deadline = $card['deadline'] ?? null;
-        if (! is_string($deadline) || $deadline === '') {
+    $bombSections = 0.0;
+    foreach ($bombSource as $instance) {
+        if ($instance['type'] !== CardLifecycle::TYPE_COUNT
+            || in_array($instance['statusCode'], ['29', '39'], true)
+            || $instance['isTaste']
+            || $instance['deadline'] === null
+            || $instance['daysUntil'] === null
+            || (-$instance['daysUntil']) <= $bombDays
+            || ($instance['remaining'] ?? 0) <= 0) {
             continue;
         }
-        $days = (int) now()->startOfDay()->diffInDays(CarbonImmutable::parse($deadline), false);
-        if ($days >= -$bombDays) {
-            continue;   // 未过期，或过期未满 6 个月
-        }
-        $bombCards[] = $card + ['daysExpired' => abs($days)];
-        $bombSections += (int) ($card['residue'] ?? 0);
+        $bombCards[] = [
+            'id' => $instance['id'],
+            'cardNo' => $instance['cardNo'],
+            'title' => $instance['title'],
+            'residue' => (int) floor($instance['remaining']),
+            'deadline' => $instance['deadline'],
+            'status' => (string) $instance['statusCode'],
+            'type' => '1',
+            'daysExpired' => abs((int) $instance['daysUntil']),
+        ];
+        $bombSections += $instance['remaining'];
     }
-    // 口径 5：超过 6 个月没有出勤。$dd 即函数前部算好的 lastVisitDays
-    // （last_visit 距今天数；last_visit 为 null 时 $dd 也为 null，表示从未到店）。
-    // 从未到店的人比「183 天前来过」更久没来，直接满足。
-    $bombLastVisitOk = $c->last_visit === null
-        || ($dd !== null && $dd > $bombDays);
+    $bombLastVisitOk = $c->last_visit === null || ($dd !== null && $dd > $bombDays);
     $bomb = $bombCards !== [] && $bombLastVisitOk;
 
+    // ── 过期有余额的理由（独立返回，不进 renewal.why）────────────────────
+    $expiredBalanceWhy = [];
+    $expiredBalanceSections = 0.0;
+    $expiredBalanceAmount = 0.0;
+    foreach ($expiredBalance as $instance) {
+        $note = CardLifecycle::historyNote($instance);
+        if ($note !== null) {
+            $expiredBalanceWhy[] = $note;
+        }
+        if ($instance['type'] === CardLifecycle::TYPE_COUNT) {
+            $expiredBalanceSections += CardLifecycle::residualBalance($instance);
+        }
+        if ($instance['type'] === CardLifecycle::TYPE_STORED) {
+            $expiredBalanceAmount += CardLifecycle::residualBalance($instance);
+        }
+    }
+    // 老汇总行（无逐卡明细）：只给汇总口径的说明，绝不编造逐卡身份（F5/C4）
+    if ($legacyExpiredWithBalance) {
+        $expiredBalanceWhy[] = '到期日已过 '.abs((int) $expireDays).' 天，余 '.((int) $summaryResidue).' 节（汇总口径，无逐卡明细）';
+        $expiredBalanceSections += (float) $summaryResidue;
+    }
+
     // 分层优先级：P0 → P2(仍在出勤) → P1 → P2(停练兜底) → P3 → P4，先命中先落层（互斥单值）。
-    //
-    // P0 放最前是**必须**的：真实数据里「待续费」与「待复活」重叠率 100%
-    // （见诊断文档 C5），若把待复活放在 P0 之前，待续费窗口池会被整池搬空——
-    // 那正是「P0 恒为空」的另一种成因。重叠会员的展示优先级由 watch 里的
-    // primary/coLists 表达（D3：不隐藏，只分主次），不由分层表达。
-    //
-    // P2 用**独立常量 strict**（M1>M2>M3），不跟随 declineMode：
-    // declineMode 是「出勤降低」**清单**的可调阈值（店长改它期望清单变化），
-    // 而分层表达的是长期趋势，不应因为店长调清单阈值而整层换位。
-    // 两者用途不同，所以是两个变量：$declining（清单，读配置）/ $decliningForLayer（分层，固定 strict）。
-    //
-    // ── P2 拆成两档、且「仍在出勤」档提到 P1 之前（2026-09-24 修复） ──
-    //
-    // 缺陷形态（用户报告「P2 只剩 2 人」的根因）：旧链是 P0 → P1 → P2，
-    // 而 $revive = dd > reviveDays(30) 没来。频次下降（M1>M2>M3）的人出勤在萎缩，
-    // last_visit 往往也越来越久远——只要超过 30 天就先命中 P1，P2 被整层吃空：
-    // 频次下降最严重的会员（M3 已归零、dd 必然 > 30）全部进 P1，
-    // P2 只剩「还在来且递减」的极小样本，经营价值归零。
-    //
-    // 修法依据 P2 的经营语义「正在流失、还来得及拦」把严格递减拆成两档：
-    //   $decliningActive（主档）：M3 > 0 且严格递减——本月还来，趋势下降是**主动信号**，
-    //     排到 P1 之前落 P2。M3 > 0 蕴含 last_visit 在 30 天内，与 $revive 天然互斥，
-    //     但必须显式排前：否则「仍在出勤的递减者」会先被 P1 抢走（正是本缺陷）。
-    //   $decliningForLayer（兜底档）：不要求 M3 > 0 的严格递减——已停练的递减者
-    //     理论上会被 $revive / $preLoss 捕获（M3=0 且 M2>0 直接命中 $preLoss；
-    //     dd>30 命中 $revive），此分支仅兜住两者都没接住的残余（例如 M2=M3=0
-    //     且 dd 在 reviveDays 内、未开卡的严格递减者），放回 P1 之后维持旧行为，
-    //     不扩大 P2 的授权面。
-    // 停练者（M3=0）不是「频次下降」，是「已经流失」——那是 P1 待复活的画像（验收 2）。
     $decliningActive = $m3 > 0 && ($m1 > $m2 && $m2 > $m3);
     $decliningForLayer = ! $revive && ! $preLoss && ($m1 > $m2 && $m2 > $m3);
-    $layer = ! $hasAsset ? 'P5'
+    $layer = ! $hasAnyCard ? 'P5'
         : ($in ? 'P0'
             : ($decliningActive ? 'P2'
                 : ($revive ? 'P1'
                     : ($decliningForLayer ? 'P2'
                         : ($expiredWithBalance ? 'P3' : 'P4')))));
 
+    // ── 诊断快照（供 members:explain / 前端「判定依据」弹层）──────────────
+    $instanceSnapshots = [];
+    foreach ($all as $instance) {
+        $instanceSnapshots[] = [
+            'id' => $instance['id'],
+            'cardNo' => $instance['cardNo'],
+            'cardId' => $instance['cardId'],
+            'title' => $instance['title'],
+            'type' => $instance['type'],
+            'unit' => $instance['unit'],
+            'statusCode' => $instance['statusCode'],
+            'state' => $instance['state'],
+            'historyReason' => $instance['historyReason'],
+            'deadline' => $instance['deadline'],
+            'daysUntil' => $instance['daysUntil'],
+            // 节/天是整数口径，元保留 2 位小数；null 表示未知（≠0）
+            'remaining' => $instance['remaining'] === null
+                ? null
+                : ($instance['unit'] === '元' ? round($instance['remaining'], 2) : (int) $instance['remaining']),
+            'remainingSource' => $instance['remainingSource'],
+            'validDays' => $instance['validDays'],
+            'bound' => $instance['bound'] === null
+                ? null
+                : ($instance['unit'] === '元' ? round($instance['bound'], 2) : (int) $instance['bound']),
+            'seriesIndex' => $instance['seriesIndex'] ?? null,
+            'seriesCount' => $instance['seriesCount'] ?? null,
+            'isTaste' => $instance['isTaste'],
+            'degraded' => $instance['degraded'],
+            'note' => $instance['state'] === 'history'
+                ? CardLifecycle::historyNote($instance)
+                : null,
+        ];
+    }
+    $publicHits = array_values(array_map(function (array $hit) {
+        unset($hit['_sort']);
+
+        return $hit;
+    }, $hits));
+
     return [
-        'hasAsset' => $hasAsset,
+        // ── 旧键（一个都不能删；前端/今日待办仍读）──────────────────────
+        'hasAsset' => $hasAnyCard,
         'm1' => $m1, 'm2' => $m2, 'm3' => $m3,
         'lastVisitDays' => $dd,
         'expireDays' => $expireDays,
@@ -2331,20 +2630,118 @@ function customerDecision(Customer $c, ?array $rules = null): array
         'vip' => $paid >= $vip,
         'hasBalance' => $hasBalance,
         'expiredWithBalance' => $expiredWithBalance,
-        // 炸弹会员：正式会员 + 次卡有余额 + 已过期超 6 个月 + 超 6 个月未到店（口径见上方 $bomb 注释）
-        'bomb' => ['in' => $bomb, 'sections' => $bombSections, 'cards' => $bombCards],
+        // 炸弹会员：正式会员 + 次卡有余额 + 已过期超 6 个月 + 超 6 个月未到店
+        'bomb' => ['in' => $bomb, 'sections' => (int) floor($bombSections), 'cards' => $bombCards],
         'layer' => $layer,
+        // ── 新键（只增不改，§3.6）─────────────────────────────────────
+        'hasAnyCard' => $hasAnyCard,
+        'hasActiveEntitlement' => $hasActiveEntitlement,
+        'hasUsableEntitlement' => $hasUsableEntitlement,
+        'expiredBalance' => [
+            'in' => $expiredWithBalance,
+            'why' => $expiredBalanceWhy,
+            'whyCodes' => $expiredWithBalance ? ['expired_balance'] : [],
+            'sections' => (int) floor($expiredBalanceSections),
+            'amount' => round($expiredBalanceAmount, 2),
+            'cards' => $expiredBalance,
+        ],
+        'display' => (function () use ($all, $current, $unactivated, $usable, $history, $summaryResidue, $stats, $mainCard, $expireDays, $c) {
+            [$mainInstance, $mainState] = CardLifecycle::mainCardFrom($all);
+            [$expireDate, $expireState] = CardLifecycle::expireDateFrom($all);
+            // 老数据兜底：没有逐卡明细时，展示字段退回同步列（main_card / expire_date），
+            // 并显式标注来源状态，避免把「无法归因」显示成「— / none」。
+            if ($mainInstance === null && ! in_array($mainCard, ['', '—', '待同步卡项'], true)) {
+                $mainInstance = ['title' => $mainCard];
+                $mainState = ($expireDays !== null && $expireDays < 0) ? 'history' : 'current';
+            }
+            if ($expireDate === null && $c->expire_date) {
+                $expireDate = (string) $c->expire_date;
+                $expireState = ($expireDays !== null && $expireDays < 0) ? 'history' : 'current';
+            }
+            $displayCount = 0.0;
+            foreach (array_merge($current, $unactivated) as $i) {
+                if ($i['type'] === CardLifecycle::TYPE_COUNT && $i['remaining'] !== null) {
+                    $displayCount += $i['remaining'];
+                }
+            }
+            $storedValue = 0.0;
+            foreach (array_merge($current, $unactivated) as $i) {
+                if ($i['type'] === CardLifecycle::TYPE_STORED && $i['remaining'] !== null) {
+                    $storedValue += $i['remaining'];
+                }
+            }
+            $historySections = 0.0;
+            $historyAmount = 0.0;
+            foreach ($history as $i) {
+                $residual = CardLifecycle::residualBalance($i);
+                if ($i['type'] === CardLifecycle::TYPE_COUNT) {
+                    $historySections += $residual;
+                }
+                if ($i['type'] === CardLifecycle::TYPE_STORED) {
+                    $historyAmount += $residual;
+                }
+            }
+            $usableCount = 0.0;
+            foreach ($usable as $i) {
+                if ($i['type'] === CardLifecycle::TYPE_COUNT) {
+                    $usableCount += $i['remaining'];
+                }
+            }
+
+            return [
+                'mainCard' => $mainInstance !== null ? $mainInstance['title'] : '—',
+                'mainCardState' => $mainState,
+                'expireDate' => $expireDate,
+                'expireDateState' => $expireState,
+                'nextExpireDays' => CardLifecycle::daysUntilDate($expireDate),
+                'usableCount' => (int) floor($usableCount),
+                'displayCount' => (int) floor($displayCount),
+                'storedValue' => round($storedValue, 2),
+                'historySections' => (int) floor($historySections),
+                'historyAmount' => round($historyAmount, 2),
+                'legacySummaryResidue' => $summaryResidue,
+                'daysLeft' => $stats['daysLeft'] ?? null,
+                'daysTotal' => $stats['daysTotal'] ?? null,
+            ];
+        })(),
+        'dataVersion' => $dataVersion,
         'renewal' => [
             'in' => $in,
             'why' => $why,
-            // 结构化命中类型（deadline_near / deadline_expired / count_exhausted / validity_percent…）。
-            // $urgent 只读这些标记，不做文案匹配；前端也可按 code 分类展示，不必解析中文。
+            // 结构化命中类型（§5.2 唯一允许值）
             'whyCodes' => $whyCodes,
             'deadlineHit' => $deadlineHit,
             'bucket' => $bucket,
             'urgent' => $urgent,
             'revive' => $revive,
             'degraded' => $degraded,
+            // v3.9 新增
+            'degradedCodes' => $degradedCodes,
+            'whyTruncated' => $whyTruncated,
+            'suppressedCodes' => $suppressedCodes,
+            'hits' => $publicHits,
+            'instances' => $instanceSnapshots,
+            'expiredBalance' => [
+                'in' => $expiredWithBalance,
+                'why' => $expiredBalanceWhy,
+                'whyCodes' => $expiredWithBalance ? ['expired_balance'] : [],
+                'sections' => (int) floor($expiredBalanceSections),
+                'amount' => round($expiredBalanceAmount, 2),
+                'cards' => array_values(array_map(fn (array $i) => [
+                    'id' => $i['id'],
+                    'cardNo' => $i['cardNo'],
+                    'title' => $i['title'],
+                    'type' => $i['type'],
+                    'unit' => $i['unit'],
+                    'daysExpired' => $i['daysUntil'] === null ? null : abs((int) $i['daysUntil']),
+                    'remaining' => CardLifecycle::residualBalance($i),
+                ], $expiredBalance)),
+            ],
+            'flags' => [
+                'hasAnyCard' => $hasAnyCard,
+                'hasActiveEntitlement' => $hasActiveEntitlement,
+                'hasUsableEntitlement' => $hasUsableEntitlement,
+            ],
         ],
     ];
 }
@@ -2452,8 +2849,10 @@ function recalculateMemberLayers(): int
  */
 function computeMemberLists(array $rules): array
 {
-    $lists = ['待续课' => [], '出勤降低' => [], 'VIP' => [], '预流失' => [], '待复活' => [], '炸弹会员' => []];
-    $watch = ['待续费' => [], '待开卡' => [], '经营分层' => [], '炸弹会员' => []];
+    // 「过期有余额」只作为**筛选标签的数据源**，不新增第 6 个页签（§3.4 captain 决策①）；
+    // 放进 lists 是为了让 `?list=过期有余额` 可用，UI 侧不渲染页签即可。
+    $lists = ['待续课' => [], '出勤降低' => [], 'VIP' => [], '预流失' => [], '待复活' => [], '炸弹会员' => [], '过期有余额' => []];
+    $watch = ['待续费' => [], '待开卡' => [], '经营分层' => [], '炸弹会员' => [], '过期有余额' => []];
 
     // 「正式会员」集合 = **既有谓词** scopeMemberCustomers()（不得另写一份等价条件：
     // 该谓词的 `layer != 'P5' OR external_id like 'ky:%'` 双条件正是为了兜住
@@ -2490,6 +2889,15 @@ function computeMemberLists(array $rules): array
                         'expireDays' => $d['expireDays'],
                         'attendM3' => $d['m3'],
                         'degraded' => $renewal['degraded'],
+                        // v3.9：展示字段与判定依据（前端「判定依据」弹层 / 到期日状态文案）
+                        'mainCard' => $d['display']['mainCard'],
+                        'mainCardState' => $d['display']['mainCardState'],
+                        'expireDateState' => $d['display']['expireDateState'],
+                        'nextExpireDays' => $d['display']['nextExpireDays'],
+                        'usableCount' => $d['display']['usableCount'],
+                        'displayCount' => $d['display']['displayCount'],
+                        'degradedCodes' => $renewal['degradedCodes'],
+                        'hits' => $renewal['hits'],
                     ];
                 } elseif ($renewal['bucket'] === '待开卡') {
                     // D5：不新增页签，但要让「有卡未开」可见，否则这类会员会静默消失。
@@ -2503,6 +2911,26 @@ function computeMemberLists(array $rules): array
                             : ['有未开卡卡项，尚未开始消耗课时'],
                         'whyCodes' => $renewal['whyCodes'],
                         'degraded' => $renewal['degraded'],
+                    ];
+                }
+                // ── 过期有余额（P3 的独立标签；与 bucket/in 正交）────────────────
+                // 只认 expired / expired_by_clock 且落在展示窗内的余额；退卡/停卡永不参与。
+                if ($d['expiredBalance']['in']) {
+                    $lists['过期有余额'][] = $c->id;
+                    $watch['过期有余额'][$c->id] = [
+                        'why' => $d['expiredBalance']['why'],
+                        'whyCodes' => $d['expiredBalance']['whyCodes'],
+                        'sections' => $d['expiredBalance']['sections'],
+                        'amount' => $d['expiredBalance']['amount'],
+                        'cardCount' => count($d['expiredBalance']['cards']),
+                        'cards' => array_values(array_map(fn (array $x) => [
+                            'id' => $x['id'] ?? null,
+                            'cardNo' => $x['cardNo'] ?? null,
+                            'title' => $x['title'] ?? null,
+                            'daysExpired' => $x['daysUntil'] === null ? null : abs((int) $x['daysUntil']),
+                            'remaining' => CardLifecycle::residualBalance($x),
+                            'unit' => $x['unit'] ?? '节',
+                        ], $d['expiredBalance']['cards'])),
                     ];
                 }
                 $watch['经营分层'][$c->id] = $d['layer'];

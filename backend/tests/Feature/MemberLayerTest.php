@@ -105,7 +105,9 @@ class MemberLayerTest extends TestCase
         $this->member('回归-P0', [$this->card('私教20次', '4', '1', 2, 18, now()->addDays(300)->toDateString())]);
         $this->member('回归-P2', [$this->card('私教200次', '4', '1', 180, 20, now()->addDays(500)->toDateString())],
             ['attend_m1' => 9, 'attend_m2' => 6, 'attend_m3' => 3]);
-        $this->member('回归-P3', [$this->card('私教50次', '4', '1', 50, 0, now()->subDays(100)->toDateString())]);
+        // P3 的 v3.9 语义 =「有过期实例且仍有余额」（受展示窗约束）：
+        // 过期 30 天在默认窗（90）内 → P3；过期 200 天出窗 → P4。
+        $this->member('回归-P3', [$this->card('私教50次', '4', '1', 50, 0, now()->subDays(30)->toDateString())]);
         $this->member('回归-P4', [$this->card('私教200次', '4', '1', 180, 20, now()->addDays(500)->toDateString())]);
         $this->member('回归-P5', [], ['main_card' => '—']);
 
@@ -247,24 +249,30 @@ class MemberLayerTest extends TestCase
 
     public function test_asset_less_row_with_ky_external_id_is_not_treated_as_lead(): void
     {
-        // 边界：同步会员的卡项全部过期时 main_card 会变成 '—'，此时他**仍是会员**，
-        // 不能被当成客资（前端客资）——CustomerController 用
-        // 「layer='P5' 且 external_id 非 ky:」双条件把这两类区分开。
-        // 本测试锁住：ky: 来源的行即使无资产也不落到 P5（否则会从会员列表消失）。
-        $expired = $this->member('过期无资产', [
-            $this->card('私教50次', '6', '1', 0, 50, now()->subDays(10)->toDateString()),
-        ], ['external_id' => 'ky:999001', 'main_card' => '—']);
+        // 边界：ky: 来源的行即使是「无资产」（layer=P5），也**仍是会员**、不能被当成客资。
+        // CustomerController 用「layer='P5' 且 external_id 非 ky:」双条件把这两类区分开。
+        //
+        // v3.9 补充（S8）：卡项全部过期的会员**不再落 P5**（有卡历史 → P3/P4），
+        // 所以「无资产且 P5」只剩「真的从未有卡」这一种形态 —— 正是本用例要锁的那条。
+        $neverHadCard = $this->member('从未有卡', [], ['external_id' => 'ky:999001', 'main_card' => '—']);
+        $allExpired = $this->member('卡项全过期', [
+            $this->card('私教50次', '6', '1', 50, 50, now()->subDays(10)->toDateString()),
+        ], ['external_id' => 'ky:999002', 'main_card' => '—']);
 
         recalculateMemberLayers();
-        $this->assertSame('P5', $expired->fresh()->layer, '无资产行落 P5 是既定语义');
+        $this->assertSame('P5', $neverHadCard->fresh()->layer, '从未有卡 → P5（分层语义不变）');
+        $this->assertNotSame('P5', $allExpired->fresh()->layer, 'S8：有卡历史不得落 P5');
+        $this->assertSame('P3', $allExpired->fresh()->layer, '过期未满窗且有余额 → P3');
 
-        // 但 /customers?type=lead 必须排除 ky: 来源，会员列表必须包含他
+        // 但 /customers?type=lead 必须排除 ky: 来源，会员列表必须包含他们
         $this->super();
         $leads = array_column($this->getJson('/api/customers?type=lead&size=500')->assertOk()->json('data.records'), 'name');
-        $this->assertNotContains('过期无资产', $leads, 'ky: 来源的行不得出现在客资列表');
+        $this->assertNotContains('从未有卡', $leads, 'ky: 来源的行不得出现在客资列表');
+        $this->assertNotContains('卡项全过期', $leads, 'ky: 来源的全过期会员同样不得出现在客资列表');
 
         $members = array_column($this->getJson('/api/customers?type=member&size=500')->assertOk()->json('data.records'), 'name');
-        $this->assertContains('过期无资产', $members, 'ky: 来源的行必须留在会员列表');
+        $this->assertContains('从未有卡', $members, 'ky: 来源的行必须留在会员列表');
+        $this->assertContains('卡项全过期', $members, '全过期会员必须留在会员列表');
     }
 
     // ------------------------------------------------------------ 幂等 / 时间戳
@@ -304,12 +312,22 @@ class MemberLayerTest extends TestCase
         $this->member('命令-B', [$this->card('私教200次', '4', '1', 180, 20, now()->addDays(500)->toDateString())],
             ['layer' => 'P5']);
 
+        // A-05：recalculateMemberLayers() 不写 updated_at → 缓存指纹不变，
+        // 手工重算后必须显式失效，否则按 layer 聚合的 analytics 会旧 ≤120s。
+        $memberListsVersion = businessCacheVersion('member_lists');
+        $analyticsVersion = businessCacheVersion('analytics');
+
         $this->artisan('rebuild:layers')
             ->expectsOutputToContain('实际更新 2 行')
+            ->expectsOutputToContain('业务缓存已失效')
             ->assertSuccessful();
 
         $dist = $this->distribution();
         $this->assertGreaterThanOrEqual(1, $dist['P0'] ?? 0);
+        $this->assertGreaterThan($memberListsVersion, businessCacheVersion('member_lists'),
+            'rebuild:layers 后必须自增 member_lists 缓存版本（A-05）');
+        $this->assertGreaterThan($analyticsVersion, businessCacheVersion('analytics'),
+            'rebuild:layers 后必须自增 analytics 缓存版本（A-05）');
     }
 
     public function test_rebuild_layers_dry_run_does_not_write(): void
@@ -317,12 +335,15 @@ class MemberLayerTest extends TestCase
         $this->member('预演-A', [$this->card('私教20次', '4', '1', 2, 18, now()->addDays(300)->toDateString())],
             ['layer' => 'P5']);
 
+        $memberListsVersion = businessCacheVersion('member_lists');
+
         $this->artisan('rebuild:layers', ['--dry-run' => true])
             ->expectsOutputToContain('预演模式')
             ->expectsOutputToContain('预计变化 1 行')
             ->assertSuccessful();
 
         $this->assertSame('P5', Customer::where('name', '预演-A')->first()->layer, '预演不得写库');
+        $this->assertSame($memberListsVersion, businessCacheVersion('member_lists'), '预演不得失效缓存');
     }
 
     // ------------------------------------------------------------ 分层定义单一来源
@@ -653,15 +674,20 @@ class MemberLayerTest extends TestCase
     {
         // ① 真客资：P5 且非 ky:
         $lead = $this->member('客资-真留资', [], ['main_card' => '—']);
-        // ② 同步会员，卡项全部过期 → 无资产 → 落 P5，但 external_id 是 ky:
-        $syncedMember = $this->member('会员-卡项全过期', [
-            $this->card('私教50次', '6', '1', 0, 50, now()->subDays(10)->toDateString()),
-        ], ['external_id' => 'ky:77001', 'main_card' => '—', 'card_paid_amount' => 12345.67]);
+        // ② 同步会员，从未有卡 → 落 P5，但 external_id 是 ky:（授权面必须排除）
+        $syncedMember = $this->member('会员-从未有卡', [], [
+            'external_id' => 'ky:77001', 'main_card' => '—', 'card_paid_amount' => 12345.67,
+        ]);
+        // ③ 同步会员，卡项全部过期 → v3.9 起落 P3（不再 P5），同样不得被新媒体看到
+        $expiredMember = $this->member('会员-卡项全过期', [
+            $this->card('私教50次', '6', '1', 50, 50, now()->subDays(10)->toDateString()),
+        ], ['external_id' => 'ky:77002', 'main_card' => '—', 'card_paid_amount' => 67890.12]);
         recalculateMemberLayers();
 
-        // 两者都落 P5 —— 分层语义没错
+        // 真客资 P5；两个 ky: 会员都不是 P5（S8：有卡历史不再进 P5）
         $this->assertSame('P5', $lead->fresh()->layer);
         $this->assertSame('P5', $syncedMember->fresh()->layer);
+        $this->assertSame('P3', $expiredMember->fresh()->layer, '全过期且有余额 → P3');
 
         $media = User::factory()->create(['username' => uniqid('m'), 'role' => 'R_MEDIA', 'status' => '启用']);
         $media->forceFill(['roles' => ['R_MEDIA']])->save();
@@ -673,12 +699,14 @@ class MemberLayerTest extends TestCase
 
         // 真客资可见
         $this->assertContains('客资-真留资', $names, '新媒体必须能看到前端客资');
-        // 同步会员不可见（这是越权面）
-        $this->assertNotContains('会员-卡项全过期', $names, '新媒体不得看到 ky: 来源的无资产会员');
-        $this->assertStringNotContainsString('会员-卡项全过期', $payload);
+        // 同步会员不可见（这是越权面）：P5 且 ky:，以及 P3 的 ky: 会员都不得出现
+        $this->assertNotContains('会员-从未有卡', $names, '新媒体不得看到 ky: 来源的无资产会员');
+        $this->assertNotContains('会员-卡项全过期', $names, '新媒体不得看到 ky: 来源的全过期会员');
+        $this->assertStringNotContainsString('会员-从未有卡', $payload);
         // 姓名/手机号/实收金额都不得泄露
         $this->assertStringNotContainsString((string) $syncedMember->phone, $payload, '不得泄露会员手机号');
         $this->assertStringNotContainsString('12345.67', $payload, '不得泄露会员实收金额');
+        $this->assertStringNotContainsString('67890.12', $payload, '不得泄露全过期会员的实收金额');
     }
 
     /**
@@ -692,10 +720,12 @@ class MemberLayerTest extends TestCase
     public function test_controller_media_narrowing_also_excludes_synced_member(): void
     {
         $this->member('控制器-真客资', [], ['main_card' => '—']);
-        $synced = $this->member('控制器-同步无资产', [
-            $this->card('私教50次', '6', '1', 0, 50, now()->subDays(10)->toDateString()),
-        ], ['external_id' => 'ky:77004', 'main_card' => '—', 'card_paid_amount' => 88888.88]);
+        // v3.9：只有「从未有卡」才会落 P5 —— 这样才真正压到控制器那层「P5 且非 ky:」的收窄。
+        $synced = $this->member('控制器-同步无资产', [], [
+            'external_id' => 'ky:77004', 'main_card' => '—', 'card_paid_amount' => 88888.88,
+        ]);
         recalculateMemberLayers();
+        $this->assertSame('P5', $synced->fresh()->layer, '前置：无卡行落 P5，收窄逻辑才有对象');
 
         // 多角色：scopeCustomersForUser 走 R_MANAGER 分支提前 return，收窄只能由控制器补
         $u = User::factory()->create(['username' => uniqid('mr'), 'role' => 'R_MANAGER', 'status' => '启用']);

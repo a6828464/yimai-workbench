@@ -21,11 +21,13 @@
         </div>
       </div>
       <div class="mt-1 text-xs text-gray-400">
-        清单阈值（随「会员管理 → 调整标签阈值」实时同步）：待续费 {{ renewalRuleText }} · 预流失
-        {{ activeRules.predropMin }}-{{ activeRules.predropMax }} 天未到店 · 待复活 &gt;{{
-          activeRules.reviveDays
+        清单阈值（随「会员管理 → 调整标签阈值」实时同步）：待续费 {{ renewalRuleText }} ·
+        过期有余额回溯窗 {{ expiredBalanceText }} · 预流失 {{ activeRules.predropMin }}-{{
+          activeRules.predropMax
         }}
-        天 · VIP 实收 ≥{{ formatMoney(activeRules.vipAmountThreshold) }}
+        天未到店 · 待复活 &gt;{{ activeRules.reviveDays }} 天 · VIP 实收 ≥{{
+          formatMoney(activeRules.vipAmountThreshold)
+        }}
         元
       </div>
     </template>
@@ -148,26 +150,52 @@
                   >
                 </div>
                 <div class="mt-0.5 truncate text-xs text-gray-500">
-                  {{ c.mainCard }} · {{ c.expireDate ? `${c.expireDate} 到期` : '到期日未知' }} ·
+                  {{ c.mainCard }}（{{ mainCardStateLabel(renewalDisplay(c).mainCardState) }}） ·
                   {{ c.consultant || c.owner }} ·
                   {{
                     c.hasRenewalPlan ? '已建续费计划，按方案推进' : '建议：今天到店时当面推进续费'
                   }}
                 </div>
+                <!--
+                  判定理由：与会员管理「判定依据」同一份后端 why / whyCodes，
+                  前端只做可读映射，不在前端重算（也不解析中文）。
+                -->
+                <div
+                  v-if="renewalWhy(c).length || renewalWhyTags(c).length"
+                  class="mt-0.5 flex flex-wrap items-center gap-1 text-xs text-gray-400"
+                >
+                  <ElTag v-for="t in renewalWhyTags(c)" :key="t" size="small" effect="plain">{{
+                    t
+                  }}</ElTag>
+                  <span v-if="renewalWhy(c).length" class="min-w-0 truncate">{{
+                    renewalWhy(c)[0]
+                  }}</span>
+                </div>
+                <!-- 规则没生效时如实说明（与会员管理的降级提示同源） -->
+                <div
+                  v-if="renewalDegraded(c).length"
+                  class="mt-0.5 truncate text-xs text-orange-500"
+                  :title="renewalDegraded(c).join('\n')"
+                >
+                  ⚠ {{ renewalDegraded(c)[0] }}
+                </div>
               </div>
               <div class="shrink-0 text-right text-xs">
                 <div
-                  :class="
-                    (c.remainTimes ?? 99) <= (activeRules.renewalThreshold ?? 10)
-                      ? 'text-red-500 font-600'
-                      : 'text-gray-500'
+                  :class="renewalDisplay(c).low ? 'text-red-500 font-600' : 'text-gray-500'"
+                  :title="
+                    renewalDisplay(c).exact
+                      ? '判定口径：当前可用次卡（不含未开卡）'
+                      : '旧快照没有判定口径，按展示口径近似'
                   "
                 >
-                  剩余 {{ c.remainTimes ?? '-' }} 节
+                  剩余 {{ renewalDisplay(c).displayCount ?? '-' }} 节
                 </div>
-                <div v-if="c.expireDays !== null" class="text-gray-400">
-                  {{ c.expireDays <= 0 ? '今日到期' : `剩 ${c.expireDays} 天` }}
+                <div v-if="renewalDisplay(c).storedValue" class="text-gray-500">
+                  储值 {{ fmtQty(renewalDisplay(c).storedValue ?? 0, '元') }}
                 </div>
+                <!-- 到期文案由 expireDateState 决定：历史卡显示「已过期 N 天」，不再一律「今日到期」 -->
+                <div class="text-gray-400">{{ renewalDisplay(c).expireText }}</div>
               </div>
               <TodoActions
                 :actions="actionMenus.renewals"
@@ -501,6 +529,7 @@
     refreshMemberRules,
     markTodoAction,
     updateMemberFields,
+    queryCustomers,
     type TodayTodo,
     type TodayTodoBookingItem,
     type TodayTodoRenewalItem,
@@ -510,10 +539,21 @@
     type TodayTodoReviewItem,
     type TodayTodoLeadItem,
     type TodayTodoTaskItem,
-    type MemberRules
+    type MemberRules,
+    type CardEntitlement,
+    type RenewalReason
   } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
+  import {
+    expiredBalanceWindowText,
+    expireDateText,
+    fmtQty,
+    lowRemainInfo,
+    mainCardStateLabel,
+    renewalRuleSummary,
+    whyCodeLabel
+  } from '@/views/yimai/shared/card-display'
   import { ElMessage } from 'element-plus'
   import TodoActions from './todo-actions.vue'
 
@@ -573,16 +613,14 @@
     return Number(v).toLocaleString('zh-CN')
   }
 
-  /** 待续费阈值摘要：次卡节数/占比 + 到期天数（+ 有效期占比，启用时） */
-  const renewalRuleText = computed(() => {
-    const r = activeRules.value
-    const parts = [`次卡剩余 ≤${r.renewalThreshold ?? 10} 节`]
-    if ((r.renewalCountPercent ?? 0) > 0) parts.push(`占比 ≤${r.renewalCountPercent}%`)
-    parts.push(`到期 ≤${r.renewalExpireDays ?? 30} 天`)
-    if ((r.renewalExpirePercent ?? 0) > 0)
-      parts.push(`时间卡有效期剩余 ≤${r.renewalExpirePercent}%`)
-    return parts.join(' 或 ')
-  })
+  /**
+   * 待续费阈值摘要：与「会员管理 → 调整标签阈值」共用同一份文案
+   * （`views/yimai/shared/card-display`），两处不会各说一套。
+   */
+  const renewalRuleText = computed(() => renewalRuleSummary(activeRules.value))
+
+  /** 过期有余额回溯窗（同一份阈值来源；它只影响 P3 提示，不再影响待续费） */
+  const expiredBalanceText = computed(() => expiredBalanceWindowText(activeRules.value))
 
   const allTabs: { key: TabKey; label: string }[] = [
     { key: 'bookings', label: '今日预约' },
@@ -609,6 +647,125 @@
   const reviews = computed<TodayTodoReviewItem[]>(() => todo.value?.reviews ?? [])
   const newLeads = computed<TodayTodoLeadItem[]>(() => todo.value?.newLeads ?? [])
   const tasks = computed<TodayTodoTaskItem[]>(() => todo.value?.tasks ?? [])
+
+  /* ---------- 待续费行：展示口径（只读后端字段，不重算判定） ---------- */
+
+  /**
+   * 与会员管理**同一份**后端结论：`/customers?list=待续课` 返回的
+   * `renewalReasons`（判定理由，含 why/hits/expireDateState/usableCount）
+   * 与 `cardStats.entitlement`（唯一汇总口径）。
+   *
+   * 为什么要单独拉这份：`/today/todo` 的待续费行目前只带旧字段
+   * （mainCard/remainTimes/expireDate/expireDays），没有 `expireDateState`，
+   * 前端若自己按 `expireDays <= 0` 判「今日到期」，就会把「已过期 60 天」
+   * 显示成今天到期（D08 的症状）。这里直接取判定层的原话，**不在前端算第二遍**。
+   */
+  interface RenewalSource {
+    entitlement: CardEntitlement | null
+    reason: RenewalReason | null
+  }
+
+  const renewalSources = ref<Record<number, RenewalSource>>({})
+
+  /** 概要模式（工作台卡片）不拉这份重请求；完整页才需要逐行理由 */
+  async function loadRenewalSources(): Promise<void> {
+    if (props.variant === 'summary') return
+    try {
+      const res = await queryCustomers({
+        list: '待续课',
+        type: 'member',
+        current: 1,
+        size: 5000
+      })
+      const sources: Record<number, RenewalSource> = {}
+      for (const row of res.records ?? []) {
+        sources[row.id] = {
+          entitlement: row.cardStats?.entitlement ?? row.entitlement ?? null,
+          reason: res.renewalReasons?.[row.id] ?? null
+        }
+      }
+      // 理由 map 里可能有本页没返回的 id（范围/分页差异），仍收进来按 id 命中
+      for (const [key, reason] of Object.entries(res.renewalReasons ?? {})) {
+        const id = Number(key)
+        if (!sources[id]) sources[id] = { entitlement: null, reason }
+      }
+      renewalSources.value = sources
+    } catch (e) {
+      // 拿不到就按 item 自带字段展示（降级句式，不猜），不阻塞待办列表
+      console.warn('[today-todo.loadRenewalSources]', e)
+    }
+  }
+
+  interface RenewalDisplay {
+    /** 展示口径次卡节数（含未开卡；= 旧 remainTimes） */
+    displayCount: number | null
+    /** 判定口径次卡节数（不含未开卡；缺失=旧后端） */
+    usableCount: number | null
+    /** 储值卡余额（元） */
+    storedValue: number | null
+    mainCardState: 'current' | 'unactivated' | 'history' | 'none'
+    /** 到期文案：句式由 expireDateState 决定（§5.5），不再用 expireDays<=0 推「今日到期」 */
+    expireText: string
+    /** 是否标红（判定口径 usableCount ≤ 阈值；旧后端才退到展示口径并标记非精确） */
+    low: boolean
+    exact: boolean
+  }
+
+  function buildRenewalDisplay(c: TodayTodoRenewalItem): RenewalDisplay {
+    const source = renewalSources.value[c.id]
+    const reason = source?.reason ?? null
+    const entitlement = c.entitlement ?? source?.entitlement ?? null
+    const displayCount = entitlement?.displayCount ?? reason?.displayCount ?? c.remainTimes ?? null
+    const usableCount = entitlement?.usableCount ?? reason?.usableCount ?? c.usableCount ?? null
+    const storedValue = entitlement?.storedValue ?? c.storedValue ?? null
+    const mainCardState =
+      entitlement?.mainCardState ?? reason?.mainCardState ?? c.mainCardState ?? 'none'
+    const expireText = expireDateText(
+      entitlement?.expireDateState ?? reason?.expireDateState ?? c.expireDateState,
+      entitlement?.nextExpireDays ?? c.nextExpireDays ?? reason?.expireDays ?? c.expireDays,
+      c.expireDate
+    )
+    const info = lowRemainInfo(
+      { usableCount, displayCount },
+      activeRules.value.renewalThreshold ?? 10
+    )
+    return {
+      displayCount,
+      usableCount,
+      storedValue,
+      mainCardState,
+      expireText,
+      low: info.low,
+      exact: info.exact
+    }
+  }
+
+  /** 按 key 预算，模板里不重复算（理由/阈值都随 activeRules 变化，故依赖它） */
+  const renewalDisplays = computed<Record<string, RenewalDisplay>>(() => {
+    const out: Record<string, RenewalDisplay> = {}
+    for (const c of renewals.value) out[c.key] = buildRenewalDisplay(c)
+    return out
+  })
+
+  function renewalDisplay(c: TodayTodoRenewalItem): RenewalDisplay {
+    return renewalDisplays.value[c.key] ?? buildRenewalDisplay(c)
+  }
+
+  /** 判定理由（后端 why 原话；与会员管理「判定依据」同一份） */
+  function renewalWhy(c: TodayTodoRenewalItem): string[] {
+    return renewalSources.value[c.id]?.reason?.why ?? c.why ?? []
+  }
+
+  /** 理由码 → 可读标签（与会员管理同一份映射，不解析中文） */
+  function renewalWhyTags(c: TodayTodoRenewalItem): string[] {
+    const codes = renewalSources.value[c.id]?.reason?.whyCodes ?? c.whyCodes ?? []
+    return [...new Set(codes)].map((code) => whyCodeLabel(code))
+  }
+
+  /** 降级说明：非空表示有规则没生效（用户排查「阈值调了没反应」的唯一线索） */
+  function renewalDegraded(c: TodayTodoRenewalItem): string[] {
+    return renewalSources.value[c.id]?.reason?.degraded ?? c.degraded ?? []
+  }
 
   const groupRows = computed<Record<TabKey, TodoRow[]>>(() => ({
     bookings: bookings.value as unknown as TodoRow[],
@@ -872,6 +1029,9 @@
       if (todo.value?.rules) {
         activeRules.value = todo.value.rules
       }
+      // 待续费逐行理由/展示字段：与会员管理同一接口、同一份后端结论（不重算）。
+      // 概要模式（工作台卡片）在 loadRenewalSources 里直接跳过。
+      await loadRenewalSources()
       // 完整页尊重 initialGroup；否则默认落在第一个有待处理的分组
       const wanted = props.initialGroup as TabKey | ''
       const wantedValid = wanted && visibleTabs.value.some((t) => t.key === wanted)

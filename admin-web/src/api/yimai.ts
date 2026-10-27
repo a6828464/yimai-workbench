@@ -12,6 +12,15 @@ import type {
 
 export type { YimaiLead, YimaiAuditLog, MemberRules }
 
+/**
+ * 体验/赠品卡标题关键词的默认值。
+ *
+ * ⚠️ 必须与后端 `CardLifecycle::DEFAULT_TASTE_PATTERN` 逐字一致：
+ * 前端只在「输入框留空」和「恢复默认」按钮里用它，真正的判定用的是后端 `rules`。
+ * 旧实现硬编码 `体验|员工|测试`，漏掉「新人礼包2次」→ 该卡进了 P0（D10-④）。
+ */
+export const DEFAULT_TASTE_TITLE_PATTERN = '体验|员工|测试|礼包|赠送'
+
 const DEFAULT_MEMBER_RULES: MemberRules = {
   renewalThreshold: 10,
   renewalCountPercent: 20,
@@ -27,6 +36,22 @@ const DEFAULT_MEMBER_RULES: MemberRules = {
   cultivationGroup: 12,
   // 与后端 helpers.php:rules() 的默认值保持一致（缺键会在提交时把服务端值打回默认）
   renewalExpiredBackfillDays: 90,
+  // —— v3.9 §6.2 新增两键（同样必须与 store/DEFAULT_RULES、后端 rules() 三处同步）——
+  /**
+   * 过期有余额回溯窗（天）。0 = 不展示。
+   *
+   * ⚠️ 语义已变（§6.3）：它**只**影响「过期有余额」提示（P3 / 筛选标签），
+   * 不再把过期卡送进「待续费」——过期实例永不命中待续费（I1）。
+   * 旧键 `renewalExpiredBackfillDays` 保留为回退来源，保存时双写（见 §6.3）。
+   */
+  expiredBalanceWindowDays: 90,
+  /** 储值卡余额提醒（元）。0 = 关闭。单位是元，**不与课时混算**（§6.2） */
+  renewalStoredValueThreshold: 0,
+  /**
+   * 体验/员工/测试/赠品卡的标题关键词（正则片段，竖线分隔）。
+   * 留空 = 用默认值（后端 `CardLifecycle::DEFAULT_TASTE_PATTERN` 同值）。
+   */
+  tasteTitlePattern: DEFAULT_TASTE_TITLE_PATTERN,
   mediaVisitReward: 20,
   mediaValidMonths: 2,
   bombExpiredDays: 183,
@@ -40,9 +65,42 @@ const DEFAULT_MEMBER_RULES: MemberRules = {
 
 let rulesCache: MemberRules = { ...DEFAULT_MEMBER_RULES }
 
+/**
+ * 归一化服务端返回的规则（v3.9 §6.2/§6.3）：
+ * 1. 补默认值 —— 旧后端不会返回新键，缺键会在提交时把服务端值打回默认；
+ * 2. 新键缺失时按 §6.3 读取顺序回退旧键 `renewalExpiredBackfillDays`；
+ * 3. **禁止吞 0**：0 是合法值（0=关闭 / 0=不限制），只在「缺键或 null」时回退。
+ */
+function normalizeMemberRules(remote: Partial<MemberRules> | null | undefined): MemberRules {
+  const merged: MemberRules = { ...DEFAULT_MEMBER_RULES, ...(remote ?? {}) }
+  if (remote) {
+    if (remote.expiredBalanceWindowDays === undefined || remote.expiredBalanceWindowDays === null) {
+      if (typeof remote.renewalExpiredBackfillDays === 'number') {
+        merged.expiredBalanceWindowDays = remote.renewalExpiredBackfillDays
+      }
+    }
+  }
+  // 数值键兜底（后端可能返回 null）：非法值回到默认，合法 0 保留
+  const windowDays = Number(merged.expiredBalanceWindowDays)
+  merged.expiredBalanceWindowDays = Number.isFinite(windowDays)
+    ? windowDays
+    : DEFAULT_MEMBER_RULES.expiredBalanceWindowDays
+  const storedValue = Number(merged.renewalStoredValueThreshold)
+  merged.renewalStoredValueThreshold = Number.isFinite(storedValue)
+    ? storedValue
+    : DEFAULT_MEMBER_RULES.renewalStoredValueThreshold
+  // 标题关键词：空/非字符串一律回默认（后端 rules() 与保存时也是同一套回退）
+  const taste = merged.tasteTitlePattern
+  merged.tasteTitlePattern =
+    typeof taste === 'string' && taste.trim() !== ''
+      ? taste.trim()
+      : DEFAULT_MEMBER_RULES.tasteTitlePattern
+  return merged
+}
+
 export async function refreshMemberRules(): Promise<MemberRules> {
   if (USE_BACKEND) {
-    rulesCache = await apiGet<MemberRules>('/member-rules')
+    rulesCache = normalizeMemberRules(await apiGet<Partial<MemberRules>>('/member-rules'))
   }
   return rulesCache
 }
@@ -59,6 +117,18 @@ export async function refreshMemberRules(): Promise<MemberRules> {
  *   前端**只消费 id**，不在此处重算。
  */
 export type MemberListKey = '待续课' | '出勤降低' | 'VIP' | '预流失' | '待复活' | '炸弹会员'
+
+/**
+ * 会员列表可用的清单/筛选键。
+ *
+ * `过期有余额` 是 v3.9 的**筛选标签**（不是页签，§3.4）：后端 `computeMemberLists()`
+ * 已经把 `lists['过期有余额']` 与 `watch['过期有余额']` 一起产出，所以
+ * `GET /customers?list=过期有余额` 可直接过滤、`list-counts` 也带它的计数。
+ *
+ * 它按设计**不进** `MemberListKey`：那一组是「五清单 + 炸弹」的页签体系，
+ * 混进去会让「页签 → 清单」的映射与徽标语义同时变味。
+ */
+export type MemberListFilter = MemberListKey | '过期有余额'
 
 /** 新客培养：单个课型维度的上课统计 */
 export interface CultivationCategory {
@@ -151,20 +221,39 @@ export function getMemberRules(): MemberRules {
   if (USE_BACKEND) return rulesCache
   ensureSeeded()
   // 持久化的旧规则可能缺新阈值键，合并默认值兜底
-  rulesCache = { ...DEFAULT_MEMBER_RULES, ...useYimaiStore().state.rules }
+  rulesCache = normalizeMemberRules(useYimaiStore().state.rules)
   return rulesCache
 }
 
+/** 生效的「过期有余额回溯窗」：新键 → 旧键 → 90（0 是合法值，用 `??` 不用 `||`） */
+function effectiveExpiredWindowDays(rules: Partial<MemberRules>): number {
+  const value = rules.expiredBalanceWindowDays ?? rules.renewalExpiredBackfillDays ?? 90
+  return Number.isFinite(Number(value)) ? Number(value) : 90
+}
+
 export async function setMemberRules(rules: MemberRules): Promise<MemberRules> {
+  // §6.3 双写：新键为准，同时把旧键写成同值 —— 回滚到旧版本时行为一致。
+  // 旧键 `renewalExpiredBackfillDays` 已不再影响 `renewal.in`（过期实例永不命中）。
+  const windowDays = effectiveExpiredWindowDays(rules)
+  const payload: MemberRules = {
+    ...rules,
+    expiredBalanceWindowDays: windowDays,
+    renewalExpiredBackfillDays: windowDays,
+    // 空串=交回后端默认值（后端保存时也会做同一套回退，这里先 trim 免得存进空格）
+    tasteTitlePattern:
+      typeof rules.tasteTitlePattern === 'string' ? rules.tasteTitlePattern.trim() : ''
+  }
   if (USE_BACKEND) {
-    rulesCache = await apiPut<MemberRules>(
+    const remote = await apiPut<Partial<MemberRules>>(
       '/member-rules',
-      rules as unknown as Record<string, unknown>
+      payload as unknown as Record<string, unknown>
     )
+    // §6.5：响应返回生效后的完整 rules；若后端只回部分键，用 payload 归一
+    rulesCache = normalizeMemberRules(remote && Object.keys(remote).length ? remote : payload)
     return rulesCache
   }
-  useYimaiStore().setMemberRules(rules)
-  rulesCache = rules
+  useYimaiStore().setMemberRules(payload)
+  rulesCache = payload
   return rulesCache
 }
 
@@ -328,7 +417,12 @@ export async function getCustomerDetail(id: number): Promise<CustomerDetail> {
 
 export interface YimaiCustomer extends StoreCustomer {
   externalId?: string
-  /** 有效卡汇总（同步写入）：次卡剩余/绑定、时间卡剩余/总天数，供待续费阈值判定 */
+  /**
+   * 有效卡汇总（同步写入）：次卡剩余/绑定、时间卡剩余/总天数，供待续费阈值判定。
+   *
+   * v3.9 起新增 `historyCards` / `entitlement` / `dataVersion` 等键（§1.4）——
+   * 前端**一律按可选处理**：旧快照没有它们时退化为旧字段展示，不猜、不重算。
+   */
   cardStats?: {
     countResidue: number | null
     countBound: number
@@ -346,29 +440,155 @@ export interface YimaiCustomer extends StoreCustomer {
      * 用户已拍定「过期卡不纳入待续费」，故过期卡不进 `cardsList`（判定层输入）；
      * 但「过期卡数据必须保留可查」，故落到这里，供「炸弹会员」清单使用。
      * 前端**只读**：判定口径在后端 `helpers.php`。
+     *
+     * v3.9（C8）起收窄为：`type=1 ∧ 已过期 ∧ residue>0 ∧ 排除 29/39 ∧ 非体验`，
+     * 全类型历史实例改由 `historyCards` 承载 —— 展示层优先读 `historyCards`。
      */
     expiredCards?: {
       title: string
       residue: number
       deadline: string | null
       status: string
-      /** '1'=次卡(节) '2'=期限卡(天) */
+      /** '1'=次卡(节) '2'=期限卡(天) '3'=储值卡(元) */
       type: string
     }[]
+    /** v3.9 新增：全类型历史实例（唯一历史事实源，§1.4） */
+    historyCards?: CustomerHistoryCardItem[] | null
+    /** v3.9 新增：会员级权益摘要（唯一汇总口径，§2.6） */
+    entitlement?: CardEntitlement | null
+    /** v3.9 新增：过期有余额（P3）汇总 */
+    expiredBalance?: {
+      in: boolean
+      sections?: number
+      amount?: number
+      count?: number
+      withinWindowDays?: number
+    } | null
+    /** v3.9 新增：资产/权益标记（替代拆开的 hasAsset，§3.6） */
+    hasAnyCard?: boolean
+    hasActiveEntitlement?: boolean
+    hasUsableEntitlement?: boolean
+    /** v3.9 数据契约版本号（=2）。缺失即旧快照，展示层据此提示「请重新同步」 */
+    dataVersion?: number
   } | null
-  /** 有效卡项明细（同步写入）：供剩余课时列逐卡展示 */
+  /**
+   * 有效卡项明细（同步写入）：供剩余课时列逐卡展示。
+   *
+   * v3.9 契约里这份明细叫 `current ∪ unactivated`（历史实例进 `historyCards`）。
+   * 后端若把键改名为 `currentCards`，这里同样接受（`cardsOf()` 两个都读）。
+   */
   cardsList?: CustomerCardItem[] | null
+  /** v3.9 别名：`cardsList` 的同义键（二选一，缺失时回退另一个） */
+  currentCards?: CustomerCardItem[] | null
+  /** v3.9 别名：若后端把 `entitlement` 提到会员根节点，这里同样读得到 */
+  entitlement?: CardEntitlement | null
 }
+
+/** 卡项单位（§2.5：节=次卡 / 天=期限卡 / 元=储值卡；任何展示都必须经过它） */
+export type CardUnit = '节' | '天' | '元'
+
+/** 卡项类型码：'1'=次卡 '2'=期限卡 '3'=储值卡（§1.4） */
+export type CardTypeCode = '1' | '2' | '3'
+
+/**
+ * 卡项实例状态（§2.1/§2.3 的唯一分类）。
+ * - `current` 当前卡（含请假 4：其 deadline 已顺延）
+ * - `unactivated` 已售未开卡（只进「待开卡」）
+ * - `history` 历史卡（过期 6 / 退卡 29 / 停卡 39 / 跨期），**永不进待续费**
+ * - `excluded` 体验/员工/测试卡（不进任何集合）
+ */
+export type CardInstanceState = 'current' | 'unactivated' | 'history' | 'excluded'
 
 export interface CustomerCardItem {
   title: string
-  /** 节=次卡 天=期限卡 */
-  unit: '节' | '天'
+  /** 节=次卡 天=期限卡 元=储值卡（v3.9 起不再把储值卡落成「节」） */
+  unit: CardUnit
   residue: number | null
   bound: number | null
   deadline: string | null
   status: string
   unactivated: boolean
+  /* ── 以下为 v3.9 新增键（§1.4）：旧快照缺失时前端降级展示，不猜 ── */
+  /** 原始卡类型（判定与单位的唯一来源；缺失时按 unit 回退） */
+  type?: CardTypeCode | string
+  /** 实例 id（mcard id）—— 同名多卡的唯一身份 */
+  id?: string | number
+  /** 别名：后端若命名为 instanceId，同样接受 */
+  instanceId?: string | number
+  cardNo?: string | null
+  cardId?: string | null
+  /** 发卡日（后端命名 createTime / soldAt 二选一） */
+  createTime?: string | null
+  soldAt?: string | null
+  /** 开卡日；空 = 未开卡（activateTime / activatedAt） */
+  activateTime?: string | null
+  activatedAt?: string | null
+  /** 判定只读的原始状态码（'4'|'5'|'6'|'7'|'29'|'39'） */
+  statusCode?: string | null
+  /** 余量来源：residue_amount | residue_days | deadline（诊断用） */
+  residueSource?: string | null
+  /** 期限卡剩余天数：仅当缺 deadline 时作为回退（§2.4） */
+  residueDays?: number | null
+  isTaste?: boolean
+  tasteReason?: string | null
+  /** 期限卡有效期总天数（有效期占比规则的分母） */
+  validDays?: number | null
+  /** 判定状态（后端 `state()` 的输出；诊断用，判定层自行复算） */
+  state?: CardInstanceState
+  /** 系列内序号（1 起）与系列张数（后端 `seriesIndex`/`seriesCount`，同名多卡归因的权威值） */
+  seriesIndex?: number | null
+  seriesCount?: number | null
+  /** 同步侧已判定的降级码（逐卡，如期限卡脏 residue 被忽略、缺身份字段） */
+  degraded?: string[]
+}
+
+/**
+ * 历史卡实例（`card_stats.historyCards[]`，§1.4）。
+ * **唯一历史事实源**：过期有余额、炸弹会员都从这里取证据；`renewal.why` 永不出现它。
+ *
+ * 注意形状差异：历史卡没有「绑定总量/未开卡」语义，后端不返回 `bound`/`unactivated`，
+ * 所以这两个键在这里是可选（不要按当前卡的口径去读）。
+ */
+export interface CustomerHistoryCardItem extends Omit<CustomerCardItem, 'bound' | 'unactivated'> {
+  bound?: number | null
+  unactivated?: boolean
+  historyReason?: 'expired' | 'refunded' | 'suspended' | 'expired_by_clock' | string
+  /** 后端给出的一句历史卡说明（§5.4 的 expired_*_note），有则优先展示 */
+  note?: string | null
+}
+
+/**
+ * 会员级权益摘要（`card_stats.entitlement`，§1.4/§2.6）—— **唯一汇总口径**。
+ *
+ * ⚠️ 判定口径（`usableCount`）与展示口径（`displayCount`）是两个数，
+ * 不得在同一个句子里混称「合计」（D12）。
+ */
+export interface CardEntitlement {
+  /** 主卡：只由当前/未开卡实例计算；无当前时回退最近历史（供展示） */
+  mainCard: string
+  mainCardState: 'current' | 'unactivated' | 'history' | 'none'
+  /** 到期日：当前实例最早 deadline；无当前实例时回退历史最近一次 */
+  expireDate: string | null
+  expireDateState: 'current' | 'history' | 'none'
+  /** 距到期天数（负数=已过期） */
+  nextExpireDays: number | null
+  /** 判定口径：当前可用次卡（current ∧ type=1 ∧ 有余量）的节数合计 */
+  usableCount: number | null
+  /** 展示口径：current ∪ unactivated ∧ type=1 的节数合计（= 旧 remain_times） */
+  displayCount: number | null
+  /** 展示口径：current ∪ unactivated ∧ type=3 的元合计 */
+  storedValue: number | null
+  /** 历史（过期/退卡/停卡）沉睡量：节 / 元 / 张数 */
+  historyBalance: { sections: number; amount: number; count: number }
+  /** 实例张数分档（供「另有 N 张历史卡」这类说明） */
+  counts: {
+    current: number
+    unactivated: number
+    history: number
+    usable: number
+    exhausted: number
+    unknown: number
+  }
 }
 
 export interface YimaiTask {
@@ -839,6 +1059,70 @@ export interface RenewalReason {
   coLists: string[]
   /** 主清单/主档位，决定哪个标签是主标签 */
   primary: string
+  /** 判定理由是否被截断（只展示前 N 条） */
+  whyTruncated?: boolean
+  /* ── 以下为 v3.9 新增（§5.2）：只增不改，旧消费方不受影响 ── */
+  /**
+   * 逐条命中（判定依据面板的「命中的那张卡」就靠它）。
+   *
+   * 每个对象自带 `code` + `why`，所以**可以安全配对**——这与
+   * `whyCodes`/`why` 的「不要按索引配对」约束不冲突。
+   */
+  hits?: RenewalHitItem[]
+  /** 判定用到的实例快照（已按月/历史分组由前端做，前端不重算状态） */
+  instances?: CustomerCardItem[]
+  /** 过期有余额（P3）：**只提示，不触发待续费**（§3.4/§5.4） */
+  expiredBalance?: RenewalExpiredBalance
+  /** 资产/权益标记（替代拆开的 `hasAsset`，§3.6） */
+  flags?: {
+    hasAnyCard: boolean
+    hasActiveEntitlement: boolean
+    hasUsableEntitlement: boolean
+  }
+  /* ── v3.9 展示字段镜像（后端 `display.*`，供列表/待办直接读，避免前端重算）── */
+  mainCard?: string
+  mainCardState?: 'current' | 'unactivated' | 'history' | 'none'
+  expireDateState?: 'current' | 'history' | 'none'
+  /** 判定口径次卡节数（不含未开卡） */
+  usableCount?: number | null
+  /** 展示口径次卡节数（含未开卡） */
+  displayCount?: number | null
+  /** 降级码（与 `degraded` 文案并行；程序读码，人读文案） */
+  degradedCodes?: string[]
+}
+
+/** 单条命中（§5.2 `renewal.hits[]`）：code 与 why 一一对应，可安全配对 */
+export interface RenewalHitItem {
+  /** §5.2 枚举：deadline_near / count_card_low / stored_value_low … */
+  code: string
+  instanceId?: string | number
+  cardNo?: string | null
+  title?: string
+  /** 命中说明（人话，含身份后缀） */
+  why: string
+  /** 命中的布尔表达式（诊断用，例如 `0 <= daysUntil(20) <= 30`） */
+  expr?: string
+  /** 表达式变量取值（诊断用） */
+  values?: Record<string, number | string | null>
+}
+
+/** 过期有余额（§3.4）：历史卡证据，仅提示；`in=true` 对应 P3 提示 */
+export interface RenewalExpiredBalance {
+  in: boolean
+  why?: string[]
+  whyCodes?: string[]
+  sections?: number
+  amount?: number
+  /** 证据明细（后端字段名是 remaining/daysExpired，不是卡实例的 residue/deadline） */
+  cards?: {
+    id?: string | number | null
+    cardNo?: string | null
+    title?: string
+    type?: string
+    unit?: string
+    daysExpired?: number | null
+    remaining?: number | null
+  }[]
 }
 
 export function queryCustomers(
@@ -848,7 +1132,7 @@ export function queryCustomers(
     venue?: string
     layer?: string
     type?: 'all' | 'member' | 'lead'
-    list?: MemberListKey
+    list?: MemberListFilter
     owner?: string
     consultant?: string
     haveCourse?: string
@@ -3167,13 +3451,39 @@ export interface TodayTodoMemberItem {
 
 export interface TodayTodoRenewalItem extends TodayTodoMemberItem, TodayTodoDoneInfo {
   mainCard: string
+  /** 展示口径次卡节数合计（= entitlement.displayCount；旧字段名保留） */
   remainTimes: number | null
   expireDate: string | null
+  /**
+   * 距到期天数（旧口径，负数=已过期）。
+   *
+   * ⚠️ v3.9 起**禁止**再用它推「今日到期」：`expireDays<=0` 既可能是今天到期，
+   * 也可能是已过期 60 天。到期文案必须读 `expireDateState` + `nextExpireDays`（§5.5）。
+   */
   expireDays: number | null
   /** 7 天内到期 */
   urgent: boolean
   evalLevel?: 'high' | 'medium' | 'low' | null
   hasRenewalPlan: boolean
+  /* ── v3.9 新增（§5.5 硬要求）：与会员管理同源，后端算好前端只展示 ── */
+  /** 到期日口径：current / history / none —— 缺失即旧后端，按旧字段降级但不猜「今日到期」 */
+  expireDateState?: 'current' | 'history' | 'none'
+  /** 距到期天数（负数=已过期），与 `expireDateState` 配套 */
+  nextExpireDays?: number | null
+  /** 主卡口径：current / unactivated / history / none */
+  mainCardState?: 'current' | 'unactivated' | 'history' | 'none'
+  /** 会员级权益摘要（唯一汇总口径） */
+  entitlement?: CardEntitlement
+  /** 判定口径次卡节数（= entitlement.usableCount；不要用它替代展示口径） */
+  usableCount?: number | null
+  /** 储值卡余额合计（元，展示口径） */
+  storedValue?: number | null
+  /** 判定理由（与会员管理 popover 同一份后端 why，前端只展示不重算） */
+  why?: string[]
+  /** 理由分类码（只做可读映射，不解析中文） */
+  whyCodes?: string[]
+  /** 降级说明（有规则没生效时非空） */
+  degraded?: string[]
 }
 
 export interface TodayTodoChurnItem extends TodayTodoMemberItem, TodayTodoDoneInfo {

@@ -7,6 +7,7 @@ use App\Models\Customer;
 use App\Models\KyBooking;
 use App\Models\KyCard;
 use App\Models\SyncJob;
+use App\Support\CardLifecycle;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
@@ -18,26 +19,44 @@ use Throwable;
 class KyMemberSyncService
 {
     /**
-     * 「参与续费判定」的有效卡状态白名单。
+     * 卡项分类口径（v3.9）。
      *
-     * ⚠️ 用户决策（2026-09-24）：「过期卡不纳入待续费」。
-     * 线上 status 真实取值（`ky_cards_live_20260924.json` 全量 2954 张实测）：
-     *   6=过期(1896) 5=正常(897) 7=未开卡(131) 4=请假(14) 29=退卡(10) 39=停卡(6)
-     * 因此 `6` **有意不在此白名单内**：过期卡的 deadline/residue 不进入
-     * `remain_times` / `expire_date` / `countResidue` / `countBound` / `cards_list`，
-     * 于是它无法通过任何一条分支进入「待续费」。
+     * 旧实现在这里维护 `ACTIVE_CARD_STATUSES = ['4','5','7']` 白名单，把「是否在用」
+     * 判成「上游状态码是否在白名单里」——那是用户症状①（旧年卡已过期仍进清单）与
+     * 「全过期会员落 P5」的共同根因：白名单既不读 deadline，也不表达历史。
      *
-     * ⚠️ 但过期卡数据**必须保留可查**（新增「炸弹会员」清单的判定输入）：
-     * 见 `summarizeCards()` 末尾写入 `card_stats.expiredCards` 的那段。
-     * 「保留」与「不入待续费」是两条互不干扰的路径 —— 保留走 `card_stats`，
-     * 判定走 `$active`（本白名单）。不要把过期卡塞进 `cards_list`：
-     * `cards_list` 是判定层的分类输入，塞进去会立刻让过期卡经由 C8 分支
-     * （`$days < 0 && $days >= -$backfillDays`，`helpers.php:2042`）进入待续费，
-     * 直接违反用户决策。
+     * v3.9 起**唯一入口是 `CardLifecycle::state()`**：
+     *   current（4/5，且 deadline ≥ 今天）/ unactivated（7）/ history（6/29/39 或 deadline < 今天）。
+     * 过期实例不写入 `cards_list`（判定输入），而写入 `card_stats.historyCards`
+     * + 兼容区 `card_stats.expiredCards`（仅炸弹会员消费）。
+     *
+     * ⚠️ 不要再在这里恢复任何 status 白名单：新增状态只需改 `CardLifecycle::stateOf()`。
      */
-    private const ACTIVE_CARD_STATUSES = ['4', '5', '7'];
-
     private const MAX_SYNC_SECONDS = 6600;
+
+    /** 判定口径配置（只读；表不存在时回落空数组，保证命令/测试环境可用） */
+    private static function currentRules(): array
+    {
+        try {
+            return rules();
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /** 上游状态码（numeric status → 中文映射），仅用于 29/39 这类统计排除 */
+    private static function cardStatusCode(array $card): ?string
+    {
+        $raw = $card['status'] ?? null;
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        if (is_numeric($raw)) {
+            return (string) (int) $raw;
+        }
+
+        return CardLifecycle::STATUS_CODES[(string) $raw] ?? null;
+    }
 
     /**
      * @param  array{sync_job?: SyncJob, run_key?: string, display_name?: string, metadata?: array}|SyncJob|null  $artifactContext
@@ -173,8 +192,11 @@ class KyMemberSyncService
         }
 
         $created = $updated = $unchanged = $skipped = 0;
+        // 配置只读一次：summarizeCards 需要 tasteTitlePattern 与过期余额窗，
+        // 若在每个会员里各读一次 AppSetting，一次全量同步会多出 1500+ 次查询。
+        $syncRules = self::currentRules();
         DB::transaction(function () use (
-            $members, $cardsByMember, $attendance, $venue, $venueId,
+            $members, $cardsByMember, $attendance, $venue, $venueId, $syncRules,
             &$created, &$updated, &$unchanged, &$skipped
         ) {
             // external_id 是全局唯一键，历史错店记录也必须复用，避免重复插入导致整店回滚。
@@ -201,7 +223,7 @@ class KyMemberSyncService
                 $phone = preg_replace('/\D+/', '', self::pick($row, ['phone', 'mobile'])) ?? '';
                 $source = self::pick($row, ['source_title', 'source']) ?: 'KeepYoga';
                 $consultant = self::pick($row, ['consultant_name', 'consultant', 'adviser_name', 'advisor_name', 'member_consultant']);
-                $cardSummary = self::summarizeCards($cardsByMember[$memberId] ?? []);
+                $cardSummary = self::summarizeCards($cardsByMember[$memberId] ?? [], $syncRules);
                 $visitSummary = $attendance[$memberId] ?? [];
 
                 $changes = [
@@ -361,47 +383,78 @@ class KyMemberSyncService
         );
     }
 
-    private static function summarizeCards(array $cards): array
+    /**
+     * 会员卡项 → cards_list / historyCards / entitlement / card_stats（v3.9 契约）。
+     *
+     * @param  array|null  $rules  同步主流程传入一次（1580 个会员只读一次配置）；测试可省略
+     */
+    private static function summarizeCards(array $cards, ?array $rules = null): array
     {
-        $active = array_values(array_filter($cards, function (array $card) {
-            if (! in_array((string) ($card['status'] ?? ''), self::ACTIVE_CARD_STATUSES, true)) {
-                return false;
+        // ── v3.9：判定单元从「会员级汇总」改为「卡项实例」──────────────────────
+        //
+        // 分类完全交给 CardLifecycle::normalize()（同步/判定唯一共享口径），这里只做：
+        // ①同 id 去重（跨馆镜像行）②按 state 分桶 ③按契约写 cards_list / historyCards
+        // ④按单位分组汇总（节/天/元 永不混算）。
+        //
+        // 旧实现的三个根因在这里被结构性消除：
+        //  - `ACTIVE_CARD_STATUSES = ['4','5','7']` 白名单 → 换成 state()（deadline<TODAY 即 history）；
+        //  - main_card 的 `(hasBalance, statusPriority, deadline desc)` → 换成 sortKey()（当前优先）；
+        //  - expire_date = min(所有可用卡 deadline) → 换成「当前实例的最早 deadline」。
+        $syncRules = $rules ?? self::currentRules();
+        $pattern = CardLifecycle::tastePattern($syncRules);
+
+        // ① 去重：同一 id 因跨馆共享卡被导出两次（can_op=1 本馆 / can_op=0 镜像）。
+        //    保留 can_op=1 的那行；can_op 缺失时后出现的覆盖先出现的。
+        $deduped = [];
+        $indexById = [];
+        $mirrorDeduped = false;
+        foreach ($cards as $row) {
+            $id = self::pick($row, ['id']);
+            if ($id === '') {
+                $deduped[] = $row;
+
+                continue;
             }
-            if ((string) ($card['is_taste'] ?? '0') === '1') {
-                return false;
+            if (isset($indexById[$id])) {
+                $mirrorDeduped = true;
+                $kept = $deduped[$indexById[$id]];
+                $keptCanOp = self::pick($kept, ['can_op', 'canOp']);
+                $rowCanOp = self::pick($row, ['can_op', 'canOp']);
+                if ($rowCanOp === '1' && $keptCanOp !== '1') {
+                    $deduped[$indexById[$id]] = $row;
+                } elseif ($rowCanOp === $keptCanOp) {
+                    $deduped[$indexById[$id]] = $row;
+                }
+
+                continue;
             }
-            $title = self::pick($card, ['card_title', 'card_name']);
+            $indexById[$id] = count($deduped);
+            $deduped[] = $row;
+        }
 
-            return ! preg_match('/(体验|员工|测试)/u', $title);
-        }));
+        // ② 归一化 + 分桶（excluded 不进任何判定集合，只作「曾经有卡」的证据）
+        $current = $unactivated = $history = $excluded = [];
+        foreach ($deduped as $row) {
+            $instance = CardLifecycle::normalize($row, $pattern);
+            // 保留原始行：已耗次数的权威推导需要 curr_unit_cash_value / usage_total /
+            // consume_amount_format 三个上游字段，而归一化结果只保留判定语义字段。
+            $instance['raw'] = $row;
+            match ($instance['state']) {
+                'current' => $current[] = $instance,
+                'unactivated' => $unactivated[] = $instance,
+                'history' => $history[] = $instance,
+                default => $excluded[] = $instance,
+            };
+        }
 
-        usort($active, function (array $a, array $b) {
-            $statusPriority = ['5' => 3, '4' => 2, '7' => 1];
-            $aHasBalance = (string) ($a['type'] ?? '') !== '1' || (float) ($a['residue_amount'] ?? 0) > 0;
-            $bHasBalance = (string) ($b['type'] ?? '') !== '1' || (float) ($b['residue_amount'] ?? 0) > 0;
-            if ($aHasBalance !== $bHasBalance) {
-                return $bHasBalance <=> $aHasBalance;
-            }
-            $statusDiff = ($statusPriority[(string) ($b['status'] ?? '')] ?? 0)
-                <=> ($statusPriority[(string) ($a['status'] ?? '')] ?? 0);
-            if ($statusDiff !== 0) {
-                return $statusDiff;
-            }
-
-            return (int) ($b['deadline'] ?? 0) <=> (int) ($a['deadline'] ?? 0);
-        });
-
-        $main = $active[0] ?? null;
-
-        // 全部有效卡汇总（不再只看主卡）：
-        // - 次卡剩余节数 = 所有有效次卡(含未开卡)的 residue_amount 合计，一张用完的卡不再污染整体判定
-        // - 绑定总量 = **仅仍有余额的卡**的 剩余 + 已用(usage_total)，供「剩余占比」阈值。
-        //   已用完的历史卡若仍计入分母，会把占比压低（20/300 = 6.7% 假命中），
-        //   而它对应的分子早已是 0 —— 分母只统计「还没用完的卡」，占比才代表真实消耗进度。
-        // - 最早到期日 = **仅仍有可用余量的卡**的最早 deadline。用完的旧卡即使即将到期也不该
-        //   触发续费提醒（那张卡已经没课可上了，催的是「新卡」而不是「这张卡」）；
-        //   这是 expire_date 被旧卡拉早、导致整店误报的直接原因。
-        // - 时间卡剩余天数/有效期天数合计，供「有效期占比」阈值
+        // ── 汇总（唯一口径见规范 §2.6；单位按 节/天/元 分组，永不混算）──────────
+        //
+        // 口径要点：
+        // - countResidue / countBound 是**展示口径**（含未开卡的库存），判定层不得用它替代
+        //   entitlement.usableCount（D12：两个「合计」不同源）；
+        // - daysLeft 改为**按 deadline 累加**（旧实现取 residue_amount 恒 0，F1 的第二根因）；
+        // - storedValue 独立统计（元），既不进 countResidue 也不进 daysLeft（D05/I5）；
+        // - historySections / historyAmount 只统计历史实例的沉睡余额（EXPIRED_BAL 另受窗口约束）。
         $countResidue = 0.0;
         $countBound = 0.0;
         $underivable = 0;
@@ -409,65 +462,109 @@ class KyMemberSyncService
         $daysLeft = 0.0;
         $daysTotal = 0.0;
         $hasTimeCard = false;
-        $earliestDeadline = null;
-        foreach ($active as $card) {
-            $type = (string) ($card['type'] ?? '');
-            $hasResidueValue = is_numeric($card['residue_amount'] ?? null);
-            // 次卡的 residue_amount = 剩余节数；期限卡的 residue_amount = 剩余天数。
-            $residue = $hasResidueValue ? max(0.0, self::toNum($card['residue_amount'])) : null;
-            // 「仍有可用余额」= 取到了数值且 > 0。取不到数值（上游没返回 residue_amount）时
-            // **不贡献到期日**：宁可漏提醒也不能凭未知余额催续费——本次修复的正是
-            // 「用完的卡把 expire_date 拉早」这一类误报，未知值不该再制造同类误报。
-            // 判定层（helpers 的 customerDecision）会把这些卡收进 $unknownResidue：
-            // 次卡余额未知 → 进 degraded 显式告知；期限卡余额未知 → 仍按 deadline 判到期。
-            // 注意 cards_list 里保留 residue=null 正是为了让下游能区分「0」与「未知」，
-            // 不要在这里把 null 归一成 0（那会让「余额未知」被当成「已用完」）。
-            $usable = $residue !== null && $residue > 0;
-            // 未开卡（status=7）：仍计入剩余库存（remain_times / countResidue 是「还剩多少」的展示口径，
-            // 卡确实在会员名下），但不参与续费判定所需的到期日与有效期占比——
-            // 未开卡的卡一天都没开始跑，算进来会同时污染分子与分母。
-            // 这与「不新增第 6 个清单页签」的决定一致：待开卡只在 reason 里说明。
-            $unactivated = (string) ($card['status'] ?? '') === '7';
-            if ($type === '1' && $hasResidueValue) {
+        $storedValue = 0.0;
+        $historySections = 0.0;
+        $historyAmount = 0.0;
+        $balanceSections = 0.0;
+        $balanceAmount = 0.0;
+        $balanceCards = 0;
+        $balanceWindow = CardLifecycle::expiredBalanceWindow($syncRules);
+
+        foreach ($current as &$card) {
+            if ($card['type'] === CardLifecycle::TYPE_COUNT) {
                 $hasCountCard = true;
-                $countResidue += $residue;
-                // 分母与分子同源：都来自「全部有效次卡（含未开卡）」，否则占比会在两个口径间跳变
-                if ($residue > 0) {
-                    // 分母 = 剩余节数 + **已耗次数**（不是已耗金额！单位错曾造出 29/495.63=5.9% 的假尾段）
-                    $consumed = self::consumedCount($card);
-                    if ($consumed === null) {
-                        // 推导不出已耗次数：**不猜**。分子照常累加（剩余节数是确定值），
-                        // 分母只含剩余节数 —— 这只会让占比**偏高**（少报尾段），
-                        // 绝不会凭空造出「分母被金额撑大 ⇒ 假装尾段」的假命中；
-                        // 同时记入 $underivable，由 card_stats.countBoundUnderivable 显式上报。
-                        $underivable++;
-                        $countBound += $residue;
+                if ($card['remaining'] !== null) {
+                    $countResidue += $card['remaining'];
+                    if ($card['remaining'] > 0) {
+                        // 分母 = 剩余节数 + **已耗次数**（不是已耗金额！单位错曾造出 29/495.63=5.9% 的假尾段）
+                        $consumed = self::consumedCount($card['raw']);
+                        if ($consumed === null) {
+                            // 推导不出已耗次数：不猜。分母只含剩余节数 → 占比偏高（少报尾段），
+                            // 绝不会凭空造出「分母被金额撑大 ⇒ 假装尾段」的假命中。
+                            $underivable++;
+                            $card['bound'] = $card['remaining'];
+                        } else {
+                            $card['bound'] = $card['remaining'] + $consumed;
+                        }
+                        $countBound += $card['bound'];
                     } else {
-                        $countBound += $residue + $consumed;
+                        $card['bound'] = $card['remaining'];
                     }
                 }
             }
-            if ($type === '2' && $hasResidueValue && ! $unactivated) {
+            if ($card['type'] === CardLifecycle::TYPE_TIME) {
                 $hasTimeCard = true;
-                $daysLeft += $residue;
-                $expiry = self::toNum($card['expiry_days'] ?? 0);
-                if ($expiry > 0) {
-                    $daysTotal += $expiry;
+                if ($card['remaining'] !== null) {
+                    $daysLeft += $card['remaining'];
+                }
+                if ($card['validDays'] !== null) {
+                    $daysTotal += $card['validDays'];
                 }
             }
-            $deadline = self::date($card['deadline'] ?? null);
-            if ($deadline !== null && $usable && ! $unactivated && ($earliestDeadline === null || $deadline < $earliestDeadline)) {
-                $earliestDeadline = $deadline;
+            if ($card['type'] === CardLifecycle::TYPE_STORED && $card['remaining'] !== null) {
+                $storedValue += $card['remaining'];
+            }
+        }
+        unset($card);
+
+        foreach ($unactivated as &$card) {
+            if ($card['type'] === CardLifecycle::TYPE_COUNT) {
+                $hasCountCard = true;
+                if ($card['remaining'] !== null) {
+                    $countResidue += $card['remaining'];
+                    if ($card['remaining'] > 0) {
+                        $consumed = self::consumedCount($card['raw'] ?? []);
+                        $card['bound'] = $consumed === null ? $card['remaining'] : $card['remaining'] + $consumed;
+                        if ($consumed === null) {
+                            $underivable++;
+                        }
+                        $countBound += $card['bound'];
+                    } else {
+                        $card['bound'] = $card['remaining'];
+                    }
+                }
+            }
+            if ($card['type'] === CardLifecycle::TYPE_STORED && $card['remaining'] !== null) {
+                $storedValue += $card['remaining'];
+            }
+        }
+        unset($card);
+
+        foreach ($history as $card) {
+            $residual = CardLifecycle::residualBalance($card);
+            if ($card['type'] === CardLifecycle::TYPE_COUNT) {
+                $historySections += $residual;
+            }
+            if ($card['type'] === CardLifecycle::TYPE_STORED) {
+                $historyAmount += $residual;
+            }
+            // 过期有余额：只认 expired / expired_by_clock（退卡/停卡永不参与，D10），
+            // 且必须有过期日 + 落在展示窗内（§3.4 四条边界）。
+            if (in_array($card['historyReason'], ['expired', 'expired_by_clock'], true)
+                && $residual > 0
+                && CardLifecycle::withinExpiredWindow($card, $balanceWindow)) {
+                $balanceCards++;
+                if ($card['type'] === CardLifecycle::TYPE_COUNT) {
+                    $balanceSections += $residual;
+                }
+                if ($card['type'] === CardLifecycle::TYPE_STORED) {
+                    $balanceAmount += $residual;
+                }
             }
         }
 
+        // ── 累计购买私教课量 / 实收金额（S16：退卡 29 与停卡 39 都跳过）──────────
+        //
+        // 旧实现只跳过 29（退卡），停卡（39）仍计入 total_purchased / card_paid_amount，
+        // 于是「冻结中的权益」被算成已成交业绩。本任务只动这两个统计字段（最小改动）。
         $totalPurchased = 0;
-        foreach ($cards as $card) {
+        foreach ($deduped as $card) {
             $title = self::pick($card, ['card_title', 'card_name']);
             if (! str_contains($title, '私教') || preg_match('/(体验|员工|测试|赠)/u', $title)) {
                 continue;
             }
-            if ((string) ($card['status'] ?? '') === '29' || (string) ($card['is_taste'] ?? '0') === '1') {
+            if (in_array(self::cardStatusCode($card), ['29', '39'], true)
+                || (string) ($card['is_taste'] ?? '0') === '1') {
                 continue;
             }
             // 累计购买私教课量 = 该次卡当前绑定节数(剩余) + 已耗**次数**。
@@ -484,7 +581,7 @@ class KyMemberSyncService
         }
 
         $cardPaid = 0.0;
-        foreach ($cards as $card) {
+        foreach ($deduped as $card) {
             $title = self::pick($card, ['card_title', 'card_name']);
             if (preg_match('/(体验|员工|测试|赠)/u', $title)) {
                 continue;
@@ -492,107 +589,228 @@ class KyMemberSyncService
             if ((string) ($card['is_taste'] ?? '0') === '1') {
                 continue;
             }
-            if ((string) ($card['status_format'] ?? '') === '退卡') {
+            if (in_array(self::cardStatusCode($card), ['29', '39'], true)
+                || in_array((string) ($card['status_format'] ?? ''), ['退卡', '停卡'], true)) {
                 continue;
             }
-            // 会员卡实收金额 = 非体验/非退卡卡项的 deal_price（成交价）合计
+            // 会员卡实收金额 = 非体验/非退卡/非停卡卡项的 deal_price（成交价）合计
             $paid = self::toNum($card['deal_price'] ?? 0);
             if ($paid > 0) {
                 $cardPaid += $paid;
             }
         }
 
+        // ③ 系列归因 + 汇总（§2.6）：主卡/到期日只由当前实例决定，历史永不拉早。
+        //
+        // A-01：系列序号直接挂在实例上（annotateSeries），不再用 identity 当 map 键 ——
+        // 缺 id/card_no 时 identity 是 hash，同字段多卡会撞键。标注后按 state 重新分桶，
+        // 保证 cards_list / historyCards / entitlement 用的是同一份带序号快照。
+        $allInstances = CardLifecycle::annotateSeries(array_merge($current, $unactivated, $history));
+        $current = array_values(array_filter($allInstances, fn (array $i) => $i['state'] === 'current'));
+        $unactivated = array_values(array_filter($allInstances, fn (array $i) => $i['state'] === 'unactivated'));
+        $history = array_values(array_filter($allInstances, fn (array $i) => $i['state'] === 'history'));
+        [$mainInstance, $mainCardState] = CardLifecycle::mainCardFrom($allInstances);
+        [$expireDate, $expireDateState] = CardLifecycle::expireDateFrom($allInstances);
+        $nextExpireDays = CardLifecycle::daysUntilDate($expireDate);
+
+        $usableCount = 0.0;
+        foreach ($current as $card) {
+            if ($card['type'] === CardLifecycle::TYPE_COUNT && CardLifecycle::isUsable($card)) {
+                $usableCount += $card['remaining'];
+            }
+        }
+
+        // ① 历史实例明细（唯一历史事实源，全类型，带身份）
+        $historyCards = array_values(array_map(function (array $card) {
+            return [
+                'id' => $card['id'],
+                'cardNo' => $card['cardNo'],
+                'cardId' => $card['cardId'],
+                'title' => $card['title'],
+                'type' => (string) $card['type'],
+                'unit' => $card['unit'],
+                // 期限卡到期即失效 → 残余恒 0（定义，不是缺失）；次卡/储值卡保留原始残余。
+                'residue' => $card['type'] === CardLifecycle::TYPE_TIME
+                    ? 0
+                    : ($card['remaining'] === null ? null : $card['remaining']),
+                'deadline' => $card['deadline'],
+                'daysUntil' => $card['daysUntil'],
+                'statusCode' => $card['statusCode'],
+                'status' => $card['statusLabel'] ?? (CardLifecycle::STATUS_LABELS[$card['statusCode'] ?? ''] ?? ''),
+                'state' => 'history',
+                'historyReason' => $card['historyReason'],
+                'createTime' => $card['createTime'],
+                'soldAt' => $card['createTime'],
+                'activatedAt' => $card['activateTime'],
+                'expired' => true,
+                'daysLeft' => $card['daysUntil'],
+                'valueType' => match ($card['type']) {
+                    CardLifecycle::TYPE_TIME => 'time',
+                    CardLifecycle::TYPE_STORED => 'stored',
+                    default => 'count',
+                },
+                'isTaste' => false,
+                // 同步侧已判定的降级码（判定层无法从纠正后的字段复现这些事实）
+                'degraded' => $card['degraded'],
+            ];
+        }, $history));
+
+        // ② 过期卡保留区（兼容区，C8 收窄）：type=1 ∧ 已过期 ∧ 有余额 ∧ 排除 29/39 ∧ 非体验。
+        //    仅供「炸弹会员」消费；historyCards 才是唯一历史事实源。
+        $expiredCards = array_values(array_map(function (array $card) {
+            return [
+                'id' => $card['id'],
+                'cardNo' => $card['cardNo'],
+                'title' => $card['title'],
+                'residue' => (int) floor($card['remaining']),
+                'deadline' => $card['deadline'],
+                'status' => (string) $card['statusCode'],
+                'statusCode' => $card['statusCode'],
+                'daysExpired' => $card['daysUntil'] === null ? null : abs($card['daysUntil']),
+                'type' => '1',
+            ];
+        }, array_values(array_filter($history, function (array $card) {
+            return $card['type'] === CardLifecycle::TYPE_COUNT
+                && ! in_array($card['statusCode'], ['29', '39'], true)
+                && ! $card['isTaste']
+                && $card['deadline'] !== null
+                && $card['daysUntil'] !== null
+                && $card['daysUntil'] < 0
+                && ($card['remaining'] ?? 0) > 0;
+        }))));
+
+        // ③ 被排除的体验/赠品卡：不进任何判定集合，但保留为「曾经有卡」的证据（A11）。
+        $excludedCards = array_values(array_map(fn (array $card) => [
+            'title' => $card['title'],
+            'type' => (string) $card['type'],
+            'isTaste' => true,
+            'tasteReason' => $card['tasteReason'],
+        ], $excluded));
+
+        $syncDegraded = [];
+        if ($mirrorDeduped) {
+            $syncDegraded[] = 'mirror_row_deduped';
+        }
+        if ($excluded !== []) {
+            $syncDegraded[] = 'taste_excluded_by_pattern';
+        }
+
         return [
-            'main_card' => $main ? self::pick($main, ['card_title', 'card_name']) : '—',
+            'main_card' => $mainInstance !== null ? $mainInstance['title'] : '—',
             // 次卡剩余合计（含未开卡）；无次卡时为 null（时间卡会员不再被误判为 0 节）
             'remain_times' => $hasCountCard ? (int) floor($countResidue) : null,
-            // 最早到期日（此前只取主卡到期日）
-            'expire_date' => $earliestDeadline,
+            // 最早到期日：**当前实例**的最早 deadline；无当前实例才回退最近历史（带 state 标注）
+            'expire_date' => $expireDate,
             'total_purchased' => $totalPurchased,
             'card_paid_amount' => round($cardPaid, 2),
-            // 运行时阈值判定依据（阈值可在工作台调整，这里只存原始汇总）
+            // 运行时阈值判定依据 + v3.9 新契约（§1.4）
             'card_stats' => [
                 'countResidue' => $hasCountCard ? (int) floor($countResidue) : null,
                 'countBound' => (int) floor($countBound),
+                // 期限卡剩余天数改为按 deadline 累加（旧实现取 residue_amount 恒 0，F1 第二根因）
                 'daysLeft' => $hasTimeCard ? (int) floor($daysLeft) : null,
                 'daysTotal' => $hasTimeCard ? (int) floor($daysTotal) : null,
                 // 已耗次数推导不出的在用次卡张数：>0 时判定层必须显式降级告知，
                 // 不得让「分母只剩剩余节数」这件事静默发生（见 helpers 的 degraded）。
                 'countBoundUnderivable' => $underivable,
-                // ── 过期卡保留区（用户决策 2026-09-24：「过期卡不纳入待续费」但「数据必须保留可查」）──
-                //
-                // 为什么不放进 cards_list：cards_list 是判定层的**分类输入**，塞进去会
-                // 立刻让过期卡经由 C8 分支进入待续费，违反用户决策。
-                // 为什么不放进 ky_cards 事实表：那张表只存 title/deal_price/status/sold_at 等，
-                // 没有余额与到期日列，且本期不新增迁移（见任务 out-of-scope）。
-                // 所以保留区落在 **card_stats**（已是 json 列，无迁移、向后兼容）：
-                // 「炸弹会员」清单（正式会员 + 次卡有余额 + 过期 > 6 个月）靠它才算得出来。
-                //
-                // 只保留**算得出沉睡量**的卡：type=1（次卡，单位=节）、有数值且 >0 的 residue、
-                // 有 deadline。时间卡/储值卡（type≠1）的 residue 是「天」，混进来会把
-                // 「沉睡 2509 节」算成别的单位。
-                'expiredCards' => array_values(array_map(function (array $card) {
-                    return [
-                        'title' => self::pick($card, ['card_title', 'card_name']),
-                        'residue' => (int) floor(max(0.0, self::toNum($card['residue_amount'] ?? 0))),
-                        'deadline' => self::date($card['deadline'] ?? null),
-                        'status' => (string) ($card['status'] ?? ''),
-                        // 卡类型（1=次卡/节，2=期限卡/天）：口径要求保留「含卡类型」；
-                        // 且下游「炸弹会员」只认 type=1 —— 缺了这个字段，
-                        // 「为什么排除了时间卡」在数据侧就无从复核（只看到「有余额」）。
-                        'type' => (string) ($card['type'] ?? ''),
-                    ];
-                }, array_values(array_filter($cards, function (array $card) {
-                    // 已在白名单里的卡由 cards_list 表达，不进保留区（避免两处各存一份而分叉）
-                    if (in_array((string) ($card['status'] ?? ''), self::ACTIVE_CARD_STATUSES, true)) {
-                        return false;
-                    }
-                    if ((string) ($card['is_taste'] ?? '0') === '1') {
-                        return false;
-                    }
-                    if (preg_match('/(体验|员工|测试)/u', self::pick($card, ['card_title', 'card_name']))) {
-                        return false;
-                    }
-                    if ((string) ($card['type'] ?? '') !== '1') {
-                        return false;
-                    }
-
-                    return self::toNum($card['residue_amount'] ?? 0) > 0
-                        && self::date($card['deadline'] ?? null) !== null;
-                })))),
+                // 过期卡保留区（兼容）：只保留**算得出沉睡量**的次卡；29/39 已排除（S11）。
+                'expiredCards' => $expiredCards,
+                // 被排除的体验/赠品卡（只作「曾经有卡」证据，永不参与命中）
+                'excludedCards' => $excludedCards,
+                // 历史实例明细（唯一历史事实源；过期有余额 / 炸弹会员的输入）
+                'historyCards' => $historyCards,
+                // 会员级权益摘要（唯一汇总口径；判定层会复算校验）
+                'entitlement' => [
+                    'mainCard' => $mainInstance !== null ? $mainInstance['title'] : '—',
+                    'mainCardState' => $mainCardState,
+                    'expireDate' => $expireDate,
+                    'expireDateState' => $expireDateState,
+                    'nextExpireDays' => $nextExpireDays,
+                    'usableCount' => (int) floor($usableCount),
+                    'displayCount' => $hasCountCard ? (int) floor($countResidue) : 0,
+                    'storedValue' => round($storedValue, 2),
+                    'historyBalance' => [
+                        'sections' => (int) floor($historySections),
+                        'amount' => round($historyAmount, 2),
+                        'count' => count($history),
+                    ],
+                    'counts' => [
+                        'current' => count($current),
+                        'unactivated' => count($unactivated),
+                        'history' => count($history),
+                        'excluded' => count($excluded),
+                        'usable' => count(array_filter($current, fn ($c) => CardLifecycle::isUsable($c))),
+                        'exhausted' => count(array_filter($current, fn ($c) => CardLifecycle::isExhausted($c))),
+                        'unknown' => count(array_filter($current, fn ($c) => CardLifecycle::isUnknown($c))),
+                    ],
+                ],
+                // §3.6：体验/赠品卡明确排除在「有卡」之外（快照复算：只有礼包卡的 765 人必须落 P5）
+                'hasAnyCard' => $allInstances !== [],
+                'hasActiveEntitlement' => $current !== [] || $unactivated !== [],
+                'expiredBalance' => [
+                    'in' => $balanceCards > 0,
+                    'sections' => (int) floor($balanceSections),
+                    'amount' => round($balanceAmount, 2),
+                    'cards' => $balanceCards,
+                ],
+                'dataVersion' => CardLifecycle::DATA_VERSION,
+                'syncDegraded' => $syncDegraded,
             ],
-            // 有效卡项明细：供会员管理「剩余课时」列逐卡展示（含未开卡标记）
+            // 有效卡项明细（current ∪ unactivated）：保留旧 9 键 + 实例身份/生命周期新键（§1.4）
             'cards_list' => array_values(array_map(function (array $card) {
-                $type = (string) ($card['type'] ?? '');
-                $hasResidueValue = is_numeric($card['residue_amount'] ?? null);
-                $residue = $hasResidueValue ? max(0.0, self::toNum($card['residue_amount'])) : null;
-                $residueInt = $residue !== null ? (int) floor($residue) : null;
-                $unactivated = (string) ($card['status'] ?? '') === '7';
-                // 逐卡「绑定总量」= 剩余节数 + 已耗**次数**（与 countBound 同源表达式）。
-                // 推导不出已耗次数时退化为「剩余节数」：占比因此偏高（少报尾段），
-                // 绝不会因金额混入而假装成尾段。
-                $consumed = $type === '1' ? self::consumedCount($card) : null;
-                $bound = $type === '1'
-                    ? (int) floor(max(0.0, self::toNum($card['residue_amount'] ?? 0)) + max(0, $consumed ?? 0))
-                    : null;
-
                 return [
-                    'title' => self::pick($card, ['card_title', 'card_name']),
-                    // 1=次卡(节) 2=期限卡(天)
-                    'unit' => $type === '2' ? '天' : '节',
-                    'residue' => $residueInt,
-                    'bound' => $bound,
-                    'deadline' => self::date($card['deadline'] ?? null),
-                    'status' => self::pick($card, ['status_format', 'status']),
-                    'unactivated' => $unactivated,
-                    // 判定层需要的两个补充字段（§5.4 方案 A）：
-                    // - type:      原始卡类型，判定层据此区分次卡/期限卡，不必从 unit 反推
-                    // - validDays: 期限卡有效期总天数，供逐卡「有效期占比」
-                    //   （此前只有汇总的 daysTotal，缺 expiry_days 的卡会进分子不进分母）
-                    'type' => $type,
-                    'validDays' => (int) floor(max(0.0, self::toNum($card['expiry_days'] ?? 0))),
+                    // ── 保留键（旧前端/旧判定仍可读）──────────────────────
+                    'title' => $card['title'],
+                    // v3.9：节 | 天 | 元（不再把储值卡落成「节」）
+                    'unit' => $card['unit'],
+                    // NULL = 未知；次卡=节、期限卡=剩余天数（由 deadline 推导）、储值卡=元
+                    'residue' => $card['remaining'] === null
+                        ? null
+                        : ($card['type'] === CardLifecycle::TYPE_STORED
+                            ? round($card['remaining'], 2)
+                            : (int) floor($card['remaining'])),
+                    'bound' => $card['type'] === CardLifecycle::TYPE_COUNT
+                        ? ($card['bound'] === null ? null : (int) floor($card['bound']))
+                        : null,
+                    'deadline' => $card['deadline'],
+                    'status' => $card['statusLabel'] ?? (CardLifecycle::STATUS_LABELS[$card['statusCode'] ?? ''] ?? ''),
+                    'unactivated' => $card['state'] === 'unactivated',
+                    'type' => (string) $card['type'],
+                    // A-02：未知必须保留 null（契约 §1.4「两者皆 0 ⇒ null」）；
+                    // 写成 0 会让判定层再也区分不了「有效期未知」与「有效期 0 天」。
+                    'validDays' => $card['validDays'] === null ? null : (int) $card['validDays'],
+
+                    // ── 新增键：实例身份与生命周期（缺身份时判定层降级归因）────
+                    'id' => $card['id'],
+                    'cardNo' => $card['cardNo'],
+                    'cardId' => $card['cardId'],
+                    // createTime / soldAt 同义（发卡日）：前者是判定层契约键，后者是业务命名
+                    'createTime' => $card['createTime'],
+                    'soldAt' => $card['createTime'],
+                    'activateTime' => $card['activateTime'],
+                    'activatedAt' => $card['activateTime'],
+                    'statusCode' => $card['statusCode'],
+                    'residueDays' => $card['residueDays'] === null ? null : (int) floor($card['residueDays']),
+                    'residueSource' => $card['remainingSource'],
+                    // 生命周期派生（判定层会自行复算，这里落库供展示与审计）
+                    'expired' => $card['state'] === 'history'
+                        || ($card['daysUntil'] !== null && $card['daysUntil'] < 0),
+                    'daysLeft' => $card['daysUntil'],
+                    'valueType' => match ($card['type']) {
+                        CardLifecycle::TYPE_TIME => 'time',
+                        CardLifecycle::TYPE_STORED => 'stored',
+                        default => 'count',
+                    },
+                    'isTaste' => $card['isTaste'],
+                    'tasteReason' => $card['tasteReason'],
+                    'state' => $card['state'],
+                    // 系列序号由 annotateSeries 直接挂在实例上（A-01：不再用 identity map）
+                    'seriesIndex' => $card['seriesIndex'] ?? null,
+                    'seriesCount' => $card['seriesCount'] ?? null,
+                    // 同步侧已判定的降级码（如期限卡脏 residue 被忽略、缺身份字段）
+                    'degraded' => $card['degraded'],
                 ];
-            }, $active)),
+            }, array_merge($current, $unactivated))),
         ];
     }
 
@@ -1031,27 +1249,9 @@ class KyMemberSyncService
 
     private static function date(mixed $value): ?string
     {
-        if ($value === null || $value === '') {
-            return null;
-        }
-        if (is_numeric($value)) {
-            $number = (int) $value;
-            if ($number <= 0) {
-                return null;
-            }
-            if ($number > 1000000000) {
-                return CarbonImmutable::createFromTimestamp($number)->toDateString();
-            }
-            $text = (string) (int) $number;
-            if (strlen($text) === 8) {
-                return CarbonImmutable::createFromFormat('Ymd', $text)->toDateString();
-            }
-        }
-        try {
-            return CarbonImmutable::parse((string) $value)->toDateString();
-        } catch (\Throwable) {
-            return null;
-        }
+        // 日期解析的唯一实现见 CardLifecycle::parseDate()（同步/判定共用，
+        // 避免「同一张卡在同步层是 2026-09-23、在判定层是 2026-09-24」这类跨层偏差）。
+        return CardLifecycle::parseDate($value);
     }
 
     private static function dateTime(mixed $value): ?string

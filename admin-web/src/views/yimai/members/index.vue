@@ -59,7 +59,7 @@
           class="f-lg"
           @change="reloadFromFirstPage"
         >
-          <ElOption v-for="k in LIST_KEYS" :key="k" :label="k" :value="k" />
+          <ElOption v-for="k in FILTER_KEYS" :key="k" :label="k" :value="k" />
         </ElSelect>
         <ElSelect
           v-model="searchForm.consultant"
@@ -190,13 +190,14 @@
               >
 
               <!--
-                判定理由入口：点开看「为什么他在这个清单里」。
-                用 popover 而不是 tooltip —— 理由可能有多条 + 降级说明，需要可停留、可滚动。
+                判定理由入口：点开看「为什么命中 / 为什么没命中」。
+                用 popover 而不是 tooltip —— 理由可能有多条 + 逐卡明细 + 降级说明，
+                需要可停留、可滚动。
               -->
               <ElPopover
-                v-if="reasonOf(row)"
+                v-if="hasCardDetail(row)"
                 placement="right"
-                :width="330"
+                :width="380"
                 trigger="click"
                 popper-class="renewal-reason-popover"
               >
@@ -210,20 +211,143 @@
                   <div class="reason-body__head">
                     <span class="font-600">{{ row.name }}</span>
                     <ElTag size="small" effect="dark" :type="primaryType(row)">
-                      {{ reasonOf(row)?.bucket || primaryLabel(row) }}
+                      {{
+                        reasonOf(row)?.bucket ||
+                        (isRenewalListed(row) ? primaryLabel(row) : '不在待续费')
+                      }}
                     </ElTag>
                   </div>
 
-                  <div class="reason-body__section">为什么在待续费清单</div>
-                  <ul class="reason-body__list">
-                    <li v-for="(w, i) in reasonOf(row)?.why ?? []" :key="i">{{ w }}</li>
-                  </ul>
+                  <!-- ① 命中理由：hits 自带 code+why，可安全配对；没有 hits 时退回 why 列表 -->
+                  <template v-if="reasonOf(row)">
+                    <div class="reason-body__section">为什么在待续费清单</div>
+                    <ul v-if="hitLines(row).length" class="reason-body__list">
+                      <li v-for="h in hitLines(row)" :key="`${h.code}-${h.why}`">
+                        <ElTag size="small" type="danger" effect="plain">{{ h.label }}</ElTag>
+                        <span class="reason-body__hit">{{ h.why }}</span>
+                      </li>
+                    </ul>
+                    <ul v-else-if="(reasonOf(row)?.why ?? []).length" class="reason-body__list">
+                      <li v-for="(w, i) in reasonOf(row)?.why ?? []" :key="i">{{ w }}</li>
+                    </ul>
+                    <div v-else class="reason-body__hint">后端未返回逐条理由</div>
+                    <div v-if="whyTags(row).length" class="reason-body__codes">
+                      <span class="reason-body__codes-label">命中类型</span>
+                      <ElTag v-for="t in whyTags(row)" :key="t" size="small" effect="plain">{{
+                        t
+                      }}</ElTag>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="reason-body__section">为什么没进待续费</div>
+                    <div class="reason-body__hint">
+                      {{
+                        isRenewalListed(row)
+                          ? '本次列表未返回该会员的判定理由（后端未附带 renewal 块），请刷新或核对后端版本'
+                          : '后端判定：名下当前卡项均未触发阈值（历史卡、已用完、未开卡都不计入待续费）'
+                      }}
+                    </div>
+                    <!-- 在「过期有余额」筛选标签里的人：说清它是 P3 提示而非待续费命中 -->
+                    <div v-if="memberLists(row).includes('过期有余额')" class="reason-body__hint">
+                      该会员在「过期有余额」筛选标签里（P3）：过期的历史卡仍有余额，
+                      只做提示、不触发续费（详见下方历史卡项）
+                    </div>
+                  </template>
 
-                  <template v-if="secondaryLists(row).length">
+                  <!-- ② 当前卡项：类型徽标 + 身份（卡号/发卡日）+ 状态 + 余量(单位) + 到期 -->
+                  <div class="reason-body__section">
+                    当前卡项
+                    <span class="reason-body__count">{{ cardsOf(row).current.length }} 张</span>
+                  </div>
+                  <div v-if="cardsOf(row).current.length" class="reason-cards">
+                    <div
+                      v-for="c in cardsOf(row).current"
+                      :key="c.key"
+                      class="reason-card"
+                      :class="{ 'is-hit': c.hit }"
+                    >
+                      <div class="reason-card__head">
+                        <ElTag size="small" :type="c.typeTag" effect="plain">{{
+                          c.typeLabel
+                        }}</ElTag>
+                        <span class="reason-card__name">{{ c.title }}</span>
+                        <ElTag v-if="c.unactivated" size="small" type="info" effect="plain"
+                          >未开卡</ElTag
+                        >
+                        <ElTag v-if="c.hit" size="small" type="danger" effect="dark">命中</ElTag>
+                      </div>
+                      <div class="reason-card__meta">
+                        <span>{{ c.status }}</span>
+                        <span v-if="c.identity"> · {{ c.identity }}</span>
+                      </div>
+                      <div class="reason-card__qty">余 {{ c.qty }} · {{ c.deadline }}</div>
+                    </div>
+                  </div>
+                  <div v-else class="reason-body__hint">无当前卡项</div>
+
+                  <!-- ③ 历史卡项：单独一组，明确「仅提示，不触发待续费」 -->
+                  <template v-if="cardsOf(row).history.length">
+                    <div class="reason-body__section">
+                      历史卡项
+                      <span class="reason-body__count">{{ cardsOf(row).history.length }} 张</span>
+                      <span class="reason-body__hint-inline">仅提示，不触发待续费</span>
+                    </div>
+                    <div class="reason-cards reason-cards--history">
+                      <div v-for="c in cardsOf(row).history" :key="c.key" class="reason-card">
+                        <div class="reason-card__head">
+                          <ElTag size="small" :type="c.typeTag" effect="plain">{{
+                            c.typeLabel
+                          }}</ElTag>
+                          <span class="reason-card__name">{{ c.title }}</span>
+                        </div>
+                        <div class="reason-card__meta">
+                          <span>{{ c.status }}</span>
+                          <span v-if="c.identity"> · {{ c.identity }}</span>
+                        </div>
+                        <div class="reason-card__qty">余 {{ c.qty }} · {{ c.deadline }}</div>
+                        <div v-if="c.note" class="reason-card__note">{{ c.note }}</div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <!-- ④ 过期有余额（P3）：历史卡证据，只提示 -->
+                  <template v-if="expiredBalanceOf(row)">
+                    <div class="reason-body__section">过期有余额（仅提示，不进待续费）</div>
+                    <ul v-if="(expiredBalanceOf(row)?.why ?? []).length" class="reason-body__list">
+                      <li v-for="(w, i) in expiredBalanceOf(row)?.why ?? []" :key="i">{{ w }}</li>
+                    </ul>
+                    <div v-else class="reason-body__hint">
+                      {{
+                        expiredBalanceOf(row)?.in
+                          ? '历史卡仍有余额，已计入「过期有余额」筛选标签'
+                          : '历史卡无余额，或已超出回溯窗'
+                      }}
+                    </div>
+                    <div
+                      v-if="
+                        expiredBalanceOf(row)?.in &&
+                        (expiredBalanceOf(row)?.sections || expiredBalanceOf(row)?.amount)
+                      "
+                      class="reason-body__hint"
+                    >
+                      合计：{{ fmtQty(expiredBalanceOf(row)?.sections ?? 0, '节') }} /
+                      {{ fmtQty(expiredBalanceOf(row)?.amount ?? 0, '元') }}
+                    </div>
+                  </template>
+
+                  <!-- ⑤ 当前阈值：与「调整标签阈值」「今日待办」同源同文案 -->
+                  <div class="reason-body__section">当前阈值（与设置页同源）</div>
+                  <div class="reason-body__hint">
+                    待续费：{{ renewalRuleSummary(rules) }}；过期有余额回溯窗：{{
+                      expiredBalanceWindowText(rules)
+                    }}
+                  </div>
+
+                  <template v-if="popoverLists(row).length">
                     <div class="reason-body__section">同时所属清单</div>
                     <div class="flex flex-wrap gap-1">
                       <ElTag
-                        v-for="l in secondaryLists(row)"
+                        v-for="l in popoverLists(row)"
                         :key="l"
                         size="small"
                         effect="plain"
@@ -274,35 +398,94 @@
           </template>
         </ElTableColumn>
 
+        <!--
+          剩余课时（v3.9）：
+          - 大号数字 = 展示口径（当前∪未开卡次卡合计，= 旧 remainTimes），历史卡不计入；
+          - 红字判定 = 判定口径 usableCount ≤ 阈值（`<=`，与后端一致；旧实现是 `<`）；
+          - 下方逐卡摘要按类型给单位（次卡节 / 期限卡天 / 储值卡元），不再把储值卡写成「节」。
+        -->
         <ElTableColumn
           v-if="activeTab === 'all' || activeTab === 'renewal'"
           label="剩余课时"
+          width="170"
+        >
+          <template #header>
+            <ElTooltip placement="top">
+              <template #content>
+                <div>大号数字：展示口径＝当前 + 未开卡次卡合计（旧「剩余课时」）</div>
+                <div class="mt-1">
+                  标红：当前可用次卡（不含未开卡）≤ {{ rules.renewalThreshold }} 节
+                </div>
+                <div class="mt-1">历史卡与已用完的卡不计入合计，可在「判定依据」中查看</div>
+              </template>
+              <span class="cursor-help">剩余课时</span>
+            </ElTooltip>
+          </template>
+          <template #default="{ row }">
+            <span
+              :class="remainInfo(row).low ? 'font-600 text-red-500' : ''"
+              :title="
+                remainInfo(row).exact
+                  ? '判定口径：当前可用次卡（不含未开卡）'
+                  : '旧快照没有判定口径，按展示口径近似'
+              "
+            >
+              {{ displayCountOf(row) ?? '—'
+              }}<span v-if="displayCountOf(row) !== null" class="text-xs"> 节</span>
+            </span>
+            <div
+              v-if="cardLinesOf(row).length"
+              class="mt-0.5 text-xs leading-4 text-gray-400"
+              :title="cardSummaryText(row)"
+            >
+              <div v-for="card in cardLinesOf(row).slice(0, 3)" :key="card.key" class="truncate">
+                {{ card.title }} {{ card.qty
+                }}<template v-if="card.unactivated">（未开卡）</template>
+              </div>
+              <div v-if="cardLinesOf(row).length > 3" class="text-gray-300">
+                …另有 {{ cardLinesOf(row).length - 3 }} 张当前卡
+              </div>
+            </div>
+          </template>
+        </ElTableColumn>
+
+        <!-- 主卡：只由当前实例计算（无当前才回退历史），并标出历史卡张数 -->
+        <ElTableColumn
+          v-if="activeTab === 'all' || activeTab === 'renewal'"
+          label="主卡"
           width="150"
         >
           <template #default="{ row }">
-            <span
+            <div class="text-sm">{{ summaryOf(row).mainCard || '—' }}</div>
+            <div class="mt-0.5 text-xs text-gray-400">
+              {{ mainCardStateLabel(summaryOf(row).mainCardState) }}
+              <template v-if="summaryOf(row).historyCards.length">
+                · 另有 {{ summaryOf(row).historyCards.length }} 张历史卡
+              </template>
+            </div>
+          </template>
+        </ElTableColumn>
+
+        <!-- 到期日：句式由后端 expireDateState 决定，历史卡显示「已过期 N 天」 -->
+        <ElTableColumn
+          v-if="activeTab === 'all' || activeTab === 'renewal'"
+          label="到期日"
+          width="130"
+        >
+          <template #default="{ row }">
+            <div
+              class="text-sm tabular-nums"
               :class="
-                row.remainTimes !== null && row.remainTimes < rules.renewalThreshold
+                expireDanger(row)
                   ? 'font-600 text-red-500'
-                  : ''
+                  : summaryOf(row).expireDateState === 'history'
+                    ? 'text-orange-500'
+                    : ''
               "
             >
-              {{ row.remainTimes ?? '—'
-              }}<span v-if="row.remainTimes !== null" class="text-xs"> 节</span>
-            </span>
-            <div
-              v-if="row.cardsList?.length"
-              class="mt-0.5 text-xs leading-4 text-gray-400"
-              :title="cardSummaryText(row.cardsList)"
-            >
-              <div v-for="card in row.cardsList.slice(0, 3)" :key="card.title" class="truncate">
-                {{ card.title }} {{ card.residue ?? '?' }}{{ card.unit
-                }}<template v-if="card.unactivated">（未开卡）</template>
-              </div>
-              <div v-if="row.cardsList.length > 3" class="text-gray-300">
-                …共 {{ row.cardsList.length }} 张有效卡
-              </div>
+              {{ summaryOf(row).expireDate || '—' }}
             </div>
+            <div class="mt-0.5 text-xs text-gray-400">{{ expireTextOf(row) }}</div>
           </template>
         </ElTableColumn>
 
@@ -415,8 +598,9 @@
 
         <!--
           炸弹会员：显示「哪张卡、过期多久、还剩多少节」。
-          数据源是后端保留区 `cardStats.expiredCards`（**不是** `cardsList` —— 过期卡
-          按用户决策不进判定层），因此这里必须读保留区，读 cardsList 会永远为空。
+          数据源是历史卡（v3.9 起优先 `cardStats.historyCards`，旧快照回退保留区
+          `cardStats.expiredCards`）——**不是** `cardsList`：按用户决策，过期卡不进判定层，
+          读 cardsList 会永远为空。
         -->
         <template v-if="activeTab === 'bomb'">
           <ElTableColumn label="沉睡卡项" min-width="260">
@@ -506,9 +690,47 @@
                 {{ item.reason.bucket }}
               </ElTag>
             </div>
-            <ul class="m-reason__list">
+            <!-- 命中理由：hits 自带 code+why，可配对；没有 hits 时退回 why 列表 -->
+            <ul v-if="item.reason.hits.length" class="m-reason__list">
+              <li v-for="h in item.reason.hits" :key="`${h.code}-${h.why}`">
+                <ElTag size="small" type="danger" effect="plain">{{ h.label }}</ElTag>
+                {{ h.why }}
+              </li>
+            </ul>
+            <ul v-else-if="item.reason.why.length" class="m-reason__list">
               <li v-for="(w, i) in item.reason.why" :key="i">{{ w }}</li>
             </ul>
+            <div v-else class="m-reason__label">
+              {{
+                item.reason.hasReason
+                  ? '后端未返回逐条理由'
+                  : item.reason.listed
+                    ? '本次列表未返回该会员的判定理由（请刷新或核对后端版本）'
+                    : '后端判定：名下当前卡项均未触发阈值'
+              }}
+            </div>
+
+            <!-- 当前卡项 / 历史卡项（与桌面 popover 同一分组，历史卡不进汇总） -->
+            <div v-if="item.reason.current.length" class="m-reason__cards">
+              <div class="m-reason__label">当前卡项</div>
+              <div v-for="c in item.reason.current" :key="c.key" class="m-reason__card">
+                <ElTag size="small" :type="c.typeTag" effect="plain">{{ c.typeLabel }}</ElTag>
+                {{ c.title }} · 余 {{ c.qty }} · {{ c.status }}
+                <template v-if="c.identity"> · {{ c.identity }}</template>
+                <template v-if="c.hit">
+                  <ElTag size="small" type="danger" effect="dark">命中</ElTag>
+                </template>
+              </div>
+            </div>
+            <div v-if="item.reason.history.length" class="m-reason__cards">
+              <div class="m-reason__label">历史卡项（仅提示，不触发待续费）</div>
+              <div v-for="c in item.reason.history" :key="c.key" class="m-reason__card">
+                <ElTag size="small" :type="c.typeTag" effect="plain">{{ c.typeLabel }}</ElTag>
+                {{ c.title }} · 余 {{ c.qty }} · {{ c.status }}
+                <template v-if="c.identity"> · {{ c.identity }}</template>
+              </div>
+            </div>
+
             <div v-if="item.reason.degraded.length" class="m-reason__degraded">
               <div class="m-reason__label m-reason__label--warn"
                 >以下规则当前未生效（可能漏判）</div
@@ -756,25 +978,39 @@
         <ElFormItem label="次卡剩余(节)"
           ><ElInputNumber v-model="rulesForm.renewalThreshold" :min="1" :max="50" /><span
             class="ml-2 text-xs text-gray-400"
-            >全部次卡合计剩余 ≤ 该值且最近月有出勤（含未开卡）</span
+            >任一当前可用次卡剩余节数 ≤ 该值即提醒（不含未开卡、已用完）</span
           ></ElFormItem
         >
         <ElFormItem label="次卡剩余占比(%)"
           ><ElInputNumber v-model="rulesForm.renewalCountPercent" :min="0" :max="100" /><span
             class="ml-2 text-xs text-gray-400"
-            >合计剩余 ÷ 合计绑定(剩余+已用) ≤ 该值；0=关闭</span
+            >剩余 ÷（剩余 + 已耗次数） ≤ 该值；0=关闭</span
           ></ElFormItem
         >
         <ElFormItem label="到期提醒(天)"
           ><ElInputNumber v-model="rulesForm.renewalExpireDays" :min="1" :max="365" /><span
             class="ml-2 text-xs text-gray-400"
-            >任一有效卡剩余天数 ≤ 该值（含次卡/时间卡）</span
+            >任一<strong>当前卡</strong>剩余天数 ≤ 该值（历史卡、已用完的卡不参与）</span
           ></ElFormItem
         >
         <ElFormItem label="有效期占比(%)"
           ><ElInputNumber v-model="rulesForm.renewalExpirePercent" :min="0" :max="100" /><span
             class="ml-2 text-xs text-gray-400"
-            >时间卡剩余天数 ÷ 有效期天数 ≤ 该值；0=关闭</span
+            >期限卡剩余天数 ÷ 有效期天数 ≤ 该值；0=关闭</span
+          ></ElFormItem
+        >
+        <!--
+          储值卡余额提醒（v3.9 §6.2 新增键 renewalStoredValueThreshold）。
+          单位是「元」，与课时（节）是两套量纲，所以单独一条，不并进「次卡剩余」。
+        -->
+        <ElFormItem label="储值卡余额提醒(元)"
+          ><ElInputNumber
+            v-model="rulesForm.renewalStoredValueThreshold"
+            :min="0"
+            :max="1000000"
+            :step="100"
+          /><span class="ml-2 text-xs text-gray-400"
+            >储值卡余额 ≤ 该值即提醒；0=关闭。单位是元，不与课时混算</span
           ></ElFormItem
         >
         <ElAlert class="mb-3" type="info" :closable="false">
@@ -782,15 +1018,21 @@
           <template #default>
             <div class="text-xs leading-5">
               <div>
-                · <strong>合计口径</strong>：全部在用卡的剩余课时/有效期占比低于阈值即命中；
+                · <strong>合计口径</strong>：当前可用卡的剩余课时/有效期占比低于阈值即命中；
               </div>
               <div>
                 · <strong>逐卡口径</strong>：任一单卡进入尾段（剩余课时或有效期占比低于阈值）也命中
                 —— 合计还有几十节、但其中一张卡只剩几节，同样该续；
               </div>
               <div>
-                · <strong>已过期但仍有余额</strong>的卡，在配置的回溯窗内同样触发提醒；
-                已用完、未开卡的卡项不参与判定。
+                · <strong>单位不混算</strong>：次卡按「节」、期限卡按「天」、储值卡按「元」
+                分别判定与展示，储值卡余额不会被算成课时；
+              </div>
+              <div>
+                ·
+                <strong>已过期卡不再触发待续费</strong
+                >：过期实例永不进清单；仅在「过期有余额回溯窗」内计入
+                「过期有余额」（P3）提示。已用完、未开卡的卡项也不参与判定。
               </div>
               <div class="mt-1 text-gray-500">
                 近 30 天未到店只影响「紧急 / 观察」分档，不再是进清单的门槛。
@@ -846,15 +1088,46 @@
           ></ElFormItem
         >
         <ElDivider content-position="left">会员清单 · 其他口径</ElDivider>
-        <ElFormItem label="过期卡回溯(天)"
-          ><ElInputNumber
-            v-model="rulesForm.renewalExpiredBackfillDays"
-            :min="0"
-            :max="3650"
-          /><span class="ml-2 text-xs text-gray-400"
-            >已过期但仍有余额的卡只回溯最近 N 天；0=完全不看已过期卡</span
+        <!--
+          「过期卡回溯」→「过期有余额回溯窗」（v3.9 §6.2/§6.3 改名，不是新功能）：
+          同一个可见范围，但**语义已变** —— 它只决定「过期有余额」提示的可见范围，
+          不再把过期卡送进待续费（过期实例永不命中，I1）。
+          表单绑新键 expiredBalanceWindowDays；保存时由 setMemberRules 双写旧键。
+        -->
+        <ElFormItem label="过期有余额回溯窗(天)"
+          ><ElInputNumber v-model="rulesForm.expiredBalanceWindowDays" :min="0" :max="3650" /><span
+            class="ml-2 text-xs text-gray-400"
+            >已过期且仍有余额的卡只统计最近 N 天；0=不展示。只影响「过期有余额」提示（P3），<strong
+              >不再把卡送进待续费</strong
+            ></span
           ></ElFormItem
         >
+        <!--
+          体验/赠品卡识别（v3.9 §6.2 新增键 tasteTitlePattern）。
+          旧实现把 `体验|员工|测试` 硬编码在同步层，于是「新人礼包2次」进了 P0（D10-④）；
+          做成配置后不发版也能补词。留空 = 后端默认值，前端不在这里编默认语义。
+        -->
+        <ElFormItem label="体验/赠品卡识别">
+          <div class="flex w-full flex-col gap-1">
+            <div class="flex items-center gap-2">
+              <ElInput
+                v-model="rulesForm.tasteTitlePattern"
+                class="flex-1"
+                clearable
+                :placeholder="DEFAULT_TASTE_TITLE_PATTERN"
+              />
+              <ElButton link type="primary" size="small" @click="resetTastePattern"
+                >恢复默认</ElButton
+              >
+            </div>
+            <span class="text-xs text-gray-400"
+              >按卡名关键词识别体验/员工/测试/赠品卡（正则片段，竖线分隔，不能含「~」）；留空=用默认值
+              {{
+                DEFAULT_TASTE_TITLE_PATTERN
+              }}。命中这些词的卡项不进任何清单，也不参与待续费/炸弹判定</span
+            >
+          </div>
+        </ElFormItem>
         <ElFormItem label="炸弹会员(天)"
           ><ElInputNumber v-model="rulesForm.bombExpiredDays" :min="30" :max="3650" /><span
             class="ml-2 text-xs text-gray-400"
@@ -941,6 +1214,7 @@
     isBirthdayToday,
     queryCustomerOptions,
     queryMemberListCounts,
+    DEFAULT_TASTE_TITLE_PATTERN,
     EVAL_DIMENSIONS,
     EVAL_RISKS,
     evalTotalScore,
@@ -952,11 +1226,34 @@
   import type {
     YimaiCustomer,
     MemberListKey,
+    MemberListFilter,
     RenewalEvaluationAnswers,
     RenewalEvaluationContext,
-    RenewalReason,
-    CustomerCardItem
+    RenewalReason
   } from '@/api/yimai'
+  import {
+    cardDeadlineText,
+    cardIdentityText,
+    cardQtyText,
+    cardStatusText,
+    cardTypeCode,
+    cardTypeLabel,
+    cardTypeLabelByType,
+    cardTypeTagType,
+    cardUnitByType,
+    expiredBalanceWindowText,
+    expireDateText,
+    fmtQty,
+    historyReasonText,
+    lowRemainInfo,
+    mainCardStateLabel,
+    renewalRuleSummary,
+    sameNameIndexMap,
+    sumRemainingByType,
+    summarizeCustomerCards,
+    whyCodeLabel
+  } from '@/views/yimai/shared/card-display'
+  import type { CardLike, CustomerCardSummary } from '@/views/yimai/shared/card-display'
   import { USE_BACKEND, apiGet } from '@/api/backend'
   import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
@@ -995,11 +1292,100 @@
     return Number(v).toLocaleString('zh-CN')
   }
 
-  /** 剩余课时列悬浮提示：逐卡列出名称+剩余 */
-  function cardSummaryText(cards: CustomerCardItem[]): string {
-    return cards
-      .map((x) => `${x.title} ${x.residue ?? '?'}${x.unit}${x.unactivated ? '（未开卡）' : ''}`)
-      .join('；')
+  // ---------- 卡项展示（v3.9：只消费后端字段，历史卡不进汇总） ----------
+
+  /** 每行的卡项展示摘要：按当前页预算一次，避免模板里反复重算 */
+  const cardSummaries = computed<Record<number, CustomerCardSummary>>(() => {
+    const out: Record<number, CustomerCardSummary> = {}
+    for (const row of list.value) out[row.id] = summarizeCustomerCards(row)
+    return out
+  })
+
+  function summaryOf(row: YimaiCustomer): CustomerCardSummary {
+    return cardSummaries.value[row.id] ?? summarizeCustomerCards(row)
+  }
+
+  /** 「次卡剩余」提示：判定口径 usableCount ≤ 阈值；旧快照才回退展示口径并标注 */
+  function remainInfo(row: YimaiCustomer): { low: boolean; value: number | null; exact: boolean } {
+    return lowRemainInfo(summaryOf(row), rules.value.renewalThreshold ?? 10)
+  }
+
+  /** 列里大号数字：展示口径（含未开卡），与旧「剩余课时」同义 */
+  function displayCountOf(row: YimaiCustomer): number | null {
+    return summaryOf(row).displayCount
+  }
+
+  /** 剩余课时列悬浮提示：逐卡列出「类型 / 名称 / 余量 / 身份」，再给三个口径合计 */
+  function cardSummaryText(row: YimaiCustomer): string {
+    const s = summaryOf(row)
+    const lines = s.currentCards.map((card) => {
+      const identity = cardIdentityText(card)
+      const unactivated = card.unactivated || card.state === 'unactivated' ? '（未开卡）' : ''
+      return `[${cardTypeLabel(card)}] ${card.title} ${cardQtyText(card)}${unactivated}${
+        identity ? `（${identity}）` : ''
+      }`
+    })
+    // 按类型聚合（节/天/元 各自成组，绝不跨单位相加）
+    const byType = (['1', '2', '3'] as const)
+      .map((type) => {
+        const sum = sumRemainingByType(s.currentCards, type)
+        if (sum === null) return ''
+        return `${cardTypeLabelByType(type)} ${fmtQty(sum, cardUnitByType(type))}`
+      })
+      .filter(Boolean)
+    const totals = [`展示口径 ${fmtQty(s.displayCount, '节')}（含未开卡）`]
+    if (s.usableCount !== null) totals.push(`判定口径 ${fmtQty(s.usableCount, '节')}（不含未开卡）`)
+    if (byType.length) totals.push(`按类型合计：${byType.join(' · ')}`)
+    if (s.historyCards.length) totals.push(`另有 ${s.historyCards.length} 张历史卡（不计入合计）`)
+    return [...lines, ...totals].join('\n')
+  }
+
+  /** 剩余课时列下方的逐卡摘要（当前卡，按 次卡→期限卡→储值卡 排序；单位各自正确） */
+  interface CardLine {
+    key: string
+    title: string
+    typeLabel: string
+    typeTag: 'primary' | 'success' | 'warning'
+    qty: string
+    unactivated: boolean
+  }
+  const CARD_TYPE_ORDER: Record<string, number> = { '1': 0, '2': 1, '3': 2 }
+  const cardLines = computed<Record<number, CardLine[]>>(() => {
+    const out: Record<number, CardLine[]> = {}
+    for (const row of list.value) {
+      const cards = [...summaryOf(row).currentCards].sort((a, b) => {
+        const ta = CARD_TYPE_ORDER[cardTypeCode(a)] ?? 9
+        const tb = CARD_TYPE_ORDER[cardTypeCode(b)] ?? 9
+        return ta - tb
+      })
+      out[row.id] = cards.map((card, i) => ({
+        key: String(card.id ?? card.cardNo ?? `${row.id}-${i}`),
+        title: card.title,
+        typeLabel: cardTypeLabel(card),
+        typeTag: cardTypeTagType(card),
+        qty: cardQtyText(card),
+        unactivated: Boolean(card.unactivated) || card.state === 'unactivated'
+      }))
+    }
+    return out
+  })
+
+  function cardLinesOf(row: YimaiCustomer) {
+    return cardLines.value[row.id] ?? []
+  }
+
+  /** 到期日列文案（句式由后端 `expireDateState` 决定，§5.5） */
+  function expireTextOf(row: YimaiCustomer): string {
+    const s = summaryOf(row)
+    return expireDateText(s.expireDateState, s.nextExpireDays, s.expireDate)
+  }
+
+  /** 到期日是否上色：只在「后端说是当前卡」且落在到期提醒窗内时标红（纯展示强调） */
+  function expireDanger(row: YimaiCustomer): boolean {
+    const s = summaryOf(row)
+    if (s.expireDateState !== 'current') return false
+    const days = s.nextExpireDays
+    return days !== null && days >= 0 && days <= (rules.value.renewalExpireDays ?? 30)
   }
 
   /**
@@ -1007,6 +1393,12 @@
    * 本页只用它们做「按清单筛 id」「页签 → 清单」的映射，不重算任何判定。
    */
   const LIST_KEYS: MemberListKey[] = ['待续课', '出勤降低', 'VIP', '预流失', '待复活', '炸弹会员']
+  /**
+   * 「过期有余额」是 v3.9 的**筛选标签**（不是第 7 个页签，§3.4）：
+   * 后端已经产出 `lists['过期有余额']`，所以下拉里能直接按它筛，且同样由后端判定。
+   */
+  const EXTRA_FILTER_KEYS = ['过期有余额'] as const
+  const FILTER_KEYS: MemberListFilter[] = [...LIST_KEYS, ...EXTRA_FILTER_KEYS]
   const EVALUATION_STATUSES = ['未评估', '高机会', '重点培育', '风险修复', '已过期']
   const TAB_KEY_TO_LIST: Record<string, MemberListKey> = {
     renewal: '待续课',
@@ -1065,7 +1457,7 @@
    * 现在改为向服务端取 `list=` 过滤结果的 id：口径只有后端一份，
    * 前端不再算第二遍（也就不用维护镜像）。
    */
-  const memberListIds = ref<Record<number, MemberListKey[]>>({})
+  const memberListIds = ref<Record<number, MemberListFilter[]>>({})
 
   /**
    * 会员 id → 待续费判定理由（**后端权威口径**，前端只消费不重算）。
@@ -1101,9 +1493,9 @@
   })
 
   /** 生效清单过滤：页签优先，其次下拉清单（仅总览页签展示） */
-  function effectiveListFilter(): MemberListKey | undefined {
+  function effectiveListFilter(): MemberListFilter | undefined {
     if (activeTab.value !== 'all') return TAB_KEY_TO_LIST[activeTab.value]
-    return (searchForm.value.list || undefined) as MemberListKey | undefined
+    return (searchForm.value.list || undefined) as MemberListFilter | undefined
   }
 
   async function load(keepPage = false) {
@@ -1163,7 +1555,7 @@
    *
    * 只取 id（后端 size 上限 5000，超一页继续拉），不带卡片明细。
    */
-  async function fetchMemberListIds(list: MemberListKey): Promise<number[]> {
+  async function fetchMemberListIds(list: MemberListFilter): Promise<number[]> {
     if (!USE_BACKEND) return []
     const PAGE = 5000
     const ids: number[] = []
@@ -1189,7 +1581,7 @@
   async function loadMemberListIds() {
     try {
       const results = await Promise.all(
-        LIST_KEYS.map(async (key) => {
+        FILTER_KEYS.map(async (key) => {
           try {
             return [key, await fetchMemberListIds(key)] as const
           } catch {
@@ -1197,7 +1589,7 @@
           }
         })
       )
-      const map: Record<number, MemberListKey[]> = {}
+      const map: Record<number, MemberListFilter[]> = {}
       for (const [key, ids] of results) {
         for (const id of ids) {
           if (!map[id]) map[id] = []
@@ -1233,7 +1625,7 @@
    *
    * 顺序按 LIST_KEYS 固定，保证同一会员每次渲染标签顺序一致。
    */
-  function memberLists(row: YimaiCustomer): MemberListKey[] {
+  function memberLists(row: YimaiCustomer): MemberListFilter[] {
     return memberListIds.value[row.id] ?? []
   }
 
@@ -1260,11 +1652,21 @@
 
   /** 主标签的语义色：待复活走 info，紧急走 danger，观察走 warning */
   function primaryType(row: YimaiCustomer): 'danger' | 'warning' | 'info' {
+    // 没有判定理由（不在待续费清单）时用中性色，避免「不在待续费」被标成危险
+    if (!reasonOf(row)) return 'info'
     const p = primaryLabel(row)
     if (p === '待复活') return 'info'
     if (p.includes('紧急')) return 'danger'
     if (p.includes('观察')) return 'warning'
     return 'danger'
+  }
+
+  /**
+   * 判定依据面板里的「同时所属清单」：有待续费理由时用 coLists 口径，
+   * 否则退回该会员的全部清单归属（后端权威 id），别让弹层看起来是空的。
+   */
+  function popoverLists(row: YimaiCustomer): string[] {
+    return reasonOf(row) ? secondaryLists(row) : memberLists(row)
   }
 
   /**
@@ -1294,6 +1696,124 @@
   /** 降级说明：非空即表示有规则没能生效（如卡项快照为 NULL 时占比阈值静默失效） */
   function degradedOf(row: YimaiCustomer): string[] {
     return reasonOf(row)?.degraded ?? []
+  }
+
+  /** 是否在待续费清单里（后端权威归属，不是本地判定） */
+  function isRenewalListed(row: YimaiCustomer): boolean {
+    return memberLists(row).includes('待续课')
+  }
+
+  /** 有卡项明细或有判定理由 → 提供「判定依据」入口（含「为什么没命中」） */
+  function hasCardDetail(row: YimaiCustomer): boolean {
+    const s = summaryOf(row)
+    return Boolean(reasonOf(row)) || s.currentCards.length > 0 || s.historyCards.length > 0
+  }
+
+  /** `whyCodes` → 可读标签（只做映射；后端只对部分分支压码，不能按索引配 why） */
+  function whyTags(row: YimaiCustomer): string[] {
+    return [...new Set(reasonOf(row)?.whyCodes ?? [])].map((code) => whyCodeLabel(code))
+  }
+
+  /** `renewal.hits[]`：每个命中项自带 code + why，可以安全配对 */
+  function hitLines(row: YimaiCustomer): { code: string; label: string; why: string }[] {
+    return (reasonOf(row)?.hits ?? []).map((hit) => ({
+      code: hit.code,
+      label: whyCodeLabel(hit.code),
+      why: hit.why
+    }))
+  }
+
+  /** 过期有余额（P3）：只提示，不进待续费 */
+  function expiredBalanceOf(row: YimaiCustomer): RenewalReason['expiredBalance'] | null {
+    return reasonOf(row)?.expiredBalance ?? null
+  }
+
+  /** 判定依据面板里的一张卡（文案全部预先算好，模板只负责排版） */
+  interface DisplayCardRow {
+    key: string
+    title: string
+    typeLabel: string
+    typeTag: 'primary' | 'success' | 'warning'
+    qty: string
+    status: string
+    identity: string
+    deadline: string
+    unactivated: boolean
+    hit: boolean
+    note: string
+  }
+
+  /**
+   * 判定依据面板的「当前卡项 / 历史卡项」两组。
+   *
+   * - 分组只用后端 `state`（当前∪未开卡 / 历史），前端不重算状态；
+   * - 「命中」只在 `renewal.hits[]` 明确指出该实例时点亮，不做近似匹配；
+   * - 历史卡单独一组并注明「仅提示，不触发待续费」（§5.4）。
+   */
+  const displayCards = computed<
+    Record<number, { current: DisplayCardRow[]; history: DisplayCardRow[] }>
+  >(() => {
+    const out: Record<number, { current: DisplayCardRow[]; history: DisplayCardRow[] }> = {}
+    for (const row of list.value) {
+      const summary = summaryOf(row)
+      const reason = reasonOf(row)
+      const hitIds = new Set<string>()
+      const hitNos = new Set<string>()
+      for (const hit of reason?.hits ?? []) {
+        if (hit.instanceId !== undefined && hit.instanceId !== null) {
+          hitIds.add(String(hit.instanceId))
+        }
+        if (hit.cardNo) hitNos.add(String(hit.cardNo))
+      }
+
+      const all: CardLike[] = [...summary.currentCards, ...summary.historyCards]
+      const sameName = sameNameIndexMap(all)
+
+      const toRow = (card: CardLike, history: boolean, index: number): DisplayCardRow => {
+        const id = card.id ?? card.instanceId
+        const hit =
+          !history &&
+          ((id !== undefined && id !== null && hitIds.has(String(id))) ||
+            (Boolean(card.cardNo) && hitNos.has(String(card.cardNo))))
+        const notes: string[] = []
+        if (history) {
+          notes.push('仅提示，不触发待续费')
+          if (cardTypeCode(card) === '2') notes.push('期限卡到期即失效，剩余天数计为 0')
+          const reasonText = historyReasonText(card)
+          if (reasonText) notes.push(reasonText)
+        }
+        // 同名归因优先用后端 `seriesIndex/seriesCount`（权威）；旧快照才用本地分组
+        const sameNameInfo =
+          typeof card.seriesIndex === 'number' &&
+          typeof card.seriesCount === 'number' &&
+          card.seriesCount > 0
+            ? { index: card.seriesIndex, total: card.seriesCount }
+            : (sameName.get(card) ?? null)
+        return {
+          key: `${history ? 'h' : 'c'}-${String(id ?? card.cardNo ?? index)}`,
+          title: String(card.title ?? '—'),
+          typeLabel: cardTypeLabel(card),
+          typeTag: cardTypeTagType(card),
+          qty: cardQtyText(card),
+          status: cardStatusText(card),
+          identity: cardIdentityText(card, sameNameInfo),
+          deadline: cardDeadlineText(card),
+          unactivated: Boolean(card.unactivated) || card.state === 'unactivated',
+          hit,
+          note: notes.join(' · ')
+        }
+      }
+
+      out[row.id] = {
+        current: summary.currentCards.map((card, i) => toRow(card, false, i)),
+        history: summary.historyCards.map((card, i) => toRow(card, true, i))
+      }
+    }
+    return out
+  })
+
+  function cardsOf(row: YimaiCustomer): { current: DisplayCardRow[]; history: DisplayCardRow[] } {
+    return displayCards.value[row.id] ?? { current: [], history: [] }
   }
 
   /**
@@ -1343,13 +1863,14 @@
   const BOMB_EXPIRED_DAYS = 183
 
   /**
-   * 该会员的沉睡卡项 = 后端保留区 `cardStats.expiredCards` 里过期超 6 个月的次卡。
+   * 该会员的沉睡卡项 = 历史卡里过期超 6 个月的**次卡**。
    *
    * ⚠️ 四个易错点：
-   * 1. **读 `expiredCards`，不是 `cardsList`**：按用户决策，过期卡不进判定层，
-   *    所以 `cardsList` 里**没有**它们（读它会永远为空，看起来像「功能没生效」）。
+   * 1. **读历史卡（`historyCards`，旧快照回退 `expiredCards`），不是 `cardsList`**：
+   *    过期卡不进判定层，`cardsList` 里**没有**它们（读它会永远为空，看起来像「功能没生效」）。
    * 2. `type === '1'`（次卡，单位=节）：`type === '2'` 是期限卡、residue 单位是**天**，
-   *    混进来会把「沉睡 N 节」算成别的量纲。
+   *    混进来会把「沉睡 N 节」算成别的量纲。退卡(29)/停卡(39) 也不算「沉睡」，
+   *    必须按 `historyReason` / `statusCode` 剔除（D10：它们曾污染炸弹节数）。
    * 3. 边界用**严格大于**：`> BOMB_EXPIRED_DAYS`。captain 已冻结该取法
    *    （严格 ⇒ 393 卡/2509 节；含等号 ⇒ 394/2512），**不要**改成 `>=`。
    * 4. 第 5 条口径「超 6 个月未到店」由后端 `customerDecision` 判（2026-09-25 补充），
@@ -1363,12 +1884,25 @@
   function bombCards(
     row: YimaiCustomer
   ): { title: string; residue: number; deadline: string | null }[] {
-    const expired = row.cardStats?.expiredCards
-    if (!expired?.length) return []
+    // v3.9（C8）：历史事实源从 `expiredCards` 换成 `historyCards`（全类型，
+    // 能区分退卡/停卡；`summarizeCustomerCards` 在旧快照下自动回退旧保留区）。
+    const pool = summaryOf(row)
+      .historyCards.filter((card) => {
+        if (cardTypeCode(card) !== '1') return false
+        // 退卡/停卡不是「钱收了课没上」，不计入沉睡量（D10：29/39 曾污染炸弹节数）
+        if (card.historyReason === 'refunded' || card.historyReason === 'suspended') return false
+        const code = String(card.statusCode ?? '')
+        return code !== '29' && code !== '39'
+      })
+      .map((card) => ({
+        title: card.title,
+        residue: Number(card.residue ?? 0),
+        deadline: card.deadline
+      }))
+    if (!pool.length) return []
 
-    return expired.filter(
+    return pool.filter(
       (card) =>
-        card.type === '1' &&
         Number(card.residue ?? 0) > 0 &&
         Boolean(card.deadline) &&
         bombExpiredDays(card) > BOMB_EXPIRED_DAYS
@@ -1455,12 +1989,20 @@
     }
 
     if (activeTab.value === 'all' || activeTab.value === 'renewal') {
-      const remain = row.remainTimes
+      // 展示口径（含未开卡）；标红用判定口径，`<=` 与后端一致（旧实现是 `<`）
+      const summary = summaryOf(row)
+      const info = remainInfo(row)
       metrics.push({
         label: '剩余课时',
-        value: remain ?? '—',
-        unit: remain == null ? '' : '节',
-        danger: remain != null && remain < rules.value.renewalThreshold
+        value: summary.displayCount ?? '—',
+        unit: summary.displayCount == null ? '' : '节',
+        danger: info.low
+        // 副标题不给（MobileCardMetric 只有 label/value/unit），口径差异放到下方 note
+      })
+      metrics.push({
+        label: '到期',
+        value: expireTextOf(row),
+        danger: expireDanger(row)
       })
     }
 
@@ -1583,15 +2125,21 @@
         note: cardNote(row),
         actions: cardActions(row),
         // 判定理由：手机端直接展开渲染（见模板里的 m-reason 区块）。
-        // 这里预先算好 bucket 文案与语义色，避免模板里再调函数。
-        reason: reason
-          ? {
-              why: reason.why ?? [],
-              bucket: reason.bucket || primaryLabel(row),
-              primaryType: primaryType(row),
-              degraded: reason.degraded ?? []
-            }
-          : null
+        // 与桌面 popover 同一份数据源：hits / whyCodes / 当前卡项 / 历史卡项。
+        reason:
+          reason || hasCardDetail(row)
+            ? {
+                why: reason?.why ?? [],
+                hits: hitLines(row),
+                bucket: reason?.bucket || (isRenewalListed(row) ? primaryLabel(row) : '不在待续费'),
+                primaryType: primaryType(row),
+                degraded: reason?.degraded ?? [],
+                current: cardsOf(row).current,
+                history: cardsOf(row).history,
+                hasReason: Boolean(reason),
+                listed: isRenewalListed(row)
+              }
+            : null
       }
     })
   )
@@ -1821,16 +2369,34 @@
     if (v) Object.assign(rulesForm, getMemberRules())
   })
 
+  /** 体验/赠品卡关键词恢复默认（留空也等价，但按钮给一个明确动作） */
+  function resetTastePattern() {
+    rulesForm.tasteTitlePattern = DEFAULT_TASTE_TITLE_PATTERN
+  }
+
   async function applyRules() {
+    // 客户端只拦「一定不合法」的两种：`~` 是后端的正则分隔符；超长后端会 422。
+    // 正则语义的最终判定交给后端（PCRE 与 JS 的方言不同，前端不抢这个判断）。
+    const tastePattern = String(rulesForm.tasteTitlePattern ?? '').trim()
+    if (tastePattern.includes('~')) {
+      ElMessage.error('体验/赠品卡关键词不能包含「~」')
+      return
+    }
+    if (tastePattern.length > 200) {
+      ElMessage.error('体验/赠品卡关键词不能超过 200 字')
+      return
+    }
     try {
-      await setMemberRules({ ...rulesForm })
+      await setMemberRules({ ...rulesForm, tasteTitlePattern: tastePattern })
       rules.value = getMemberRules()
       rulesDlg.value = false
       load(false)
       ElMessage.success('规则已更新，清单实时重算')
     } catch (e) {
       console.error('[members.applyRules]', e)
-      ElMessage.error('规则保存失败，请稍后重试')
+      // 把后端的校验文案透出来（如「正则表达式无效」），否则用户只看到一句通用失败
+      const detail = String((e as { message?: string }).message ?? '').slice(0, 120)
+      ElMessage.error(detail ? `规则保存失败：${detail}` : '规则保存失败，请稍后重试')
     }
   }
 
@@ -1893,6 +2459,40 @@
       }
     }
 
+    &__count {
+      margin-left: 4px;
+      color: var(--art-gray-600, #909399);
+    }
+
+    &__hint {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--art-gray-600, #909399);
+    }
+
+    &__hint-inline {
+      margin-left: 6px;
+      font-size: 12px;
+      color: var(--el-color-warning);
+    }
+
+    &__hit {
+      margin-left: 4px;
+    }
+
+    &__codes {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    &__codes-label {
+      font-size: 12px;
+      color: var(--art-gray-500, #a8abb2);
+    }
+
     &__list {
       margin: 0;
       padding-left: 18px;
@@ -1913,6 +2513,54 @@
 
     li {
       list-style: disc;
+    }
+  }
+
+  /* 判定依据里的逐卡块：当前卡项 / 历史卡项两组共用 */
+  .reason-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+
+    &--history {
+      opacity: 0.85;
+    }
+  }
+
+  .reason-card {
+    padding: 4px 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    border-left: 2px solid var(--el-border-color-lighter);
+    border-radius: 2px;
+    background: var(--art-gray-100, #f5f7fa);
+
+    /* 命中的那张当前卡：左侧红条 + 浅红底，一眼能定位 */
+    &.is-hit {
+      border-left-color: var(--el-color-danger);
+      background: var(--el-color-danger-light-9, #fef0f0);
+    }
+
+    &__head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+    }
+
+    &__name {
+      font-weight: 500;
+      color: var(--art-gray-900, #303133);
+    }
+
+    &__meta,
+    &__qty,
+    &__note {
+      color: var(--art-gray-600, #909399);
+    }
+
+    &__note {
+      font-size: 11px;
     }
   }
 
@@ -1955,6 +2603,19 @@
 
     &__degraded {
       margin-top: 8px;
+    }
+
+    /* 手机端逐卡块：与桌面 popover 同一分组（当前 / 历史），历史卡不进汇总 */
+    &__cards {
+      margin-top: 6px;
+    }
+
+    &__card {
+      padding: 2px 0 2px 6px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--art-gray-700, #606266);
+      border-left: 2px solid var(--el-border-color-lighter);
     }
   }
 </style>

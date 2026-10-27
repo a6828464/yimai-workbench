@@ -563,7 +563,30 @@ class CustomerController extends Controller
             'renewalExpirePercent' => 'nullable|integer|min:0|max:100',
             // 已过期但仍有余额的卡的回溯天数（决策 D4）：上限 3650 ≈ 10 年，
             // 允许店长按自己的历史数据跨度调整；0 = 完全不看已过期卡。
+            //
+            // v3.9：本键不再影响待续费命中（过期实例永不命中），只作为
+            // `expiredBalanceWindowDays` 的回退来源；保存时**双写**（§6.3），
+            // 保证回滚到旧版本时行为一致。前端不再单独渲染它。
             'renewalExpiredBackfillDays' => 'nullable|integer|min:0|max:3650',
+            // 过期有余额展示窗（天；0=关闭）。只影响 P3 与「过期有余额」筛选标签。
+            'expiredBalanceWindowDays' => 'nullable|integer|min:0|max:3650',
+            // 储值卡余额阈值（元；0=关闭）。单位是元，永不与节/天比较。
+            'renewalStoredValueThreshold' => 'nullable|integer|min:0|max:1000000',
+            // 体验/赠品卡标题关键词（PCRE 片段）。空 = 用默认值；`~` 是内部定界符，
+            // 禁止出现以免拼出非法/注入式正则；非法 PCRE 直接 422。
+            'tasteTitlePattern' => ['nullable', 'string', 'max:200', function (string $attribute, mixed $value, \Closure $fail) {
+                if ($value === null || $value === '') {
+                    return;
+                }
+                if (str_contains((string) $value, '~')) {
+                    $fail('体验/赠品卡识别正则不能包含 ~');
+
+                    return;
+                }
+                if (@preg_match('~('.((string) $value).')~u', '') === false) {
+                    $fail('体验/赠品卡识别正则无效');
+                }
+            }],
             'vipAmountThreshold' => 'required|integer|min:1000|max:1000000',
             'declineMode' => 'required|in:strict,recent',
             'predropMin' => 'required|integer|min:1|max:180',
@@ -604,7 +627,24 @@ class CustomerController extends Controller
         $data['renewalCountPercent'] = (int) ($data['renewalCountPercent'] ?? 20);
         $data['renewalExpireDays'] = (int) ($data['renewalExpireDays'] ?? 30);
         $data['renewalExpirePercent'] = (int) ($data['renewalExpirePercent'] ?? 0);
-        $data['renewalExpiredBackfillDays'] = (int) ($data['renewalExpiredBackfillDays'] ?? 90);
+        // v3.9：新键是 nullable（未提交 = 不改），但 `0` 是合法值（=关闭），
+        // 因此**只能**在键存在时强转，绝不能 `?? 默认值` 回写成 90（会把 0 吞掉）。
+        foreach (['expiredBalanceWindowDays', 'renewalStoredValueThreshold'] as $intKey) {
+            if (array_key_exists($intKey, $data) && $data[$intKey] !== null) {
+                $data[$intKey] = (int) $data[$intKey];
+            }
+        }
+        // §6.3 双写：新键优先；只提交旧键（旧前端/回滚场景）时同步到新键。
+        if (array_key_exists('expiredBalanceWindowDays', $data) && $data['expiredBalanceWindowDays'] !== null) {
+            $data['renewalExpiredBackfillDays'] = (int) $data['expiredBalanceWindowDays'];
+        } elseif (array_key_exists('renewalExpiredBackfillDays', $data) && $data['renewalExpiredBackfillDays'] !== null) {
+            $data['expiredBalanceWindowDays'] = (int) $data['renewalExpiredBackfillDays'];
+            $data['renewalExpiredBackfillDays'] = (int) $data['renewalExpiredBackfillDays'];
+        }
+        // 空串 = 用默认值（不回写空串，避免把正则编译成全匹配）
+        if (array_key_exists('tasteTitlePattern', $data) && ($data['tasteTitlePattern'] === null || $data['tasteTitlePattern'] === '')) {
+            $data['tasteTitlePattern'] = \App\Support\CardLifecycle::DEFAULT_TASTE_PATTERN;
+        }
         setRules($data);
         audit($r, '修改', '会员管理', 0, '清单规则阈值', '双店', json_encode($data, JSON_UNESCAPED_UNICODE));
 

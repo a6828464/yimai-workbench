@@ -160,7 +160,10 @@ class RenewalPrecisionTest extends TestCase
             $this->card('新私教40次', '4', '1', 40, 0, $this->inDays(400)),
         ]);
         $this->assertRenewal($f03, false, '已用完卡的到期日不得触发');
-        $this->assertSame($this->inDays(400), $f03->expire_date, 'expire_date 应取有余量卡的最早到期日');
+        // v3.9：expire_date = min(deadline) over **CURRENT**（§2.6）。已用完的卡仍是 current
+        // 实例，只是不满足命中适配域（deadlineEligible 要求次卡有余量）；历史实例才会被排除。
+        $this->assertSame($this->inDays(10), $f03->expire_date,
+            'expire_date 取当前实例的最早 deadline（历史实例永不把「当前」拉早）');
 
         $f04 = $this->memberFromCards('F04 用完卡临期+新卡100节', [
             $this->card('旧私教50次', '4', '1', 0, 50, $this->inDays(10)),
@@ -222,42 +225,53 @@ class RenewalPrecisionTest extends TestCase
         $this->assertRenewal($c, true, '在用卡只剩 5 节应提醒续费');
     }
 
-    // ------------------------------------------------- C8：已过期但有余量
+    // ------------------------------------------------- 历史卡：只进「过期有余额」，永不进待续费
 
     public function test_expired_card_with_balance_is_flagged_within_backfill_window(): void
     {
-        // 夹具 F17：卡已过期 30 天，还剩 50 节 —— 卡里的课可能还能上/需延期，
-        // 旧口径被 `expireDays >= 0` 挡掉，是最该联系却完全看不见的人。
+        // 夹具 F17（v3.9 口径翻转，§9.2 #1/#2）：卡已过期 30 天、还剩 50 节。
+        // 旧口径把它送进待续费（C8 分支）；新口径**过期实例永不命中**，
+        // 它的运营价值迁到独立的「过期有余额」标签（P3 + 筛选）。
         $f17 = $this->memberFromCards('F17 过期30天余50节', [
             $this->card('私教50次', '4', '1', 50, 0, $this->inDays(-30)),
         ]);
-        $this->assertRenewal($f17, true, '已过期但有余量应提醒');
-        $watch = $this->watchFor($f17);
-        $this->assertStringContainsString('已过期', implode('；', $watch['why']));
+        $this->assertRenewal($f17, false, '过期实例永不进待续费');
+
+        $d = customerDecision($f17->fresh());
+        $this->assertSame([], $d['renewal']['why'], '历史卡不得产生 renewal.why');
+        $this->assertSame('P3', $d['layer'], '窗内过期且有余额 → P3');
+        $this->assertTrue($d['expiredWithBalance'], '过期有余额必须独立成立');
+        $this->assertStringContainsString('已过期', implode('；', $d['expiredBalance']['why']));
     }
 
     public function test_expired_card_beyond_backfill_window_is_ignored(): void
     {
-        // 夹具 F25：过期 -100 天，超出 90 天回溯窗（决策 D4）→ 不报。
-        // 陈年旧账每天都挂在清单里会把清单训练成「不用看」。
+        // 夹具 F25：过期 -100 天，超出 90 天展示窗（决策 D4）→ 连「过期有余额」也不显示。
         $f25 = $this->memberFromCards('F25 过期100天余50节', [
             $this->card('私教50次', '4', '1', 50, 0, $this->inDays(-100)),
         ]);
-        $this->assertRenewal($f25, false, '超出回溯窗的过期卡不再提醒');
+        $this->assertRenewal($f25, false, '过期卡不进待续费');
+        $this->assertSame('P4', customerDecision($f25->fresh())['layer'], '出窗的过期余额落 P4');
     }
 
     public function test_expired_window_boundary_is_inclusive(): void
     {
-        // 边界：正好 -90 天应在窗内，-91 天应在窗外（锁住「>= -90」而非「> -90」）
+        // 边界：正好 -90 天在展示窗内（P3），-91 天出窗（P4）；两条都不进待续费。
         $edge = $this->memberFromCards('边界-90天', [
             $this->card('私教50次', '4', '1', 50, 0, $this->inDays(-90)),
         ]);
-        $this->assertRenewal($edge, true, '-90 天在回溯窗内（含边界）');
+        $this->assertRenewal($edge, false);
+        $de = customerDecision($edge->fresh());
+        $this->assertTrue($de['expiredWithBalance'], '-90 天在展示窗内（含边界）');
+        $this->assertSame('P3', $de['layer']);
 
         $past = $this->memberFromCards('边界-91天', [
             $this->card('私教50次', '4', '1', 50, 0, $this->inDays(-91)),
         ]);
-        $this->assertRenewal($past, false, '-91 天已出窗');
+        $this->assertRenewal($past, false);
+        $dp = customerDecision($past->fresh());
+        $this->assertFalse($dp['expiredWithBalance'], '-91 天已出窗');
+        $this->assertSame('P4', $dp['layer']);
     }
 
     // ------------------------------------------------- D2：合计与逐卡并存
@@ -272,8 +286,10 @@ class RenewalPrecisionTest extends TestCase
         ]);
         $this->assertRenewal($f05, true, '合计 52 节但单卡只剩 2 节');
         $why = implode('；', $this->watchFor($f05)['why']);
-        $this->assertStringContainsString('单卡', $why);
-        $this->assertStringContainsString('52', $why, 'why 应说明「合计仍有 52 节」，让店长理解为何合计健康却被提醒');
+        // v3.9 文案（§5.1）：逐卡尾段 = 「「卡名」仅余 2 节 ≤ 10 节（当前可用合计 52 节）（…）」
+        // 旧文案的「单卡」「合计仍有」两个词已不再使用（D08-③/D12：展示口径不得叫「合计」）。
+        $this->assertStringContainsString('仅余', $why);
+        $this->assertStringContainsString('52', $why, 'why 应说明「当前可用合计 52 节」，让店长理解为何合计健康却被提醒');
 
         // 夹具 F21：两张各剩 3 节 + 一张 100 节（合计 106）
         $f21 = $this->memberFromCards('F21 两张各剩3节', [
@@ -310,15 +326,21 @@ class RenewalPrecisionTest extends TestCase
 
     public function test_member_without_any_active_card_has_no_asset(): void
     {
-        // 夹具 F15/F20：只有退卡（status 29）或完全没有卡 → 无资产，不进续费判定
+        // 夹具 F15/F20：只有退卡（status 29）≠ 无资产；完全没卡才是无资产。
+        // v3.9（§9.2 #11）：退卡实例进 historyCards，main_card 回退到最近历史并带 state=history；
+        // 它不落 P5（P5 只留给「从未有卡」）。
         $f15 = $this->memberFromCards('F15 只有退卡', [
             $this->card('退掉的私教', '29', '1', 30, 0, $this->inDays(30)),
         ]);
         $this->assertRenewal($f15, false);
-        $this->assertSame('—', $f15->main_card);
+        $d15 = customerDecision($f15->fresh());
+        $this->assertSame('退掉的私教', $f15->main_card, '历史回退是唯一确定值，不能写 —');
+        $this->assertSame('history', $d15['display']['mainCardState']);
+        $this->assertNotSame('P5', $d15['layer'], '有卡历史（退卡）不得落 P5');
 
         $f20 = $this->memberFromCards('F20 无任何有效卡', [], m3: 6);
         $this->assertRenewal($f20, false);
+        $this->assertSame('P5', customerDecision($f20->fresh())['layer'], '从未有卡才是 P5');
     }
 
     // ------------------------------------------------- C4 / D1：出勤只决定紧急度
@@ -459,11 +481,11 @@ class RenewalPrecisionTest extends TestCase
         $this->memberFromCards('分层-P2频次下降', [
             $this->card('私教200次', '4', '1', 180, 20, $this->inDays(500)),
         ], m3: 0, extra: ['attend_m1' => 9, 'attend_m2' => 6, 'attend_m3' => 3]);
-        // P3 的语义是「已过期有余量、但**已出紧急窗**」的积压池：过期 30 天（窗内）的会员
-        // 归 P0（正在被跟），过期 100 天（窗外）的才落到 P3 等人工处置。
-        // 分层互斥，优先级 P0 > P1 > P2 > P3 > P4，先命中先落层。
+        // P3 的语义（v3.9）：**有过期实例且仍有余额**（未命中待续费），受展示窗约束。
+        // 过期 30 天在默认窗（90）内 → 落 P3；过期 200 天出窗 → P4（A06）。
+        // 分层互斥，优先级 P0 > P1/P2 > P3 > P4，先命中先落层。
         $this->memberFromCards('分层-P3过期有余额', [
-            $this->card('私教50次', '4', '1', 50, 0, $this->inDays(-100)),
+            $this->card('私教50次', '4', '1', 50, 0, $this->inDays(-30)),
         ], extra: ['in_revive' => false]);
         $this->memberFromCards('分层-P4可升级', [
             $this->card('私教200次', '4', '1', 180, 20, $this->inDays(500)),
@@ -530,7 +552,7 @@ class RenewalPrecisionTest extends TestCase
         $this->assertNotNull($reason, '清单接口必须返回命中理由');
         $this->assertSame('待续费·紧急', $reason['bucket']);
         $this->assertTrue($reason['urgent']);
-        $this->assertStringContainsString('单卡', implode('；', $reason['why']));
+        $this->assertStringContainsString('仅余', implode('；', $reason['why']));
         $this->assertSame('待续费·紧急', $reason['primary']);
 
         // 不在清单的会员不应出现在 reasons 里（避免前端渲染出多余提示）
@@ -693,8 +715,9 @@ class RenewalPrecisionTest extends TestCase
     }
 
     /**
-     * R6：期限卡余额缺失时不得静默漏提醒 —— 必须按 deadline 单独判到期，
-     * 且接口返回明确的降级说明。
+     * R6：期限卡余额缺失时不得静默漏提醒 —— v3.9 起**不需要 residue 也能算对**：
+     * 剩余天数唯一取 `deadline − TODAY`（F1）。因此该卡既命中到期规则，
+     * 也不应再产生「未返回剩余量」的降级（那是旧口径读 residue_amount 的症状）。
      */
     public function test_time_card_with_missing_residue_still_judged_by_deadline(): void
     {
@@ -708,11 +731,14 @@ class RenewalPrecisionTest extends TestCase
         $watch = $this->watchFor($c);
         $this->assertTrue($watch['deadlineHit']);
         $this->assertSame('待续费·紧急', $watch['bucket']);
-        $this->assertNotEmpty($watch['degraded'], '接口必须返回明确的降级说明');
-        $this->assertStringContainsString('未返回剩余量', implode('；', $watch['degraded']));
+        $this->assertStringContainsString('天后到期', implode('；', $watch['why']));
+        $this->assertStringContainsString('剩余 10 天', implode('；', $watch['why']),
+            '期限卡剩余天数必须由 deadline 推导（不是 residue_amount）');
+        $this->assertNotContains('count_residue_unknown', $watch['degradedCodes'],
+            '期限卡不需要 residue_amount，不应再报「未返回剩余量」');
     }
 
-    /** R6 边界：期限卡余额缺失且 deadline 远 → 不报，但仍要降级说明。 */
+    /** R6 边界：期限卡余额缺失且 deadline 远 → 不报，且**不应**凭空造降级（deadline 已知）。 */
     public function test_time_card_with_missing_residue_and_far_deadline_is_degraded_only(): void
     {
         $c = $this->memberFromCards('期限卡余额缺失远期', [
@@ -722,7 +748,10 @@ class RenewalPrecisionTest extends TestCase
 
         $this->assertRenewal($c, false);
         $decision = customerDecision($c->fresh());
-        $this->assertNotEmpty($decision['renewal']['degraded'], '即使不报，也要说明「该卡未参与判定」');
+        $this->assertNotContains('time_card_no_deadline', $decision['renewal']['degradedCodes'],
+            '有 deadline 就不该报「期限卡缺到期日」');
+        $this->assertSame(0, $decision['display']['usableCount'],
+            '期限卡单位是「天」，绝不能计入 usableCount（节）');
     }
 
     /**
@@ -817,16 +846,14 @@ class RenewalPrecisionTest extends TestCase
     }
 
     /**
-     * t23[1]：watch['待开卡'] 的 why 必须与 watch['待续费'] 同源（透传 decision 的 why/whyCodes）。
+     * t23[1] / v3.9 §3.3：watch['待开卡'] 的 why 必须与 decision 同源。
      *
-     * ⚠️ 本测试在 t25 被**重写**，原因值得记录：
-     * 原夹具是「未开卡 + 已确认耗尽的次卡」，它当时归「待开卡」并带真实 why。
-     * 但 t25 修掉 T24-F1（guard 漏 `$exhaustedCount`）后，该夹具**正确地**改归「待续费」——
-     * 也就是说，原测试之所以能成立，正是**依赖于那个 bug**。
-     * 而且现在可以证明更强的结论：**「待开卡」结构上必然 why 为空** ——
-     * guard 要求每张卡都是 unactivated，此时 liveCount/liveTime/unknownResidue/exhaustedCount
-     * 全空，而所有 why 产生点都以这些集合非空为前提，故无 why 可产生。
-     * 所以本测试改为断言真正的契约：待开卡明细的 why 走回退文案、且与 decision 同构地带 whyCodes/degraded。
+     * v3.9 **口径再次变化**（这是本测试第二次重写，两次都值得记录）：
+     *  - t25 时结论是「待开卡 ⟹ why 为空」（当时 K1 只是「不进待续费」）；
+     *  - v3.9 要求 K1 命中时**重建 why**：`unactivated_open` / `unactivated_with_history`。
+     *    原因是「待开卡」是独立 bucket，店长需要知道「为什么他在这个池子」以及「另有过期卡」。
+     * 因此现在的契约是：why 非空、whyCodes ⊆ {unactivated_open, unactivated_with_history}，
+     * 且**不得**出现 count_exhausted（被 K1 压制，只进 diagnostics）。
      */
     public function test_pending_start_watch_is_consistent_with_decision(): void
     {
@@ -836,35 +863,39 @@ class RenewalPrecisionTest extends TestCase
 
         $d = customerDecision($c->fresh());
         $this->assertSame('待开卡', $d['renewal']['bucket'], '前置：仅未开卡应归待开卡');
-        // 结构性事实：待开卡 ⟹ why 为空（见上方注释的推导）
-        $this->assertSame([], $d['renewal']['why'], '待开卡结构上 why 必空');
+        $this->assertFalse($d['renewal']['in'], 'K1 不进待续费');
+        $this->assertNotEmpty($d['renewal']['why'], '待开卡必须给出「尚未开卡」的理由');
+        $this->assertStringContainsString('尚未开卡', implode('；', $d['renewal']['why']));
+        $this->assertSame(['unactivated_open'], $d['renewal']['whyCodes'], 'whyCodes 作用域约束（§5.2）');
 
         $watch = memberListWatch()['待开卡'][$c->id] ?? null;
         $this->assertNotNull($watch, '待开卡明细必须存在');
-        // why 为空 → 回退默认文案（不得为空数组）
-        $this->assertNotEmpty($watch['why'], 'why 不得为空（无真实 why 时须回退默认文案）');
-        $this->assertStringContainsString('未开卡', implode('；', $watch['why']));
-        // 与待续费同构：whyCodes / degraded 字段必须存在
-        $this->assertArrayHasKey('whyCodes', $watch, '待开卡明细必须与待续费同构地带 whyCodes');
-        $this->assertArrayHasKey('degraded', $watch, '待开卡明细必须与待续费同构地带 degraded');
+        $this->assertSame($d['renewal']['why'], $watch['why'], 'why 必须与 decision 同源');
+        $this->assertSame($d['renewal']['whyCodes'], $watch['whyCodes'], 'whyCodes 必须透传 decision');
         $this->assertSame($d['renewal']['degraded'], $watch['degraded'], 'degraded 必须透传 decision');
     }
 
     /**
-     * t25 结构性事实的显式锁：**待开卡 ⟹ why 为空**。
+     * v3.9 §3.3 / C7：待开卡的 whyCodes 只允许 unactivated_*，**绝不含 count_exhausted**。
      *
-     * 这条不变量解释了为什么 t23 的原测试必须重写：它断言的「待开卡 + 非空 why」
-     * 只在 T24-F1 的 bug 下存在。把不变量本身锁住，避免后人再写出依赖 bug 的测试。
+     * 这是「已耗尽 + 未开卡 → 待开卡」口径翻转的可测试硬约束：
+     * 点亮的 count_exhausted 只能出现在 diagnostics（suppressedCodes），
+     * 否则「待开卡」成员身上会出现「课时已耗尽」的自相矛盾。
      */
-    public function test_pending_start_always_has_empty_why(): void
+    public function test_pending_start_why_codes_are_scoped_to_unactivated(): void
     {
         $u1 = ['card_title' => '未开卡次卡', 'status' => '7', 'type' => '1', 'residue_amount' => 10, 'usage_total' => 0];
         $u2 = ['card_title' => '未开卡年卡', 'status' => '7', 'type' => '2', 'residue_amount' => 300, 'usage_total' => 0, 'expiry_days' => 365];
+        $exhausted = ['card_title' => '已耗尽次卡', 'status' => '5', 'type' => '1', 'residue_amount' => 0, 'usage_total' => 30];
 
-        foreach ([[$u1], [$u2], [$u1, $u2], [$u1, $u1, $u1]] as $i => $cards) {
-            $d = customerDecision($this->memberFromCards("待开卡空why-{$i}", $cards, m3: 6)->fresh());
+        foreach ([[$u1], [$u2], [$u1, $u2], [$u1, $u1, $u1], [$u1, $exhausted]] as $i => $cards) {
+            $d = customerDecision($this->memberFromCards("待开卡作用域-{$i}", $cards, m3: 6)->fresh());
             $this->assertSame('待开卡', $d['renewal']['bucket'], "第 {$i} 组应归待开卡");
-            $this->assertSame([], $d['renewal']['why'], "第 {$i} 组待开卡的 why 必须为空（结构必然）");
+            $this->assertFalse($d['renewal']['in'], "第 {$i} 组不进待续费");
+            $allowed = ['unactivated_open', 'unactivated_with_history'];
+            $this->assertSame([], array_values(array_diff($d['renewal']['whyCodes'], $allowed)),
+                "第 {$i} 组 whyCodes 越界：" .implode(',', $d['renewal']['whyCodes']));
+            $this->assertNotContains('count_exhausted', $d['renewal']['whyCodes'], 'C7：耗尽信号被 K1 压制');
         }
     }
 
@@ -914,13 +945,13 @@ class RenewalPrecisionTest extends TestCase
      */
     public function test_p3_only_reachable_beyond_backfill_window(): void
     {
-        $this->setRules(['renewalExpiredBackfillDays' => 90]);
+        $this->setRules(['expiredBalanceWindowDays' => 90]);
 
-        // 窗内：过期 30 天 → 命中续费 → P0
+        // v3.9 口径翻转（§9.2 #6–#9）：**窗内过期不再命中待续费**，而是落 P3（过期有余额）。
         $inWindow = $this->memberFromCards('窗内过期', [
             $this->card('私教50次', '4', '1', 20, 30, now()->subDays(30)->toDateString()),
         ], m3: 6);
-        // 超窗：过期 200 天 → 不命中 → P3
+        // 超窗：过期 200 天 → 既不出「过期有余额」也不命中 → P4
         $beyond = $this->memberFromCards('超窗过期', [
             $this->card('私教50次', '4', '1', 20, 30, now()->subDays(200)->toDateString()),
         ], m3: 6);
@@ -928,15 +959,17 @@ class RenewalPrecisionTest extends TestCase
         $di = customerDecision($inWindow->fresh());
         $db = customerDecision($beyond->fresh());
 
-        $this->assertTrue($di['renewal']['in'], '窗内过期必须命中待续费');
-        $this->assertSame('P0', $di['layer'], '窗内过期落 P0，不是 P3');
-        $this->assertFalse($db['renewal']['in'], '超窗过期不命中待续费');
-        $this->assertSame('P3', $db['layer'], '超窗过期才落 P3');
+        $this->assertFalse($di['renewal']['in'], '过期实例永不命中待续费（I1 口径翻转）');
+        $this->assertSame([], $di['renewal']['why'], '历史卡不得产生 why');
+        $this->assertTrue($di['expiredWithBalance'], '窗内过期 → 过期有余额');
+        $this->assertSame('P3', $di['layer'], '窗内过期且有余额 → P3');
+        $this->assertFalse($db['renewal']['in'], '超窗过期同样不命中');
+        $this->assertFalse($db['expiredWithBalance'], '出窗后不再计入过期有余额');
+        $this->assertSame('P4', $db['layer'], '超窗过期 → P4');
 
-        // 描述与行为一致
+        // 描述与行为一致（§9.2 #9）
         $desc = layerDefinitions()['P3']['desc'];
-        $this->assertStringContainsString('超出', $desc, 'P3 描述必须写明「超出回溯窗」');
-        $this->assertStringContainsString('renewalExpiredBackfillDays', $desc, '描述须点出是哪个配置项');
+        $this->assertStringContainsString('有过期实例且仍有余额', $desc, 'P3 描述必须与行为一致');
     }
 
     // ============================================================ t25 结构性修复回归
@@ -965,22 +998,17 @@ class RenewalPrecisionTest extends TestCase
     }
 
     /**
-     * 结构性性质：**加一张未开卡卡项，不得改变判定**。
+     * 结构性性质（v3.9 收窄为**有可用权益的基底**）：加一张未开卡卡项，不得改变判定。
      *
-     * 这是 T24-F1/T24-F2 的通式。两个缺陷的共同形态正是「加一张未开卡卡项 → 结论翻转」：
-     *   - F1：仅已耗尽次卡 in=true → 加未开卡后 in=false（guard 漏 exhaustedCount）
-     *   - F2：未开卡本身有/无标题 → hasAsset 翻转（hasAsset 漏 unactivated）
+     * 这是 T24-F1/T24-F2 的通式：缺陷形态是「加一张未开卡卡项 → 结论翻转」。
      *
-     * 为什么用性质而不是枚举组合：性质对**所有**基底成立，
-     * 包含 `unactivated × {exhaustedCount, unknownResidue, liveCount, liveTime}` 四组，
-     * 且将来新增第 6 种卡项状态时无需再改这条测试（新状态作为基底自动纳入）。
-     * 枚举式写法正是三轮漏项的成因，不能用它来防同类漏项。
+     * ⚠️ v3.9 的边界（必须写清楚，否则这条性质会被误读成「永远成立」）：
+     *  K1 的口径是 `USABLE=∅ ∧ UNACT≠∅ → 待开卡`，因此当基底**没有任何可用权益**时，
+     *  加一张未开卡卡项**应当**把 bucket 翻转成「待开卡」（C7 显式口径翻转）。
+     *  所以本性质只在「基底 hasUsableEntitlement=true」时断言不变；
+     *  「无可用权益」那一半由 `test_exhausted_plus_unactivated_flips_to_pending_start` 单独锁定。
      *
-     * ⚠️ 两个维度都要跑（这是本条测试**第一次写错**后补上的）：
-     *  ① 未开卡卡项**有标题 / 无标题**两种形态 —— T24-F2 的缺陷只在「无标题」时暴露，
-     *     因为无标题 ⟹ `main_card` 为空串 ⟹ 汇总证据失效，才轮到 cards_list 证据。
-     *     只测有标题会漏掉它（回退验证实测：只测有标题时该缺陷不会被发现）。
-     *  ② 基底**有标题 / 无标题**两种形态 —— 同理，基底无标题时汇总证据也不可用。
+     * 两个维度都要跑：未开卡卡项有/无标题；基底有/无标题（T24-F2 只在无标题时暴露）。
      */
     public function test_adding_unactivated_card_never_changes_decision(): void
     {
@@ -988,14 +1016,13 @@ class RenewalPrecisionTest extends TestCase
         $bases = array_diff_key($states, ['unactivated' => true]);
         $this->assertCount(4, $bases, '基底应覆盖除 unactivated 外的 4 种状态');
 
-        // 未开卡卡项的两种形态：有标题 / 无标题（后者才会暴露 T24-F2）
         $unactivatedForms = [
             '有标题' => $states['unactivated'],
             '无标题' => ['status' => '7', 'type' => '1', 'residue_amount' => 10, 'usage_total' => 0],
         ];
 
+        $compared = 0;
         foreach ($bases as $name => $base) {
-            // 基底也跑两种形态：无标题基底会让 main_card 失效，从而逼出 cards_list 证据
             $baseForms = ['有标题' => $base, '无标题' => array_diff_key($base, ['card_title' => true])];
 
             foreach ($baseForms as $baseForm => $b) {
@@ -1007,7 +1034,14 @@ class RenewalPrecisionTest extends TestCase
                     $a = customerDecision($without->fresh());
                     $c = customerDecision($with->fresh());
 
+                    // hasAsset 永远不得因「加一张未开卡」而翻转（T24-F2 的原始缺陷）
                     $this->assertSame($a['hasAsset'], $c['hasAsset'], "[{$label}] 加未开卡不得改变 hasAsset");
+
+                    if (! $a['hasUsableEntitlement']) {
+                        // K1：基底无可用权益 + 未开卡 → 应当翻转成待开卡（C7），不在此断言不变
+                        continue;
+                    }
+                    $compared++;
                     $this->assertSame($a['renewal']['in'], $c['renewal']['in'], "[{$label}] 加未开卡不得改变 in");
                     $this->assertSame($a['renewal']['bucket'], $c['renewal']['bucket'], "[{$label}] 加未开卡不得改变 bucket");
                     $this->assertSame($a['layer'], $c['layer'], "[{$label}] 加未开卡不得改变 layer");
@@ -1017,12 +1051,9 @@ class RenewalPrecisionTest extends TestCase
             }
         }
 
-        // 防「性质测试空转」：确认确有非平凡结论（in=true）参与比较，
-        // 否则全部是 false==false 的空比较，性质测试会假绿。
-        $exhaustedBase = customerDecision(
-            $this->memberFromCards('性质-非平凡校验', [$states['exhaustedCount']], m3: 6)->fresh()
-        );
-        $this->assertTrue($exhaustedBase['renewal']['in'], '基底必须包含非平凡结论，否则性质测试空转');
+        // 防「性质测试空转」：必须有非平凡比较参与，否则全是被 continue 跳过的空循环
+        $this->assertGreaterThanOrEqual(8, $compared,
+            '应至少比较 8 组「基底有可用权益」的组合（liveCount/liveTime × 标题形态 × 未开卡形态）');
 
         // 同时确认「无标题」形态确实让汇总证据失效（否则该维度等于没测）
         $noTitleBase = customerDecision(
@@ -1034,13 +1065,14 @@ class RenewalPrecisionTest extends TestCase
     }
 
     /**
-     * T24-F1（high）：guard 漏查 `$exhaustedCount`。
+     * T24-F1 / C7：**显式口径翻转**（§9.2 #10）。
      *
-     * 修复前实测：仅已耗尽次卡（0/30、到期+5 天）→ in=true/P0；
-     * **加一张未开卡卡项后 → in=false/P4/待开卡** —— `$in` 把 why 里已经算出的
-     * 「在用次卡课时已耗尽」整个否决。修复后两种形态必须结论一致。
+     * v3.9 之前：「已耗尽 + 未开卡 → 待续费」（t25 曾把这条锁成不变量）。
+     * v3.9 之后：`USABLE=∅ ∧ UNACT≠∅ → 待开卡`（K1 优先于 K2），
+     * 耗尽信号被 K1 压制 —— 只允许出现在 diagnostics（suppressedCodes），
+     * 绝不允许拼进 why / whyCodes。**这不是回归，是按规范改写。**
      */
-    public function test_guard_does_not_drop_exhausted_count_signal(): void
+    public function test_exhausted_plus_unactivated_flips_to_pending_start(): void
     {
         $exhausted = $this->stateCards()['exhaustedCount'];
         $unactivated = $this->stateCards()['unactivated'];
@@ -1051,12 +1083,18 @@ class RenewalPrecisionTest extends TestCase
         $a = customerDecision($only->fresh());
         $b = customerDecision($plus->fresh());
 
-        $this->assertTrue($a['renewal']['in'], '基准：仅已耗尽次卡必须命中续费');
-        $this->assertTrue($b['renewal']['in'], '加一张未开卡卡项不得把「课时已耗尽」信号抹掉');
-        $this->assertSame($a['layer'], $b['layer'], '两者 layer 必须一致');
-        $this->assertSame($a['renewal']['bucket'], $b['renewal']['bucket'], '两者 bucket 必须一致');
-        $this->assertNotSame('待开卡', $b['renewal']['bucket'], '有已耗尽卡项时不得归「待开卡」');
-        $this->assertContains('count_exhausted', $b['renewal']['whyCodes'], 'why 里的耗尽信号必须保留');
+        // 基准：仅已耗尽次卡 → count_exhausted 命中（真实数据几乎不触发，F4/C3）
+        $this->assertTrue($a['renewal']['in'], '基准：仅已耗尽次卡仍命中续费');
+        $this->assertContains('count_exhausted', $a['renewal']['whyCodes']);
+
+        // 翻转：加一张未开卡卡项 → 待开卡，且不进待续费
+        $this->assertFalse($b['renewal']['in'], 'C7：待开卡不进待续费');
+        $this->assertSame('待开卡', $b['renewal']['bucket']);
+        $this->assertNotContains('count_exhausted', $b['renewal']['whyCodes'],
+            'whyCodes 作用域约束：待开卡只允许 unactivated_*');
+        $this->assertContains('count_exhausted', $b['renewal']['suppressedCodes'],
+            '被压制的耗尽信号必须保留在 diagnostics 里');
+        $this->assertSame('P4', $b['layer'], '无可用权益、无过期余额 → P4');
     }
 
     /**
@@ -1141,11 +1179,29 @@ class RenewalPrecisionTest extends TestCase
         $violations = [];
         foreach ($inputs as $label => $cards) {
             $sum = $m->invoke(null, $cards);
-            if ($sum['main_card'] === '—' && $sum['cards_list'] !== []) {
+            // v3.9（§9.2 #13 的重定义）：main_card='—' ⟹ 没有当前/未开卡实例，也没有历史实例；
+            // `hasAnyCard` 可能仍为 true（被排除的体验/赠品卡是「曾经有卡」的证据，见 A11），
+            // 因此等价式写成「main_card='—' ⟺ ALL=∅」，而不是与 hasAnyCard 直接等价。
+            if ($sum['main_card'] === '—'
+                && ($sum['cards_list'] !== [] || $sum['card_stats']['historyCards'] !== [])) {
                 $violations[] = $label;
             }
+            // 有历史实例时，主卡必须回退到历史（带 state），且历史明细可识别身份
+            if ($sum['card_stats']['historyCards'] !== []) {
+                if ($sum['main_card'] === '—') {
+                    $violations[] = $label.'（有历史实例却无主卡）';
+                }
+                foreach ($sum['card_stats']['historyCards'] as $history) {
+                    if (! array_key_exists('state', $history) || $history['state'] !== 'history'
+                        || ! array_key_exists('historyReason', $history)) {
+                        $violations[] = $label.'（历史实例不可识别）';
+
+                        break;
+                    }
+                }
+            }
         }
-        $this->assertSame([], $violations, '不变量被破坏：main_card=\'—\' 却有 cards_list 非空');
+        $this->assertSame([], $violations, '不变量被破坏：main_card/历史实例的结构关系不成立');
     }
 
     /** 授权面端到端：真客资仍 P5/可见，ky: 无资产会员仍不被当客资。 */
@@ -1289,12 +1345,18 @@ class RenewalPrecisionTest extends TestCase
             '分母仍含「剩余节数 + usage_total(金额)」形态——单位错误会复发'
         );
 
-        // 分母累加处必须经 consumedCount() 推导
+        // 分母累加处必须经 consumedCount() 推导（v3.9 起逐卡 bound 先算、再汇总，
+        // 表达式仍必须是「剩余节数 + 已耗次数」，不得再让金额进入分母）
         $this->assertStringContainsString('consumedCount', $src, '必须经 consumedCount() 统一推导已耗次数');
-        $this->assertMatchesRegularExpression(
-            '/\$countBound \+= \$residue \+ \$consumed;/',
+        $this->assertStringContainsString(
+            "\$card['bound'] = \$card['remaining'] + \$consumed;",
             $src,
-            '汇总分母必须是「剩余节数 + 已耗次数」'
+            '逐卡分母必须是「剩余节数 + 已耗次数」'
+        );
+        $this->assertStringContainsString(
+            '$countBound += $card[\'bound\'];',
+            $src,
+            '汇总分母必须累加逐卡 bound（与逐卡同源）'
         );
     }
 

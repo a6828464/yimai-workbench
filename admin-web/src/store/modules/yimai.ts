@@ -171,6 +171,25 @@ export interface MemberRules {
   cultivationGroup: number
   /** 已过期但仍有余额的卡，只回溯最近 N 天（默认 90；0=不看已过期卡） */
   renewalExpiredBackfillDays: number
+  /**
+   * 过期有余额回溯窗（天，默认 90；0=不展示）。
+   *
+   * ⚠️ v3.9（§6.2/§6.3）：语义已从「过期卡回溯」改成「过期有余额提示的可见范围」。
+   * 它**只**影响 P3 /「过期有余额」筛选标签，**不再**把过期卡送进「待续费」。
+   * 旧键 `renewalExpiredBackfillDays` 保留为回退来源，保存时双写。
+   */
+  expiredBalanceWindowDays: number
+  /** 储值卡余额提醒（元，默认 0=关闭）。单位是元，不与课时混算（§6.2） */
+  renewalStoredValueThreshold: number
+  /**
+   * 体验/员工/测试/赠品卡的**标题关键词**（正则片段，竖线分隔，§6.2/§3.7）。
+   *
+   * 同步层与判定层共用这一份：旧实现硬编码 `体验|员工|测试`，漏掉「新人礼包2次」
+   * 就让它进了 P0（D10-④）。留空 = 用后端默认值（`体验|员工|测试|礼包|赠送`）。
+   *
+   * ⚠️ 禁止包含 `~`（后端把它当正则分隔符），保存时前端先做一次拦截给出人话提示。
+   */
+  tasteTitlePattern: string
   /** 新媒体：时效内到店的线上新客奖励金额（元/人，默认 20）—— 算钱口径 */
   mediaVisitReward: number
   /** 新媒体：时效月数 n（默认 2 ⇒ 留资月 + 下一个自然月内有效）—— 算钱口径 */
@@ -236,6 +255,11 @@ const DEFAULT_RULES: MemberRules = {
   cultivationSmall: 12,
   cultivationGroup: 12,
   renewalExpiredBackfillDays: 90,
+  // v3.9 §6.2 新增两键：必须与 api/yimai.ts 的 DEFAULT_MEMBER_RULES 同步。
+  expiredBalanceWindowDays: 90,
+  renewalStoredValueThreshold: 0,
+  // 体验/赠品卡标题关键词（正则片段）；留空由后端回退到同一默认值
+  tasteTitlePattern: '体验|员工|测试|礼包|赠送',
   mediaVisitReward: 20,
   mediaValidMonths: 2,
   bombExpiredDays: 183,

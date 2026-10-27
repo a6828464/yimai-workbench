@@ -513,12 +513,23 @@ final class TodayController extends Controller
         }
 
         // ---- 待续费：待续课清单（临近到期优先） ----
+        // 明细与清单同源：memberListWatch() 与 memberListIds() 来自同一次缓存扫描，
+        // 因此「为什么他在清单里」与「他在不在清单里」永远自洽（D3/§5.4）。
+        $renewalWatch = memberListWatch()['待续费'] ?? [];
         $renewals = [];
         if (! $isMedia) {
             $renewals = $scopedCustomers
                 ->filter(fn ($c) => in_array('待续课', $listMap[$c['id']] ?? [], true))
-                ->map(function ($c) use ($daysBetween, $listMap, $doneInfo) {
+                ->map(function ($c) use ($daysBetween, $listMap, $doneInfo, $renewalWatch) {
                     $expireDays = $daysBetween($c['expireDate']);
+                    $meta = $renewalWatch[$c['id']] ?? [];
+                    // 到期日状态：current（允许「X 天后到期 / 今日到期」）、history（只说「已过期 N 天」）、
+                    // none（显示 —）。前端「今日到期」文案必须读它，而不是 `expireDays <= 0`（D08-①）。
+                    $expireDateState = $meta['expireDateState'] ?? match (true) {
+                        $c['expireDate'] === null => 'none',
+                        ($expireDays ?? 0) < 0 => 'history',
+                        default => 'current',
+                    };
 
                     return [
                         'id' => $c['id'],
@@ -531,12 +542,24 @@ final class TodayController extends Controller
                         'remainTimes' => $c['remainTimes'],
                         'expireDate' => $c['expireDate'],
                         'expireDays' => $expireDays,
-                        'urgent' => $expireDays !== null && $expireDays <= 7,
+                        // 紧急度以判定层为准（in ∧ (m3>0 ∨ deadline 命中)），不再用「7 天内到期」重算：
+                        // 历史卡的负天数曾被当成「今天到期」，正是 D08 的误判来源。
+                        'urgent' => (bool) ($meta['urgent'] ?? false),
                         'owner' => $c['owner'],
                         'consultant' => $c['consultant'] ?? '',
                         'evalLevel' => $c['evalLevel'] ?? null,
                         'hasRenewalPlan' => ! empty($c['renewalPlan']),
                         'lists' => $listMap[$c['id']] ?? [],
+                        // ── v3.9 判定依据（与 renewalReasons / 规范 §5.2 同构）──────
+                        'expireDateState' => $expireDateState,
+                        'nextExpireDays' => $meta['nextExpireDays'] ?? $expireDays,
+                        'mainCardState' => $meta['mainCardState'] ?? 'none',
+                        'usableCount' => $meta['usableCount'] ?? null,
+                        'displayCount' => $meta['displayCount'] ?? null,
+                        'why' => $meta['why'] ?? [],
+                        'whyCodes' => $meta['whyCodes'] ?? [],
+                        'hits' => $meta['hits'] ?? [],
+                        'entitlement' => $c['cardStats']['entitlement'] ?? null,
                     ] + $doneInfo('renewal:'.$c['id']);
                 })
                 ->sortBy(fn ($c) => [$c['expireDays'] === null ? 9999 : $c['expireDays'], $c['remainTimes'] ?? 999])

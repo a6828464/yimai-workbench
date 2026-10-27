@@ -1,5 +1,73 @@
 # 更新日志
 
+## 2026-10-27 ｜ feat: v3.9.0 「待续费」改为卡项实例生命周期判定（旧年卡误报 / 年卡漏判双修）+ 过期有余额 P3 + 逐卡证据
+
+**为什么做这一版**：用户报「老会员续了新年卡，系统把已到期的旧年卡加进待续费，新卡反而不计算」。
+用真实快照（2954 行 → 去重 2853 实例 / 1560 会员-门店行）复算，根因有两条，都不是阈值问题：
+
+1. **过期判定只看上游 `status`、不看 `deadline`**：当天同步之后才到期的卡仍是 `status=5`，
+   于是旧卡以「在用卡」身份进入判定，再由 C8「已过期但有余量」分支送进待续费；
+   `expire_date` 又取全局最早 deadline，旧卡同时遮蔽新卡。
+2. **期限卡的剩余天数根本不在 `residue_amount`**：184 张期限卡里 183 张 `residue_amount=0`，
+   真实剩余天数在 `residue_days`（159/159 精确等于 `deadline−today`）。旧实现读 `residue_amount`
+   ⇒ 期限卡 daysLeft 恒 0、`cards_list.residue=0` 被判定层静默丢弃 ⇒ **年卡永远不会进到期判定**。
+
+### 新增
+
+- **`App\Support\CardLifecycle`**：`state() / remaining() / unit() / deadlineEligible()` 的唯一实现，
+  同步层与判定层共用，禁止两处各写一份 if。
+- **`cards_list` v2 契约**：每条实例新增 `id/cardNo/cardId/createTime/activateTime/statusCode/state/
+  seriesIndex/degraded` 等身份与生命周期字段；`card_stats` 新增 `historyCards`（全类型历史）、
+  `entitlement`（mainCard/expireDate/usableCount/storedValue…）、`expiredBalance`、`dataVersion=2`。
+- **`members:explain-cards {customer}`**（别名 `members:explain`）：逐卡打印 state/deadline/remaining/
+  命中表达式，回答「为什么在/不在清单」。
+- **`members:audit-renewal`**：只读批量审计，带 `historyOnlyHits / timeCardMissed / storedValueMisjudged`
+  三个守门指标与 `--diff-legacy` 逐人对账。
+- **「过期有余额」**：P3 分层 + 会员管理筛选标签（不新增页签）；过期卡只提示、不触发待续费。
+- **前端**：判定依据面板按「当前卡项 / 历史卡项」分组，逐卡类型徽标（次卡/期限卡/储值卡）、
+  卡号/发卡日（同名第 k 张）、余量单位（节/天/元）；剩余课时列改用 `usableCount`；
+  今日待办到期文案改读 `expireDateState`；阈值弹窗新增「储值卡余额提醒」「体验/赠品卡识别」，
+  原「过期卡回溯」改名「过期有余额回溯窗」并注明不再影响待续费。
+
+### 修复
+
+- 旧年卡（deadline 已过、status 仍 5）不再进待续费；新卡不再被旧卡遮蔽（`expire_date` 只由当前实例计算）。
+- 期限卡按 `deadline` 判定，最后一天（`daysUntil=0`）仍会提醒；`residue_amount=0` 不再被判「已耗尽」。
+- 储值卡单位改为「元」，独立阈值（默认 0=关闭），不再出现「仅余 5 节」的 P0。
+- `hasAnyCard` 与 `hasActiveEntitlement` 拆分：只有「从未有卡」才落 P5；全部卡过期的正式会员落 P3/P4。
+- 退卡（29）/停卡（39）永不进待续费、不计入过期余额、不计入炸弹会员。
+- 未开卡 + 过期卡混排时归「待开卡」；已耗尽 + 未开卡也归「待开卡」（口径翻转，旧测试同步改写）。
+- 理由文案带实例身份，同名多卡可区分；历史卡永不进 `renewal.why`。
+
+### 口径变化（会改变现有名单，不是回归）
+
+- 过期只认 `deadline`：`deadline < 今天` 的实例结构性退出命中域（`HIT_DOMAIN` 只由 CURRENT 构造）。
+- 期限卡余量只由 `deadline` 推导；`residue_days` 仅在缺 `deadline` 时回退，并记 degraded。
+- `renewalExpiredBackfillDays` 保留为兼容回退键，语义改为「过期有余额展示窗」；新键
+  `expiredBalanceWindowDays`（默认 90，0=关闭），保存时双写。
+- `tasteTitlePattern`（默认 `体验|员工|测试|礼包|赠送`）可调；命中卡项不进任何清单。
+
+### 影响面（2026-09-24 冻结快照，非线上实时）
+
+待续费 211 → **190**（移出 36、新增 15）；P5 1081 → **765**，P3 0 → **63**，P4 268 → **542**；
+过期卡造成的命中 56 → **0**；期限卡 ≤30 天漏判 15 人补齐；储值卡误判 2 人清零。
+守门指标：`historyOnlyHits=0 / timeCardMissed=0 / storedValueMisjudged=0`。
+
+### 升级步骤
+
+1. `php artisan migrate --force`（本次无新表；如版本跨度大仍建议执行）。
+2. 随心瑜同步一次（全量或等 05:30 自动同步）——`cards_list` v2 只有同步后才写入。
+3. `php artisan rebuild:layers` 重算 P0–P5（同步完成后也会自动重算）。
+4. `php artisan members:audit-renewal --venue=... --diff-legacy` 核对三个守门指标。
+5. 阈值建议见 `docs/口径/待续费设置指南-v3.9.md`（稳健起步：10 节 / 30 天 / 占比关 / 储值卡关）。
+
+### 验证
+
+- 后端全量 `php artisan test`：**864 passed / 21 skipped / 0 failed**（含独立验收、对抗探测与快照对账）。
+- 独立验收 36 用例 / 291 断言；变异测试 M0–M9，8/9 被杀（M6 为等价变异，已用不变量用例补位）。
+- 冻结快照实现级复算与 captain 独立参考实现逐人对比：in/layer/bucket **1560/1560 一致**。
+- 前端 `vue-tsc` / ESLint / Vite build 全绿。
+
 ## 2026-10-26 ｜ feat: v3.8.0 在线更新改多通道 manifest 架构（Gitee 优先 + GitHub 反代兜底 + sha256 强校验）+ 留资新增来源精简 + 双平台推送脚本
 
 **为什么做这一版**：参照一麦GOS 插件 2026-10-26 排障沉淀的《GitHub镜像推送与国内服务器在线更新-参考手册》，

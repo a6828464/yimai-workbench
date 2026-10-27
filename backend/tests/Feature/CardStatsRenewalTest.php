@@ -62,16 +62,33 @@ class CardStatsRenewalTest extends TestCase
     {
         AppSetting::create(['rules' => [
             'renewalThreshold' => 10, 'renewalCountPercent' => 20,
-            'renewalExpireDays' => 30, 'renewalExpirePercent' => 10,
+            // 到期窗口收到 1 天：让「占比命中」与「到期命中」互不干扰（隔离 R-T2）
+            'renewalExpireDays' => 1, 'renewalExpirePercent' => 10,
             'vipAmountThreshold' => 30000, 'declineMode' => 'strict',
             'predropMin' => 15, 'predropMax' => 30, 'reviveDays' => 30,
         ]]);
-        // 有效期用了 91.8%（30/365 剩余），到期日还远 → 占比规则命中
-        $c = $this->customer('有效期占比会员', ['main_card' => '年卡', 'attend_m3' => 5], [
+
+        // v3.9（§9.2 #17）：有效期占比改为**逐卡** remaining/validDays。
+        // 旧夹具的 daysLeft=30 是 residue_amount 的假象（F1），不再参与任何占比；
+        // 汇总口径只剩 expire_date（+200 天，54.8% > 10%）→ 不再命中。
+        $legacySummary = $this->customer('汇总占比会员', ['main_card' => '年卡', 'attend_m3' => 5], [
             'countResidue' => null, 'countBound' => 0, 'daysLeft' => 30, 'daysTotal' => 365,
         ], ['expire_date' => now()->addDays(200)->toDateString()]);
+        $this->assertNotInRenewalList($legacySummary, 'daysLeft/daysTotal 汇总占比已废弃（S14）');
 
-        $this->assertInRenewalList($c);
+        // 逐卡口径：remaining = deadline−TODAY = 20 天，20/365 = 5.5% ≤ 10% → 命中
+        $perCard = $this->customer('逐卡占比会员', ['main_card' => '年卡', 'attend_m3' => 5], [
+            'countResidue' => null, 'countBound' => 0, 'daysLeft' => null, 'daysTotal' => null,
+        ], [
+            'expire_date' => now()->addDays(20)->toDateString(),
+            'cards_list' => [[
+                'id' => '9001', 'title' => '年卡', 'type' => '2', 'unit' => '天',
+                'residue' => 20, 'residueDays' => 20, 'residueSource' => 'deadline',
+                'deadline' => now()->addDays(20)->toDateString(), 'validDays' => 365,
+                'status' => '正常', 'statusCode' => '5', 'state' => 'current', 'unactivated' => false,
+            ]],
+        ]);
+        $this->assertInRenewalList($perCard, '逐卡有效期占比命中（R-T2）');
     }
 
     public function test_legacy_customers_without_card_stats_fall_back_to_old_fields(): void
@@ -185,16 +202,16 @@ class CardStatsRenewalTest extends TestCase
         ])->assertOk()->assertJsonPath('data.bombExpiredDays', 365);
     }
 
-    private function assertInRenewalList(Customer $c): void
+    private function assertInRenewalList(Customer $c, string $note = ''): void
     {
         $ids = $this->renewalIds();
-        $this->assertContains($c->id, $ids, "会员 {$c->name} 应在待续课清单");
+        $this->assertContains($c->id, $ids, "会员 {$c->name} 应在待续课清单".($note !== '' ? "（{$note}）" : ''));
     }
 
-    private function assertNotInRenewalList(Customer $c): void
+    private function assertNotInRenewalList(Customer $c, string $note = ''): void
     {
         $ids = $this->renewalIds();
-        $this->assertNotContains($c->id, $ids, "会员 {$c->name} 不应在待续课清单");
+        $this->assertNotContains($c->id, $ids, "会员 {$c->name} 不应在待续课清单".($note !== '' ? "（{$note}）" : ''));
     }
 
     private function renewalIds(): array
@@ -439,10 +456,15 @@ class CardStatsRenewalTest extends TestCase
 
     public function test_expired_unactivated_card_is_retained(): void
     {
-        // status=7（未开卡）在在用白名单里，由 cards_list 表达 —— 不进保留区，避免两处各存一份
+        // status=7 且 deadline 已过 = 脏数据（A13）：v3.9 按 expiredByClock 优先判 history，
+        // 因此它**不在 cards_list**（判定输入），而是进 historyCards + expiredCards（可查）。
         $sum = $this->expiredSummarize([$this->expiredCard(['status' => '7'])]);
 
-        $this->assertCount(1, $sum['cards_list'], '未开卡属于在用白名单，由 cards_list 表达');
-        $this->assertSame([], $sum['card_stats']['expiredCards'], '同一条卡不得在两处各存一份（会分叉）');
+        $this->assertSame([], $sum['cards_list'], '未开卡但已过期 → history，不得进判定输入');
+        $this->assertCount(1, $sum['card_stats']['historyCards'], '历史实例必须可查（唯一历史事实源）');
+        $this->assertSame('expired_by_clock', $sum['card_stats']['historyCards'][0]['historyReason']);
+        $this->assertCount(1, $sum['card_stats']['expiredCards'], '过期次卡余额仍须保留给炸弹会员');
+        $this->assertContains('unactivated_expired', $sum['card_stats']['historyCards'][0]['degraded'],
+            '未开卡却已过期必须显式降级（warn）');
     }
 }
