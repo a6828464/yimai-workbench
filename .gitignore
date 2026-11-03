@@ -44,7 +44,12 @@ admin-web/src/mock/
 .ai-memory/
 
 # 产品与教研规划文档（含转化策略、卡项设计、老师方法论等商业内容，本仓库为公开仓库，不入库）
-docs/
+# 例外：小程序迁移台账与凭据要能跨会话/跨机器追溯（2026-11-04 加）。
+# 注意 `docs/` 会把整个目录排除，使内部的 ! 规则失效；必须写成 `docs/*` 才能对子目录开例外。
+docs/*
+!docs/miniapp-migration/
+!docs/miniapp-migration/**
+docs/miniapp-migration/*.tmp
 
 # Python 缓存（脚本抽出来后可本地跑）
 __pycache__/

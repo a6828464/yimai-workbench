@@ -1,0 +1,107 @@
+{
+  "pages": [
+    {
+      "path": "pages/login/login",
+      "style": {
+        "navigationBarTitleText": "登录",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/workbench/workbench",
+      "style": {
+        "navigationBarTitleText": "工作台"
+      }
+    },
+    {
+      "path": "pages/todo/todo",
+      "style": {
+        "navigationBarTitleText": "今日待办"
+      }
+    },
+    {
+      "path": "pages/tasks/tasks",
+      "style": {
+        "navigationBarTitleText": "任务"
+      }
+    },
+    {
+      "path": "pages/profile/profile",
+      "style": {
+        "navigationBarTitleText": "我的"
+      }
+    },
+    {
+      "path": "pages/review/review",
+      "style": {
+        "navigationBarTitleText": "课后分析"
+      }
+    },
+    {
+      "path": "pages/plan/plan",
+      "style": {
+        "navigationBarTitleText": "训练计划"
+      }
+    },
+    {
+      "path": "pages/approvals/approvals",
+      "style": {
+        "navigationBarTitleText": "审批"
+      }
+    },
+    {
+      "path": "pages/members/members",
+      "style": {
+        "navigationBarTitleText": "会员管理"
+      }
+    },
+    {
+      "path": "pages/members/detail",
+      "style": {
+        "navigationBarTitleText": "会员详情"
+      }
+    },
+    {
+      "path": "pages/leads/leads",
+      "style": {
+        "navigationBarTitleText": "留资管理"
+      }
+    },
+    {
+      "path": "pages/leads/form",
+      "style": {
+        "navigationBarTitleText": "留资录入"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "一麦工作台",
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "backgroundColor": "#F6F7F9"
+  },
+  "tabBar": {
+    "color": "#8A8F99",
+    "selectedColor": "#2E7D5B",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/workbench/workbench",
+        "text": "工作台"
+      },
+      {
+        "pagePath": "pages/todo/todo",
+        "text": "待办"
+      },
+      {
+        "pagePath": "pages/tasks/tasks",
+        "text": "任务"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的"
+      }
+    ]
+  }
+}

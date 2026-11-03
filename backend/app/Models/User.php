@@ -28,11 +28,17 @@ class User extends Authenticatable
         'phone',
         'avatar',
         'profile',
+        // 微信绑定列：只允许通过绑定接口写入，不放进 $fillable 是有意的 ——
+        // 放进 fillable 后任何 User::create($request->all()) 都能自封 openid，
+        // 等于伪造微信身份登录。绑定走 forceFill + 唯一索引兜底。
     ];
 
     protected $hidden = [
         'password',
         'remember_token',
+        // 微信内部标识不外泄：userInfo() 也不返回，避免前端或日志带走可被冒用的键。
+        'wx_openid',
+        'wx_unionid',
     ];
 
     protected function casts(): array
@@ -43,6 +49,7 @@ class User extends Authenticatable
             'venues' => 'array',
             'roles' => 'array',
             'profile' => 'array',
+            'wx_bound_at' => 'datetime',
         ];
     }
 
@@ -65,6 +72,12 @@ class User extends Authenticatable
             'phone' => $this->phone,
             'avatar' => $this->avatar,
             'status' => $this->status ?? '启用',
+            // 微信绑定态。openid 仍然藏在 $hidden 里（第 39 行口径不变），这里只给
+            // 「有没有绑、绑在什么时候」，因为只有员工本人能看到自己的 /me：
+            //  - 未绑 → 小程序「我的」页显示自己的 openid 报给管理员；
+            //  - 已绑 → 显示绑定时间，避免「到底绑没绑」靠猜。
+            'wxBound' => ! empty($this->wx_openid),
+            'wxBoundAt' => $this->wx_bound_at?->toIso8601String(),
         ];
     }
 }

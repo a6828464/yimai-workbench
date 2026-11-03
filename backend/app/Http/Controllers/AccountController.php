@@ -129,10 +129,90 @@ final class AccountController extends Controller
         return ok(['aliases' => $aliases, 'backfilled' => $filled]);
     }
 
-    /** POST /accounts */
-    public function store(Request $r)
+    /**
+     * 查看账号的微信绑定状态（超管）。
+     *
+     * 只返回「是否已绑定 / 绑定时间」，**不返回 openid**：openid 是可被冒用的身份键，
+     * 一旦出现在管理端响应里，前端日志、浏览器缓存、截图都会把它带走。
+     */
+    public function wxBinding(Request $r, string $key)
     {
         requireSuper($r);
+        $user = User::where('username', $key)->first();
+        abort_if($user === null, 404, '账号不存在');
+
+        return ok([
+            'bound' => ! empty($user->wx_openid),
+            'boundAt' => $user->wx_bound_at?->toIso8601String(),
+            'hasUnionid' => ! empty($user->wx_unionid),
+        ]);
+    }
+
+    /**
+     * 管理员绑定微信身份（超管）。
+     *
+     * 为什么需要这一步：code2session 只返回 openid，而 openid 与「员工是谁」之间
+     * 没有任何天然对应关系 —— 微信不给手机号，员工系统也不能开放注册。
+     * 所以绑定必须由人来做：员工在自己微信里用账号密码登录过一次后，
+     * 前端把该次登录拿到的 openid 报给管理员，由管理员写入对应账号。
+     *
+     * 幂等与冲突：
+     *  - 同一个 openid 只能绑一个账号（唯一索引兜底，这里先做可读的 422）；
+     *  - 重复绑定同一个账号视为成功，不报错（管理员点两次不该看到失败）。
+     */
+    public function bindWx(Request $r, string $key)
+    {
+        requireSuper($r);
+        $user = User::where('username', $key)->first();
+        abort_if($user === null, 404, '账号不存在');
+
+        $d = $r->validate([
+            'openid' => 'required|string|min:8|max:64',
+            'unionid' => 'nullable|string|max:64',
+        ]);
+
+        $taken = User::where('wx_openid', $d['openid'])->where('id', '!=', $user->id)->first();
+        // 注意：不能写成 abort_if($taken !== null, 422, '…'.$taken->name.'…')
+        // —— abort_if 的 message 参数是无条件求值的，$taken 为 null 时会在
+        // 「一切正常」的那条路径上炸掉（500）。必须先把消息拼好再 abort。
+        if ($taken !== null) {
+            abort(422, '该微信已绑定到账号「'.$taken->name.'」，请先解绑');
+        }
+
+        $attrs = [
+            'wx_openid' => $d['openid'],
+            'wx_bound_at' => $user->wx_bound_at ?? now(),
+        ];
+        if (! empty($d['unionid'])) {
+            $attrs['wx_unionid'] = $d['unionid'];
+        }
+        // forceFill：wx_* 不在 $fillable 里，是有意防止 Mass Assignment 伪造身份
+        $user->forceFill($attrs)->save();
+
+        return ok(['bound' => true, 'boundAt' => $user->wx_bound_at?->toIso8601String()]);
+    }
+
+    /** 解除微信绑定（超管）。员工换微信、或绑错人时用。 */
+    public function unbindWx(Request $r, string $key)
+    {
+        requireSuper($r);
+        $user = User::where('username', $key)->first();
+        abort_if($user === null, 404, '账号不存在');
+
+        $user->forceFill([
+            'wx_openid' => null,
+            'wx_unionid' => null,
+            'wx_bound_at' => null,
+        ])->save();
+
+        // 解绑后该员工已签发的 token 仍有效（会话是账号级的，不是微信级的），
+        // 这是有意的：解绑不该把正在上班的人踢下线。要踢人用 disable。
+        return ok(['bound' => false]);
+    }
+
+    /** POST /accounts */
+    public function store(Request $r)
+    {        requireSuper($r);
         $d = $r->validate([
             'userName' => 'required|string|max:20',
             'name' => 'nullable|string|max:20',

@@ -58,10 +58,16 @@ use Illuminate\Support\Facades\Route;
 Route::pattern('id', '[0-9]{1,18}');
 
 Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
+// 微信授权登录（小程序 P2 合规硬门）。限流比账密登录更紧：
+// 每次调用都会向微信发一次 code2session，被刷等于用我们自己的 appid 打微信接口。
+Route::post('/auth/wx-login', [AuthController::class, 'wxLogin'])->middleware('throttle:6,1');
 Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
+    // 微信自助绑定：本人读自己的 openid / 把当前微信绑到自己账号（必须已登录，否则等于开放注册）
+    Route::get('/auth/wx-identity', [AuthController::class, 'wxIdentity']);
+    Route::put('/auth/wx-self-bind', [AuthController::class, 'wxSelfBind'])->middleware('throttle:6,1');
     Route::post('/auth/logout', [AuthController::class, 'logout']);
 
     // ---------- 个人中心（账号自助资料 / 密码 / 营销人设，按用户持久化，多设备共用） ----------
@@ -133,6 +139,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // 人员归属映射：查未映射的姓名 / 维护别名。放在 /accounts/{key} 之前，避免被当参数吃掉
     Route::get('/accounts/staff-mapping', [AccountController::class, 'staffMapping']);
     Route::put('/accounts/{key}/aliases', [AccountController::class, 'updateAliases']);
+    // 微信身份绑定（小程序授权登录的唯一入口；须放在 /accounts/{key} 之前）
+    Route::get('/accounts/{key}/wx-binding', [AccountController::class, 'wxBinding']);
+    Route::put('/accounts/{key}/wx-binding', [AccountController::class, 'bindWx']);
+    Route::delete('/accounts/{key}/wx-binding', [AccountController::class, 'unbindWx']);
     Route::post('/accounts', [AccountController::class, 'store']);
     Route::patch('/accounts/{key}', [AccountController::class, 'update']);
 

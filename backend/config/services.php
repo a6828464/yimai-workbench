@@ -66,6 +66,14 @@ return [
         'max_total_image_bytes' => env('AI_MAX_TOTAL_IMAGE_BYTES', 4194304),
     ],
 
+    // 微信小程序（授权登录是 P2 合规硬门：运营规范 2.12.6 要求「存在账号体系时
+    // 必须提供微信授权登录」）。secret 只用于服务端 code2session，
+    // 绝不下发前端、不进日志、不进响应体。
+    'wechat' => [
+        'appid' => env('WECHAT_MINI_APPID', ''),
+        'secret' => env('WECHAT_MINI_SECRET', ''),
+    ],
+
     // 自助注册（默认关闭；开启后请同时设置 REGISTRATION_CODE 邀请码兜底）
     'registration' => [
         'enabled' => env('REGISTRATION_ENABLED', false),

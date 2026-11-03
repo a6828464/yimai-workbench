@@ -1,0 +1,91 @@
+/* 一麦小程序全局样式：不引 Tailwind（weapp 适配未验证），手写 BEM 工具类 */
+
+page {
+  background: #f6f7f9;
+  font-size: 28rpx;
+  color: #1f2329;
+  font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif;
+}
+
+.ym-card {
+  background: #fff;
+  border-radius: 20rpx;
+  padding: 28rpx;
+  margin: 20rpx 24rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.04);
+}
+
+.ym-page {
+  min-height: 100vh;
+  padding-bottom: 40rpx;
+  box-sizing: border-box;
+}
+
+.ym-row {
+  display: flex;
+  align-items: center;
+}
+
+.ym-row--between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ym-muted {
+  color: #8a8f99;
+  font-size: 24rpx;
+}
+
+.ym-title {
+  font-size: 32rpx;
+  font-weight: 600;
+}
+
+.ym-tag {
+  display: inline-block;
+  font-size: 20rpx;
+  padding: 4rpx 14rpx;
+  border-radius: 999rpx;
+  background: #eef4f1;
+  color: #2e7d5b;
+}
+
+.ym-tag--warn {
+  background: #fdf0e6;
+  color: #c26a1b;
+}
+
+.ym-tag--danger {
+  background: #fdeceb;
+  color: #c0392b;
+}
+
+/* 触控目标 ≥ 44px (88rpx) */
+.ym-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 88rpx;
+  border-radius: 16rpx;
+  font-size: 30rpx;
+  background: #2e7d5b;
+  color: #fff;
+}
+
+.ym-btn--plain {
+  background: #fff;
+  color: #2e7d5b;
+  border: 2rpx solid #2e7d5b;
+}
+
+.ym-btn--disabled {
+  opacity: 0.5;
+}
+
+.ym-empty {
+  padding: 120rpx 0;
+  text-align: center;
+  color: #8a8f99;
+  font-size: 26rpx;
+}
