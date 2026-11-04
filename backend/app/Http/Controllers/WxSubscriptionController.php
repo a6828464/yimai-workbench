@@ -98,11 +98,19 @@ final class WxSubscriptionController extends Controller
         }
 
         // 测试数据用本人姓名/门店：既能让收到的通知看起来像真的，也不会泄露他人信息。
+        //
+        // phone 必须给一个合法占位号：leadAssigned 的模板含 phone_number4（客户手机），
+        // 服务层对空 phone_number 会「发送前跳过」（避免 47003 白耗授权）。此前测试
+        // 载荷没带 phone，导致点了「发一条测试」永远得到「模板必填字段为空」，看起来像坏了。
         $result = $this->wx->send($user, $key, [
             'customerName' => '测试客户',
+            'phone' => '13800000000',
             'staffName' => (string) $user->name,
             'venue' => (string) ($user->venue ?: '—'),
             'role' => '会籍顾问',
+            'remark' => '这是一条测试通知，收到即表示链路正常',
+            'title' => '测试待办任务',
+            'deadline' => now()->addDay(),
             'time' => now(),
         ]);
 

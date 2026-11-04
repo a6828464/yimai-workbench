@@ -128,6 +128,13 @@ function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
           reject(new HttpError(msg, 403, 403))
           return
         }
+        if (status === 429) {
+          // 限流文案必须说人话：直接透出 Laravel 的 "Too Many Attempts." 用户只会以为系统坏了。
+          const msg = '操作太频繁了，请等 1 分钟再试'
+          if (!silent) uni.showToast({ title: msg, icon: 'none' })
+          reject(new HttpError(msg, 429, 429))
+          return
+        }
         if (status < 200 || status >= 300) {
           // 三形态错误体都要能读出人话：主契约 {code,message}，KeepYoga 风格 {ok,message/emsg}、
           // {errno,emsg}。只读 message 时，`POST /shares/disable` 的 503 `{errno,emsg}`

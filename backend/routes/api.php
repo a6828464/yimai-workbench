@@ -58,17 +58,17 @@ use Illuminate\Support\Facades\Route;
 */
 Route::pattern('id', '[0-9]{1,18}');
 
-Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:10,1');
+Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:login');
 // 微信授权登录（小程序 P2 合规硬门）。限流比账密登录更紧：
 // 每次调用都会向微信发一次 code2session，被刷等于用我们自己的 appid 打微信接口。
-Route::post('/auth/wx-login', [AuthController::class, 'wxLogin'])->middleware('throttle:6,1');
+Route::post('/auth/wx-login', [AuthController::class, 'wxLogin'])->middleware('throttle:wx-login');
 Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     // 微信自助绑定：本人读自己的 openid / 把当前微信绑到自己账号（必须已登录，否则等于开放注册）
     Route::get('/auth/wx-identity', [AuthController::class, 'wxIdentity']);
-    Route::put('/auth/wx-self-bind', [AuthController::class, 'wxSelfBind'])->middleware('throttle:6,1');
+    Route::put('/auth/wx-self-bind', [AuthController::class, 'wxSelfBind'])->middleware('throttle:wx-bind');
     Route::post('/auth/logout', [AuthController::class, 'logout']);
 
     // ---------- 微信订阅消息（模板通知）：授权状态 / 记授权 / 自测发一条 ----------
@@ -77,7 +77,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/wx/subscriptions', [WxSubscriptionController::class, 'index']);
     Route::post('/wx/subscriptions', [WxSubscriptionController::class, 'store']);
     // 自测：每次都会真发一条微信消息，按「接口成本」限流（一人 1 分钟最多 6 次够用）
-    Route::post('/wx/subscriptions/test', [WxSubscriptionController::class, 'test'])->middleware('throttle:6,1');
+    Route::post('/wx/subscriptions/test', [WxSubscriptionController::class, 'test'])->middleware('throttle:wx-test');
 
     // ---------- 个人中心（账号自助资料 / 密码 / 营销人设，按用户持久化，多设备共用） ----------
     Route::get('/my/profile', [ProfileController::class, 'myProfile']);
