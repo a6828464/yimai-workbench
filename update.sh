@@ -141,15 +141,17 @@ package_url_of() {
 FETCH_ERRORS=""
 MANIFEST_JSON=""
 MANIFEST_SOURCE=""
+# 逐通道都试一遍，最后**选版本最高的那份**（不是第一个成功的）。
+# 与后端 helpers.php 的 fetchUpdateManifest() 同口径：GitHub 先出包、Gitee 由流水线
+# 后续步骤同步，只要 Gitee 滞后，「先到先得」就会下载旧包把站点降级
+# （2026-11-04 实测：GitHub 已 3.11.0，Gitee 还停在 3.10.0）。
 for src in $MANIFEST_SOURCES; do
   murl="$(manifest_url_of "$src")"
   echo "  尝试清单: $murl"
-  if curl_fetch "$murl" "$WORK_ROOT/manifest.json" 15 "manifest"; then
-    if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$WORK_ROOT/manifest.json" 2>/dev/null; then
-      MANIFEST_SOURCE="$src"
-      MANIFEST_JSON="$(cat "$WORK_ROOT/manifest.json")"
+  if curl_fetch "$murl" "$WORK_ROOT/manifest-${src}.json" 15 "manifest"; then
+    if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$WORK_ROOT/manifest-${src}.json" 2>/dev/null; then
       echo "  ✓ 清单经 [$(source_label "$src")] 获取成功"
-      break
+      continue
     else
       FETCH_ERRORS="${FETCH_ERRORS}${src}：清单格式异常（非合法 JSON）；"
       echo "  清单格式异常，尝试下一个通道..."
@@ -160,6 +162,43 @@ for src in $MANIFEST_SOURCES; do
     echo "  清单下载失败，尝试下一个通道..."
   fi
 done
+
+# 三份清单里挑 version 最高的一份；同版本按 MANIFEST_SOURCES 的先后（gitee 优先）
+BEST_SOURCE="$(python3 - "$WORK_ROOT" $MANIFEST_SOURCES <<'PYEOF' 2>/dev/null || true
+import json, os, sys
+
+root, sources = sys.argv[1], sys.argv[2:]
+
+def key(v):
+    try:
+        return tuple(int(x) for x in str(v).split('.'))
+    except Exception:
+        return (-1,)
+
+best, best_key = '', None
+for name in sources:
+    path = os.path.join(root, 'manifest-%s.json' % name)
+    if not os.path.exists(path):
+        continue
+    try:
+        data = json.load(open(path, encoding='utf-8'))
+    except Exception:
+        continue
+    version = str(data.get('version', '') or '')
+    if not version:
+        continue
+    k = key(version)
+    if best_key is None or k > best_key:
+        best, best_key = name, k
+print(best)
+PYEOF
+)"
+
+if [ -n "$BEST_SOURCE" ]; then
+  MANIFEST_SOURCE="$BEST_SOURCE"
+  MANIFEST_JSON="$(cat "$WORK_ROOT/manifest-${BEST_SOURCE}.json")"
+  echo "  → 采用 [$(source_label "$BEST_SOURCE")] 的清单（版本最高）"
+fi
 
 # 从 manifest 提取字段（已确认是合法 JSON 才进来）
 manifest_field() {  # $1=json 键名
