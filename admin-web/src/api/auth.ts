@@ -312,10 +312,13 @@ export async function mergeStaffAccount(
   from: string[]
 ): Promise<{ into: number; rows: number; aliases: number; backfilled: number; skipped: string[] }> {
   if (!USE_BACKEND) throw new Error('演示模式不支持合并账号')
-  return apiPost<{ into: number; rows: number; aliases: number; backfilled: number; skipped: string[] }>(
-    '/accounts/staff-mapping/merge',
-    { into, from }
-  )
+  return apiPost<{
+    into: number
+    rows: number
+    aliases: number
+    backfilled: number
+    skipped: string[]
+  }>('/accounts/staff-mapping/merge', { into, from })
 }
 
 /** 归属下拉的数据源：账号（规范名），而不是历史自由文本 */

@@ -301,7 +301,10 @@
             >
               {{ k }} × {{ c }}
             </ElTag>
-            <span v-if="!row.footprint || !Object.keys(row.footprint).length" class="text-xs text-gray-400">
+            <span
+              v-if="!row.footprint || !Object.keys(row.footprint).length"
+              class="text-xs text-gray-400"
+            >
               名下暂无数据
             </span>
           </template>
@@ -351,7 +354,8 @@
         </ElButton>
       </div>
       <div class="text-xs text-gray-400 mt-1">
-        合并会把源账号的会员/客资/排课改成目标账号的姓名与 id，并**停用**源账号（数据不删，可追溯）。
+        合并会把源账号的会员/客资/排课改成目标账号的姓名与
+        id，并**停用**源账号（数据不删，可追溯）。
       </div>
 
       <div v-if="mapDlg.staleIds.length" class="mt-4">
@@ -712,7 +716,11 @@
         roles: [...editForm.roles],
         venues
       })
-      ElMessage.success(name !== editDlg.row.userName ? '已更新（旧名已登记为别名，历史数据仍归本人）' : '账号信息已更新')
+      ElMessage.success(
+        name !== editDlg.row.userName
+          ? '已更新（旧名已登记为别名，历史数据仍归本人）'
+          : '账号信息已更新'
+      )
       editDlg.visible = false
       await load()
     } catch (e) {
