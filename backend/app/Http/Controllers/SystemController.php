@@ -3,6 +3,17 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Throwable;
+
+/**
+ * 系统维护（版本检查 / 在线更新 / 日志 / 更新日志）。
+ *
+ * ⚠️ `use Throwable;` 这一行不能删：本文件里所有 `catch (Throwable)` 都靠它。
+ * 少了它，`Throwable` 会被解析成 `App\Http\Controllers\Throwable`（不存在），catch 永远
+ * 不匹配 —— 线上表现就是「代码里明明写了兜底，还是 500」：changelog 读 CHANGELOG 时
+ * 撞到 open_basedir 越界、update 里 proc_open 被禁，都会绕过兜底直接冒泡。
+ * （2026-11-04 实测：`/api/system/changelog` 匿名 500，栈顶就是 is_file 的 open_basedir 警告。）
+ */
 
 final class SystemController extends Controller
 {
@@ -171,9 +182,12 @@ final class SystemController extends Controller
      */
     protected function changelogPath(): ?string
     {
+        // ⚠️ 候选必须全部落在 open_basedir 允许的目录内。曾把 `dirname(base_path())`
+        // 放进候选，线上宝塔只允许站点根与 /tmp —— is_file 直接抛 open_basedir 警告，
+        // 再叠加「catch 里的 Throwable 没 import」，公开接口就变成了 500。
+        // 线上日志只可能在站点根（发行包会随包复制）或 public/，父目录没有意义。
         $candidates = [
             base_path().'/CHANGELOG.md',
-            dirname(base_path()).'/CHANGELOG.md',
             base_path().'/public/CHANGELOG.md',
         ];
 
