@@ -3328,6 +3328,14 @@ function fetchUpdateManifest(): array
         $sources = [$lastOk => $sources[$lastOk]] + $sources;
     }
 
+    // 逐通道都试一遍，最后**取版本最高的那份**，而不是「第一个成功的」。
+    //
+    // 为什么必须取最高：三个通道是同一份 Release 资产的三个镜像，发布流水线里
+    // GitHub 先出包、Gitee 由后续步骤同步。只要 Gitee 那一步慢或失败（2026-11-04 实际
+    // 发生：GitHub 的 auto-latest 已是 3.11.0，Gitee 还停在 3.10.0），「先到先得」
+    // 就会一直读旧清单 —— 后台明明是最新代码却永远提示「有新版本」，点下去还会
+    // 下载旧包把站点降级。
+    $found = [];
     foreach ($sources as $source => $urls) {
         // ② 时间戳破 CDN 缓存：删旧建新后同名资产可能仍吐旧文件
         $url = $urls['manifest'].'?t='.time();
@@ -3342,17 +3350,57 @@ function fetchUpdateManifest(): array
                 $errors[] = $source.'：HTTP 200 但清单格式异常（缺 version 键）';
                 continue;
             }
-            // ① 成功后记忆通道 + ④ 成功结果缓存 1 小时（清单本体）
-            Cache::put('yimai_update_manifest_source', $source, now()->addDay());
-            Cache::put('yimai_update_manifest', $data, now()->addHour());
-
-            return [$data, $source, $errors];
+            $found[$source] = $data;
         } catch (Throwable $e) {
             $errors[] = $source.'：'.mb_substr($e->getMessage(), 0, 120);
         }
     }
 
-    return [null, '', $errors];
+    if ($found === []) {
+        return [null, '', $errors];
+    }
+
+    // 版本号优先；同版本时优先取 commit 与本地一致的那份（同一版本的不同构建不要来回跳）
+    $localCommit = '';
+    $vj = base_path().'/version.json';
+    try {
+        if (is_file($vj)) {
+            $j = json_decode((string) file_get_contents($vj), true);
+            $localCommit = is_array($j) ? (string) ($j['commit'] ?? '') : '';
+        }
+    } catch (Throwable) {
+        // open_basedir / 读失败：退化为纯版本比较，不影响主流程
+    }
+
+    $bestSource = '';
+    $best = null;
+    foreach ($found as $source => $data) {
+        if ($best === null) {
+            $bestSource = $source;
+            $best = $data;
+
+            continue;
+        }
+        $cmp = version_compare((string) $data['version'], (string) $best['version']);
+        if ($cmp > 0) {
+            $bestSource = $source;
+            $best = $data;
+
+            continue;
+        }
+        if ($cmp === 0 && $localCommit !== ''
+            && ! str_starts_with($localCommit, (string) ($best['commit'] ?? ''))
+            && str_starts_with($localCommit, (string) ($data['commit'] ?? ''))) {
+            $bestSource = $source;
+            $best = $data;
+        }
+    }
+
+    // ① 成功后记忆通道 + ④ 成功结果缓存 1 小时（清单本体）
+    Cache::put('yimai_update_manifest_source', $bestSource, now()->addDay());
+    Cache::put('yimai_update_manifest', $best, now()->addHour());
+
+    return [$best, $bestSource, $errors];
 }
 
 /** manifest 通道名 → 前端可读标签（「经 Gitee / 经 GitHub 反代」，手册 3.4 同口径） */
