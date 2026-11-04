@@ -1,82 +1,38 @@
 <template>
   <div>
-    <!-- 个人发圈人设（保存到账号，多设备共用） -->
-    <ElCard shadow="never" class="mb-4">
-      <template #header>
-        <div class="mk-card-head">
-          <span class="font-500">个人发圈人设</span>
-          <div class="flex-c gap-3 flex-wrap">
-            <span class="text-xs text-gray-400"
-              >品牌固定「{{ BRAND_NAME }}」· 城市固定「{{ BRAND_CITY }}」</span
-            >
-            <ElButton
-              size="small"
-              type="primary"
-              plain
-              :loading="savingPersona"
-              @click="savePersona"
-              >保存人设</ElButton
-            >
-          </div>
+    <!--
+      人设入口（v3.11）：这里**不再放人设编辑表单**。
+      营销工具主页原先摆着一整块「个人发圈人设」（身份角色 / 从业年限 / 专业 / 客户画像），
+      与「人设设置」重复：两处都能改，改完一处另一处还是旧值。
+      现在唯一编辑入口是个人中心的「营销人设」（身份 / 人群 / 自定义人格），
+      这里只留一行只读摘要 + 一个入口按钮，保证「还能进得去」，也不重复编辑。
+      生成时的人设仍取账号 profile（见 buildPersona），改完无需回来同步。
+    -->
+    <ElCard shadow="never" class="mb-4 mk-persona-entry">
+      <div class="mk-persona-entry__row">
+        <div class="mk-persona-entry__text">
+          <span class="mk-persona-entry__title">生成人设</span>
+          <span class="text-xs text-gray-400"
+            >品牌固定「{{ BRAND_NAME }}」· 城市固定「{{ BRAND_CITY }}」</span
+          >
         </div>
-      </template>
-      <div class="flex items-center flex-wrap gap-x-4 gap-y-1 mb-1 text-xs text-g-500">
+        <ElButton size="small" type="primary" plain @click="$router.push('/yimai/profile')"
+          >人设设置</ElButton
+        >
+      </div>
+      <div class="mk-persona-entry__summary">
         <span
           >姓名/性别/年龄取自个人中心：<b class="text-g-800">{{ my.name || '未设置' }}</b
           >{{ my.gender ? ` · ${my.gender}` : '' }}{{ my.age ? ` · ${my.age}岁` : '' }}</span
         >
-        <ElButton link type="primary" size="small" @click="$router.push('/yimai/profile')"
-          >去个人中心修改</ElButton
+        <span v-if="persona.role">
+          · 身份 <b class="text-g-800">{{ persona.role }}</b></span
         >
+        <span v-if="persona.audiences.length">
+          · 人群 <b class="text-g-800">{{ persona.audiences.join('、') }}</b></span
+        >
+        <span v-if="customPersonaPreview"> · 自定义人格 {{ customPersonaPreview }}</span>
       </div>
-      <ElRow :gutter="12">
-        <ElCol :xs="12" :sm="8" :lg="5">
-          <ElFormItem :label-position="formLabelPosition" label="身份角色">
-            <ElSelect v-model="persona.role">
-              <ElOption v-for="r in PERSONA_ROLES" :key="r" :label="r" :value="r" />
-            </ElSelect>
-          </ElFormItem>
-        </ElCol>
-        <ElCol :xs="12" :sm="8" :lg="4">
-          <ElFormItem :label-position="formLabelPosition" label="从业年限"
-            ><ElInput v-model="persona.years" placeholder="如：5年"
-          /></ElFormItem>
-        </ElCol>
-        <ElCol :xs="24" :lg="12">
-          <ElFormItem :label-position="formLabelPosition" label="专业">
-            <ElSelect
-              v-model="persona.specialties"
-              multiple
-              filterable
-              allow-create
-              default-first-option
-              collapse-tags
-              :max-collapse-tags="6"
-              class="w-full"
-              placeholder="普拉提/瑜伽/康复理疗…可多选、可自定义"
-            >
-              <ElOption v-for="s in SPECIALTY_OPTIONS" :key="s" :label="s" :value="s" />
-            </ElSelect>
-          </ElFormItem>
-        </ElCol>
-        <ElCol :span="24">
-          <ElFormItem :label-position="formLabelPosition" label="客户画像">
-            <ElSelect
-              v-model="persona.audiences"
-              multiple
-              filterable
-              allow-create
-              default-first-option
-              collapse-tags
-              :max-collapse-tags="6"
-              class="w-full"
-              placeholder="选择你的典型客户画像（可多选、可自定义添加）"
-            >
-              <ElOption v-for="a in AUDIENCE_OPTIONS" :key="a" :label="a" :value="a" />
-            </ElSelect>
-          </ElFormItem>
-        </ElCol>
-      </ElRow>
     </ElCard>
 
     <!-- 本条设置 -->
@@ -669,7 +625,6 @@
   import AntiFoldTool from './anti-fold-tool.vue'
   import { useMarketingFavorites } from './marketing-favorites'
   import {
-    AUDIENCE_OPTIONS,
     BRAND_CITY,
     BRAND_NAME,
     DEFAULT_EMOJI_USAGE_ID,
@@ -685,8 +640,6 @@
     MOMENTS_MAX_IMAGES,
     MOMENTS_PRIORITY_CHAIN,
     MOMENTS_STANCE_RULE,
-    PERSONA_ROLES,
-    SPECIALTY_OPTIONS,
     auditMomentsResult,
     composeImageSummary,
     compressMomentImage,
@@ -713,7 +666,6 @@
   import {
     defaultMyProfile,
     fetchMyProfile,
-    saveMyProfile,
     fetchMarketingHistory,
     removeMarketingHistory
   } from '@/api/my'
@@ -766,41 +718,45 @@
   /** 个人中心资料（姓名/性别/年龄等自动带入人设） */
   const my = ref<MyProfile>(defaultMyProfile())
 
-  /** 人设编辑区（保存在账号 profile 上） */
+  /**
+   * 人设**只读**镜像（v3.11）。
+   *
+   * 编辑入口已收敛到个人中心「营销人设」（身份 / 人群 / 自定义人格），
+   * 这里保留一份镜像只为两件事：① 本页顶部显示只读摘要；② 组装生成提示词。
+   * 不再提供 savePersona —— 两处都能保存就会互相覆盖。
+   */
   const persona = ref({
     role: '全职老师',
     years: '',
     specialties: [] as string[],
-    audiences: [] as string[]
+    audiences: [] as string[],
+    /** 自定义人格（第三段人设，原样带入提示词） */
+    customPersona: ''
+  })
+
+  /** 顶部摘要里的自定义人格：多行折成一行并截断，避免摘要撑高卡片 */
+  const customPersonaPreview = computed(() => {
+    const text = String(persona.value.customPersona ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!text) return ''
+    return text.length > 24 ? `${text.slice(0, 24)}…` : text
   })
 
   onMounted(async () => {
-    my.value = await fetchMyProfile()
+    try {
+      my.value = await fetchMyProfile()
+    } catch {
+      // 资料接口不可用时用默认资料兜底：本页仍可生成（人设留空），不白屏
+    }
     persona.value = {
       role: my.value.persona.role,
       years: my.value.years,
       specialties: [...my.value.specialties],
-      audiences: [...my.value.persona.audiences]
+      audiences: [...my.value.persona.audiences],
+      customPersona: my.value.persona.customPersona ?? ''
     }
   })
-
-  const savingPersona = ref(false)
-  async function savePersona() {
-    savingPersona.value = true
-    try {
-      await saveMyProfile({
-        years: persona.value.years,
-        specialties: persona.value.specialties,
-        persona: { role: persona.value.role, audiences: persona.value.audiences }
-      })
-      my.value = await fetchMyProfile(true)
-      ElMessage.success('人设已保存到账号，换设备登录也不会丢')
-    } catch (e) {
-      ElMessage.error(`保存失败：${String(e).slice(0, 60)}`)
-    } finally {
-      savingPersona.value = false
-    }
-  }
 
   // ==================== 本条设置：选项口径全部直接引用 api 层常量 ====================
 
@@ -1081,7 +1037,9 @@
       specialties: persona.value.specialties,
       brand: BRAND_NAME,
       city: BRAND_CITY,
-      audiences: persona.value.audiences
+      audiences: persona.value.audiences,
+      // 自定义人格（v3.11）：第三段人设，由 api 层 personaText() 追加在身份/人群之后
+      customPersona: persona.value.customPersona
     }
   }
 

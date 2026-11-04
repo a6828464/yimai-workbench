@@ -21,6 +21,7 @@ import { requireLogin } from '@/utils/guard'
 import { fetchWxIdentity, wxSelfBind, type WxIdentity } from '@/api/auth'
 import { countEnabledTemplates, fetchWxSubscriptions, WX_BIND_INTENT_KEY, type WxSubscriptionsResult } from '@/api/notify'
 import { copyText, goPath } from '@/utils/nav'
+import { fetchChangelog, type ChangelogEntry } from '@/api/system'
 
 const user = useUserStore()
 
@@ -85,6 +86,13 @@ const notifyText = computed(() => {
 })
 
 const versionText = computed(() => appVersion())
+
+/* ---------- 关于弹窗（版本号 + 最近 3 条更新要点） ---------- */
+const aboutOpen = ref(false)
+const changelog = ref<ChangelogEntry[]>([])
+const changelogLoading = ref(false)
+/** 拉成功过就不再重复打（关于是低频弹窗，但接口背后可能要去外网取 release，别每次点都等） */
+let changelogLoaded = false
 
 function appVersion(): string {
   try {
@@ -194,20 +202,33 @@ function goNotify(): void {
 }
 
 function showAbout(): void {
-  uni.showModal({
-    title: '关于一麦工作台',
-    content: [
-      '一麦瑜伽·普拉提 员工端',
-      `版本 ${versionText.value}`,
-      venueText.value,
-      '',
-      '资料、密码、模板通知都可在这里自助修改，改动会同步到电脑端工作台。',
-      '数据备份、薪酬、AI 模型配置、人员管理、KeepYoga 同步、小程序内收款不在本次范围内。'
-    ].join('\n'),
-    showCancel: false,
-    confirmText: '知道了',
-    confirmColor: BRAND_COLOR
-  })
+  aboutOpen.value = true
+  void loadChangelog()
+}
+
+function closeAbout(): void {
+  aboutOpen.value = false
+}
+
+/**
+ * 更新要点：GET /system/changelog?limit=3（公开接口，be-content 在加结构化形状）。
+ *
+ * **失败一律静默**：接口没上线、超时、返回形状不认识 —— 都只是少了这三行字，
+ * 弹窗仍然照常显示版本号。为一条辅助信息弹错误提示是本页刻意避免的事
+ * （同「模板通知摘要」的处理）。
+ */
+async function loadChangelog(): Promise<void> {
+  if (changelogLoaded || changelogLoading.value) return
+  changelogLoading.value = true
+  try {
+    const entries = await fetchChangelog(3)
+    changelog.value = entries
+    changelogLoaded = entries.length > 0
+  } catch {
+    /* 静默降级：只显示版本号 */
+  } finally {
+    changelogLoading.value = false
+  }
 }
 
 function confirmLogout(): void {
@@ -328,6 +349,39 @@ onShow(async () => {
         <button class="ym-btn me__logout" @click="confirmLogout">退出登录</button>
       </view>
     </template>
+
+    <!-- 关于：版本号 + 最近 3 条更新要点（失败只留版本号） -->
+    <view v-if="aboutOpen" class="about" @click="closeAbout">
+      <view class="about__panel" @click.stop>
+        <view class="about__head">
+          <text class="about__title">关于一麦工作台</text>
+          <text class="about__ver">版本 {{ versionText }}</text>
+          <text class="about__sub">一麦瑜伽·普拉提 · 员工端 · {{ venueText }}</text>
+        </view>
+
+        <view class="about__block">
+          <text class="about__label">最近更新</text>
+          <view v-if="changelog.length" class="about__list">
+            <view v-for="(e, i) in changelog" :key="`${e.version}-${i}`" class="about__item">
+              <text class="about__tag">{{ e.version }}</text>
+              <text class="about__item-title">{{ e.title }}</text>
+            </view>
+          </view>
+          <text v-else class="about__hint">
+            {{ changelogLoading ? '正在读取更新要点…' : '更新要点暂时取不到，不影响使用' }}
+          </text>
+        </view>
+
+        <text class="about__note">
+          资料、密码、模板通知都可在这里自助修改，改动会同步到电脑端工作台。数据备份、薪酬、AI
+          模型配置、人员管理、KeepYoga 同步、小程序内收款不在小程序范围内。
+        </text>
+
+        <view class="about__close ym-tap" @click="closeAbout">
+          <text class="about__close-text">知道了</text>
+        </view>
+      </view>
+    </view>
   </view>
 </template>
 
@@ -453,5 +507,126 @@ onShow(async () => {
     background: $white;
     border: 2rpx solid $hairline;
   }
+}
+
+/* ---------- 关于弹窗 ---------- */
+/* 居中弹窗而不是底部抽屉：本页是 tab 页，原生 tabBar 永远盖在页面最上层，
+   底部抽屉的按钮会被挡在 tabBar 后面 */
+.about {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 48rpx;
+  background: rgba(16, 24, 21, 0.5);
+}
+
+.about__panel {
+  width: 100%;
+  padding: 36rpx 32rpx 30rpx;
+  background: $white;
+  border-radius: $r-xl;
+  box-shadow: $shadow-float;
+}
+
+.about__head {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  padding-bottom: 24rpx;
+  border-bottom: 2rpx solid $hairline;
+}
+
+.about__title {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: $ink-800;
+}
+
+.about__ver {
+  font-size: 26rpx;
+  color: $brand-600;
+}
+
+.about__sub {
+  font-size: 22rpx;
+  color: $ink-400;
+}
+
+.about__block {
+  padding: 24rpx 0 8rpx;
+}
+
+.about__label {
+  display: block;
+  margin-bottom: 14rpx;
+  font-size: 24rpx;
+  font-weight: 500;
+  color: $ink-600;
+}
+
+.about__list {
+  display: flex;
+  flex-direction: column;
+  gap: 14rpx;
+}
+
+.about__item {
+  display: flex;
+  gap: 14rpx;
+  align-items: flex-start;
+  padding: 18rpx 20rpx;
+  background: $ink-50;
+  border-radius: $r-sm;
+}
+
+.about__tag {
+  flex-shrink: 0;
+  padding: 2rpx 12rpx;
+  font-size: 21rpx;
+  line-height: 1.7;
+  color: $brand-700;
+  background: $brand-100;
+  border-radius: 999rpx;
+}
+
+.about__item-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 25rpx;
+  line-height: 1.5;
+  color: $ink-700;
+  word-break: break-all;
+}
+
+.about__hint {
+  font-size: 23rpx;
+  color: $ink-400;
+}
+
+.about__note {
+  display: block;
+  padding-top: 8rpx;
+  font-size: 21rpx;
+  line-height: 1.6;
+  color: $ink-400;
+}
+
+.about__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 92rpx;
+  margin-top: 28rpx;
+  color: $white;
+  background: linear-gradient(135deg, $brand-500, $brand-700);
+  border-radius: 999rpx;
+}
+
+.about__close-text {
+  font-size: 29rpx;
+  font-weight: 500;
 }
 </style>

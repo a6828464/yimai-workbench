@@ -153,6 +153,27 @@
             </div>
           </ElFormItem>
         </ElCol>
+        <!--
+          自定义人格（v3.11）：与身份角色、客户画像**并列**的第三段人设。
+          朋友圈与小红书共用同一个 profile 键（`customPersona`），所以两边看到的是同一段文字；
+          生成时由 api 层追加在身份/客群/风格之后，不覆盖它们。
+        -->
+        <ElCol :span="24">
+          <ElFormItem :label-position="formLabelPosition" label="自定义人格">
+            <ElInput
+              v-model="profile.customPersona"
+              type="textarea"
+              :rows="3"
+              maxlength="300"
+              show-word-limit
+              resize="vertical"
+              placeholder="一句话写你自己的说话方式与定位，例：说话直接、爱开玩笑的产后康复老师，不端着，也不喊口号"
+            />
+            <div class="text-xs text-g-500 mt-1 leading-5">
+              作为第三段拼在「身份 / 客户画像」之后进入提示词，不覆盖这两项；留空则不拼接。
+            </div>
+          </ElFormItem>
+        </ElCol>
         <ElCol :xs="24" :md="12">
           <ElFormItem :label-position="formLabelPosition" label="转化方向">
             <ElSelect v-model="profile.conversion">
@@ -763,7 +784,9 @@
     audiences: [],
     style: '真实接地气',
     conversion: '评论区留言',
-    localFocus: true
+    localFocus: true,
+    // 自定义人格（v3.11）：与朋友圈共用同一个 profile 键，默认空串
+    customPersona: ''
   })
   /** 与个人中心共享的专业 */
   const specialties = ref<string[]>([])
@@ -807,9 +830,22 @@
   }
 
   onMounted(async () => {
-    my.value = await fetchMyProfile()
-    const { ipType, accountName, role, audiences, style, styles, conversion, localFocus } =
-      my.value.xhs
+    try {
+      my.value = await fetchMyProfile()
+    } catch {
+      // 资料接口不可用：保留默认人设，本页仍可生成（不抛未捕获错误）
+    }
+    const {
+      ipType,
+      accountName,
+      role,
+      audiences,
+      style,
+      styles,
+      conversion,
+      localFocus,
+      customPersona
+    } = my.value.xhs
     profile.value = {
       ipType,
       accountName,
@@ -817,7 +853,8 @@
       audiences: [...audiences],
       style,
       conversion,
-      localFocus
+      localFocus,
+      customPersona: customPersona ?? ''
     }
     // 老账号数据没有 styles：my.ts 的 normalizeXhsPrefs 已回落为 [style]
     styleList.value = (styles?.length ? styles : style ? [style] : []).slice(0, XHS_STYLE_MAX)

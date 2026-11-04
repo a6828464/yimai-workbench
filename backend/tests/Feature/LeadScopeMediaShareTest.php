@@ -88,7 +88,14 @@ class LeadScopeMediaShareTest extends TestCase
         $this->assertSame(['新媒体自己的'], $this->leadNames());
     }
 
-    public function test_service_teacher_scope_is_unchanged(): void
+    /**
+     * 服务老师的范围：**只认本人名下**（2026-11 待承接池下线）。
+     *
+     * 池子下线前这条测试锁的是「名下 + 待承接」，而待承接池正是「未分配客资乱分配」的来源：
+     * 每个服务老师都能看到全店未分配客资，谁先点开算谁的。
+     * 现在未分配客资只对超管/店长/新媒体可见（分配方），店长的这几条仍然看得到。
+     */
+    public function test_service_teacher_scope_excludes_the_unassigned_pool(): void
     {
         $service = $this->user('svc-a', '服务老师甲', 'R_SERVICE', '绿地店');
         $this->lead('名下客资', '绿地店', '绿地店长');
@@ -100,7 +107,36 @@ class LeadScopeMediaShareTest extends TestCase
 
         Sanctum::actingAs($service);
 
-        $this->assertSame(['名下客资', '待承接客资'], $this->leadNames());
+        $this->assertSame(['名下客资'], $this->leadNames());
+
+        // 店长（分配方）仍看得到本店未分配客资：收口只针对老师侧
+        Sanctum::actingAs($this->user('mgr-a', '绿地店长', 'R_MANAGER', '绿地店'));
+        // leadNames() 按名字排序后返回（集合断言，顺序不是契约）
+        $this->assertSame(['别人名下客资', '名下客资', '待承接客资'], $this->leadNames());
+    }
+
+    /**
+     * 新媒体的**单条入口**与列表同口径（t5 O2）：部门共享的客资，B 也能改/删/看历史；
+     * 非本部门录入的仍然 403。此前列表按部门、单条只认本人，表现为「列表看得到、点开 403」。
+     */
+    public function test_media_single_record_operations_follow_department_scope(): void
+    {
+        $mediaA = $this->user('media-x', '新媒体小王', 'R_MEDIA');
+        $mediaB = $this->user('media-y', '新媒体小李', 'R_MEDIA');
+        $byDept = $this->lead('小王登记的客资', '绿地店', '新媒体小王', $mediaA->id);
+        $byManager = $this->lead('店长登记的客资', '绿地店', '绿地店长');
+
+        Sanctum::actingAs($mediaB);
+
+        // 部门共享：同事登记的单条可读可改可删
+        $this->getJson("/api/leads/{$byDept->id}/history")->assertOk();
+        $this->patchJson("/api/leads/{$byDept->id}", ['remark' => '小李接手'])->assertOk();
+        $this->deleteJson("/api/leads/{$byDept->id}")->assertOk();
+
+        // 非本部门登记的单条仍然 403（列表也看不到它们，口径一致）
+        $this->getJson("/api/leads/{$byManager->id}/history")->assertForbidden();
+        $this->patchJson("/api/leads/{$byManager->id}", ['remark' => '越权'])->assertForbidden();
+        $this->deleteJson("/api/leads/{$byManager->id}")->assertForbidden();
     }
 
     public function test_coach_scope_is_unchanged(): void

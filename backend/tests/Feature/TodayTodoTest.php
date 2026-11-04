@@ -153,6 +153,61 @@ class TodayTodoTest extends TestCase
         $this->assertDatabaseHas('customers', ['id' => $customer->id, 'birthday' => null]);
     }
 
+    /**
+     * 待办里的「新客首响」与列表同口径：服务老师看不到未分配客资，
+     * 也不能用 todo/action 直接把未分配客资的状态改掉（店长作为分配方可以）。
+     *
+     * 待承接池下线前，待办的 `$canHandle` 里有一条 `|| service_teacher === ''`，
+     * 于是服务的「列表里没有了、待办还能标记」—— 收口必须连这条一起改，否则只是看不见。
+     */
+    public function test_service_teacher_todo_excludes_unassigned_leads_while_manager_sees_them(): void
+    {
+        $service = $this->user('todo-svc', '服务老师甲', 'R_SERVICE', '绿地店');
+        $own = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '本人名下客资', 'phone' => '13900000101',
+            'source' => '小红书', 'venue' => '绿地店', 'service_teacher' => '服务老师甲', 'status' => '新留资',
+        ]);
+        $unassigned = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '未分配客资', 'phone' => '13900000102',
+            'source' => '小红书', 'venue' => '绿地店', 'service_teacher' => '', 'status' => '新留资',
+        ]);
+        Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '同事名下客资', 'phone' => '13900000103',
+            'source' => '小红书', 'venue' => '绿地店', 'service_teacher' => '服务老师乙', 'status' => '新留资',
+        ]);
+
+        Sanctum::actingAs($service);
+        $res = $this->getJson('/api/today/todo')->assertOk()->json('data');
+        $this->assertSame(1, $res['counts']['newLeads']);
+        $this->assertSame('本人名下客资', $res['newLeads'][0]['name']);
+
+        // 未分配客资：待办里没有 → 直达 todo/action 也不能改状态
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'newLeads', 'key' => 'lead:'.$unassigned->id,
+            'action' => '已首响', 'leadId' => $unassigned->id,
+        ])->assertForbidden();
+        $this->assertSame('新留资', $unassigned->fresh()->status);
+
+        // 本人名下的仍可正常标记
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'newLeads', 'key' => 'lead:'.$own->id,
+            'action' => '已首响', 'leadId' => $own->id,
+        ])->assertOk();
+        $this->assertSame('已联系', $own->fresh()->status);
+
+        // 店长（分配方）：本店剩下的两条（未分配 + 同事名下）都在待办里，未分配客资可标记
+        // （本人那条已被服务老师标成「已联系」，不再算新留资）
+        Sanctum::actingAs($this->user('todo-mgr', '绿地店长', 'R_MANAGER', '绿地店'));
+        $res = $this->getJson('/api/today/todo')->assertOk()->json('data');
+        $this->assertSame(2, $res['counts']['newLeads']);
+        $this->assertContains('未分配客资', collect($res['newLeads'])->pluck('name')->all());
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'newLeads', 'key' => 'lead:'.$unassigned->id,
+            'action' => '已首响', 'leadId' => $unassigned->id,
+        ])->assertOk();
+        $this->assertSame('已联系', $unassigned->fresh()->status);
+    }
+
     private function user(string $username, string $name, string $role, ?string $venue): User
     {
         return User::factory()->create(compact('username', 'name', 'role', 'venue'));

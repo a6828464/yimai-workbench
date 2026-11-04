@@ -7,6 +7,7 @@ use App\Models\Customer;
 use App\Models\Lead;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -42,6 +43,48 @@ class BodyTestReportAccessTest extends TestCase
             'url' => $this->url(),
             'customerId' => $foreignCustomer->id,
         ])->assertForbidden();
+    }
+
+    /**
+     * 体测写入的客资准入必须与留资侧**同一判据**（t10）。
+     *
+     * 修复前 `leadVisible()` 自己写了一套，多出一条 `created_by` 通道：老师能凭「本人录入」
+     * 把体测报告写到**无主客资**（service_teacher 为空/占位）上并回填 lead_id ——
+     * 而列表/PATCH/DELETE 早就把无主客资挡在老师侧之外，这条是侧门。
+     * 现在直接复用 userCanAccessLead()：无主 → 403；已分到本人名下 → 越过权限闸门
+     * （Http::fake 让拉取失败，观测点变成 422 而不是 403，证明挡的是权限而不是别的）。
+     */
+    public function test_write_rejects_unassigned_lead_even_if_teacher_created_it(): void
+    {
+        $teacher = $this->user('bt-teacher-lead', '授课老师', 'R_TEACHER', '绿地店');
+
+        $unassigned = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '老师自己录入的待分配客资',
+            'phone' => '13800009001', 'source' => '到店', 'venue' => '绿地店',
+            'service_teacher' => '', 'service_teacher_user_id' => null,
+            'created_by' => '授课老师', 'created_by_user_id' => $teacher->id, 'status' => '新留资',
+        ]);
+        $assigned = Lead::create([
+            'lead_date' => now()->toDateString(), 'name' => '已分到本人名下的客资',
+            'phone' => '13800009002', 'source' => '到店', 'venue' => '绿地店',
+            'service_teacher' => '授课老师', 'service_teacher_user_id' => $teacher->id,
+            'created_by' => '店长', 'status' => '新留资',
+        ]);
+
+        // 越过权限后的拉取失败（避免真实出网），观测点 = 不是 403
+        Http::fake(['*' => Http::response([], 500)]);
+
+        Sanctum::actingAs($teacher);
+
+        $this->postJson('/api/body-test-reports', [
+            'url' => $this->url(),
+            'leadId' => $unassigned->id,
+        ])->assertForbidden();
+
+        $this->postJson('/api/body-test-reports', [
+            'url' => $this->url(),
+            'leadId' => $assigned->id,
+        ])->assertStatus(422);
     }
 
     /** 合法体测链接（parseUrl 要求 report-new/{数字}/{hex}/{数字}） */

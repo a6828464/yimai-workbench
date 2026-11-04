@@ -124,7 +124,14 @@
       >
         <ElTableColumn label="会员" min-width="130" fixed="left">
           <template #default="{ row }">
-            <div class="font-500">{{ row.name }}</div>
+            <!--
+              会员名 = 会员详情入口（v3.11）：点开看这名会员的**全部卡项**
+              （在用 / 未开卡 / 已过期 / 已用完）。用 link 按钮而不是整行点击，
+              避免与表格里的行内操作（续课计划/评估）抢点击。
+            -->
+            <ElButton link type="primary" class="member-name-btn" @click="openMemberDetail(row)">
+              {{ row.name }}
+            </ElButton>
             <div class="text-xs text-gray-400"
               >{{ row.phone || '尾号' + row.phoneTail
               }}{{ row.source ? ` · ${row.source}` : '' }}</div
@@ -852,6 +859,91 @@
       </template>
     </ElDrawer>
 
+    <!--
+      会员详情（v3.11）：一名会员的**全部卡项**，按 在用 / 未开卡 / 已过期 / 已用完 分组。
+
+      数据：`GET /customers/{id}` 的 `cardsList`（+ `currentCards` 同义键），
+      历史卡取 `cardStats.historyCards`，旧快照回退 `cardStats.expiredCards`。
+      接口没就绪 / 该会员没有明细时，退回列表行自带快照并在顶部标注来源，
+      不白屏、不抛错（列表页的主职责仍是看清单，不能被详情拖垮）。
+      口径：本弹层**只展示**，不参与待续费/五清单判定；判定文案仍由列表页与后端负责。
+    -->
+    <ElDialog
+      v-model="memberDlg.visible"
+      title="会员详情 · 全部卡项"
+      width="720px"
+      destroy-on-close
+    >
+      <template v-if="memberDlg.row">
+        <div class="mdt-head">
+          <div>
+            <div class="mdt-head__name">{{ memberDlg.row.name }}</div>
+            <div class="mdt-head__meta">
+              {{ memberDlg.row.phone || `尾号${memberDlg.row.phoneTail}` }} ·
+              {{ memberDlg.row.venue || '—' }} · 顾问
+              {{ memberDlg.row.consultant || '待分配' }}
+            </div>
+          </div>
+          <div class="mdt-head__stat">
+            <div
+              >卡项合计 <b>{{ memberDlg.total }}</b> 张</div
+            >
+            <div class="mdt-head__main">主卡：{{ memberDlg.mainCard || '—' }}</div>
+          </div>
+        </div>
+
+        <ElAlert
+          v-if="memberDlg.degraded"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="mb-2"
+          :title="memberDlg.degraded"
+        />
+
+        <div v-loading="memberDlg.loading" class="mdt-body">
+          <div v-for="g in memberDlg.groups" :key="g.key" class="mdt-group">
+            <div class="mdt-group__head">
+              <span class="mdt-group__title" :class="`is-${g.key}`">{{ g.label }}</span>
+              <ElTag size="small" effect="plain" :type="g.tagType">{{ g.rows.length }} 张</ElTag>
+              <span class="mdt-group__hint">{{ g.hint }}</span>
+            </div>
+            <div v-if="g.rows.length" class="mdt-cards">
+              <div
+                v-for="c in g.rows"
+                :key="c.key"
+                class="mdt-card"
+                :class="{ 'is-main': c.isMain }"
+              >
+                <div class="mdt-card__head">
+                  <ElTag size="small" :type="c.typeTag" effect="plain">{{ c.typeLabel }}</ElTag>
+                  <span class="mdt-card__name">{{ c.title }}</span>
+                  <!-- 主卡高亮但仍属于本组的一项（不单独抽出去，避免用户看不出它在哪一档） -->
+                  <ElTag v-if="c.isMain" size="small" type="danger" effect="dark">主卡</ElTag>
+                </div>
+                <div v-if="c.identity" class="mdt-card__meta">{{ c.identity }}</div>
+                <div class="mdt-card__line">
+                  <span class="mdt-card__qty">剩余 {{ c.qty }}</span>
+                  <span class="mdt-card__deadline">到期 {{ c.deadline }}</span>
+                  <ElTag size="small" :type="c.statusTag" effect="plain">{{ c.status }}</ElTag>
+                </div>
+                <div v-if="c.note" class="mdt-card__note">{{ c.note }}</div>
+              </div>
+            </div>
+            <div v-else class="mdt-group__empty">本组暂无卡项</div>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <div class="mdt-footer">
+          <span class="mdt-footer__hint"
+            >卡项来自会员卡项快照（看卡用），待续费口径仍以列表页判定为准</span
+          >
+          <ElButton @click="memberDlg.visible = false">关闭</ElButton>
+        </div>
+      </template>
+    </ElDialog>
+
     <!-- 续课计划登记（教练月度预报） -->
     <ElDialog
       v-model="renewalDlg.visible"
@@ -1206,6 +1298,7 @@
 <script setup lang="ts">
   import {
     queryCustomers,
+    getCustomerDetail,
     getMemberRules,
     setMemberRules,
     refreshMemberRules,
@@ -1231,16 +1324,20 @@
     RenewalEvaluationContext,
     RenewalReason
   } from '@/api/yimai'
+  import { listStaffOptions } from '@/api/auth'
   import {
     cardDeadlineText,
     cardIdentityText,
     cardQtyText,
+    cardRemaining,
     cardStatusText,
     cardTypeCode,
     cardTypeLabel,
     cardTypeLabelByType,
     cardTypeTagType,
+    cardUnit,
     cardUnitByType,
+    daysUntil,
     expiredBalanceWindowText,
     expireDateText,
     fmtQty,
@@ -1386,6 +1483,238 @@
     if (s.expireDateState !== 'current') return false
     const days = s.nextExpireDays
     return days !== null && days >= 0 && days <= (rules.value.renewalExpireDays ?? 30)
+  }
+
+  // ---------- 会员详情：全部卡项（v3.11） ----------
+  //
+  // 与上面的「判定依据」popover 分工不同：
+  // - 判定依据 = 解释「他为什么在/不在待续费清单」，卡片只到 当前 / 历史 两档；
+  // - 会员详情 = 看卡用，把**名下所有卡**摊开，按生命周期分四档（在用 / 未开卡 / 已过期 / 已用完）。
+  // 四档只做展示归类（依后端字段），**不参与任何判定**，也不改五清单逻辑。
+
+  /** 详情卡项分组键 */
+  type DetailGroupKey = 'active' | 'unactivated' | 'expired' | 'usedUp'
+
+  interface DetailCardRow {
+    key: string
+    title: string
+    typeLabel: string
+    typeTag: 'primary' | 'success' | 'warning'
+    /** 剩余（节 / 天 / 元，单位由卡类型决定） */
+    qty: string
+    /** 到期日文案（含「已过期 N 天」这类句式） */
+    deadline: string
+    status: string
+    statusTag: 'success' | 'info' | 'warning' | 'danger'
+    identity: string
+    isMain: boolean
+    note: string
+  }
+
+  interface DetailGroup {
+    key: DetailGroupKey
+    label: string
+    hint: string
+    tagType: 'success' | 'info' | 'warning' | 'danger'
+    rows: DetailCardRow[]
+  }
+
+  const DETAIL_GROUPS: {
+    key: DetailGroupKey
+    label: string
+    hint: string
+    tagType: DetailGroup['tagType']
+  }[] = [
+    { key: 'active', label: '在用', hint: '当前可用（含请假顺延）', tagType: 'success' },
+    { key: 'unactivated', label: '未开卡', hint: '已售未开卡，开卡后才扣次', tagType: 'info' },
+    {
+      key: 'expired',
+      label: '已过期',
+      hint: '到期/退卡/停卡，仍有余额只做提示',
+      tagType: 'warning'
+    },
+    { key: 'usedUp', label: '已用完', hint: '次卡/储值卡余量为 0', tagType: 'danger' }
+  ]
+
+  const memberDlg = reactive({
+    visible: false,
+    loading: false,
+    row: null as YimaiCustomer | null,
+    /** 数据来源说明（接口不可用 / 字段缺失时置为降级文案，页面顶部提示） */
+    degraded: '',
+    total: 0,
+    mainCard: '',
+    groups: DETAIL_GROUPS.map((g) => ({ ...g, rows: [] as DetailCardRow[] }))
+  })
+
+  /**
+   * 详情数据源的单卡余量：契约字段名是 `remaining`，
+   * 而共享 helper 走的是 `residue / residueDays`。两者都认，优先 `remaining`
+   * （后端新增字段），缺失时退回 helper 的口径换算，**不自己重算期限卡天数**。
+   */
+  function detailRemaining(card: CardLike): number | null {
+    const alias = (card as CardLike & { remaining?: number | null }).remaining
+    if (typeof alias === 'number' && Number.isFinite(alias)) return Math.max(0, alias)
+    return cardRemaining(card)
+  }
+
+  /** 详情状态标签语义色（沿用共享状态文案，只做颜色映射） */
+  function detailStatusTag(status: string): DetailCardRow['statusTag'] {
+    if (status.includes('过期') || status.includes('退卡')) return 'danger'
+    if (status.includes('停卡') || status.includes('请假')) return 'warning'
+    if (status.includes('未开卡')) return 'info'
+    if (status.includes('正常')) return 'success'
+    return 'info'
+  }
+
+  /**
+   * 单卡归到四档之一。判定顺序（先到先得，全部只读后端字段）：
+   * 1. 未开卡 —— `state=unactivated` / `unactivated` / statusCode 7
+   * 2. 期限卡（type=2）没有「用完」概念：到期即「已过期」，没到期就是「在用」
+   *    （它的 `residue` 恒 0，拿余量判会把每张过期期限卡都写成「已用完」—— F1 口径陷阱）
+   * 3. 次卡 / 储值卡余量 = 0 → 「已用完」（哪怕同时已过期：确实一点不剩了）
+   * 4. 已过期 —— `state=history` / statusCode 6·29·39 / `historyReason` / 到期日已过
+   * 5. 在用 —— 剩下的当前卡
+   */
+  function detailGroupKey(card: CardLike): DetailGroupKey {
+    const code = String(card.statusCode ?? '').trim()
+    const historyReason = (card as CardLike & { historyReason?: string | null }).historyReason
+    if (card.state === 'unactivated' || card.unactivated || code === '7') return 'unactivated'
+    const days = daysUntil(card.deadline)
+    const expired =
+      card.state === 'history' ||
+      code === '6' ||
+      code === '29' ||
+      code === '39' ||
+      Boolean(historyReason) ||
+      (days !== null && days < 0)
+    // 期限卡按「有效期」判，不按余量判
+    if (cardTypeCode(card) === '2') return expired ? 'expired' : 'active'
+    const remain = detailRemaining(card)
+    if (remain !== null && remain <= 0) return 'usedUp'
+    return expired ? 'expired' : 'active'
+  }
+
+  /** 收集一名会员的全部卡项：当前 ∪ 未开卡（`cardsList` / `currentCards`）+ 历史（`historyCards`） */
+  function collectDetailCards(customer: YimaiCustomer): CardLike[] {
+    const stats = customer.cardStats ?? null
+    const current: CardLike[] = [...(customer.currentCards ?? customer.cardsList ?? [])]
+    const history: CardLike[] = stats?.historyCards?.length
+      ? [...stats.historyCards]
+      : // 旧快照回退：`expiredCards` 是 type=1 过期次卡的保留区，字段按次卡口径补齐
+        (stats?.expiredCards ?? []).map((c) => ({
+          ...c,
+          unit: '节' as const,
+          bound: null,
+          unactivated: false,
+          type: c.type,
+          state: 'history' as const,
+          historyReason: 'expired'
+        }))
+    // 同一个实例可能同时出现在两处（后端兼容期双写）：按 id/卡号/名称+到期日去重，先到先得
+    const seen = new Set<string>()
+    const out: CardLike[] = []
+    for (const card of [...current, ...history]) {
+      const key = String(
+        card.id ?? card.instanceId ?? card.cardNo ?? `${card.title ?? ''}|${card.deadline ?? ''}`
+      )
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(card)
+    }
+    return out
+  }
+
+  /** 卡项 → 详情行 */
+  function toDetailCardRow(
+    card: CardLike,
+    index: number,
+    mainCard: string,
+    sameName: Map<CardLike, { index: number; total: number }>
+  ): DetailCardRow {
+    const status = cardStatusText(card)
+    const remain = detailRemaining(card)
+    const unit = cardUnit(card)
+    // 历史卡的终止原因：与状态文案重复时不再重复一行（「状态：过期」+「已过期」是同一件事）
+    const reason = historyReasonText(card)
+    const note = reason && !status.includes(reason) && !reason.includes(status) ? reason : ''
+    return {
+      key: String(card.id ?? card.instanceId ?? card.cardNo ?? `${card.title ?? 'card'}-${index}`),
+      title: card.title || '未命名卡项',
+      typeLabel: cardTypeLabel(card),
+      typeTag: cardTypeTagType(card),
+      qty: fmtQty(remain, unit),
+      deadline: cardDeadlineText(card),
+      status,
+      statusTag: detailStatusTag(status),
+      identity: cardIdentityText(card, sameName.get(card) ?? null),
+      // 主卡高亮：按会员主卡名匹配，仍留在本组内当一项（不抽到顶部）
+      isMain: Boolean(mainCard) && mainCard !== '—' && card.title === mainCard,
+      note
+    }
+  }
+
+  function openMemberDetail(row: YimaiCustomer) {
+    memberDlg.row = row
+    memberDlg.visible = true
+    memberDlg.degraded = ''
+    void loadMemberDetail(row)
+  }
+
+  async function loadMemberDetail(row: YimaiCustomer) {
+    memberDlg.loading = true
+    let customer: YimaiCustomer = row
+    try {
+      // `/customers/{id}` 返回 `{ customer, logs, leads }`；个别版本直接返回会员本体，
+      // 这里两种都接住，避免因外壳差异当成立即失败。
+      const d = (await getCustomerDetail(row.id)) as unknown as
+        | { customer?: YimaiCustomer }
+        | YimaiCustomer
+        | null
+      const inner =
+        d && typeof d === 'object' && 'customer' in (d as Record<string, unknown>)
+          ? (d as { customer?: YimaiCustomer }).customer
+          : (d as YimaiCustomer | null)
+      if (inner && typeof inner === 'object') customer = { ...row, ...inner }
+      else memberDlg.degraded = '详情接口未返回会员数据，以下按列表快照展示'
+    } catch {
+      // 接口未就绪 / 超时 / 权限不足：一律降级为列表快照，不弹错、不白屏
+      memberDlg.degraded = '详情接口暂不可用，以下按列表快照展示（可能不含历史卡）'
+    }
+
+    try {
+      const cards = collectDetailCards(customer)
+      const summary = summarizeCustomerCards(customer)
+      const mainCard = summary.mainCard || customer.mainCard || ''
+      const sameName = sameNameIndexMap(cards)
+      const groups = DETAIL_GROUPS.map((g) => ({ ...g, rows: [] as DetailCardRow[] }))
+      cards.forEach((card, i) => {
+        const key = detailGroupKey(card)
+        const group = groups.find((g) => g.key === key) ?? groups[0]
+        group.rows.push(toDetailCardRow(card, i, mainCard, sameName))
+      })
+      memberDlg.groups = groups
+      memberDlg.total = cards.length
+      memberDlg.mainCard = mainCard || '—'
+      // 卡片字段整体缺失（后端只给汇总）时，明确说明「用的是哪个口径」，不假装有明细
+      if (!cards.length) {
+        memberDlg.degraded =
+          summary.hasV39 || customer.mainCard
+            ? '该会员暂无卡项明细（后端只返回汇总字段），可稍后重新同步会员数据'
+            : '该会员还没有卡项记录'
+      } else if (!customer.cardStats) {
+        memberDlg.degraded =
+          '后端未返回卡项汇总快照（cardStats），历史卡可能缺失 —— 建议执行一次会员同步'
+      }
+    } catch (e) {
+      // 归类阶段理论上不会抛；真抛了也只影响本弹层，列表页照常可用
+      console.error('[members.openMemberDetail]', e)
+      memberDlg.degraded = '卡项解析失败，已按空列表展示'
+      memberDlg.groups = DETAIL_GROUPS.map((g) => ({ ...g, rows: [] as DetailCardRow[] }))
+      memberDlg.total = 0
+    } finally {
+      memberDlg.loading = false
+    }
   }
 
   /**
@@ -1614,7 +1943,16 @@
   const consultantOptions = ref<string[]>([])
   async function loadConsultants() {
     try {
-      consultantOptions.value = (await queryCustomerOptions()).consultants ?? []
+      // 与留资表单同口径：账号规范名优先（写进归属列能被直接解析到人），
+      // 历史写法兜底（旧数据仍可原样保存，不被下拉锁死）。
+      const [opts, staff] = await Promise.all([
+        queryCustomerOptions().catch(() => ({ consultants: [] as string[] })),
+        listStaffOptions().catch(() => [])
+      ])
+      const names = new Set<string>()
+      for (const s of staff) if (s.name) names.add(s.name)
+      for (const c of opts.consultants ?? []) if (c) names.add(c)
+      consultantOptions.value = [...names].sort((a, b) => a.localeCompare(b, 'zh'))
     } catch {
       /* 静默失败，允许手输 */
     }
@@ -2091,7 +2429,11 @@
    */
   function cardActions(row: YimaiCustomer): MobileCardAction[] {
     const lists = memberLists(row)
-    const actions: MobileCardAction[] = []
+    // 「会员详情」放最前：手机端只平铺 2 个动作，看卡是最高频的只读动作，
+    // 不能让它被清单专属动作挤进「更多」。
+    const actions: MobileCardAction[] = [
+      { text: '会员详情', type: 'primary', onClick: () => openMemberDetail(row) }
+    ]
 
     if (lists.includes('待续课')) {
       actions.push({ text: '续课计划', type: 'warning', onClick: () => openRenewal(row) })
@@ -2616,6 +2958,195 @@
       line-height: 1.6;
       color: var(--art-gray-700, #606266);
       border-left: 2px solid var(--el-border-color-lighter);
+    }
+  }
+
+  /* ---------- 会员详情（v3.11）：全部卡项四档 ---------- */
+  .member-name-btn {
+    height: auto;
+    padding: 0;
+    font-weight: 500;
+    justify-content: flex-start;
+  }
+
+  .mdt-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--el-border-color-lighter);
+
+    &__name {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    &__meta {
+      margin-top: 2px;
+      font-size: 12px;
+      color: var(--art-gray-500, #a8abb2);
+    }
+
+    &__stat {
+      font-size: 12px;
+      line-height: 1.7;
+      text-align: right;
+      color: var(--art-gray-600, #909399);
+
+      b {
+        font-size: 15px;
+        color: var(--art-gray-900, #303133);
+      }
+    }
+
+    &__main {
+      color: var(--art-gray-500, #a8abb2);
+    }
+  }
+
+  .mdt-body {
+    max-height: 58vh;
+    overflow-y: auto;
+    padding-right: 2px;
+  }
+
+  .mdt-group {
+    & + & {
+      margin-top: 14px;
+    }
+
+    &__head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+
+    &__title {
+      font-size: 13px;
+      font-weight: 600;
+
+      /* 四档用左侧色条区分，扫读时不必逐条读状态文案 */
+      &.is-active {
+        color: var(--el-color-success);
+      }
+
+      &.is-unactivated {
+        color: var(--el-color-info);
+      }
+
+      &.is-expired {
+        color: var(--el-color-warning);
+      }
+
+      &.is-usedUp {
+        color: var(--el-color-danger);
+      }
+    }
+
+    &__hint {
+      font-size: 12px;
+      color: var(--art-gray-400, #c0c4cc);
+    }
+
+    &__empty {
+      padding: 6px 0 6px 8px;
+      font-size: 12px;
+      color: var(--art-gray-400, #c0c4cc);
+      border-left: 2px dashed var(--el-border-color-lighter);
+    }
+  }
+
+  .mdt-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .mdt-card {
+    padding: 8px 10px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+
+    /* 主卡：只加高亮标记，仍留在原分组里（不是单独一档） */
+    &.is-main {
+      background: var(--el-color-danger-light-9, #fef0f0);
+      border-color: var(--el-color-danger-light-5, #fab6b6);
+    }
+
+    &__head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+
+    &__name {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    &__meta {
+      margin-top: 2px;
+      font-size: 12px;
+      color: var(--art-gray-500, #a8abb2);
+    }
+
+    &__line {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--art-gray-700, #606266);
+    }
+
+    &__qty {
+      font-weight: 600;
+      color: var(--art-gray-900, #303133);
+    }
+
+    &__deadline {
+      color: var(--art-gray-600, #909399);
+    }
+
+    &__note {
+      margin-top: 2px;
+      font-size: 12px;
+      color: var(--el-color-warning);
+    }
+  }
+
+  .mdt-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+
+    &__hint {
+      font-size: 12px;
+      color: var(--art-gray-400, #c0c4cc);
+      text-align: left;
+    }
+  }
+
+  /* 手机端：弹层铺满，卡项块按单列排 */
+  @media (max-width: 768px) {
+    .mdt-head {
+      flex-direction: column;
+      gap: 6px;
+
+      &__stat {
+        text-align: left;
+      }
+    }
+
+    .mdt-body {
+      max-height: 62vh;
     }
   }
 </style>

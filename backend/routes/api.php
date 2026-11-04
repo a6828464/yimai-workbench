@@ -145,9 +145,15 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ---------- 人员管理（仅超管） ----------
     Route::get('/accounts', [AccountController::class, 'index']);
-    // 人员归属映射：查未映射的姓名 / 维护别名。放在 /accounts/{key} 之前，避免被当参数吃掉
+    // 身份归一：查未映射姓名 / 认领名字 / 全量回填 / 合并账号。
+    // 全部放在 /accounts/{key} 之前，避免 staff-mapping 被当成 key 参数吃掉。
     Route::get('/accounts/staff-mapping', [AccountController::class, 'staffMapping']);
+    Route::post('/accounts/staff-mapping/assign', [AccountController::class, 'assignStaffName']);
+    Route::post('/accounts/staff-mapping/repair', [AccountController::class, 'repairStaffMapping']);
+    Route::post('/accounts/staff-mapping/merge', [AccountController::class, 'mergeStaffAccount']);
     Route::put('/accounts/{key}/aliases', [AccountController::class, 'updateAliases']);
+    // 归属下拉的统一数据源（所有登录用户可读：录留资/会员时要选人）
+    Route::get('/staff/options', [AccountController::class, 'staffOptions']);
     // 微信身份绑定（小程序授权登录的唯一入口；须放在 /accounts/{key} 之前）
     Route::get('/accounts/{key}/wx-binding', [AccountController::class, 'wxBinding']);
     Route::put('/accounts/{key}/wx-binding', [AccountController::class, 'bindWx']);
@@ -245,7 +251,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/system/logs', [SystemController::class, 'logs']);
     Route::get('/system/retention', [SystemController::class, 'retentionShow']);
     Route::put('/system/retention', [SystemController::class, 'retentionUpdate']);
-    Route::get('/system/changelog', [SystemController::class, 'changelog']);
+    // 注意：/system/changelog 不在登录组里，见文件末尾「公开接口」——小程序未登录也要看版本说明
     Route::post('/system/update', [SystemController::class, 'update']);
 
     // ---------- 薪酬计算（仅超管：控制器内每个端点首行 requireSuper，与 BackupController 同模式） ----------
@@ -277,3 +283,18 @@ Route::prefix('public')->middleware('throttle:60,1')->group(function () {
     Route::get('/post-class/{code}', [PublicShareController::class, 'postClass']);
     Route::get('/sales/{token}', [PublicShareController::class, 'sales']);
 });
+
+/*
+|--------------------------------------------------------------------------
+| 公开接口（免登录）：更新日志
+|--------------------------------------------------------------------------
+| 为什么公开：小程序「我的 → 关于」需要在**未登录**（未授权微信登录、token 过期）时也能
+| 显示版本号与最近几条更新内容，否则用户点进来只能看到空白或「请先登录」，等于这个菜单
+| 在游客态下不可用（v3.11 馆主需求）。
+|
+| 为什么可以公开：这个接口只读仓库里随包发布的 CHANGELOG.md 的**标题**（版本/日期/一句话），
+| 没有任何业务数据，也不接受任何写参数；响应里的 `latest`（远端发行说明）只在登录后才去拉，
+| 免登录调用返回空形状，避免这个接口被当成访问外部站点的匿名放大器。
+| 仍然保留限流：公开接口不设限流就是一张免费的压测门票。
+*/
+Route::get('/system/changelog', [SystemController::class, 'changelog'])->middleware('throttle:60,1');

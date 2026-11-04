@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\AuditLog;
 use App\Models\Customer;
+use App\Models\KyBooking;
 use App\Models\Lead;
 use App\Models\Task;
 use App\Models\User;
@@ -48,9 +49,11 @@ class LeadAuthorizationTest extends TestCase
         $this->assertDatabaseHas('leads', ['id' => $id, 'venue' => '绿地店', 'remark' => '更新']);
     }
 
-    public function test_service_teacher_accesses_own_venue_assigned_or_unassigned_leads(): void
+    public function test_service_teacher_sees_only_own_leads_and_not_the_unassigned_pool(): void
     {
-        // 服务老师（会籍顾问）是客资承接主体：本人名下 + 待承接池
+        // 2026-11 口径：未分配客资只对超管/店长/新媒体可见，服务老师只看**明确分到自己名下**的。
+        // 待承接池下线前，这条测试锁的是「本人名下 + 全部未分配」，正是用户反馈的
+        // 「没有分配的客资乱分配」的来源。
         $service = $this->user('service-green', '绿地顾问', 'R_SERVICE', '绿地店');
         $own = $this->lead('本人客资', '13800000002', '绿地店', '绿地顾问');
         $unassigned = $this->lead('待认领客资', '13800000002', '绿地店');
@@ -58,13 +61,230 @@ class LeadAuthorizationTest extends TestCase
         $otherVenue = $this->lead('跨店客资', '13800000002', '东部店');
         Sanctum::actingAs($service);
 
+        // 列表：只剩本人名下（未分配与同事的都不在）
+        $names = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all();
+        $this->assertSame(['本人客资'], $names);
+
+        // 手机号查重：只回本人那一条（未分配客资不再命中）
         $this->getJson('/api/leads/check?phone=13800000002')
             ->assertOk()
-            ->assertJsonCount(2, 'data.matches');
+            ->assertJsonCount(1, 'data.matches');
+
         $this->patchJson("/api/leads/{$own->id}", ['remark' => '本人跟进'])->assertOk();
-        $this->patchJson("/api/leads/{$unassigned->id}", ['serviceTeacher' => '绿地顾问'])->assertOk();
+        // 未分配：列表看不到，直达 URL 也不能改（否则就是「列表看不到、URL 能改」的 IDOR）
+        $this->patchJson("/api/leads/{$unassigned->id}", ['serviceTeacher' => '绿地顾问'])->assertForbidden();
+        $this->deleteJson("/api/leads/{$unassigned->id}")->assertForbidden();
+        $this->getJson("/api/leads/{$unassigned->id}/history")->assertForbidden();
         $this->patchJson("/api/leads/{$colleague->id}", ['remark' => '越权'])->assertForbidden();
         $this->getJson("/api/leads/{$otherVenue->id}/history")->assertForbidden();
+    }
+
+    /**
+     * 超管 / 店长 / 新媒体仍然看得到未分配客资 —— 收口的是老师侧，不是管理层。
+     *
+     * 这三类角色是客资的**分配方**：如果他们也看不到未分配客资，就没人能把它分配给谁。
+     */
+    public function test_unassigned_leads_stay_visible_to_manager_super_and_media(): void
+    {
+        $unassigned = $this->lead('待分配客资', '13800000021', '绿地店');
+        $otherVenueUnassigned = $this->lead('东部待分配客资', '13800000022', '东部店');
+
+        // 店长：本店全部（含未分配），可改
+        Sanctum::actingAs($this->user('manager-pool', '绿地店长', 'R_MANAGER', '绿地店'));
+        $names = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all();
+        $this->assertContains('待分配客资', $names);
+        $this->assertNotContains('东部待分配客资', $names, '店长仍只限本店');
+        $this->patchJson("/api/leads/{$unassigned->id}", ['serviceTeacher' => '绿地顾问'])->assertOk();
+        $this->assertDatabaseHas('leads', ['id' => $unassigned->id, 'service_teacher' => '绿地顾问']);
+
+        // 超管：双店全部，可改
+        Sanctum::actingAs($this->user('super-pool', '老板', 'R_SUPER', null));
+        $names = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all();
+        $this->assertContains('待分配客资', $names);
+        $this->assertContains('东部待分配客资', $names);
+        $this->patchJson("/api/leads/{$otherVenueUnassigned->id}", ['remark' => '老板分配'])->assertOk();
+
+        // 新媒体：只看得到本部门录入的（未分配也不例外）
+        $media = $this->user('media-pool', '新媒体小李', 'R_MEDIA', null);
+        $mine = $this->lead('新媒体录的待分配', '13800000023', '东部店', '', $media->name);
+        Sanctum::actingAs($media);
+        $names = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all();
+        $this->assertSame(['新媒体录的待分配'], $names);
+        $this->patchJson("/api/leads/{$mine->id}", ['remark' => '新媒体跟进'])->assertOk();
+        $this->patchJson("/api/leads/{$unassigned->id}", ['remark' => '越权'])->assertForbidden();
+    }
+
+    /**
+     * 老师侧录入的客资**默认落本人名下**：不会掉进未分配池，也不会「录完就消失」。
+     *
+     * 待承接池下线时必须一起补这条，否则老师录一条不填顾问的客资，自己的列表里立刻看不到
+     * —— 数据没丢（管理层看得见），但录的人会以为丢了。归属列存本人后，列表与单条准入
+     * （`scopeLeadsForUser` / `userCanAccessLead`）双双认她，不存在「列表看不到、URL 能改」。
+     */
+    public function test_teacher_created_lead_is_owned_by_the_creator_not_dropped_into_the_pool(): void
+    {
+        $service = $this->user('service-own-create', '绿地顾问', 'R_SERVICE', '绿地店');
+        Sanctum::actingAs($service);
+
+        $id = $this->postJson('/api/leads', [
+            'name' => '自己录的客资', 'source' => '到店', 'venue' => '绿地店',
+        ])->assertOk()->json('data.id');
+
+        $this->assertDatabaseHas('leads', [
+            'id' => $id,
+            'service_teacher' => '绿地顾问',
+            'service_teacher_user_id' => $service->id,
+        ]);
+
+        $names = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all();
+        $this->assertSame(['自己录的客资'], $names);
+        $this->patchJson("/api/leads/{$id}", ['remark' => '自己跟进'])->assertOk();
+
+        // 授课老师同理（她也可能是录客资的人）
+        $coach = $this->user('coach-own-create', '绿地教练', 'R_TEACHER', '绿地店');
+        Sanctum::actingAs($coach);
+        $coachId = $this->postJson('/api/leads', [
+            'name' => '教练录的客资', 'source' => '到店', 'venue' => '绿地店',
+        ])->assertOk()->json('data.id');
+        $this->assertDatabaseHas('leads', ['id' => $coachId, 'service_teacher' => '绿地教练']);
+        $this->assertContains(
+            '教练录的客资',
+            collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all()
+        );
+
+        // 管理层录入仍然保持「未分配」（由他们决定分给谁）：老师看不到，也不能改
+        Sanctum::actingAs($this->user('manager-own-create', '绿地店长', 'R_MANAGER', '绿地店'));
+        $poolId = $this->postJson('/api/leads', [
+            'name' => '店长录入待分配', 'source' => '到店', 'venue' => '绿地店',
+        ])->assertOk()->json('data.id');
+        $this->assertDatabaseHas('leads', ['id' => $poolId, 'service_teacher' => '']);
+
+        Sanctum::actingAs($service);
+        $this->getJson("/api/leads/{$poolId}/history")->assertForbidden();
+        $this->deleteJson("/api/leads/{$poolId}")->assertForbidden();
+    }
+
+    /**
+     * 授课老师的「私教课学员」通道**只在客资已有真人服务老师时生效**（t5 O3）。
+     *
+     * 馆主原话：「所有没有标记会籍顾问、没有分配服务老师的客户，都不应该出现在超管店长
+     * 新媒体以外任何人的会员管理或留资管理中」。会员侧已由 customerHasOwner 挡住，
+     * 客资侧此前还能靠「手机号 = 本人私教学员」把无主客资带出来 —— 这条把它钉住。
+     */
+    public function test_coach_private_student_channel_requires_an_owned_lead(): void
+    {
+        $coach = $this->user('coach-pool', '绿地教练', 'R_TEACHER', '绿地店');
+        // 私教学员关系：手机号 13800000061 是这位教练的私教签到学员
+        KyBooking::create([
+            'source_key' => 'V1:M61', 'venue' => '绿地店', 'booking_type' => '私教',
+            'member_id' => 'M61', 'member_name' => '私教学员', 'phone' => '13800000061',
+            'start_at' => now()->subDay(), 'course_name' => '私教', 'status' => 'signed',
+            'course_kind' => 'private', 'teacher_name' => '绿地教练', 'teacher_user_id' => $coach->id,
+        ]);
+        // 同手机号两条客资：一条无主、一条已分配给别人
+        $unowned = $this->lead('私教学员无主客资', '13800000061', '绿地店');
+        $owned = $this->lead('私教学员有主客资', '13800000061', '绿地店', '其他顾问');
+
+        $coach = User::findOrFail($coach->id);   // privateStudentKeys 请求内缓存，换实例=下一次请求
+        Sanctum::actingAs($coach);
+
+        $names = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all();
+        $this->assertSame(['私教学员有主客资'], $names, '无主客资不能靠私教手机号命中');
+        // 查重同样只回有主那条
+        $this->getJson('/api/leads/check?phone=13800000061')->assertOk()->assertJsonCount(1, 'data.matches');
+
+        // 单条入口同口径：无主客资 403，有主（手机号命中）200
+        $this->patchJson("/api/leads/{$unowned->id}", ['remark' => '越权'])->assertForbidden();
+        $this->getJson("/api/leads/{$unowned->id}/history")->assertForbidden();
+        $this->patchJson("/api/leads/{$owned->id}", ['remark' => '本人私教学员'])->assertOk();
+
+        // 店长（分配方）两条都看得到：证明数据本身存在，老师的空集是收口而不是没数据
+        Sanctum::actingAs($this->user('coach-pool-manager', '绿地店长', 'R_MANAGER', '绿地店'));
+        $managerNames = collect($this->getJson('/api/leads')->assertOk()->json('data.records'))->pluck('name')->all();
+        $this->assertContains('私教学员无主客资', $managerNames);
+        $this->assertContains('私教学员有主客资', $managerNames);
+    }
+
+    /**
+     * 「管理层 + 老师」的多角色账号录入客资时**不自动挂本人**（t5 O4）。
+     *
+     * 自动补本人是为了「纯老师录完不至于消失」；管理层是分配方，它们录的客资按既有口径
+     * 保持未分配，留给认领/分配。两条口径同时成立才叫一致。
+     */
+    public function test_manager_side_multi_role_does_not_auto_assign_new_lead(): void
+    {
+        // 店长 + 服务老师
+        $managerService = $this->user('multi-ms', '绿地店长', 'R_MANAGER', '绿地店');
+        $managerService->forceFill(['roles' => ['R_MANAGER', 'R_SERVICE']])->save();
+        Sanctum::actingAs($managerService);
+        $id = $this->postJson('/api/leads', [
+            'name' => '店长兼服务录入', 'source' => '到店', 'venue' => '绿地店',
+        ])->assertOk()->json('data.id');
+        $this->assertDatabaseHas('leads', ['id' => $id, 'service_teacher' => '']);
+
+        // 超管 + 授课老师：双店账号（venue=null），按管理层口径不自动挂人；
+        // venue 也不再被账号的 null 覆盖（t10 修的是同一处中间件分支）
+        $superTeacher = $this->user('multi-st', '老板', 'R_SUPER', null);
+        $superTeacher->forceFill(['roles' => ['R_SUPER', 'R_TEACHER']])->save();
+        Sanctum::actingAs($superTeacher);
+        $id2 = $this->postJson('/api/leads', [
+            'name' => '超管兼老师录入', 'source' => '到店', 'venue' => '绿地店',
+        ])->assertOk()->json('data.id');
+        $this->assertDatabaseHas('leads', ['id' => $id2, 'service_teacher' => '']);
+
+        // 新媒体 + 授课老师
+        $mediaTeacher = $this->user('multi-mt', '新媒体小李', 'R_MEDIA', '绿地店');
+        $mediaTeacher->forceFill(['roles' => ['R_MEDIA', 'R_TEACHER']])->save();
+        Sanctum::actingAs($mediaTeacher);
+        $id3 = $this->postJson('/api/leads', [
+            'name' => '新媒体兼老师录入', 'source' => '到店', 'venue' => '绿地店',
+        ])->assertOk()->json('data.id');
+        $this->assertDatabaseHas('leads', ['id' => $id3, 'service_teacher' => '']);
+
+        // 纯老师（对照）：仍然自动挂本人
+        Sanctum::actingAs($this->user('multi-pure', '纯顾问', 'R_SERVICE', '绿地店'));
+        $id4 = $this->postJson('/api/leads', [
+            'name' => '纯顾问录入', 'source' => '到店', 'venue' => '绿地店',
+        ])->assertOk()->json('data.id');
+        $this->assertDatabaseHas('leads', ['id' => $id4, 'service_teacher' => '纯顾问']);
+    }
+
+    /**
+     * 管理层叠加老师角色（R_SUPER + R_TEACHER）录客资按**管理层**口径（t10）。
+     *
+     * 修复前：中间件按 `elseif` 逐个角色判断，超管兼老师会掉进「授课老师」分支，
+     * 把 venue 覆盖成账号自身的 null → `venue required` 422，连录客资都做不了；
+     * 字段也被锁成老师可见集（改不了成交金额）。现在按管理层处理：venue 取请求值、
+     * 字段不锁，但仍保持「未分配」（分配方的既有口径）。
+     */
+    public function test_super_with_teacher_role_can_create_lead_with_request_venue(): void
+    {
+        $superTeacher = $this->user('super-teacher-create', '老板', 'R_SUPER', null);
+        $superTeacher->forceFill(['roles' => ['R_SUPER', 'R_TEACHER']])->save();
+        Sanctum::actingAs($superTeacher);
+
+        $id = $this->postJson('/api/leads', [
+            'name' => '超管兼老师录入', 'source' => '到店', 'venue' => '东部店',
+        ])->assertOk()->json('data.id');
+        $this->assertDatabaseHas('leads', ['id' => $id, 'venue' => '东部店', 'service_teacher' => '']);
+
+        // 字段不被老师白名单锁住（纯老师改 dealAmount 会被 403）
+        $this->patchJson("/api/leads/{$id}", ['dealAmount' => 1200])->assertOk();
+        $this->assertDatabaseHas('leads', ['id' => $id, 'deal_amount' => 1200]);
+    }
+
+    /** 店长删除客资仍锁本店（t5 O5）：跨店 403、本店 200。 */
+    public function test_manager_delete_lead_is_venue_locked(): void
+    {
+        $manager = $this->user('manager-delete', '绿地店长', 'R_MANAGER', '绿地店');
+        $own = $this->lead('本店待删客资', '13800000071', '绿地店');
+        $other = $this->lead('东部待删客资', '13800000072', '东部店');
+        Sanctum::actingAs($manager);
+
+        $this->deleteJson("/api/leads/{$other->id}")->assertForbidden();
+        $this->assertDatabaseHas('leads', ['id' => $other->id]);
+        $this->deleteJson("/api/leads/{$own->id}")->assertOk();
+        $this->assertDatabaseMissing('leads', ['id' => $own->id]);
     }
 
     public function test_coach_sees_own_and_taught_leads_but_not_the_unassigned_pool(): void
@@ -261,12 +481,12 @@ class LeadAuthorizationTest extends TestCase
         $this->assertSame(['老师会员'], collect($followups)->pluck('name')->all());
         $serviceAlerts = collect($this->getJson('/api/today/alerts')->assertOk()->json('data'))->pluck('text')->join(' ');
         $this->assertStringContainsString('老师客资', $serviceAlerts);
-        // 服务老师承接待分配池
-        $this->assertStringContainsString('待分配客资', $serviceAlerts);
+        // 未分配客资只对超管/店长/新媒体可见：服务老师不再从提醒里看到待分配池
+        $this->assertStringNotContainsString('待分配客资', $serviceAlerts);
         $this->assertStringNotContainsString('同事客资', $serviceAlerts);
         $this->assertStringNotContainsString('跨店', $serviceAlerts);
 
-        // 授课老师看本人作为会籍顾问的会员与客资，但不承接待分配池
+        // 授课老师看本人作为会籍顾问的会员与客资，同样不看未分配
         Sanctum::actingAs($this->user('today-coach', '绿地老师', 'R_TEACHER', '绿地店'));
         $coachFollowups = $this->getJson('/api/today/followups')->assertOk()->json('data');
         $this->assertSame(['老师会员'], collect($coachFollowups)->pluck('name')->all());
@@ -279,6 +499,8 @@ class LeadAuthorizationTest extends TestCase
         Sanctum::actingAs($this->user('today-manager', '绿地店长', 'R_MANAGER', '绿地店'));
         $managerAlerts = collect($this->getJson('/api/today/alerts')->assertOk()->json('data'))->pluck('text')->join(' ');
         $this->assertStringNotContainsString('跨店', $managerAlerts);
+        // 店长是分配方：未分配客资必须出现在他的提醒里（收口只针对老师侧）
+        $this->assertStringContainsString('待分配客资', $managerAlerts);
 
         // 新媒体：只看自己录入的客资。别人的客资（含跨店）都不应出现在提醒里。
         $media = $this->user('today-media', '新媒体', 'R_MEDIA', null);

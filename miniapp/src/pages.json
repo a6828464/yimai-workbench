@@ -20,6 +20,15 @@
       }
     },
     {
+      "path": "pages/guide/guide",
+      "style": {
+        "navigationBarTitleText": "到店指引",
+        "navigationBarTextStyle": "white",
+        "navigationBarBackgroundColor": "#0F1B16",
+        "backgroundColor": "#F2F4F2"
+      }
+    },
+    {
       "path": "pages/book/book",
       "style": {
         "navigationBarTitleText": "约课",

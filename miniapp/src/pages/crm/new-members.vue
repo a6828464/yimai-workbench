@@ -20,7 +20,8 @@ import { computed, ref } from 'vue'
 import { onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
 import { useUserStore } from '@/store/user'
 import { goPath, requireFeature } from '@/utils/nav'
-import { isManagerOrAbove, isSuper } from '@/utils/permission'
+import { isManagerOrAbove } from '@/utils/permission'
+import { canSwitchVenue } from '@/utils/venue'
 import {
   CULTIVATION_HEALTH_META,
   CULTIVATION_KINDS,
@@ -95,21 +96,27 @@ const kindSegOptions = computed(() => [
   ...CULTIVATION_KINDS.map((item) => ({ value: item.label }))
 ])
 
-/**
- * 只有超管能选门店：后端对店长 `hasRole(R_MANAGER)` 直接锁本店（传 venue 不生效），
- * 老师/服务/新媒体也被 scopeCustomersForUser 收窄——给了 picker 就是假选项，所以不显示。
- */
-const canPickVenue = computed(() => isSuper(user.roles))
+/** 判据与留资/会员页同源（utils/venue.ts）：**账号授权门店数 > 1** 才给切店 */
+const canPickVenue = computed(() => canSwitchVenue(user.venues, user.roles))
 
 const venueColumns = computed(() => [
   { label: '全部门店', value: '' },
   ...CULTIVATION_VENUES.map((name) => ({ label: name, value: name }))
 ])
 
-/** 非超管没有门店选择权：写清后端实际生效的范围，别写成「全部门店」误导人 */
+/**
+ * 写清后端**实际生效**的范围，别写成「全部门店」误导人。
+ * 店长是后端硬锁（`hasRole(R_MANAGER)` 直接 `where venue = 本店`，传参不生效），
+ * 所以即使账号上挂了两家店、给了 picker，也要把「锁定本店」这行字留住。
+ */
+const managerLocked = computed(
+  () => user.roles.includes('R_MANAGER') && !user.roles.includes('R_SUPER')
+)
+
 const venueText = computed(() => {
+  if (managerLocked.value) return `${user.venue || '本店'}（店长锁定本店）`
   if (canPickVenue.value) return venue.value || '全部门店'
-  if (isManagerOrAbove(user.roles)) return `${user.venue || '本店'}（店长锁定本店）`
+  if (isManagerOrAbove(user.roles)) return `${user.venue || '本店'}（管理岗锁定本店）`
   return user.venue || '按账号范围'
 })
 

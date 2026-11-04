@@ -16,7 +16,8 @@ import { computed, ref } from 'vue'
 import { onLoad, onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
-import { canUse, isMediaOnly, isSuper } from '@/utils/permission'
+import { canUse } from '@/utils/permission'
+import { useVenueFilter } from '@/utils/venue'
 import { useUserStore } from '@/store/user'
 import { LEAD_STATUSES, fetchLeads, stageLeadDraft } from '@/api/leads'
 import type { LeadEnums, MiniappLead } from '@/types'
@@ -35,20 +36,22 @@ const failed = ref(false)
 const user = useUserStore()
 
 /**
- * 门店筛选。
- *  超管 / 新媒体（双店账号）→ 可选全部或单店，切了才发 venue 参数；
- *  店长/服务/授课 → 后端 scopeLeadsForUser 已锁本店，这里只展示锁定标签。
+ * 门店筛选（口径见 utils/venue.ts，全小程序一份）。
+ *
+ * 判据从「超管 / 新媒体」改成 **账号授权门店数 > 1**：两个门店权限的普通账号
+ * 以前在任何页面都看不到切换标签，数据被固定在一家店上（v3.11 修的就是这条）。
+ *  - 双店账号 → 全部 / 绿地店 / 东部店，切了才发 venue 参数；
+ *  - 单店账号 → 后端 scopeLeadsForUser 已锁本店，只展示锁定标签（不给假选项）；
+ *  - 选择结果落 storage，切页返回、第二天再进都还是上次那家店。
  */
-const VENUE_ALL = '全部门店'
-const VENUE_OPTIONS = [
-  { label: '全部门店', value: VENUE_ALL },
-  { label: '绿地店', value: '绿地店' },
-  { label: '东部店', value: '东部店' }
-]
-const venue = ref(VENUE_ALL)
+const venueFilter = useVenueFilter()
+const canSwitchVenue = venueFilter.canSwitch
+const venueOptions = venueFilter.options
+const venue = venueFilter.venue
 /** 只有真的选了单店才发 venue 参数 */
-const venueParam = computed(() => (venue.value === VENUE_ALL ? undefined : venue.value))
-const canSwitchVenue = computed(() => isSuper(user.roles) || isMediaOnly(user.roles))
+const venueParam = venueFilter.venueParam
+/** 单店账号展示的锁定标签 */
+const lockedVenue = venueFilter.lockedLabel
 
 /** 新建入口按功能权限判断（不写死角色）：能看留资就能记一条，后端 store 不再拦截 */
 const canCreate = computed(() => canUse(user.roles, 'leads'))
@@ -99,8 +102,9 @@ function onTabChange(payload: { name: string | number }) {
   pickStatus(String(payload.name))
 }
 
-/** 切换门店：回到第一页重新拉 */
+/** 切换门店：记住这次选择，然后回到第一页重新拉 */
 function onVenueChange() {
+  venueFilter.commit()
   load(true)
 }
 
@@ -157,10 +161,9 @@ onLoad((options) => {
   const opt = (options ?? {}) as Record<string, string>
   const st = String(opt.status ?? '').trim()
   if (st && (LEAD_STATUSES as readonly string[]).includes(st)) status.value = st
+  // venue 深链是「有人从工作台卡片点进来」的明确意图 → 同样落盘（下次进页面沿用）
   const v = String(opt.venue ?? '').trim()
-  if (v && canSwitchVenue.value && VENUE_OPTIONS.some((o) => o.value === v)) {
-    venue.value = v
-  }
+  if (v && canSwitchVenue.value) venueFilter.apply(v)
 })
 
 onShow(() => {
@@ -202,11 +205,11 @@ onReachBottom(() => {
       <view class="filters__row">
         <view class="filters__cell">
           <wd-drop-menu v-if="canSwitchVenue">
-            <wd-drop-menu-item v-model="venue" :options="VENUE_OPTIONS" @change="onVenueChange" />
+            <wd-drop-menu-item v-model="venue" :options="venueOptions" @change="onVenueChange" />
           </wd-drop-menu>
           <view v-else class="vlock">
             <wd-icon name="location" size="13px" />
-            <text class="vlock__text ym-ellipsis">{{ user.venue || '本店' }}</text>
+            <text class="vlock__text ym-ellipsis">{{ lockedVenue }}</text>
           </view>
         </view>
         <view v-if="canCreate" class="create-btn ym-tap" @click="createNew">

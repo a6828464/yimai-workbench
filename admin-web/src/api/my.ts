@@ -10,6 +10,15 @@ import { USE_BACKEND, apiGet, apiPut, apiPost, apiDelete } from './backend'
 export interface MomentsPersonaPrefs {
   role: string
   audiences: string[]
+  /**
+   * 自定义人格（v3.11）：与身份角色、人群**并列的第三段人设**，自由文本（可多行）。
+   *
+   * 身份/人群是下拉枚举，用户常有「只有自己说得出的定位」写不进去
+   * （如「说话直接、爱开玩笑的产后康复老师」）。它**不覆盖**身份/人群，
+   * 只在生成提示词里作为第三段追加（`api/ai.ts::personaText` 末尾）。
+   * 键名固定 `customPersona`，与后端 profile JSON 同名；老数据没有该键 → 空串。
+   */
+  customPersona?: string
 }
 
 export interface XhsPersonaPrefs {
@@ -17,6 +26,8 @@ export interface XhsPersonaPrefs {
   accountName: string
   role: string
   audiences: string[]
+  /** 自定义人格（v3.11）：与朋友圈共用同一个 profile 键，小红书侧同样作为第三段追加 */
+  customPersona?: string
   /** 单选表达风格（历史字段，保留不动；新数据同时写 styles） */
   style: string
   /**
@@ -64,12 +75,17 @@ export const MY_PROFILE_DEFAULTS = {
   age: '',
   years: '',
   specialties: ['瑜伽', '普拉提'],
-  persona: { role: '全职老师', audiences: ['上班族', '想改善体态的人'] },
+  persona: {
+    role: '全职老师',
+    audiences: ['上班族', '想改善体态的人'],
+    customPersona: ''
+  },
   xhs: {
     ipType: '个人IP' as const,
     accountName: '',
     role: '全职老师',
     audiences: ['零基础女性', '久坐肩颈人群'],
+    customPersona: '',
     style: '真实接地气',
     styles: ['真实接地气'] as string[],
     conversion: '评论区留言',
@@ -110,12 +126,20 @@ function readLocal(): MyProfile {
 }
 
 function mergeProfile(cur: MyProfile, patch: Partial<MyProfile>): MyProfile {
+  const persona = { ...cur.persona, ...(patch.persona ?? {}) }
   return {
     ...cur,
     ...patch,
-    persona: { ...cur.persona, ...(patch.persona ?? {}) },
+    // 自定义人格：老数据没有该键 / 后端返回 null 时一律收敛成空串，
+    // 免得视图层拿到 undefined 后在 v-model 里变成 "undefined"
+    persona: { ...persona, customPersona: text(persona.customPersona) },
     xhs: normalizeXhsPrefs({ ...cur.xhs, ...(patch.xhs ?? {}) })
   }
+}
+
+/** 自由文本收敛：null / undefined / 非字符串 → 空串（不改内容、不裁剪用户输入） */
+function text(v: unknown): string {
+  return typeof v === 'string' ? v : v === null || v === undefined ? '' : String(v)
 }
 
 function toPayload(p: MyProfile): Record<string, unknown> {
@@ -168,9 +192,17 @@ function normalizeProfile(d: MyProfileResponse): MyProfile {
     specialties: d.profile?.specialties?.length
       ? d.profile.specialties
       : clone(MY_PROFILE_DEFAULTS.specialties),
-    persona: { ...clone(MY_PROFILE_DEFAULTS.persona), ...(d.profile?.persona ?? {}) },
+    persona: normalizeMomentsPersona({
+      ...clone(MY_PROFILE_DEFAULTS.persona),
+      ...(d.profile?.persona ?? {})
+    }),
     xhs: normalizeXhsPrefs({ ...clone(MY_PROFILE_DEFAULTS.xhs), ...(d.profile?.xhs ?? {}) })
   }
+}
+
+/** 朋友圈人设归一：`customPersona` 恒为字符串（缺失 = 空串，不猜默认人格） */
+function normalizeMomentsPersona(p: MomentsPersonaPrefs): MomentsPersonaPrefs {
+  return { ...p, customPersona: text(p.customPersona) }
 }
 
 /**
@@ -179,9 +211,10 @@ function normalizeProfile(d: MyProfileResponse): MyProfile {
  */
 function normalizeXhsPrefs(xhs: XhsPersonaPrefs): XhsPersonaPrefs {
   const styles = Array.isArray(xhs.styles) ? xhs.styles.filter(Boolean) : []
-  if (styles.length) return { ...xhs, styles, style: xhs.style || styles[0] }
+  const customPersona = text(xhs.customPersona)
+  if (styles.length) return { ...xhs, customPersona, styles, style: xhs.style || styles[0] }
   const fallback = xhs.style || MY_PROFILE_DEFAULTS.xhs.style
-  return { ...xhs, style: fallback, styles: [fallback] }
+  return { ...xhs, customPersona, style: fallback, styles: [fallback] }
 }
 
 // ---------- 我的资料 ----------

@@ -40,18 +40,37 @@ class EnsureUserIsEnabled
         return $response;
     }
 
+    /**
+     * 这个账号是否属于**管理层**（含「管理层 + 老师」的多角色叠加）。
+     *
+     * 为什么需要在留资入口区分：管理层是分配方，录客资要保持「未分配 + 可用完整字段」
+     * （超管可跨店、新媒体是双店账号）；老师侧则只能录到自己名下、字段也受限。
+     * 此前按 `elseif` 逐个角色判断，`R_SUPER + R_TEACHER` 这种叠加会掉进老师分支 ——
+     * 于是超管录客资时 venue 被账号的 null 覆盖，`venue required` 直接 422（既有缺陷）。
+     * 判定与 `LeadController::store` 的「自动挂本人」口径同源：两者都用这三个角色划管理层。
+     */
+    private function isManagerSide(User $user): bool
+    {
+        return userHasAnyRole($user, ['R_SUPER', 'R_MANAGER', 'R_MEDIA']);
+    }
+
     private function authorizeLeadRequest(Request $request, User $user): void
     {
         if ($request->is('api/leads') && $request->isMethod('post')) {
             Validator::make($request->all(), $this->leadRules(true))->validate();
+            // 分支只按「身份类别」选一次：管理层（含叠加老师角色）走管理层口径，
+            // 纯老师侧才锁字段、锁门店、锁初始状态。
             if (userHasRole($user, 'R_MANAGER')) {
-                $request->merge(['venue' => $user->venue]);
-            } elseif (userHasRole($user, 'R_SERVICE')) {
+                // 店长：本店。venue 为空时不写 null 覆盖（否则请求里的合法门店会被抹成 null → 422）
+                if ((string) $user->venue !== '') {
+                    $request->merge(['venue' => $user->venue]);
+                }
+            } elseif (! $this->isManagerSide($user) && userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER'])) {
                 $this->assertTeacherFields($request, true, $user);
-                $request->merge(['venue' => $user->venue, 'status' => '新留资']);
-            } elseif (userHasRole($user, 'R_TEACHER')) {
-                $this->assertTeacherFields($request, true, $user);
-                $request->merge(['venue' => $user->venue, 'status' => '新留资']);
+                $request->merge(['status' => '新留资']);
+                if ((string) $user->venue !== '') {
+                    $request->merge(['venue' => $user->venue]);
+                }
             }
 
             return;
@@ -69,8 +88,11 @@ class EnsureUserIsEnabled
         if ($request->isMethod('patch')) {
             Validator::make($request->all(), $this->leadRules(false))->validate();
             if (userHasRole($user, 'R_MANAGER')) {
-                $request->merge(['venue' => $user->venue]);
-            } elseif (userHasRole($user, 'R_SERVICE') || userHasRole($user, 'R_TEACHER')) {
+                if ((string) $user->venue !== '') {
+                    $request->merge(['venue' => $user->venue]);
+                }
+            } elseif (! $this->isManagerSide($user)
+                && userHasAnyRole($user, ['R_SERVICE', 'R_TEACHER'])) {
                 $this->assertTeacherFields($request, false, $user);
             }
         }
@@ -128,59 +150,16 @@ class EnsureUserIsEnabled
         return $query->exists();
     }
 
+    /**
+     * 单条客资的读写准入。
+     *
+     * 判据已收口到 `userCanAccessLead()`（helpers.php）：中间件、今日待办的标记处理、
+     * 以及任何新的单条入口都调用同一份，避免出现「列表里看不到、直达 URL 能改」。
+     * 这里保留方法名只是因为 `authorizeLeadRequest()` / `canSeePhoneMatch()` 调用它。
+     */
     private function canAccessLead(User $user, Lead $lead): bool
     {
-        // 超管：双店全权，不受门店约束
-        if (userHasRole($user, 'R_SUPER')) {
-            return true;
-        }
-
-        // 新媒体：**只认本人录入的**，与列表口径严格一致。
-        //
-        // 列表走 scopeLeadsForUser 的 media 分支 —— `staffOwnerFilter($user,'created_by_user_id','created_by')`
-        // （helpers.php:1096-1098）；而此处原先对 R_MEDIA 直接 `return true`，使新媒体能改/删
-        // **任意门店**留资的 venue/deal_amount/status。两套口径相差一个门店维度，是典型 IDOR。
-        // 注：v3.1.64 当时只收口了列表，单条路径被遗漏，遗留至今。
-        //
-        // 「有 store 角色」的新媒体（多角色叠加）由下面的 MANAGER/SERVICE/TEACHER 分支接管，
-        // 不会被这里提前拦死；姓名/别名并集判定复用 staffOwnsRow，与列表同谓词。
-        if (userHasRole($user, 'R_MEDIA')
-            && ! userHasAnyRole($user, ['R_MANAGER', 'R_SERVICE', 'R_TEACHER'])) {
-            return staffOwnsRow($user, $lead, 'created_by_user_id', 'created_by');
-        }
-
-        if ($lead->venue !== $user->venue) {
-            return false;
-        }
-
-        if (userHasRole($user, 'R_MANAGER')) {
-            return true;
-        }
-        // 服务老师（会籍顾问）：本人名下的客资 + 待承接池。
-        // 本人判断走 staffOwnsRow（id 或姓名/别名并集），与 scopeLeadsForUser 完全同口径 ——
-        // 只比 $user->name 会出现「列表里看得见、点开改却 403」：改过名或有别名的老师，
-        // 其历史留资的归属列写的是旧名，列表（走 staffNames）认，这里原先不认。
-        if (userHasRole($user, 'R_SERVICE')
-            && ((string) $lead->service_teacher === ''
-                || staffOwnsRow($user, $lead, 'service_teacher_user_id', 'service_teacher'))) {
-            return true;
-        }
-        // 授课老师：本人作为会籍顾问的 + 本人上过体验课的 + 本人私教学员对应的 + 本人录入的
-        if (userHasRole($user, 'R_TEACHER')) {
-            if (staffOwnsRow($user, $lead, 'service_teacher_user_id', 'service_teacher')
-                || staffOwnsRow($user, $lead, 'trial_teacher_user_id', 'trial_teacher')) {
-                return true;
-            }
-            if (staffOwnsRow($user, $lead, 'created_by_user_id', 'created_by')) {
-                return true;
-            }
-            // privateStudentKeys 里的号码是纯数字，留资侧的也要先归一才能比中
-            $phone = normalizePhone((string) $lead->phone);
-
-            return $phone !== '' && in_array($phone, privateStudentKeys($user)['phones'], true);
-        }
-
-        return false;
+        return userCanAccessLead($user, $lead);
     }
 
     /**
@@ -191,6 +170,7 @@ class EnsureUserIsEnabled
      * 保留的两条业务控制不变：不能指派给别人、不能自己标记成交。
      */
     private const TEACHER_FIELDS_CREATE = ['leadDate', 'name', 'phone', 'wechat', 'demand', 'source', 'orderPlatform', 'venue', 'serviceTeacher', 'status', 'remark'];
+
     private const TEACHER_FIELDS_UPDATE = ['demand', 'status', 'remark', 'serviceTeacher', 'trialTime', 'trialTopic', 'trialTeacher', 'trialCards'];
 
     private function assertTeacherFields(Request $request, bool $creating, User $user): void

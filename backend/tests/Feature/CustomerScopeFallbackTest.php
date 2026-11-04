@@ -232,6 +232,141 @@ use Tests\TestCase;
 
     // ------------------------------------------------------------- 注册写入 roles
 
+    // ------------------------------------------------ 未分配归属：只给管理层与新媒体
+
+    /**
+     * 未分配的会员（顾问与负责人都空 / 占位）**只对超管、店长、新媒体可见**。
+     *
+     * 用户原话（2026-11）：「所有没有标记会籍顾问、没有分配服务老师的客户，都不应该出现在
+     * 超管店长新媒体以外任何人的会员管理或留资管理中」。这条把口径钉在 scope 上：
+     *  - 服务老师 / 授课老师：只看得到有明确主人的行（姓名或 `*_user_id` 任一命中本人）；
+     *  - 店长：本店全部（含未分配）—— 它是分配方，看不到就没法分配；
+     *  - 超管：双店全部。
+     * 另外钉住「列表与单条同口径」：列表看不到的未分配会员，直达 URL 不能看也不能改。
+     */
+    public function test_unassigned_customers_are_invisible_to_service_and_teacher_but_visible_to_manager_and_super(): void
+    {
+        $service = $this->user('pool-service', '绿地顾问', 'R_SERVICE', '绿地店');
+        $teacher = $this->user('pool-teacher', '绿地老师', 'R_TEACHER', '绿地店');
+
+        $assignedToService = $this->customer('服务名下会员', '绿地店', '绿地顾问');
+        $assignedByOwner = $this->customer('负责人归属会员', '绿地店', '');
+        Customer::whereKey($assignedByOwner->id)->update(['owner' => '绿地顾问']);
+        $assignedById = $this->customer('按id归属会员', '绿地店', '');
+        Customer::whereKey($assignedById->id)->update(['consultant_user_id' => $service->id]);
+        $this->customer('老师名下会员', '绿地店', '绿地老师');
+        $blank = $this->customer('未分配空值会员', '绿地店', '');
+        $this->customer('未分配占位会员', '绿地店', '未分配');
+        $this->customer('东部未分配会员', '东部店', '');
+
+        // 服务老师：本人名下（姓名或 id）∪ 有明确主人；未分配的看不到
+        $this->assertEqualsCanonicalizing(
+            ['服务名下会员', '负责人归属会员', '按id归属会员'],
+            $this->sortedVisible($service)
+        );
+        // 授课老师：只看得到本人名下；未分配的同样看不到
+        $this->assertEqualsCanonicalizing(['老师名下会员'], $this->sortedVisible($teacher));
+
+        // 店长：本店全部（含未分配、含占位名）
+        $manager = $this->user('pool-manager', '绿地店长', 'R_MANAGER', '绿地店');
+        $this->assertEqualsCanonicalizing(
+            ['服务名下会员', '负责人归属会员', '按id归属会员', '老师名下会员', '未分配空值会员', '未分配占位会员'],
+            $this->sortedVisible($manager)
+        );
+
+        // 超管：双店全部
+        $super = $this->user('pool-super', '超管', 'R_SUPER', null, ['绿地店', '东部店']);
+        $this->assertContains('东部未分配会员', $this->sortedVisible($super));
+
+        // 列表与单条同口径：未分配会员不能靠猜 URL 打开/改写
+        Sanctum::actingAs($service);
+        $this->getJson("/api/customers/{$blank->id}")->assertForbidden();
+        $this->patchJson("/api/customers/{$blank->id}", ['consultant' => '绿地顾问'])->assertForbidden();
+        $this->getJson("/api/customers/{$assignedToService->id}")->assertOk();
+
+        Sanctum::actingAs($manager);
+        $this->getJson("/api/customers/{$blank->id}")->assertOk();
+        $this->patchJson("/api/customers/{$blank->id}", ['consultant' => '绿地顾问'])->assertOk();
+        $this->assertDatabaseHas('customers', ['id' => $blank->id, 'consultant' => '绿地顾问']);
+    }
+
+    /**
+     * 授课老师的「私教学员」通道**保留**，但只能放大到有主人的会员上。
+     *
+     * 事故（2026-11 真机）：「从授课老师角色进入小程序，发现有一些不是她名下的客户
+     * 也出现在了客户管理清单里」—— 私教签到关系（privateStudentKeys）把从未录入
+     * 顾问/负责人的同步会员带进了名单。现在这条通道只在「该会员已有主人」时生效，
+     * 既保留老师的私教学员视图，又不会把无主会员发出去。
+     */
+    public function test_teacher_private_students_remain_visible_only_when_the_member_has_an_owner(): void
+    {
+        $teacher = $this->user('coach-pool', '绿地私教', 'R_TEACHER', '绿地店');
+
+        $owned = $this->customer('私教已分配学员', '绿地店', '其他顾问', 'P1', 'ky:V1:M11');
+        $unowned = $this->customer('私教未分配学员', '绿地店', '', 'P1', 'ky:V1:M12');
+        Customer::whereKey($owned->id)->update(['phone' => '13800000101']);
+        Customer::whereKey($unowned->id)->update(['phone' => '13800000102']);
+
+        foreach ([['V1:M11', 'M11', '13800000101'], ['V1:M12', 'M12', '13800000102']] as [$key, $member, $phone]) {
+            KyBooking::create([
+                'source_key' => $key, 'venue' => '绿地店', 'booking_type' => '私教',
+                'member_id' => $member, 'member_name' => '学员'.$member, 'phone' => $phone,
+                'start_at' => now()->subDay(), 'course_name' => '私教', 'status' => 'signed',
+                'course_kind' => 'private', 'teacher_name' => '绿地私教', 'teacher_user_id' => $teacher->id,
+            ]);
+        }
+
+        // privateStudentKeys 挂在 User 实例上做请求内缓存：换一个实例等价于下一次请求
+        $teacher = User::findOrFail($teacher->id);
+
+        $this->assertEqualsCanonicalizing(['私教已分配学员'], $this->sortedVisible($teacher));
+
+        Sanctum::actingAs($teacher);
+        $this->getJson("/api/customers/{$owned->id}")->assertOk();
+        $this->getJson("/api/customers/{$unowned->id}")->assertForbidden();
+    }
+
+    /**
+     * 老师侧的**其它会员入口**也必须与列表同口径（t5 O5）。
+     *
+     * 列表被挡住但旁路没挡，是「列表看不到、直达 URL 能看」的经典残法：
+     * 这里把 `renewal-evaluation`（GET/PUT）、`/customers/options`、`/customers/list-counts`
+     * 三条路径钉在同一个 scope 上 —— 未分配的会员在这些出口同样不可见。
+     */
+    public function test_unassigned_member_is_blocked_on_teacher_side_entry_points(): void
+    {
+        $service = $this->user('entry-service', '绿地顾问', 'R_SERVICE', '绿地店');
+        // 未分配但「卡项即将到期」的会员：若没有口径，他会出现在服务的待续课清单里
+        $blank = Customer::create([
+            'name' => '未分配待续会员', 'phone' => '13800000201', 'phone_tail' => '0201',
+            'venue' => '绿地店', 'source' => 'KeepYoga', 'consultant' => '', 'owner' => '',
+            'main_card' => '私教卡', 'remain_times' => 5, 'attend_m3' => 4,
+            'expire_date' => now()->addDays(5)->toDateString(), 'layer' => 'P2', 'status' => '在籍',
+        ]);
+        $owned = $this->customer('本人名下会员', '绿地店', '绿地顾问');
+
+        Sanctum::actingAs($service);
+
+        // ① 续费评估：未分配会员 GET / PUT 都 403；本人名下的 GET 正常（对照，排除端点整体 403）
+        $this->getJson("/api/customers/{$blank->id}/renewal-evaluation")->assertForbidden();
+        $this->putJson("/api/customers/{$blank->id}/renewal-evaluation", [])->assertForbidden();
+        $this->getJson("/api/customers/{$owned->id}/renewal-evaluation")->assertOk();
+
+        // ② 会籍顾问下拉只回本人可见范围里的顾问名
+        $consultants = $this->getJson('/api/customers/options')->assertOk()->json('data.consultants');
+        $this->assertSame(['绿地顾问'], $consultants, '未分配会员不该贡献顾问名');
+
+        // ③ 五清单徽标：未分配会员不进服务老师的任何清单
+        $counts = $this->getJson('/api/customers/list-counts?type=member')->assertOk()->json('data.counts');
+        $this->assertSame(0, $counts['待续课'], '未分配的待续会员不能计进服务的徽标');
+        $this->assertSame(0, array_sum($counts), '未分配会员不进服务老师的任何清单');
+
+        // 店长（分配方）仍能看到这条：证明数据本身在清单里，服务侧的 0 是收口而不是没数据
+        Sanctum::actingAs($this->user('entry-manager', '绿地店长', 'R_MANAGER', '绿地店'));
+        $managerCounts = $this->getJson('/api/customers/list-counts?type=member')->assertOk()->json('data.counts');
+        $this->assertSame(1, $managerCounts['待续课']);
+    }
+
     /** 自助注册必须把 roles 写成与 role 单值一致的单元素数组。 */
     public function test_register_writes_roles_column_in_sync_with_role(): void
     {

@@ -226,6 +226,17 @@ class KyMemberSyncService
                 $cardSummary = self::summarizeCards($cardsByMember[$memberId] ?? [], $syncRules);
                 $visitSummary = $attendance[$memberId] ?? [];
 
+                // 归属 id **只在能解析到账号时才写**。
+                //
+                // 原来是无条件 `'consultant_user_id' => $staffIds[$consultant] ?? null`，
+                // 于是每轮全量同步都会把解析不到的名字写成 NULL —— 而上游的顾问名大量是
+                // 花名/简称（乐乐、CC、嘉欣、管管…），工作台里没有对应账号。后果：
+                //   ① 管理员人工认领/指派好的 `consultant_user_id` 被下一轮同步清空；
+                //   ② 线上长期表现为"会员的会籍顾问全是空的"，按 id 过滤的入口认不出人。
+                //
+                // 现在的语义：能解析 → 跟上上游；解析不到 → **保留库里已有值**。
+                // 名字列（`consultant`）仍然照上游覆盖，展示口径不变；
+                // 唯一的差别是"认不出是谁"时不再抹掉之前认定过的归属。
                 $changes = [
                     'name' => $name,
                     'phone' => $phone,
@@ -233,7 +244,6 @@ class KyMemberSyncService
                     'venue' => $venue,
                     'source' => $source,
                     'consultant' => $consultant,
-                    'consultant_user_id' => $staffIds[$consultant] ?? null,
                     'main_card' => $cardSummary['main_card'],
                     'remain_times' => $cardSummary['remain_times'],
                     'expire_date' => $cardSummary['expire_date'],
@@ -246,6 +256,13 @@ class KyMemberSyncService
                     'card_stats' => $cardSummary['card_stats'],
                     'cards_list' => $cardSummary['cards_list'],
                 ];
+                $consultantUserId = $consultant === '' ? null : ($staffIds[$consultant] ?? null);
+                if ($consultantUserId !== null) {
+                    $changes['consultant_user_id'] = $consultantUserId;
+                } elseif ($consultant === '') {
+                    // 上游明确没有顾问了：这条数据确实没主，允许清空
+                    $changes['consultant_user_id'] = null;
+                }
 
                 // 生日仅在上游有值时覆盖，避免同步清空工作台人工维护的数据
                 if ($birthday = self::pickDate($row, ['birthday', 'born_date', 'birth_date', 'm_birthday', 'member_birthday'])) {
@@ -286,9 +303,12 @@ class KyMemberSyncService
                 if ($customer->main_card === '待同步卡项') {
                     $changes += [
                         'status' => '待完善', 'owner' => $consultant ?: '未分配',
-                        'owner_user_id' => $staffIds[$consultant] ?? null,
                         'next_action' => '分配负责人并完善会员档案',
                     ];
+                    // 与 consultant_user_id 同一条规则：解析不到账号就不写，别把人工归属抹掉
+                    if ($consultantUserId !== null || $consultant === '') {
+                        $changes['owner_user_id'] = $consultantUserId;
+                    }
                 }
                 $customer->fill($changes);
                 if ($customer->isDirty()) {

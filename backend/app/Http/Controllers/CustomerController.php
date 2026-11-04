@@ -23,6 +23,9 @@ use Illuminate\Support\Facades\Log;
 
 class CustomerController extends Controller
 {
+    /** 会员卡项三态标签（与同步侧 `cards_list[].state` / `historyCards[].state` 对齐） */
+    private const CARD_STATE_LABELS = ['current' => '在用', 'unactivated' => '未开卡', 'history' => '已过期'];
+
     /**
      * `/customers` 列表可见范围的**唯一定义处**：角色范围 + 新媒体收窄 + type 过滤。
      *
@@ -376,7 +379,9 @@ class CustomerController extends Controller
         });
     }
 
-    /** GET /customers/{id}：客户360，主档 + 会员工作流留痕 + 按手机号关联的前端客资 */
+    /**
+     * GET /customers/{id}：客户360 —— 主档 + 会员工作流留痕 + 按手机号关联的前端客资 + 全部卡项。
+     */
     public function show(Request $r, int $id)
     {
         $c = Customer::findOrFail($id);
@@ -390,11 +395,111 @@ class CustomerController extends Controller
             ? Lead::where('phone', $c->phone)->orderByDesc('id')->get()->map(fn ($x) => camel($x))
             : [];
 
+        // 卡项全量展示（会员管理点开会员 → 「主卡以外还有哪些卡」）。
+        // `customer.cardsList` 是**判定层输入**：只有在用 ＋ 未开卡，已过期的卡按契约
+        // 不进 cards_list（进去会经由 C8 分支污染待续费判定）。所以这里在响应顶层再给
+        // 一份三态全量列表，字段沿用 cardsList 的键，只多 stateLabel / isMain；
+        // **不回写数据库、不改任何判定口径**。
+        $cards = $this->allCards($c);
+
         return ok([
             'customer' => camel($c),
             'logs' => $logs,
             'leads' => $leads,
+            'cardsList' => $cards['cardsList'],
+            'cardGroups' => $cards['cardGroups'],
         ]);
+    }
+
+    /**
+     * 会员名下**全部卡项**（在用 / 未开卡 / 已过期），供会员详情页一次看全。
+     *
+     * 数据来源都是同步侧已经写好的字段，本方法不重算任何判定：
+     *  - `customers.cards_list`    → 在用（state=current）＋ 未开卡（state=unactivated）；
+     *  - `card_stats.historyCards` → 已过期/已用完的历史实例（v3.9 起唯一历史事实源）；
+     *  - `card_stats.expiredCards` → 老快照的兼容区，**只在 historyCards 缺失时**兜底
+     *    （新快照里它是 historyCards 的子集，两份都读会把过期卡算两遍）。
+     *
+     * ⚠️ 纯展示聚合：待续费（renewal）与五清单读的仍然是 `cards_list` / `card_stats`
+     * 原字段，这里既不回写库，也不放宽/收紧任何判定口径。
+     *
+     * @return array{cardsList: array<int, array<string, mixed>>, cardGroups: array<string, int>}
+     */
+    private function allCards(Customer $c): array
+    {
+        $current = is_array($c->cards_list) ? $c->cards_list : [];
+        $stats = is_array($c->card_stats) ? $c->card_stats : [];
+        $history = (array) ($stats['historyCards'] ?? []);
+        if ($history === []) {
+            // 老快照没有 historyCards：退回兼容区（字段少一点，但「已过期」这一类不至于整块空掉）
+            $history = (array) ($stats['expiredCards'] ?? []);
+        }
+
+        $mainTitle = trim((string) ($c->main_card ?? ''));
+        $out = [];
+        $seenId = [];
+        $seenNo = [];
+        $mainMarked = false;
+
+        $push = function (array $card, string $state) use (&$out, &$seenId, &$seenNo, &$mainMarked, $mainTitle): void {
+            $id = trim((string) ($card['id'] ?? ''));
+            $no = trim((string) ($card['cardNo'] ?? ''));
+            // 同 id / 同卡号的跨馆镜像行只留第一条（与同步侧 dedupe 的口径一致）
+            if (($id !== '' && isset($seenId[$id])) || ($no !== '' && isset($seenNo[$no]))) {
+                return;
+            }
+            if ($id !== '') {
+                $seenId[$id] = true;
+            }
+            if ($no !== '') {
+                $seenNo[$no] = true;
+            }
+            $isMain = false;
+            if (! $mainMarked && $mainTitle !== '' && trim((string) ($card['title'] ?? '')) === $mainTitle) {
+                $isMain = true;
+                $mainMarked = true;
+            }
+            $out[] = $card + [
+                'state' => $state,
+                'stateLabel' => self::CARD_STATE_LABELS[$state] ?? $state,
+                'isMain' => $isMain,
+            ];
+        };
+
+        foreach ($current as $card) {
+            if (! is_array($card)) {
+                continue;
+            }
+            $state = (string) ($card['state'] ?? '');
+            // 老快照用布尔键表达未开卡；未知值一律按「在用」（cards_list 本来只装这两类）
+            if ($state !== 'unactivated') {
+                $state = $state === 'history' ? 'history' : 'current';
+            }
+            if ($state === 'current' && ! empty($card['unactivated'])) {
+                $state = 'unactivated';
+            }
+            $push($card, $state);
+        }
+        foreach ($history as $card) {
+            if (is_array($card)) {
+                $push($card, 'history');
+            }
+        }
+
+        $counts = ['current' => 0, 'unactivated' => 0, 'history' => 0];
+        foreach ($out as $card) {
+            $counts[$card['state']] = ($counts[$card['state']] ?? 0) + 1;
+        }
+
+        return [
+            'cardsList' => $out,
+            'cardGroups' => [
+                'active' => $counts['current'],
+                'unactivated' => $counts['unactivated'],
+                'expired' => $counts['history'],
+                'total' => count($out),
+            ],
+        ];
     }
 
     /** GET /customers/{id}/renewal-evaluation */

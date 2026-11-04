@@ -13,8 +13,18 @@ mkdir -p "$COMMON/backend" "$UPDATE" "$INSTALLER" "$REL"
 
 echo "── 1/4 构建前端..."
 cd "$ROOT/admin-web"
-pnpm install --frozen-lockfile --silent
-pnpm build >/dev/null
+# 本机没有 pnpm 时也能出包：node_modules 已存在就直接用本地 vite，
+# 否则报错让人先装依赖 —— 不要静默跳过构建（会打出没有前端的升级包）。
+if command -v pnpm >/dev/null 2>&1; then
+  pnpm install --frozen-lockfile --silent
+  pnpm build >/dev/null
+elif [ -x ./node_modules/.bin/vite ]; then
+  ./node_modules/.bin/vue-tsc --noEmit
+  ./node_modules/.bin/vite build >/dev/null
+else
+  echo "错误：找不到 pnpm，也没有本地 node_modules/.bin/vite，请先在 admin-web 安装依赖" >&2
+  exit 1
+fi
 FRONTEND_DIST="$ROOT/admin-web/dist"
 
 # 运行时接口配置（部署后可直接编辑此文件，无需重新构建）

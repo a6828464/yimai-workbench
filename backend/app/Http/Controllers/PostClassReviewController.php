@@ -25,6 +25,22 @@ use Illuminate\Http\Request;
  */
 final class PostClassReviewController extends Controller
 {
+    /**
+     * 「上过课」的签到口径（candidates 唯一来源判据）。
+     *
+     * - `signed`  同步把上游「已签到 / 已完成」映射成的权威值。经营看板、课时费、
+     *             出勤窗口都按它算，课后分析的候选人必须与它们同口径。
+     * - `unknown` / 空  同步拿不到可识别的状态文本（上游写「已到店」之类）的历史行。
+     *             它们确实发生在过去，排除掉会让老数据整批从列表消失 —— 那正是
+     *             「老师看不到自己上过课的会员」的成因之一，故按已发生处理。
+     * - 排除 `cancelled`（取消/作废）、`no_show`（爽约/未到）、`booked`（预约·待上课）：
+     *             这三种都不是「上过课」。
+     */
+    private const ATTENDED_STATUSES = ['signed', 'unknown', ''];
+
+    /** 课类分组标签（两组互斥：私教 / 小班+团课） */
+    private const GROUP_LABELS = ['private' => '私教', 'group' => '小班+团课'];
+
     /** 可写角色：授课老师本人、店长、超管（服务老师只读，用于顾问衔接） */
     private function assertCanWrite(User $u): void
     {
@@ -110,9 +126,25 @@ final class PostClassReviewController extends Controller
      * GET /post-class-reviews/candidates：本页可见的人群。
      *
      * 三类来源合并展示（用户口径）：
-     *  1) class  —— 上过课的：本人排课里还没填课后分析的体验课/私教课
+     *  1) class  —— 上过课的：排课表里近 N 天**实际签到**的课，按「会员 × 课类分组」聚合成一行
      *  2) lead   —— 留资管理里分配给他的：service_teacher 或 trial_teacher 是本人
      *  3) member —— 约课系统里会籍顾问归属他的：customers.consultant 是本人
+     *
+     * 「上过课」按课类分组（2026-11 馆主口径）：
+     *  - `private`（私教）单独一类；
+     *  - `group`（小班 small ＋ 团课 group 合并）一类 —— 馆里这两类都是一对多集体课，
+     *    课后分析填写口径相同，分开放只会让人在两个 tab 之间来回找。
+     * 两组互斥：一节课只落进其中一组；同一会员两类课都上过时会在两组各出现一行，
+     * 那是他真实上过的两类课，不是重复数据。
+     *
+     * 参数口径：
+     *  - `days`    窗口天数，默认 7，夹在 1..60；
+     *  - `group`   private|group|all（默认 all）—— 只裁剪 records；
+     *              `groups` 计数恒为全量，否则另一组的角标永远是 0；
+     *  - 角色兜底：识别不出角色的账号返回全空（失败关闭）；非店长/超管且不带 `teacher`
+     *    的非老师侧账号（如新媒体）`records` 置空 —— 门店全量候选只对店长/超管开放；
+     *  - `teacher` 指定老师。老师（授课/服务）**只能用本人**，传别人一律 403；
+     *              店长 / 超管 / 新媒体可代看他人（staffUserId 解析 id / 姓名 / 别名 / 昵称）。
      *
      * 会员/客资的关联同时按手机号与「姓名+门店」匹配：随心瑜预约行不保证带手机号，
      * 只按手机号匹配会让「客资状态」整列都是空的。
@@ -122,7 +154,30 @@ final class PostClassReviewController extends Controller
         $u = $r->user();
         $days = min(60, max(1, (int) $r->query('days', 7)));
         $venue = (string) $r->query('venue', '');
+        $group = (string) $r->query('group', 'all');
+        if (! in_array($group, ['private', 'group', 'all'], true)) {
+            $group = 'all';
+        }
+        // 角色识别不出来（`roles` 漏写、或 role 是已下架的旧角色码）：**失败关闭**。
+        // 这条链原先没有任何「都不是」分支 —— 这类账号既不进 R_TEACHER 也不进 R_SERVICE 条件，
+        // 于是查询上只剩门店维度，等于把「本店全部预约行的学员」当成候选人发出去。
+        // 与 scopeLeadsForUser / scopeCustomersForUser 的兜底同口径：空集，不是全量。
+        if (! isKnownRoleUser($u)) {
+            return ok([
+                'records' => [],
+                'leads' => [],
+                'members' => [],
+                'groups' => ['private' => 0, 'group' => 0],
+                'groupsPending' => ['private' => 0, 'group' => 0],
+                'pendingCount' => 0,
+                'days' => $days,
+                'group' => $group,
+                'teacher' => null,
+            ]);
+        }
+
         $isService = userHasRole($u, 'R_SERVICE');
+        $proxy = $this->resolveCandidateTeacher($r, $u);
 
         $venueFilter = function ($q) use ($u, $venue) {
             if (userHasRole($u, 'R_SUPER')) {
@@ -135,13 +190,22 @@ final class PostClassReviewController extends Controller
 
             return $q;
         };
+        // 双店账号（新媒体，venue 为空）代看某位老师时，门店锁会把范围压成空集：
+        // 这时可见范围完全由「该老师本人」这条条件承担，不再追加门店条件。
+        $skipVenueLock = $proxy !== null && (string) $u->venue === '' && ! userHasRole($u, 'R_SUPER');
 
         // ---------- 1) 上过课的 ----------
         $bookingQ = KyBooking::query()
             ->whereBetween('start_at', [now()->subDays($days)->startOfDay(), now()->endOfDay()])
-            ->whereNotIn('status', ['cancelled', 'no_show']);
-        $venueFilter($bookingQ);
-        if (userHasRole($u, 'R_TEACHER')) {
+            ->whereIn('status', self::ATTENDED_STATUSES);
+        if (! $skipVenueLock) {
+            $venueFilter($bookingQ);
+        }
+
+        if ($proxy !== null) {
+            // 本人 / 代看：只看目标老师名下的课（id 与姓名/别名并集，与归属判定同一口径）
+            $bookingQ->where(staffOwnerFilter($proxy, 'teacher_user_id', 'teacher_name'));
+        } elseif (userHasRole($u, 'R_TEACHER')) {
             $bookingQ->where(staffOwnerFilter($u, 'teacher_user_id', 'teacher_name'));
         } elseif ($isService) {
             // 服务老师不授课：看自己名下会员上过的课
@@ -150,7 +214,9 @@ final class PostClassReviewController extends Controller
                 ->where('phone', '!=', '')->pluck('phone')->all();
             $bookingQ->whereIn('phone', $myPhones !== [] ? $myPhones : ['__none__']);
         }
-        $rows = $bookingQ->orderByDesc('start_at')->limit(200)->get();
+        // 上限从 200 提到 2000：小班/团课一次课就是一二十个学员，7 个自然日很容易超过 200 行，
+        // 截断的表现正是「老师看不到自己上过课的全部会员」。
+        $rows = $bookingQ->orderByDesc('start_at')->limit(2000)->get();
         $doneIds = PostClassReview::whereIn('booking_id', $rows->pluck('id')->all() ?: [-1])
             ->pluck('booking_id')->all();
 
@@ -160,37 +226,41 @@ final class PostClassReviewController extends Controller
         $names = $rows->map(fn ($b) => (string) $b->member_name)->filter()->unique()->values()->all();
 
         $customerIdx = [];
-        $customerQ = Customer::query()->where(function ($w) use ($phones, $names) {
-            if ($phones !== []) {
-                $w->whereIn('phone', $phones);
+        $leadIdx = [];
+        // 没有可用匹配键时不要去拉全表：`where(function () {})` 是空约束，会把整库会员读进内存
+        if ($phones !== [] || $names !== []) {
+            $customerQ = Customer::query()->where(function ($w) use ($phones, $names) {
+                if ($phones !== []) {
+                    $w->whereIn('phone', $phones);
+                }
+                if ($names !== []) {
+                    $w->orWhereIn('name', $names);
+                }
+            });
+            foreach ($customerQ->get(['id', 'name', 'phone', 'venue', 'external_id', 'layer', 'main_card', 'remain_times']) as $c) {
+                if ($normalize($c->phone) !== '') {
+                    $customerIdx['p:'.$normalize($c->phone)] = $c;
+                }
+                $customerIdx['n:'.$c->name.'|'.$c->venue] = $c;
             }
-            if ($names !== []) {
-                $w->orWhereIn('name', $names);
+
+            $leadQ = Lead::query()->where(function ($w) use ($phones, $names) {
+                if ($phones !== []) {
+                    $w->whereIn('phone', $phones);
+                }
+                if ($names !== []) {
+                    $w->orWhereIn('name', $names);
+                }
+            })->orderBy('id');
+            foreach ($leadQ->get(['id', 'name', 'phone', 'venue', 'status']) as $l) {
+                $p = $normalize($l->phone);
+                if ($p !== '') {
+                    $leadIdx['p:'.$p] = $l;   // 取最新一条（orderBy id 升序，后写覆盖）
+                }
+                $leadIdx['n:'.$l->name.'|'.$l->venue] = $l;
             }
-        });
-        foreach ($customerQ->get(['id', 'name', 'phone', 'venue', 'external_id', 'layer', 'main_card', 'remain_times']) as $c) {
-            if ($normalize($c->phone) !== '') {
-                $customerIdx['p:'.$normalize($c->phone)] = $c;
-            }
-            $customerIdx['n:'.$c->name.'|'.$c->venue] = $c;
         }
 
-        $leadIdx = [];
-        $leadQ = Lead::query()->where(function ($w) use ($phones, $names) {
-            if ($phones !== []) {
-                $w->whereIn('phone', $phones);
-            }
-            if ($names !== []) {
-                $w->orWhereIn('name', $names);
-            }
-        })->orderBy('id');
-        foreach ($leadQ->get(['id', 'name', 'phone', 'venue', 'status']) as $l) {
-            $p = $normalize($l->phone);
-            if ($p !== '') {
-                $leadIdx['p:'.$p] = $l;   // 取最新一条（orderBy id 升序，后写覆盖）
-            }
-            $leadIdx['n:'.$l->name.'|'.$l->venue] = $l;
-        }
         $lookup = function (string $phone, string $name, string $venue) use ($customerIdx, $leadIdx): array {
             $keys = [];
             if ($phone !== '') {
@@ -209,9 +279,14 @@ final class PostClassReviewController extends Controller
             return [$c, $l];
         };
 
-        $records = $rows->map(function ($b) use ($doneIds, $lookup, $normalize) {
+        // 同一会员在同一课类分组里只出一行：取最近的一节课，并累计同一窗口内的节数。
+        // 没有会员档案的（体验客/裸预约行）按手机号，再退回「姓名 + 门店」，不合并同名不同人。
+        $records = [];
+        $seat = [];
+        foreach ($rows as $b) {
             $name = (string) $b->member_name;
-            $kind = $b->courseKind();
+            $kind = (string) $b->courseKind();
+            $bucket = $kind === 'private' ? 'private' : 'group';
             [$c, $l] = $lookup($normalize($b->phone), $name, (string) $b->venue);
             // 随心瑜预约行不保证带手机号：回填匹配到的会员/客资手机号，
             // 否则列表里既联系不上人，也没法用来建课后分析
@@ -225,7 +300,21 @@ final class PostClassReviewController extends Controller
             // 那是两个渠道，不是数据缺失。
             $isMember = $c && ((string) $c->external_id !== '' || (string) $c->layer !== 'P5');
 
-            return [
+            $identity = $c?->id
+                ? 'c:'.$c->id
+                : ($l?->id
+                    ? 'l:'.$l->id
+                    : ($phone !== '' ? 'p:'.$phone : 'n:'.$name.'|'.(string) $b->venue));
+            $key = $bucket.'|'.$identity;
+            if (isset($seat[$key])) {
+                // 已有更近的一行：只累计节数，展示字段保持「最近一节课」的值
+                $records[$seat[$key]]['classCount']++;
+
+                continue;
+            }
+            $seat[$key] = count($records);
+
+            $records[] = [
                 'source' => 'class',
                 'personType' => $isMember ? 'member' : ($l ? 'lead' : 'none'),
                 'memberCard' => $isMember ? (string) ($c->main_card ?? '') : '',
@@ -248,15 +337,58 @@ final class PostClassReviewController extends Controller
                 'leadId' => $l?->id,
                 'leadStatus' => (string) ($l->status ?? ''),
                 'hasReview' => in_array($b->id, $doneIds, true),
+                // ── v3.11：课类分组 + 最近一节课（列表已按「会员」聚合，不再一行一节课）──
+                'courseKind' => $kind,
+                'courseKindLabel' => KyBooking::KIND_LABELS[$kind] ?? '团课',
+                'group' => $bucket,
+                'groupLabel' => self::GROUP_LABELS[$bucket],
+                'lastClassAt' => $b->start_at?->format('Y-m-d H:i'),
+                'lastClassTitle' => (string) $b->course_name,
+                'classCount' => 1,
             ];
-        })->filter(fn ($x) => in_array($x['scene'], ['trial', 'private'], true))->values()->all();
+        }
 
-        // ---------- 2) 留资分配给他的（服务老师与授课老师都看自己的） ----------
+        // 分组计数恒为全量：group 参数只裁剪 records，否则另一组的角标永远是 0
+        $groups = ['private' => 0, 'group' => 0];
+        $groupsPending = ['private' => 0, 'group' => 0];
+        foreach ($records as $x) {
+            $groups[$x['group']]++;
+            if (! $x['hasReview']) {
+                $groupsPending[$x['group']]++;
+            }
+        }
+        $scopedRecords = $group === 'all'
+            ? $records
+            : array_values(array_filter($records, fn ($x) => $x['group'] === $group));
+
+        // 「门店全量候选」只对店长 / 超管开放。
+        //
+        // 为什么要有这条：上面的分支链只覆盖「代看 / 授课老师 / 服务老师」三种按人收窄的情形，
+        // 其它账号（新媒体，以及任何非老师侧角色）走到这里时查询上**只剩门店维度** ——
+        // 于是本店 7 天内所有预约行的学员都被当成候选人发出去。新媒体自己的可见范围是
+        // 「本人/部门录入的客资」，不是门店花名册，不能靠不传 teacher 参数就拿到。
+        //
+        // 老师侧（R_SERVICE / R_TEACHER）不置空：它们的 records 本来就是**本人学员**
+        // （授课老师按 teacher 收窄、服务老师按名下会员手机号收窄），不是门店全量。
+        // 这条与验收里的用例矩阵一致：media 不传 teacher → 空；manager/super 不传 → 本店/双店全量；
+        // teacher 不传 → 只见本人；代看（带 teacher 参数）路径完全不变。
+        if ($proxy === null
+            && ! userHasAnyRole($u, ['R_SUPER', 'R_MANAGER'])
+            && ! userIsTeacherSide($u)) {
+            $scopedRecords = [];
+            $groups = ['private' => 0, 'group' => 0];
+            $groupsPending = ['private' => 0, 'group' => 0];
+        }
+
+        // ---------- 2) 留资分配给他的（服务老师与授课老师都看自己的；代看时看目标老师的） ----------
+        $owner = $proxy ?? $u;
         $leads = [];
-        $myLeadQ = Lead::query()->where(function ($w) use ($u) {
-            $w->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher'))->orWhere(staffOwnerFilter($u, 'trial_teacher_user_id', 'trial_teacher'));
+        $myLeadQ = Lead::query()->where(function ($w) use ($owner) {
+            $w->where(staffOwnerFilter($owner, 'service_teacher_user_id', 'service_teacher'))->orWhere(staffOwnerFilter($owner, 'trial_teacher_user_id', 'trial_teacher'));
         });
-        $venueFilter($myLeadQ);
+        if (! $skipVenueLock) {
+            $venueFilter($myLeadQ);
+        }
         foreach ($myLeadQ->orderByDesc('id')->limit(200)->get() as $l) {
             $p = $normalize($l->phone);
             $leads[] = [
@@ -279,8 +411,10 @@ final class PostClassReviewController extends Controller
         // ---------- 3) 会籍顾问归属他的会员 ----------
         $members = [];
         $myCustomerQ = Customer::query()
-            ->where(fn ($w) => $w->where(staffOwnerFilter($u, 'consultant_user_id', 'consultant'))->orWhere(staffOwnerFilter($u, 'owner_user_id', 'owner')));
-        $venueFilter($myCustomerQ);
+            ->where(fn ($w) => $w->where(staffOwnerFilter($owner, 'consultant_user_id', 'consultant'))->orWhere(staffOwnerFilter($owner, 'owner_user_id', 'owner')));
+        if (! $skipVenueLock) {
+            $venueFilter($myCustomerQ);
+        }
         foreach ($myCustomerQ->orderByDesc('id')->limit(200)->get() as $c) {
             $members[] = [
                 'source' => 'member',
@@ -300,11 +434,45 @@ final class PostClassReviewController extends Controller
         }
 
         return ok([
-            'records' => $records,
+            'records' => $scopedRecords,
             'leads' => $leads,
             'members' => $members,
-            'pendingCount' => collect($records)->where('hasReview', false)->count(),
+            'groups' => $groups,
+            'groupsPending' => $groupsPending,
+            'pendingCount' => count(array_filter($scopedRecords, fn ($x) => $x['hasReview'] === false)),
+            'days' => $days,
+            'group' => $group,
+            'teacher' => $proxy === null ? null : ['id' => (int) $proxy->id, 'name' => (string) $proxy->name],
         ]);
+    }
+
+    /**
+     * 解析 candidates 的 teacher 参数。
+     *
+     * 老师（授课 / 服务）**只能用本人**：传自己可以（id / 姓名 / 别名 / 昵称都认），
+     * 传别人一律 403 —— 「老师能看到谁的学员」是权限边界，不能靠前端不下发参数来保证。
+     * 店长 / 超管 / 新媒体可以指定他人代看（馆里真实用法：店长替休假老师补填课后分析）。
+     * 解析口径与归属判定一致：纯数字按账号 id，其余走 staffUserId（本名 → 别名 → 安全昵称）。
+     */
+    private function resolveCandidateTeacher(Request $r, User $u): ?User
+    {
+        $raw = trim((string) $r->query('teacher', ''));
+        if ($raw === '') {
+            return null;
+        }
+        $id = ctype_digit($raw) ? (int) $raw : staffUserId($raw);
+
+        if (! userHasAnyRole($u, ['R_SUPER', 'R_MANAGER', 'R_MEDIA'])) {
+            abort_unless($id !== null && (int) $id === (int) $u->id, 403, '老师只能查看本人的学员');
+
+            return $u;
+        }
+
+        $target = $id === null ? null : User::find($id);
+        // 不回显原始输入：那是用户可控字节，直接拼进 JSON 会让畸形编码变成 500
+        abort_if($target === null, 422, '指定的老师不存在');
+
+        return $target;
     }
 
     /** GET /post-class-reviews */

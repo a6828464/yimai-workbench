@@ -5,7 +5,7 @@
         <div class="flex-cb">
           <span class="font-500">账号与角色</span>
           <div class="flex-c gap-2">
-            <ElButton size="small" @click="openMapping">归属映射</ElButton>
+            <ElButton size="small" @click="openMapping">身份归一</ElButton>
             <ElButton type="primary" size="small" @click="openCreate">开通新账号</ElButton>
           </div>
         </div>
@@ -170,37 +170,70 @@
     </ElDialog>
 
     <!--
-      归属映射
+      人员身份归一
 
-      业务表的归属列（service_teacher / owner / consultant / teacher_name / created_by）
-      存的是姓名字符串，不是外键。所以「谁能看到这条数据」取决于姓名能不能对上账号：
-      账号改过名、随心瑜登记的是另一个姓名、历史数据写过昵称 —— 都会让数据"悬空"。
-      这里把对不上的姓名映射到账号，映射完归属立刻恢复。
+      同一个人在三处可能被写成三个名字：随心瑜登记的花名、留资时手输的名字、
+      工作台注册时的真名。而归属列（service_teacher / owner / consultant /
+      teacher_name / created_by）存的是**姓名字符串**，不是外键 ——「谁能看到这条
+      数据」完全取决于姓名能不能对上账号。
+
+      这里做三件事，缺一件就会有人看不到自己的客资：
+        ① 认领：把悬空姓名挂到账号上（写别名 + 回填历史行 id）；
+        ② 补齐：把所有归属列里还没落 id 的行按当前名字池补上（可重复执行）；
+        ③ 合并：同一个人被建了两个账号时，连人带数据并成一个。
     -->
-    <ElDialog v-model="mapDlg.visible" title="人员归属映射" width="620px" destroy-on-close>
+    <ElDialog v-model="mapDlg.visible" title="人员身份归一" width="920px" destroy-on-close>
       <ElAlert v-if="mapDlg.unmapped.length" type="warning" :closable="false" class="mb-3">
-        有 {{ mapDlg.unmapped.length }} 个姓名出现在业务数据里、但对不上任何账号。
-        这些数据的归属是悬空的（本人看不到），把它们映射到账号即可恢复。
+        有 {{ mapDlg.unmapped.length }} 个姓名出现在业务数据里、但对不上任何账号<template
+          v-if="mapDlg.totals && mapDlg.totals.missingIds"
+          >；共 {{ mapDlg.totals.missingIds }} 行归属还没落到账号 id</template
+        >。这些数据的归属是悬空的（本人看不到），认领后立刻恢复。
       </ElAlert>
       <ElAlert v-else type="success" :closable="false" class="mb-3">
-        当前所有归属姓名都能对上账号。
+        所有归属姓名都能对上账号。<template v-if="mapDlg.totals && mapDlg.totals.missingIds"
+          >另有 {{ mapDlg.totals.missingIds }} 行还没落 id，点右侧「补齐归属 id」即可。</template
+        >
       </ElAlert>
 
-      <ElTable v-if="mapDlg.unmapped.length" :data="mapDlg.unmapped" border size="small">
-        <ElTableColumn prop="name" label="未映射的姓名" width="150" />
-        <ElTableColumn label="出现在" min-width="200">
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <ElButton
+          size="small"
+          type="primary"
+          plain
+          :loading="mapDlg.repairing"
+          @click="doRepair(false)"
+        >
+          补齐归属 id
+        </ElButton>
+        <ElButton size="small" :loading="mapDlg.repairing" @click="doRepair(true)">
+          清理悬挂 id 并补齐
+        </ElButton>
+        <span class="text-xs text-gray-400">可重复执行：只填空值，不改已归属好的行</span>
+      </div>
+
+      <div v-if="mapDlg.unmapped.length" class="mb-2 text-sm font-500">悬空姓名 → 认领到账号</div>
+      <ElTable
+        v-if="mapDlg.unmapped.length"
+        :data="mapDlg.unmapped"
+        border
+        size="small"
+        max-height="260"
+      >
+        <ElTableColumn prop="name" label="姓名" width="120" />
+        <ElTableColumn label="出现在" min-width="180">
           <template #default="{ row }">
             <ElTag v-for="(c, k) in row.counts" :key="k" size="small" class="mr-1 mb-1">
               {{ k }} × {{ c }}
             </ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="映射到账号" width="176">
+        <ElTableColumn label="认领到账号" width="250">
           <template #default="{ row }">
             <ElSelect
               v-model="mapDlg.picks[row.name]"
               placeholder="选择账号"
               size="small"
+              filterable
               class="!w-full"
             >
               <ElOption
@@ -210,15 +243,122 @@
                 :value="a.key"
               />
             </ElSelect>
+            <div v-if="row.suggestions && row.suggestions.length" class="text-xs text-gray-400">
+              建议 {{ row.suggestions[0].name }}：{{ row.suggestions[0].reason }}
+            </div>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="操作" width="80" align="center">
+          <template #default="{ row }">
+            <ElButton
+              size="small"
+              type="primary"
+              :loading="mapDlg.assigning === row.name"
+              @click="assignOne(row)"
+            >
+              认领
+            </ElButton>
           </template>
         </ElTableColumn>
       </ElTable>
+
+      <div class="mt-4 mb-2 text-sm font-500">各账号的名字与名下数据</div>
+      <div class="text-xs text-gray-400 mb-2">
+        一个名字只能属于一个账号。规范名恒被认；别名（含昵称/改名前的旧名/随心瑜里的叫法）在这里补，
+        保存后历史行会一并回填 id。
+      </div>
+      <ElTable :data="mapDlg.accounts" border size="small" max-height="260">
+        <ElTableColumn label="账号" width="150">
+          <template #default="{ row }">
+            <div class="text-sm">{{ row.name }}</div>
+            <div class="text-xs text-gray-400">
+              {{ row.key }}<template v-if="row.nickname"> · 昵称 {{ row.nickname }}</template>
+            </div>
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="别名（可编辑）" min-width="240">
+          <template #default="{ row }">
+            <ElSelect
+              v-model="mapDlg.aliases[row.key]"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              size="small"
+              class="!w-full"
+              placeholder="该账号在业务数据里出现过的其它姓名"
+            />
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="名下数据" min-width="180">
+          <template #default="{ row }">
+            <ElTag
+              v-for="(c, k) in row.footprint || {}"
+              :key="k"
+              size="small"
+              type="info"
+              class="mr-1 mb-1"
+            >
+              {{ k }} × {{ c }}
+            </ElTag>
+            <span v-if="!row.footprint || !Object.keys(row.footprint).length" class="text-xs text-gray-400">
+              名下暂无数据
+            </span>
+          </template>
+        </ElTableColumn>
+      </ElTable>
+
+      <div class="mt-4 mb-2 text-sm font-500">合并账号（同一个人被建了两次）</div>
+      <div class="flex flex-wrap items-center gap-2">
+        <ElSelect
+          v-model="mapDlg.mergeInto"
+          placeholder="并入到…"
+          size="small"
+          filterable
+          style="width: 200px"
+        >
+          <ElOption
+            v-for="a in mapDlg.accounts"
+            :key="a.key"
+            :label="`${a.name}（${a.key}）`"
+            :value="a.key"
+          />
+        </ElSelect>
+        <ElSelect
+          v-model="mapDlg.mergeFrom"
+          multiple
+          placeholder="要合并掉的账号（可多选）"
+          size="small"
+          filterable
+          style="flex: 1; min-width: 220px"
+        >
+          <ElOption
+            v-for="a in mapDlg.accounts.filter((x) => x.key !== mapDlg.mergeInto)"
+            :key="a.key"
+            :label="`${a.name}（${a.key}）`"
+            :value="a.key"
+          />
+        </ElSelect>
+        <ElButton
+          size="small"
+          type="danger"
+          plain
+          :loading="mapDlg.merging"
+          :disabled="!mapDlg.mergeInto || mapDlg.mergeFrom.length === 0"
+          @click="doMerge"
+        >
+          合并
+        </ElButton>
+      </div>
+      <div class="text-xs text-gray-400 mt-1">
+        合并会把源账号的会员/客资/排课改成目标账号的姓名与 id，并**停用**源账号（数据不删，可追溯）。
+      </div>
 
       <div v-if="mapDlg.staleIds.length" class="mt-4">
         <div class="mb-1 text-sm font-500">待清理：归属 id 指向已不存在的账号</div>
         <div class="text-xs text-gray-400 mb-2">
           账号删掉重建后会留下这些行。本人仍能通过姓名看到数据，但建议清掉 id
-          以免将来被两人同时认领。
+          以免将来被两人同时认领（可用上方「清理悬挂 id 并补齐」）。
         </div>
         <ElTag
           v-for="(s, i) in mapDlg.staleIds"
@@ -231,33 +371,13 @@
         </ElTag>
       </div>
 
-      <div class="mt-4">
-        <div class="mb-2 text-sm font-500">各账号的别名</div>
-        <div class="text-xs text-gray-400 mb-2">
-          一个名字只能属于一个账号；填写后点保存生效。规范姓名不用填，系统始终认它。
-        </div>
-        <div v-for="a in mapDlg.accounts" :key="a.key" class="mb-2 flex items-center gap-2">
-          <span class="w-36 shrink-0 text-sm">{{ a.name }}（{{ a.key }}）</span>
-          <ElSelect
-            v-model="mapDlg.aliases[a.key]"
-            multiple
-            filterable
-            allow-create
-            default-first-option
-            size="small"
-            class="!w-full"
-            placeholder="该账号在业务数据里出现过的其它姓名"
-          />
-        </div>
-      </div>
-
       <template #footer>
-        <ElButton @click="mapDlg.visible = false">取消</ElButton>
-        <ElButton type="primary" :loading="mapDlg.saving" @click="saveMapping">保存</ElButton>
+        <ElButton @click="mapDlg.visible = false">关闭</ElButton>
+        <ElButton type="primary" :loading="mapDlg.saving" @click="saveMapping">保存别名</ElButton>
       </template>
     </ElDialog>
 
-    <!-- 编辑账号（角色 / 门店范围） -->
+    <!-- 编辑账号（姓名 / 角色 / 门店范围） -->
     <ElDialog
       v-model="editDlg.visible"
       :title="`编辑账号 · ${editDlg.row?.userName ?? ''}`"
@@ -265,6 +385,14 @@
       destroy-on-close
     >
       <ElForm label-width="92px">
+        <ElFormItem label="姓名">
+          <ElInput v-model="editForm.name" maxlength="20" placeholder="真实姓名" />
+          <div class="text-xs text-gray-400">
+            这是<strong>归属名</strong>：留资/会员的「会籍顾问」存的就是这个名字。
+            必须与随心瑜里登记的叫法能从「身份归一」对上，本人才能看到自己的数据。
+            改名后旧名会自动登记为别名，历史数据不受影响。
+          </div>
+        </ElFormItem>
         <ElFormItem label="角色">
           <ElCheckboxGroup v-model="editForm.roles">
             <ElCheckbox v-for="(label, code) in ROLE_OPTIONS" :key="code" :value="code">
@@ -295,13 +423,16 @@
 
 <script setup lang="ts">
   import {
+    assignStaffName,
     createAccount,
     getStaffMapping,
     listAccounts,
+    mergeStaffAccount,
+    repairStaffMapping,
     saveStaffAliases,
     updateAccount
   } from '@/api/auth'
-  import type { AccountRow } from '@/api/auth'
+  import type { AccountRow, StaffMapping } from '@/api/auth'
   import { useDevice } from '@/hooks/core/useDevice'
   import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type {
@@ -331,16 +462,25 @@
   const saving = ref(false)
   const accounts = ref<AccountRow[]>([])
 
-  // ---------- 归属映射 ----------
+  // ---------- 人员身份归一 ----------
   const mapDlg = reactive({
     visible: false,
     saving: false,
-    accounts: [] as { key: string; name: string; aliases: string[] }[],
-    unmapped: [] as { name: string; counts: Record<string, number> }[],
-    staleIds: [] as { table: string; column: string; user_id: number; rows: number }[],
+    repairing: false,
+    merging: false,
+    /** 正在认领的姓名（按钮 loading 用；按名字而不是按行，因为同名只可能有一行） */
+    assigning: '',
+    accounts: [] as StaffMapping['accounts'],
+    unmapped: [] as StaffMapping['unmapped'],
+    staleIds: [] as StaffMapping['staleIds'],
+    coverage: [] as NonNullable<StaffMapping['coverage']>,
+    totals: undefined as StaffMapping['totals'],
     aliases: {} as Record<string, string[]>,
     // 「未映射的姓名 → 要映射到哪个账号」，保存时并入该账号的别名
-    picks: {} as Record<string, string>
+    picks: {} as Record<string, string>,
+    // 合并账号
+    mergeInto: '',
+    mergeFrom: [] as string[]
   })
 
   function openMapping() {
@@ -354,10 +494,89 @@
       mapDlg.accounts = d.accounts
       mapDlg.unmapped = d.unmapped
       mapDlg.staleIds = d.staleIds
+      mapDlg.coverage = d.coverage ?? []
+      mapDlg.totals = d.totals
       mapDlg.aliases = Object.fromEntries(d.accounts.map((a) => [a.key, [...a.aliases]]))
-      mapDlg.picks = {}
+      mapDlg.mergeFrom = []
+      // 未映射姓名预填「系统建议的账号」：大多数情况下点一下「认领」就完事，
+      // 不用每次都在几十个账号里翻。建议为空的保持空，让人自己选。
+      mapDlg.picks = Object.fromEntries(
+        d.unmapped.map((u) => [u.name, u.suggestions?.[0]?.key ?? ''])
+      )
     } catch (e) {
-      ElMessage.error(e instanceof Error ? e.message : '归属映射加载失败')
+      ElMessage.error(e instanceof Error ? e.message : '身份归一加载失败')
+    }
+  }
+
+  /** 认领一个悬空姓名：写别名 + 回填历史行 id，本人立刻能看到 */
+  async function assignOne(row: StaffMapping['unmapped'][number]) {
+    const key = mapDlg.picks[row.name]
+    if (!key) {
+      ElMessage.warning('先选择要认领到哪个账号')
+      return
+    }
+    mapDlg.assigning = row.name
+    try {
+      const r = await assignStaffName(row.name, key)
+      ElMessage.success(
+        r.backfilled > 0
+          ? `已把「${row.name}」归到该账号，回填 ${r.backfilled} 行历史数据`
+          : `已把「${row.name}」归到该账号`
+      )
+      await loadMapping()
+      await load()
+    } catch (e) {
+      ElMessage.error(e instanceof Error ? e.message : '认领失败')
+    } finally {
+      mapDlg.assigning = ''
+    }
+  }
+
+  /** 全量补齐归属 id；clearStale=true 时先清掉指向已删账号的悬挂 id */
+  async function doRepair(clearStale: boolean) {
+    mapDlg.repairing = true
+    try {
+      const r = await repairStaffMapping({ clearStale })
+      const parts = [`回填 ${r.backfilled} 行`]
+      if (r.cleared > 0) parts.push(`清理悬挂 id ${r.cleared} 行`)
+      ElMessage.success(parts.join('，'))
+      await loadMapping()
+      await load()
+    } catch (e) {
+      ElMessage.error(e instanceof Error ? e.message : '修复失败')
+    } finally {
+      mapDlg.repairing = false
+    }
+  }
+
+  /** 账号合并：把多余的账号连人带数据并进保留的那个 */
+  async function doMerge() {
+    if (!mapDlg.mergeInto || mapDlg.mergeFrom.length === 0) return
+    const target = mapDlg.accounts.find((a) => a.key === mapDlg.mergeInto)
+    mapDlg.merging = true
+    try {
+      await ElMessageBox.confirm(
+        `把「${mapDlg.mergeFrom.join('、')}」合并到「${target?.name ?? mapDlg.mergeInto}」？\n` +
+          '源账号名下的会员/客资/排课会改成目标账号，源账号将被停用（数据不删）。',
+        '合并账号',
+        { type: 'warning', confirmButtonText: '确认合并', cancelButtonText: '取消' }
+      )
+    } catch {
+      mapDlg.merging = false
+      return
+    }
+    try {
+      const r = await mergeStaffAccount(mapDlg.mergeInto, mapDlg.mergeFrom)
+      ElMessage.success(`已合并：迁移 ${r.rows} 行数据、${r.aliases} 个别名`)
+      if (r.skipped?.length) {
+        ElMessage.warning(`跳过：${r.skipped.join('；')}`)
+      }
+      await loadMapping()
+      await load()
+    } catch (e) {
+      ElMessage.error(e instanceof Error ? e.message : '合并失败')
+    } finally {
+      mapDlg.merging = false
     }
   }
 
@@ -409,7 +628,11 @@
     visible: false,
     row: null
   })
-  const editForm = reactive({ roles: ['R_TEACHER'] as string[], venues: ['绿地店'] as string[] })
+  const editForm = reactive({
+    name: '',
+    roles: ['R_TEACHER'] as string[],
+    venues: ['绿地店'] as string[]
+  })
 
   function roleType(code: string): 'warning' | 'success' | 'primary' | 'info' | 'danger' {
     if (code === 'R_SUPER') return 'warning'
@@ -467,6 +690,7 @@
 
   function openEdit(row: AccountRow) {
     editDlg.row = row
+    editForm.name = row.userName
     editForm.roles = [...(row.roles?.length ? row.roles : [row.roleCode])]
     editForm.venues = [...(row.venues?.length ? row.venues : ['绿地店', '东部店'])]
     editDlg.visible = true
@@ -477,10 +701,18 @@
     if (!editForm.roles.length) return ElMessage.warning('请至少选择一个角色')
     const venues = needsVenue(editForm.roles) ? [...editForm.venues] : ['绿地店', '东部店']
     if (!venues.length) return ElMessage.warning('请至少选择一个门店')
+    const name = editForm.name.trim()
+    if (!name) return ElMessage.warning('姓名不能为空')
     saving.value = true
     try {
-      await updateAccount(editDlg.row.key, 'update', { roles: [...editForm.roles], venues })
-      ElMessage.success('账号信息已更新')
+      // 姓名一起提交：它是归属列的权威名（service_teacher / consultant 存的就是它）。
+      // 后端会校验重名，并把旧名自动登记为别名，历史数据不会因为改名而消失。
+      await updateAccount(editDlg.row.key, 'update', {
+        name,
+        roles: [...editForm.roles],
+        venues
+      })
+      ElMessage.success(name !== editDlg.row.userName ? '已更新（旧名已登记为别名，历史数据仍归本人）' : '账号信息已更新')
       editDlg.visible = false
       await load()
     } catch (e) {

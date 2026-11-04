@@ -18,6 +18,7 @@ use App\Models\StaffAlias;
 use App\Models\Task;
 use App\Models\User;
 use App\Services\KyMemberSyncService;
+use App\Services\StaffDirectory;
 use App\Support\CardLifecycle;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
@@ -530,32 +531,30 @@ function userIsTeacherSide(?User $user): bool
 }
 
 /**
- * 姓名（含别名）→ 账号 id。**唯一命中才返回**，歧义或对不上返回 null。
+ * 人员身份中心的唯一实例（按请求共享，见 AppServiceProvider::register）。
+ *
+ * 所有「姓名 → 账号」的判断都必须经过它：口径（本名 → 别名 → 安全昵称）
+ * 只有一份，散出去就会出现「列表看得到、点开 403」这种最难排查的分裂。
+ */
+function staffDirectory(): StaffDirectory
+{
+    return app(StaffDirectory::class);
+}
+
+/**
+ * 姓名（含别名/昵称）→ 账号 id。**唯一命中才返回**，歧义或对不上返回 null。
  *
  * 写入归属时用它把 id 一起落库（`service_teacher` 与 `service_teacher_user_id` 双写）：
  * id 不随改名变化，也不怕同名，是归属判断的长期依据。
  *
- * 不缓存：规范名与别名都建了索引，一两次查询成本很低；而函数级 static 在长驻进程／
- * 测试串跑时会串数据（同 `privateStudentKeys()` 的注释）。
+ * 解析口径委托 `StaffDirectory::nameMap()`（本名 > 别名 > 昵称，歧义一律不猜）。
+ * 曾经这里只查 `users.name` 与 `staff_aliases.alias`，而前端历史版本把 **昵称** 写进
+ * 归属列 —— 那批数据的 id 永远是 null、本人按姓名也搜不到。现在昵称也算名字，
+ * 但只在它不与任何账号的本名/别名撞车时才生效（`StaffDirectory` 里有实现与理由）。
  */
 function staffUserId(?string $name): ?int
 {
-    $name = trim((string) $name);
-    if ($name === '') {
-        return null;
-    }
-
-    $hits = User::where('name', $name)->limit(2)->pluck('id');
-    if ($hits->count() === 1) {
-        return (int) $hits->first();
-    }
-    if ($hits->count() > 1) {
-        return null; // 同名多账号：宁可不认，也不猜
-    }
-
-    $aliases = StaffAlias::where('alias', $name)->limit(2)->pluck('user_id');
-
-    return $aliases->count() === 1 ? (int) $aliases->first() : null;
+    return staffDirectory()->resolve($name);
 }
 
 /**
@@ -568,26 +567,7 @@ function staffUserId(?string $name): ?int
  */
 function staffNameToIdMap(): array
 {
-    $map = [];
-    $ambiguous = [];
-
-    foreach (User::orderBy('id')->get(['id', 'name']) as $u) {
-        $n = trim((string) $u->name);
-        if ($n !== '') {
-            isset($map[$n]) ? $ambiguous[$n] = true : $map[$n] = (int) $u->id;
-        }
-    }
-    foreach (StaffAlias::orderBy('id')->get(['user_id', 'alias']) as $a) {
-        $n = trim((string) $a->alias);
-        if ($n !== '') {
-            isset($map[$n]) ? $ambiguous[$n] = true : $map[$n] = (int) $a->user_id;
-        }
-    }
-    foreach (array_keys($ambiguous) as $n) {
-        unset($map[$n]);
-    }
-
-    return $map;
+    return staffDirectory()->nameMap();
 }
 
 /**
@@ -685,43 +665,17 @@ function staleOwnerUserIds(): array
 /**
  * 归属列的 id 回填（迁移里那份逻辑的可重入版本）。
  *
- * 为什么需要它：管理员在「人员管理 → 归属映射」里补了别名之后，**历史行的 id 不会自己出现**
+ * 为什么需要它：管理员在「人员管理 → 身份归一」里补了别名之后，**历史行的 id 不会自己出现**
  * ——迁移在校验时已经跑过一次了。所以改完别名要能再回填一次，把刚对上的行补上 id。
- * 返回补了多少行。
+ *
+ * 实现只在 `StaffDirectory::backfill()`（唯一 owner）：这里的表/列清单曾经在本文件、
+ * 迁移文件、同步服务里各存一份，加一张表漏一处就会「会员补上了、排课没补」。
+ *
+ * @return int 本次补上的行数
  */
 function backfillStaffOwnerIds(): int
 {
-    /** 表 → [姓名列 => id 列]（与迁移 add_owner_user_ids 保持一致） */
-    $columns = [
-        'leads' => ['service_teacher' => 'service_teacher_user_id', 'trial_teacher' => 'trial_teacher_user_id', 'created_by' => 'created_by_user_id'],
-        'customers' => ['consultant' => 'consultant_user_id', 'owner' => 'owner_user_id'],
-        'ky_bookings' => ['teacher_name' => 'teacher_user_id'],
-        'tasks' => ['owner' => 'owner_user_id'],
-        'training_plans' => ['created_by' => 'created_by_user_id'],
-        'post_class_reviews' => ['teacher_name' => 'teacher_user_id'],
-    ];
-
-    $map = staffNameToIdMap();
-    $filled = 0;
-
-    foreach ($columns as $table => $pairs) {
-        if (! Schema::hasTable($table)) {
-            continue;
-        }
-        foreach ($pairs as $nameColumn => $idColumn) {
-            if (! Schema::hasColumn($table, $nameColumn) || ! Schema::hasColumn($table, $idColumn)) {
-                continue;
-            }
-            foreach ($map as $name => $userId) {
-                $filled += DB::table($table)
-                    ->where($nameColumn, $name)
-                    ->whereNull($idColumn)
-                    ->update([$idColumn => $userId]);
-            }
-        }
-    }
-
-    return $filled;
+    return staffDirectory()->backfill()['filled'];
 }
 
 /**
@@ -885,26 +839,18 @@ function courseKindFrom(?string $courseType): string
 function staffNames(User $user): array
 {
     $cache = modelScopedCache($user);
-    if (isset($cache->staffNames)) {
+    $directory = staffDirectory();
+    // 缓存带版本号：保存别名/改名之后，同一请求里手上这份数组已经过期了。
+    // 只清服务内部缓存不够 —— 调用方（各 scope 闭包）拿的是数组副本。
+    if (isset($cache->staffNames) && ($cache->staffNamesVersion ?? -1) === $directory->version) {
         return $cache->staffNames;
     }
 
-    $names = [];
-    $canonical = trim((string) $user->name);
-    if ($canonical !== '') {
-        $names[$canonical] = true;
-    }
+    // 口径唯一 owner：StaffDirectory（本名 → 别名 → 安全昵称，冲突时让位给权威名）。
+    // 这里只负责请求内缓存 —— 同一请求里会被调用几十次。
+    $cache->staffNamesVersion = $directory->version;
 
-    if ($user->id) {
-        foreach (StaffAlias::where('user_id', $user->id)->pluck('alias') as $alias) {
-            $alias = trim((string) $alias);
-            if ($alias !== '') {
-                $names[$alias] = true;
-            }
-        }
-    }
-
-    return $cache->staffNames = array_keys($names);
+    return $cache->staffNames = $directory->namesFor($user);
 }
 
 /**
@@ -913,64 +859,24 @@ function staffNames(User $user): array
  * 用来在人员管理页提示"这些名字还没映射到账号"。只要它非空，就说明有数据的归属
  * 是悬空的 —— 那个（那些）人看不到自己的会员/客资/任务，管理员补一条别名即可修好。
  *
- * @return array<string, array{name: string, counts: array<string, int>}>
+ * 返回结构保持 `名字 => {name, counts}`（既有调用方与测试依赖），并额外带
+ * `suggestions`：系统按证据给出的疑似账号，前端可直接一键并入。
+ *
+ * @return array<string, array{name: string, counts: array<string, int>, suggestions?: array<int, array{id:int,key:string,name:string,reason:string,confidence:string}>}>
  */
 function unmappedStaffNames(): array
 {
-    $known = [];
-    foreach (User::query()->pluck('name') as $n) {
-        $n = trim((string) $n);
-        if ($n !== '') {
-            $known[$n] = true;
-        }
-    }
-    foreach (StaffAlias::query()->pluck('alias') as $a) {
-        $a = trim((string) $a);
-        if ($a !== '') {
-            $known[$a] = true;
-        }
-    }
-
-    // 归属列 → 展示用的中文来源名
-    $columns = [
-        'customers.consultant' => '会员·会籍顾问',
-        'customers.owner' => '会员·负责人',
-        'leads.service_teacher' => '留资·会籍顾问',
-        'leads.trial_teacher' => '留资·上课老师',
-        'ky_bookings.teacher_name' => '排课·上课老师',
-        'tasks.owner' => '任务·负责人',
-        'training_plans.created_by' => '训练计划·创建人',
-        'post_class_reviews.teacher_name' => '课后分析·老师',
-    ];
-
     $out = [];
-    foreach ($columns as $ref => $label) {
-        [$table, $column] = explode('.', $ref);
-        if (! Schema::hasTable($table) || ! Schema::hasColumn($table, $column)) {
-            continue;
-        }
-        $rows = DB::table($table)
-            ->select($column, DB::raw('count(*) as c'))
-            ->whereNotNull($column)
-            ->where($column, '!=', '')
-            ->groupBy($column)
-            ->get();
-
-        foreach ($rows as $row) {
-            $name = trim((string) $row->{$column});
-            if ($name === '' || isset($known[$name])) {
-                continue;
-            }
-            // 明确的非人员占位符不算未映射
-            if (in_array($name, ['未分配', '待分配', '待完善', '未确认'], true)) {
-                continue;
-            }
-            $out[$name] ??= ['name' => $name, 'counts' => []];
-            $out[$name]['counts'][$label] = (int) $row->c;
-        }
+    foreach (staffDirectory()->unmapped() as $item) {
+        $out[$item['name']] = [
+            'name' => $item['name'],
+            'counts' => $item['counts'],
+            'suggestions' => $item['suggestions'],
+        ];
     }
 
     ksort($out);
+
     return $out;
 }
 
@@ -1041,29 +947,6 @@ function privateStudentKeys(User $user): array
 }
 
 /**
- * 会员可见范围（多角色取并集）。
- *
- *  超管  → 不加条件（双店）
- *  店长  → 本店全部
- *  服务老师 → 本店 + 挂在自己名下的会员
- *  授课老师 → 本店 + （自己名下的会员 ∪ 私教课学员）
- *  新媒体 → P5 留资
- *
- * 多角色时把各自的「按人条件」并起来；店长/超管这类更大范围直接吸收其余角色。
- *
- * **一个角色都识别不出来时按最小权限处理（空集），不再返回未加条件的查询。**
- * 这与姊妹函数 scopeLeadsForUser 是同一口径，也是同一教训：`roles` 漏写、或账号角色是
- * 已下架的旧角色码（`ASSIGNABLE` 里已不存在，但历史库里仍有这类账号）时，原先末尾的
- * `return $query;` 会让这个账号静默拿到**双店全量会员名单**——越权不该是默认值。
- *
- * 为什么选空集而不是「按 `user->venues` 收窄」：本函数的角色口径里并没有 venues 这一维。
- * `venues` 只服务于经营看板的门店下拉（见 applyVenueScope），而这里是**会员名单**的可见性；
- * 用 venues 收窄会给一个角色不明的账号开出「授权门店内全部会员」这种既非超管、也非店长的
- * 第三类权限，等于为提示「配置缺失」而先发一份名单出去。空集则与 scopeLeadsForUser 完全对称，
- * 且失败方向是「本人看不到数据（会被立刻上报）」而不是「别人看到不该看的数据（可能无人发现）」。
- * 修配置的路径很短：roles/role 任一列写对即刻恢复，不需要改代码。
- */
-/**
  * 「前端客资/留资」的**唯一谓词**：`layer = 'P5'` 且**非 ky: 来源**。
  *
  * 为什么必须带 `ky:` 守卫：分层 `layer='P5'` 的业务含义是「**无卡项资产**」，
@@ -1096,6 +979,203 @@ function scopeMemberCustomers($query)
     return $query->where(fn ($w) => $w->where('layer', '!=', 'P5')->orWhere('external_id', 'like', 'ky:%'));
 }
 
+/**
+ * 归属列「没有主人」的判定：空串，或页面占位名（`未分配` / `待分配` / `—` …）。
+ *
+ * 占位名的权威清单在 `StaffDirectory::NON_PERSON_NAMES`（身份归一中心），
+ * 这里**只引用不复制** —— 再抄一份就会出现「面板认它是占位、查询不认」的分裂。
+ */
+function isUnassignedStaffName(?string $name): bool
+{
+    $name = trim((string) $name);
+
+    return $name === '' || in_array($name, StaffDirectory::NON_PERSON_NAMES, true);
+}
+
+/**
+ * 会员「已有归属」的查询谓词：**会籍顾问或负责人任一有真人**。
+ *
+ * 判定同时看姓名列与 `*_user_id`：id 是长期依据（改名不变），姓名兜住历史行。
+ * 只看姓名会把「姓名被清空、但 id 还在」的行误判成未分配 —— 那批数据本人应该看得见。
+ *
+ * 用途：未分配的会员/客资只对超管、店长、新媒体可见；服务老师与授课老师看到的
+ * 每一条都必须有明确的主人（2026-11 用户口径：「没有标记会籍顾问、没有分配服务老师的
+ * 客户，不应该出现在超管店长新媒体以外任何人的会员管理或留资管理里」）。
+ */
+function scopeAssignedCustomers($query)
+{
+    return $query->where(function ($w) {
+        foreach ([['consultant', 'consultant_user_id'], ['owner', 'owner_user_id']] as [$nameColumn, $idColumn]) {
+            $w->orWhere(function ($q) use ($nameColumn, $idColumn) {
+                $q->where($idColumn, '>', 0)
+                    ->orWhere(fn ($x) => $x
+                        ->whereNotNull($nameColumn)
+                        ->where($nameColumn, '!=', '')
+                        ->whereNotIn($nameColumn, StaffDirectory::NON_PERSON_NAMES));
+            });
+        }
+    });
+}
+
+/**
+ * 单条会员「已有归属」的内存判定 —— 与 `scopeAssignedCustomers()` 逐条同口径。
+ *
+ * 列表与单条入口必须用同一个判据：否则会出现「列表里没有它、猜个 URL 却能看/能改」，
+ * 那是最典型的 IDOR 形态（`canAccessCustomer()` 用本函数）。
+ */
+function customerHasOwner(Customer $customer): bool
+{
+    foreach ([['consultant', 'consultant_user_id'], ['owner', 'owner_user_id']] as [$nameColumn, $idColumn]) {
+        if ((int) ($customer->{$idColumn} ?? 0) > 0) {
+            return true;
+        }
+        if (! isUnassignedStaffName($customer->{$nameColumn} ?? null)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * 客资「已有归属」的查询谓词：**服务老师是真人**（姓名非空非占位，或 `service_teacher_user_id` 有值）。
+ *
+ * 客资只有一个归属列（服务老师；负责上课的 trial_teacher 是「课的交给了谁」，不是客资的主任）。
+ * 这与会员侧 `scopeAssignedCustomers()` 同源——馆主口径是同一句话：
+ * 「所有没有标记会籍顾问、没有分配服务老师的客户，都不应该出现在超管店长新媒体以外
+ * 任何人的会员管理或留资管理中」。
+ *
+ * **专用于「私教课学员」这条按人通道的门槛**：授课老师靠手机号/私教关系能命中别人的客资，
+ * 那批客资本来就可能是无主的同步行；没有这一层，无主客资会顺着「私教关系」漏进老师侧。
+ * 只在按人通道上加门槛（AND），不改变「本人名下」与「本人上过体验课」两条既有归属判据。
+ */
+function scopeAssignedLeads($query)
+{
+    return $query->where(function ($w) {
+        $w->where('service_teacher_user_id', '>', 0)
+            ->orWhere(fn ($x) => $x
+                ->whereNotNull('service_teacher')
+                ->where('service_teacher', '!=', '')
+                ->whereNotIn('service_teacher', StaffDirectory::NON_PERSON_NAMES));
+    });
+}
+
+/**
+ * 单条客资「已有归属」的内存判定 —— 与 `scopeAssignedLeads()` 逐条同口径。
+ *
+ * `userCanAccessLead()` 的私教手机号通道用它做门槛：列表已经不给无主客资，
+ * 单条入口（PATCH/DELETE/history/待办标记）也不能凭一个手机号就放行。
+ */
+function leadHasOwner(Lead $lead): bool
+{
+    if ((int) ($lead->service_teacher_user_id ?? 0) > 0) {
+        return true;
+    }
+
+    return ! isUnassignedStaffName($lead->service_teacher ?? null);
+}
+
+/**
+ * 新媒体**部门**账号集合（id 与姓名）—— 列表 scope 与单条准入的唯一来源。
+ *
+ * 新媒体的可见范围是「部门」而不是「个人」（轮班接管同一个账号池，见 scopeLeadsForUser），
+ * 所以单条 PATCH / DELETE / history 必须与列表用同一份集合，否则就是
+ * 「列表看得到、点开 403」——那种分裂最后一定被当成 bug 修到列表上（把范围缩回个人）。
+ *
+ * 结果挂在**当前请求**上做请求内缓存：不是函数级 static（Octane 下跨请求会串数据），
+ * 也不是容器单例（测试里一个 app 实例会跑多次请求，容器缓存会把「刚建的账号」漏掉）。
+ * 这里只查一次 users 表（账号量级几十行）。
+ *
+ * @return array{ids: array<int, int>, names: array<int, string>}
+ */
+function mediaDepartmentIdentities(): array
+{
+    // 只在真实 HTTP 请求内做记忆：console / 队列里的「request」是长驻对象，
+    // 挂在它上面会让不同任务读到同一份旧集合（Octane 同理，故用 runningInConsole 兜住）。
+    $req = (! app()->runningInConsole() && app()->bound('request')) ? app('request') : null;
+    if ($req !== null && $req->attributes->has('yimai_media_dept')) {
+        return $req->attributes->get('yimai_media_dept');
+    }
+
+    $ids = [];
+    $names = [];
+    foreach (User::query()
+        // roles 是 JSON 数组列，用 LIKE 命中角色码；role 单值列兜住历史账号
+        ->where(fn ($q) => $q->where('role', 'R_MEDIA')->orWhere('roles', 'like', '%R_MEDIA%'))
+        ->orderBy('id')
+        ->get(['id', 'name']) as $member) {
+        $ids[] = (int) $member->id;
+        $name = trim((string) $member->name);
+        if ($name !== '') {
+            $names[$name] = true;
+        }
+    }
+
+    $out = ['ids' => $ids, 'names' => array_keys($names)];
+    if ($req !== null) {
+        $req->attributes->set('yimai_media_dept', $out);
+    }
+
+    return $out;
+}
+
+/** 「这条客资由新媒体部门录入的」—— 与 scopeLeadsForUser 的 media 分支逐字同口径（查询版/内存版）。 */
+function scopeLeadCreatedByMediaDepartment($query)
+{
+    $dept = mediaDepartmentIdentities();
+
+    return $query->where(function ($w) use ($dept) {
+        $w->whereIn('created_by_user_id', $dept['ids']);
+        if ($dept['names'] !== []) {
+            // 历史行只有姓名（user_id 列是后加的）：按部门账号姓名兜住
+            $w->orWhereIn('created_by', $dept['names']);
+        }
+    });
+}
+
+/** 单条客资是否由新媒体部门录入（口径与上一条完全相同，供单条准入使用）。 */
+function leadCreatedByMediaDepartment(Lead $lead): bool
+{
+    $dept = mediaDepartmentIdentities();
+    if ((int) ($lead->created_by_user_id ?? 0) > 0
+        && in_array((int) $lead->created_by_user_id, $dept['ids'], true)) {
+        return true;
+    }
+
+    $name = trim((string) ($lead->created_by ?? ''));
+
+    return $name !== '' && in_array($name, $dept['names'], true);
+}
+
+/**
+ * 会员可见范围（多角色取并集）。
+ *
+ *  超管  → 不加条件（双店）
+ *  店长  → 本店全部
+ *  新媒体 → P5 留资（跨店）
+ *  服务老师 → 本店 + 挂在自己名下的会员（有明确主人）
+ *  授课老师 → 本店 + （自己名下的会员 ∪ 私教课学员），同样要求有明确主人
+ *
+ * **未分配的会员只对超管/店长/新媒体可见。** 服务老师与授课老师的每一条可见记录，
+ * 都必须有会籍顾问或负责人（姓名 或 `*_user_id` 任一命中）。这条规则压在按人条件之外
+ * （AND），因为授课老师还有「私教学员」这条按人通道 —— 只靠按人条件，一个从未录入
+ * 顾问/负责人的同步会员会被「私教学员」通道带回来，正是 2026-11 用户反馈的
+ * 「从授课老师角色进小程序，不是她名下的客户也出现在客户管理清单里」。
+ *
+ * 多角色时把各自的「按人条件」并起来；店长/超管这类更大范围直接吸收其余角色。
+ *
+ * **一个角色都识别不出来时按最小权限处理（空集），不再返回未加条件的查询。**
+ * 这与姊妹函数 scopeLeadsForUser 是同一口径，也是同一教训：`roles` 漏写、或账号角色是
+ * 已下架的旧角色码（`ASSIGNABLE` 里已不存在，但历史库里仍有这类账号）时，原先末尾的
+ * `return $query;` 会让这个账号静默拿到**双店全量会员名单**——越权不该是默认值。
+ *
+ * 为什么选空集而不是「按 `user->venues` 收窄」：本函数的角色口径里并没有 venues 这一维。
+ * `venues` 只服务于经营看板的门店下拉（见 applyVenueScope），而这里是**会员名单**的可见性；
+ * 用 venues 收窄会给一个角色不明的账号开出「授权门店内全部会员」这种既非超管、也非店长的
+ * 第三类权限，等于为提示「配置缺失」而先发一份名单出去。空集则与 scopeLeadsForUser 完全对称，
+ * 且失败方向是「本人看不到数据（会被立刻上报）」而不是「别人看到不该看的数据（可能无人发现）」。
+ * 修配置的路径很短：roles/role 任一列写对即刻恢复，不需要改代码。
+ */
 function scopeCustomersForUser($query, User $user)
 {
     $roles = userRoles($user);
@@ -1128,13 +1208,19 @@ function scopeCustomersForUser($query, User $user)
     }
 
     if ($personScopes !== []) {
-        return $query->where('venue', $user->venue)->where(function ($q) use ($personScopes) {
-            $q->where(function ($inner) use ($personScopes) {
-                foreach ($personScopes as $scope) {
-                    $inner->orWhere($scope);
-                }
+        // 老师侧（服务老师/授课老师）只能看到**有明确主人**的会员：
+        // 顾问与负责人都空/占位的行只留给超管、店长、新媒体（2026-11 用户口径）。
+        // 这一层必须压在按人条件**之外**（AND），否则授课老师的「私教学员」通道会把
+        // 没有归属的会员带回来 —— 那正是「不是她名下的客户出现在客户管理清单里」的来源。
+        return $query->where('venue', $user->venue)
+            ->where(fn ($q) => scopeAssignedCustomers($q))
+            ->where(function ($q) use ($personScopes) {
+                $q->where(function ($inner) use ($personScopes) {
+                    foreach ($personScopes as $scope) {
+                        $inner->orWhere($scope);
+                    }
+                });
             });
-        });
     }
     if (in_array('R_MEDIA', $roles, true)) {
         // 新媒体只看前端客资——必须用「P5 且非 ky:」这个谓词，不能只看 layer。
@@ -1153,9 +1239,17 @@ function scopeCustomersForUser($query, User $user)
  *
  *  超管  → 不加条件（双店）
  *  店长  → 本店全部
- *  服务老师 → 本店 + 本人名下 + 待承接池
- *  授课老师 → 本店 + 本人名下 + 本人上过体验课的 + 本人私教学员
+ *  服务老师 → 本店 + **本人名下**（id 或姓名/别名命中 service_teacher）
+ *  授课老师 → 本店 + 本人名下 ∪ 本人上过体验课的（trial_teacher）∪ 本人私教学员
  *  新媒体 → **全体新媒体账号**录入的客资（部门共享，跨门店）
+ *
+ * **未分配的客资（`service_teacher` 为空 / 占位名）不再对老师侧可见**（2026-11 用户口径：
+ * 「没有分配服务老师的客户，不应该出现在超管店长新媒体以外任何人的留资管理里」）。
+ * 这里原先有一条待承接池 `->orWhere('service_teacher', '')`：它让每个服务老师都能看到
+ * 全店所有未分配客资，于是「谁先点开算谁的」——用户看到的就是「未分配的客资乱分配」。
+ * 池子已下线，未分配客资只留给超管/店长/新媒体分配。删除它时**同时清扫了依赖它的下游**
+ * （`EnsureUserIsEnabled::canAccessLead` 的单条准入、`LeadController::destroy` 的删除准入、
+ * `TodayController::todoAction` 的标记准入），否则会留下「列表里没有、直达 URL 能改」的洞口。
  *
  * **新媒体必须在这里收窄**。这个函数此前对 media 直接返回未加条件的查询，注释写的是
  * 「由调用方按场景叠加自己的过滤」—— 但 `/leads` 列表与 `/today/alerts` 都没叠加，
@@ -1186,10 +1280,10 @@ function scopeLeadsForUser($query, User $user)
     $mediaScope = null; // 新媒体：跨门店，整个部门（所有 R_MEDIA 账号）共享
 
     if (in_array('R_SERVICE', $roles, true)) {
-        // 服务老师是客资承接主体：本人名下的 + 待承接池
+        // 服务老师只承接**明确分到自己名下**的客资（id 或姓名/别名）。
+        // 待承接池已下线：未分配客资只对超管/店长/新媒体可见。
         $storeScopes[] = fn ($q) => $q
-            ->where(staffOwnerFilter($user, 'service_teacher_user_id', 'service_teacher'))
-            ->orWhere('service_teacher', '');
+            ->where(staffOwnerFilter($user, 'service_teacher_user_id', 'service_teacher'));
     }
     if (in_array('R_TEACHER', $roles, true)) {
         $keys = privateStudentKeys($user);
@@ -1197,33 +1291,21 @@ function scopeLeadsForUser($query, User $user)
             $q->where(staffOwnerFilter($user, 'service_teacher_user_id', 'service_teacher'))
                 ->orWhere(staffOwnerFilter($user, 'trial_teacher_user_id', 'trial_teacher'));
             if ($keys['phones'] !== []) {
-                $q->orWhereIn('phone', $keys['phones']);
+                // 「私教课学员」是按人通道，不是归属：**必须同时满足「这条客资已有真人服务老师」**，
+                // 否则一个刚从随心瑜同步进来、还没分配顾问的客资，会因为学员恰好是本人的
+                // 私教/体验课学员而出现在留资管理里 —— 正是馆主说的「没有分配服务老师的客户
+                // 不应该出现在超管店长新媒体以外任何人那里」。口径与会员侧 customerHasOwner 一致。
+                $q->orWhere(function ($w) use ($keys) {
+                    $w->whereIn('phone', $keys['phones']);
+                    scopeAssignedLeads($w);
+                });
             }
         };
     }
     if (in_array('R_MEDIA', $roles, true)) {
-        // 部门账号名单**一次性**取出来再进闭包：闭包是在 SQL 编译期执行的，
-        // 里面再查库就会变成每条客资一次查询（N+1）。
-        $deptIds = [];
-        $deptNames = [];
-        foreach (User::query()
-            // roles 是 JSON 数组列，用 LIKE 命中角色码；role 单值列兜住历史账号
-            ->where(fn ($q) => $q->where('role', 'R_MEDIA')->orWhere('roles', 'like', '%R_MEDIA%'))
-            ->get(['id', 'name']) as $member) {
-            $deptIds[] = (int) $member->id;
-            $name = trim((string) $member->name);
-            if ($name !== '') {
-                $deptNames[$name] = true;
-            }
-        }
-        $deptNames = array_keys($deptNames);
-        $mediaScope = function ($q) use ($deptIds, $deptNames) {
-            $q->whereIn('created_by_user_id', $deptIds);
-            if ($deptNames !== []) {
-                // 历史行只有姓名（user_id 列是后加的）：按部门账号姓名兜住
-                $q->orWhereIn('created_by', $deptNames);
-            }
-        };
+        // 部门账号集合只在这里查一次（见 mediaDepartmentIdentities 的请求内缓存），
+        // 单条准入也调同一份，避免「列表部门共享、点开只认本人」。
+        $mediaScope = fn ($q) => scopeLeadCreatedByMediaDepartment($q);
     }
 
     if ($storeScopes === [] && $mediaScope === null) {
@@ -1525,6 +1607,12 @@ function canAccessCustomer(User $user, Customer $customer): bool
             || in_array($customer->consultant, $names, true)) {
             return true;
         }
+        // 未分配的会员只对超管/店长可见（超管与店长上面已 return，走到这里只剩老师侧）。
+        // 判据与 scopeCustomersForUser() 里的 scopeAssignedCustomers() 同口径：
+        // 名单已经不给老师侧的行，单条入口也不能给 —— 否则「列表里看不到、猜个 URL 能看/能改」。
+        if (! customerHasOwner($customer)) {
+            return false;
+        }
         if (privateTeaches($user, $customer)) {
             return true;
         }
@@ -1543,6 +1631,75 @@ function privateTeaches(User $user, Customer $customer): bool
     $phone = (string) $customer->phone;
 
     return $phone !== '' && in_array($phone, $keys['phones'], true);
+}
+
+/**
+ * 单条客资的读写准入 —— **唯一收口点**：中间件（`EnsureUserIsEnabled`，管 PATCH/DELETE/history/查重）
+ * 与今日待办的「标记处理」（`TodayController::todoAction`）共用同一份判据。
+ *
+ * 为什么要收成一份：待办页此前自己写了一段 `$canHandle`（`已分配 ∨ 未分配 ∨ 店长`），
+ * 与列表 scope 相差一个待承接池。池子下线后，那段自写判断要么漏掉「授课老师本人上过体验课」
+ * 这条合法归属，要么留着池子让未分配客资继续可以被标记 —— 两个方向都是错。
+ * 判据只写一次，两个入口逐字同口径，就不会再出现「列表里看不到、直达 URL 能改」。
+ *
+ * 口径与 `scopeLeadsForUser()` 对齐（并集，不是 if/elseif）：
+ *  - 超管：双店全权
+ *  - 新媒体（不叠加门店角色时）：仅本人录入的（与列表的部门口径差一层门店维度，
+ *    这是 2026-11 收口时留下的既存差异，只收紧不放宽）
+ *  - 门店不符：一律不可（新媒体已在上面处理）
+ *  - 店长：本店全部（含未分配 —— 未分配客资归超管/店长/新媒体管）
+ *  - 服务老师：仅本人名下（`service_teacher` 的 id 或姓名/别名）
+ *  - 授课老师：本人名下 ∪ 本人上过体验课（`trial_teacher`）∪ 本人私教学员
+ *
+ * 「本人录入（created_by）」**不算准入** —— 它既不是归属字段，也无法与「未分配」区分：
+ * 保留它就会让老师改得到列表里看不到的未分配客资。老师录入的客资在写入时即补成本人名下
+ * （见 `LeadController::store`），所以合法的自我认领不受影响。
+ */
+function userCanAccessLead(User $user, Lead $lead): bool
+{
+    if (userHasRole($user, 'R_SUPER')) {
+        return true;
+    }
+
+    if (userHasRole($user, 'R_MEDIA')
+        && ! userHasAnyRole($user, ['R_MANAGER', 'R_SERVICE', 'R_TEACHER'])) {
+        // 与列表的部门口径**同一份集合**（mediaDepartmentIdentities）：轮班接管账号池时，
+        // A 登记的客资 B 也要能点开、能改、能删，否则就是「列表看得到、点开 403」。
+        return leadCreatedByMediaDepartment($lead);
+    }
+
+    if ($lead->venue !== $user->venue) {
+        return false;
+    }
+
+    if (userHasRole($user, 'R_MANAGER')) {
+        return true;
+    }
+
+    // 服务老师（会籍顾问）：**仅本人名下**。待承接池已下线 ——
+    // 未分配客资只对超管/店长/新媒体可见（见 scopeLeadsForUser）。
+    if (userHasRole($user, 'R_SERVICE')
+        && staffOwnsRow($user, $lead, 'service_teacher_user_id', 'service_teacher')) {
+        return true;
+    }
+
+    if (userHasRole($user, 'R_TEACHER')) {
+        if (staffOwnsRow($user, $lead, 'service_teacher_user_id', 'service_teacher')
+            || staffOwnsRow($user, $lead, 'trial_teacher_user_id', 'trial_teacher')) {
+            return true;
+        }
+        // 私教课学员通道：**只在客资已有真人服务老师时生效**（与 scopeLeadsForUser 同一门槛）。
+        // 无主客资不因为「手机号是本人的私教学员」就放行 —— 口径与会员侧 customerHasOwner 一致。
+        if (! leadHasOwner($lead)) {
+            return false;
+        }
+        // privateStudentKeys 里的号码是纯数字，留资侧的也要先归一才能比中
+        $phone = normalizePhone((string) $lead->phone);
+
+        return $phone !== '' && in_array($phone, privateStudentKeys($user)['phones'], true);
+    }
+
+    return false;
 }
 
 function renewalEvaluationContext(Customer $customer): array

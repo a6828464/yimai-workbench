@@ -5,7 +5,20 @@ set -Eeuo pipefail
 # 默认以脚本所在目录为站点根；也可通过 SITE_ROOT=/path ./update.sh 覆盖。
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SITE_ROOT="${SITE_ROOT:-$SCRIPT_ROOT}"
-APP_ROOT="$SITE_ROOT/backend"
+
+# Laravel 根目录的定位。**两种部署形态都要能跑**，否则「版本更新」在线上必然是坏的：
+#   A) 发行包形态：站点根/backend 才是 Laravel 根（本仓库的开发目录就是这种）
+#   B) 宝塔站点形态：站点根**本身**就是 Laravel 根（app/ routes/ public/ 直接在站点根下）
+#      —— 线上 oa.nbyimai.com 正是 B。旧代码写死 `$SITE_ROOT/backend`，于是脚本一进来就
+#      报「站点目录不存在」退出；而后台那边更早一步就被 open_basedir 拦成 500。
+# 可用 APP_ROOT 显式覆盖（后台调用时会把真实的 base_path() 传进来，最可靠）。
+if [ -n "${APP_ROOT:-}" ]; then
+  :
+elif [ -d "$SITE_ROOT/backend" ]; then
+  APP_ROOT="$SITE_ROOT/backend"
+else
+  APP_ROOT="$SITE_ROOT"
+fi
 WORK_ROOT="${WORK_ROOT:-$SITE_ROOT/.update-work}"
 STATE_FILE="$SITE_ROOT/.update-state.json"
 

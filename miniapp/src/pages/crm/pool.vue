@@ -19,7 +19,7 @@
 import { computed, ref } from 'vue'
 import { onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
 import { goPath, requireSuper } from '@/utils/nav'
-import { isSuper } from '@/utils/permission'
+import { canSwitchVenue } from '@/utils/venue'
 import { useUserStore } from '@/store/user'
 import {
   POOL_CONSULTANT_UNASSIGNED,
@@ -62,8 +62,8 @@ let pendingReset = false
 /** 请求序号：筛选变更后让在途响应作废，旧筛选的数据不混进新列表 */
 let requestSeq = 0
 
-/** 只有超管能选门店（本页也由 requireSuper() 收口，其他人根本进不来） */
-const canPickVenue = computed(() => isSuper(user.roles))
+/** 门店选择权：判据同留资/会员页（授权门店数 > 1）；本页另由 requireSuper() 收口 */
+const canPickVenue = computed(() => canSwitchVenue(user.venues, user.roles))
 
 const venueOptions = computed(() => [
   { label: '全部门店', value: '' },

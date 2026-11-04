@@ -645,6 +645,7 @@
     FALLBACK_LEAD_ENUMS
   } from '@/api/yimai'
   import type { YimaiLead } from '@/api/yimai'
+  import { listStaffOptions } from '@/api/auth'
   import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
   import { useTableHeight } from '@/hooks/core/useTableHeight'
@@ -824,11 +825,29 @@
   // 实测值，筛选条加一个控件就又不准了，而且抄到别的页面必然是错的。
   const { tableMaxHeight, tableRef } = useTableHeight()
 
-  /** 会籍顾问选项：轻量接口（服务端去重），不再全量拉取会员 */
+  /**
+   * 会籍顾问选项：**账号规范名优先**，历史写法兜底。
+   *
+   * 为什么不能只取「会员档案里出现过的 consultant」：那等于让录入者从一堆历史写法里
+   * 再挑一个，于是同一名员工在不同行里叫三个名字（随心瑜的花名、留资里手输的简称、
+   * 工作台注册的真名），归属 id 永远对不上，本人也就永远看不到自己的客资。
+   *
+   * 现在的顺序是：
+   *   1. 工作台账号的规范名（`/staff/options`）—— 选中它写进归属列，服务端能直接解析到人；
+   *   2. 历史值（`/customers/options`）—— 保留下来只为"旧数据能原样保存"，不是鼓励再用。
+   * 两边合并去重，界面不变（仍是可选可手输的下拉）。
+   */
   const consultantOptions = ref<string[]>([])
   async function loadConsultants() {
     try {
-      consultantOptions.value = (await queryCustomerOptions()).consultants ?? []
+      const [opts, staff] = await Promise.all([
+        queryCustomerOptions().catch(() => ({ consultants: [] as string[] })),
+        listStaffOptions().catch(() => [])
+      ])
+      const names = new Set<string>()
+      for (const s of staff) if (s.name) names.add(s.name)
+      for (const c of opts.consultants ?? []) if (c) names.add(c)
+      consultantOptions.value = [...names].sort((a, b) => a.localeCompare(b, 'zh'))
     } catch {
       /* 静默失败，允许手输 */
     }

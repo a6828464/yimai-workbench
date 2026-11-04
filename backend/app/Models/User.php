@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Services\StaffDirectory;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -13,6 +14,25 @@ class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, Notifiable;
+
+    /**
+     * 账号变动即失效「名字 → 账号」映射。
+     *
+     * `users.name` 是归属判断的权威名之一，新建/改名/改昵称/删除都会改变解析结果：
+     *  - 新建账号：同名历史数据从此有主（`backfillStaffOwnerIds()` 才认得出）；
+     *  - 改昵称：昵称也算一个可用名字（见 `StaffDirectory::namesFor()`）；
+     *  - 删除账号：名字要从池里消失，否则旧数据会被判成"有主"却指向不存在的 id。
+     *
+     * 不做这件事的实际后果：管理员刚建好账号，同一请求内后续的归属判断仍按旧映射走，
+     * 页面看起来"建了但没生效"，只能靠刷新解决 —— 属于最难复现的一类缺陷。
+     */
+    protected static function booted(): void
+    {
+        $flush = static fn () => app(StaffDirectory::class)->flush();
+
+        static::saved($flush);
+        static::deleted($flush);
+    }
 
     protected $fillable = [
         'name',

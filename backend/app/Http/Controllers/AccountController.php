@@ -57,24 +57,187 @@ final class AccountController extends Controller
     /**
      * GET /accounts/staff-mapping
      *
-     * 人员归属映射总览：每个账号的规范名/别名，以及业务数据里出现、但对不上任何账号的姓名。
-     * 「未映射」非空就说明有数据的归属是悬空的 —— 那个人看不到自己的会员/客资/任务。
+     * 人员身份归一总览（原「归属映射」面板的数据源）。
+     *
+     * 这里回答四个问题，缺一个管理员就只能靠猜：
+     *  1. 每个账号有哪几个名字（本名 / 昵称 / 别名），各自名下有多少行数据；
+     *  2. 业务数据里有哪些名字还没归属（`unmapped`，带疑似账号建议）；
+     *  3. 各归属列的 id 覆盖率（`coverage`，还差多少行没落 id）；
+     *  4. 归属 id 指向已不存在账号的行（`staleIds`，账号删掉重建留下的）。
+     *
+     * 旧字段（accounts / unmapped / staleIds）结构保持不变，只增不减 —— 老客户端
+     * 与既有测试都依赖它。
      */
     public function staffMapping(Request $r)
     {
         requireSuper($r);
 
+        $directory = staffDirectory();
+
+        $accounts = [];
+        foreach ($directory->accounts() as $row) {
+            $user = User::find($row['id']);
+            $accounts[] = [
+                'key' => (string) ($user?->username ?? ''),
+                'name' => $row['name'],
+                'nickname' => $row['nickname'],
+                'aliases' => $row['aliases'],
+                'roles' => $row['roles'],
+                'venue' => $row['venue'],
+                'status' => $row['status'],
+                // 名下数据量：改名/认领后这个数字会立刻变化，是"生效了没有"的唯一直观证据
+                'footprint' => $user ? $directory->footprint($user) : [],
+            ];
+        }
+
+        $unmapped = array_values($directory->unmapped());
+
         return ok([
-            'accounts' => User::orderBy('id')->get()->map(fn ($u) => [
-                'key' => $u->username,
-                'name' => (string) $u->name,
-                'aliases' => StaffAlias::where('user_id', $u->id)->orderBy('id')->pluck('alias')->all(),
-            ]),
-            'unmapped' => array_values(unmappedStaffNames()),
-            // 归属 id 指向已不存在账号的行（账号删掉重建留下的），需要清理
+            'accounts' => $accounts,
+            'unmapped' => $unmapped,
             'staleIds' => staleOwnerUserIds(),
+            'coverage' => $directory->coverage(),
+            'totals' => [
+                'unmapped' => count($unmapped),
+                'missingIds' => array_sum(array_column($directory->coverage(), 'missing')),
+            ],
         ]);
     }
+
+    /**
+     * POST /accounts/staff-mapping/assign
+     *
+     * 把一个悬空姓名「认领」到某个账号。
+     *
+     * 这是「随心瑜叫苏米、留资写蒙澍南、工作台注册叫澍南」三套名字的统一动作：
+     * 认领一次 → 写进 `staff_aliases` → 回填所有历史行的归属 id → 清业务缓存，
+     * 本人刷新即能看到。名字一旦登记就全局唯一，重复认领会明确报冲突而不是静默覆盖。
+     */
+    public function assignStaffName(Request $r)
+    {
+        requireSuper($r);
+
+        $d = $r->validate([
+            'name' => 'required|string|max:60',
+            'userKey' => 'required|string|max:60',
+            'source' => 'nullable|string|in:manual,ky,merge',
+        ]);
+
+        $user = User::where('username', $d['userKey'])->first();
+        abort_if($user === null, 404, '账号不存在');
+
+        $result = staffDirectory()->assign(
+            $d['name'],
+            (int) $user->id,
+            $d['source'] ?? 'manual',
+            '人员管理 → 身份归一'
+        );
+
+        audit($r, '修改', '人员管理', $user->id, $user->name, is_string($user->venue) ? $user->venue : '双店',
+            "归属认领：把「{$result['alias']}」并入账号 {$user->name}（回填 {$result['backfilled']} 行）");
+
+        return ok($result);
+    }
+
+    /**
+     * POST /accounts/staff-mapping/repair
+     *
+     * 全量补齐归属 id（可重复执行）。两件事：
+     *  - `backfill`：按现有名字池把 `*_user_id` 为空的业务行补上；
+     *  - `clearStale`（可选）：把指向已删除账号的悬挂 id 置空，再由下一轮补正确的。
+     *
+     * 为什么要有手动入口：同步写入 id 只在"写入那一刻"发生，账号是在数据之后建的
+     * （或改过名）时，历史行就会一直是空 id —— 这种行只能靠一次全量回填纠正。
+     */
+    public function repairStaffMapping(Request $r)
+    {
+        requireSuper($r);
+
+        $d = $r->validate([
+            'clearStale' => 'nullable|boolean',
+            'scan' => 'nullable|boolean',
+        ]);
+
+        $directory = staffDirectory();
+        // scan=true 时先清悬挂 id 再回填：先清后补，补的是"按当前名字池能认出来的"
+        $cleared = ! empty($d['clearStale']) ? $directory->clearStale() : 0;
+        $result = $directory->backfill();
+        invalidateBusinessCaches();
+
+        audit($r, '修改', '人员管理', 0, '全部账号', '双店',
+            "归属修复：回填 {$result['filled']} 行".($cleared > 0 ? "，清理悬挂 id {$cleared} 行" : ''));
+
+        return ok([
+            'backfilled' => $result['filled'],
+            'byTable' => $result['byTable'],
+            'cleared' => $cleared,
+            'coverage' => $directory->coverage(),
+        ]);
+    }
+
+    /**
+     * POST /accounts/staff-mapping/merge
+     *
+     * 账号合并：把 `from` 并进 `into`（同一个人被建了两次、或旧账号要改用真名时用）。
+     *
+     * 与 `assign` 的区别：assign 只是"这个名字也归他"，merge 是把**整个账号**连人带
+     * 数据并过去，并停用源账号 —— 源账号下的会员/客资/排课会改成目标账号的姓名与 id。
+     */
+    public function mergeStaffAccount(Request $r)
+    {
+        requireSuper($r);
+
+        $d = $r->validate([
+            'into' => 'required|string|max:60',
+            'from' => 'required|array|min:1',
+            'from.*' => 'string|max:60',
+            'delete' => 'nullable|boolean',
+        ]);
+
+        $into = User::where('username', $d['into'])->first();
+        abort_if($into === null, 404, '目标账号不存在');
+
+        $fromIds = User::whereIn('username', $d['from'])->pluck('id')->map(fn ($id) => (int) $id)->all();
+        abort_if($fromIds === [], 422, '要合并的账号不存在');
+
+        $result = staffDirectory()->merge((int) $into->id, $fromIds, (bool) ($d['delete'] ?? false));
+
+        audit($r, '修改', '人员管理', $into->id, $into->name, is_string($into->venue) ? $into->venue : '双店',
+            "账号合并：".implode('、', $d['from'])." → {$into->name}（迁移 {$result['rows']} 行，别名 {$result['aliases']} 条）");
+
+        return ok($result);
+    }
+
+    /**
+     * GET /staff/options
+     *
+     * 归属下拉的**唯一数据源**：返回账号（而不是历史自由文本）。
+     *
+     * 留资/会员表单此前用的是「会员档案里出现过的 consultant 去重」—— 那等于让用户
+     * 从一堆历史写法里再挑一个，新数据继续产生悬空名字。改成账号列表后，写进归属列的
+     * 永远是某个真实账号的本名，选择本身就把 id 一起带上了。
+     */
+    public function staffOptions(Request $r)
+    {
+        $me = $r->user();
+        $directory = staffDirectory();
+
+        $list = [];
+        foreach (User::query()->where('status', '!=', '停用')->orderBy('id')->get() as $u) {
+            $list[] = [
+                'id' => (int) $u->id,
+                // staffName 是归属用的规范名（不是昵称），前端提交它的原值
+                'name' => trim((string) $u->name),
+                'aliases' => $directory->namesFor($u),
+                'roles' => userRoles($u),
+                'venue' => $u->venue,
+                'self' => (int) $u->id === (int) $me->id,
+            ];
+        }
+
+        return ok(['staff' => $list]);
+    }
+
 
     /**
      * PUT /accounts/{key}/aliases
@@ -105,11 +268,18 @@ final class AccountController extends Controller
         }
         $aliases = array_keys($aliases);
 
-        // 与别的账号冲突的直接报出来，不做静默丢弃
+        // 与别的账号冲突的直接报出来，不做静默丢弃。
+        // 两类冲突都要拦：① 这个名字已是别人的别名；② 这个名字其实是别人的**本名**
+        // —— 后者若放行，那个人的本名解析会被别名挡住，他的数据反而归到这边来。
         $conflict = StaffAlias::whereIn('alias', $aliases)
             ->where('user_id', '!=', $user->id)
             ->pluck('alias')
             ->all();
+        $nameConflict = User::whereIn('name', $aliases)
+            ->where('id', '!=', $user->id)
+            ->pluck('name')
+            ->all();
+        $conflict = array_values(array_unique(array_merge($conflict, $nameConflict)));
         if ($conflict !== []) {
             abort(422, '这些名字已属于其它账号：'.implode('、', $conflict));
         }
@@ -119,6 +289,8 @@ final class AccountController extends Controller
             StaffAlias::create(['user_id' => $user->id, 'alias' => $a, 'source' => 'manual']);
         }
 
+        // 名字池变了：先丢请求内缓存，再回填历史行的归属 id
+        staffDirectory()->flush();
         // 别名改了要把历史行的归属 id 补上 —— 迁移只在校验时跑过一次，
         // 管理员刚映射好的那些姓名对应的老数据还需要这一步才能真正落 id。
         $filled = backfillStaffOwnerIds();
@@ -255,10 +427,16 @@ final class AccountController extends Controller
             'venues' => $venues,
             'status' => '启用',
         ]);
-        audit($r, '新增', '人员管理', $user->id, $user->name, is_string($venue) ? $venue : '双店',
-            "开通账号：{$user->name}（{$this->label($roles)}）/ 门店[".implode('、', $venues).']');
+        // 新账号建好就回填一次：如果业务数据里早就有同名（随心瑜/留资里写的就是这个真名），
+        // 这一步会让那些行立刻带上 id —— 否则管理员要先开「身份归一」再点修复才生效。
+        $backfilled = backfillStaffOwnerIds();
+        invalidateBusinessCaches();
 
-        return ok(['key' => $user->username]);
+        audit($r, '新增', '人员管理', $user->id, $user->name, is_string($venue) ? $venue : '双店',
+            "开通账号：{$user->name}（{$this->label($roles)}）/ 门店[".implode('、', $venues).']'
+            .($backfilled > 0 ? "，回填历史归属 {$backfilled} 行" : ''));
+
+        return ok(['key' => $user->username, 'backfilled' => $backfilled]);
     }
 
     /** PATCH /accounts/{key} */
@@ -275,6 +453,7 @@ final class AccountController extends Controller
         abort_unless(in_array($action, $allowed, true), 422, '未知操作');
 
         $d = $r->validate([
+            'name' => 'nullable|string|max:20',
             'roles' => 'nullable|array|min:1',
             'roles.*' => 'string|in:R_SUPER,R_MANAGER,R_SERVICE,R_TEACHER,R_MEDIA',
             'roleCode' => 'nullable|string|in:R_SUPER,R_MANAGER,R_SERVICE,R_TEACHER,R_MEDIA',
@@ -305,6 +484,36 @@ final class AccountController extends Controller
             $detail = '重置密码';
         } else {
             $patch = [];
+            /*
+             * 改名（本次新增能力）。
+             *
+             * 归属列存的是姓名字符串，改完名之后**历史行的姓名列还写着旧名**，
+             * 只改 users.name 会让这个人瞬间看不到自己的会员/客资/排课。
+             * 所以改名必须同时把旧名登记为别名（一条记录，「这个账号以前叫这个」），
+             * 让 `staffNames()` 的并集继续覆盖历史行。旧名若已被别的账号占用则跳过
+             * （那是真实的同名冲突，不能强行抢），并在审计里说明。
+             */
+            $newName = trim((string) ($d['name'] ?? ''));
+            $oldName = trim((string) $user->name);
+            if ($newName !== '' && $newName !== $oldName) {
+                abort_if(
+                    User::where('name', $newName)->where('id', '!=', $user->id)->exists(),
+                    422,
+                    '姓名「'.$newName.'」已被其它账号使用'
+                );
+                $patch['name'] = $newName;
+                if ($oldName !== ''
+                    && StaffAlias::where('alias', $oldName)->doesntExist()
+                    && User::where('name', $oldName)->where('id', '!=', $user->id)->doesntExist()) {
+                    StaffAlias::create([
+                        'user_id' => $user->id,
+                        'alias' => $oldName,
+                        'source' => 'rename',
+                        'note' => '改名前自动登记（历史数据仍写着这个名字）',
+                    ]);
+                }
+                $detail = "改名：{$oldName} → {$newName}";
+            }
             // 兼容旧客户端：只传 roleCode 时按单角色处理
             $roles = $d['roles'] ?? (isset($d['roleCode']) && $d['roleCode'] !== '' ? [$d['roleCode']] : null);
             if ($roles !== null) {
@@ -316,7 +525,7 @@ final class AccountController extends Controller
                 // 含门店绑定角色即锁定到单一门店；否则放开为双店
                 $bound = array_intersect($roles, self::VENUE_BOUND) !== [];
                 $patch['venue'] = $bound ? (($d['venues'] ?? $user->venues)[0] ?? null) : null;
-                $detail = '角色调整：'.$this->label($before).' → '.$this->label($roles);
+                $detail = ($detail !== '' ? $detail.'；' : '').'角色调整：'.$this->label($before).' → '.$this->label($roles);
             }
             if (! empty($d['venues'])) {
                 $patch['venues'] = $d['venues'];
@@ -326,6 +535,13 @@ final class AccountController extends Controller
                 // 角色变了要立刻生效：清掉旧 token，避免前端还拿着旧角色继续用
                 if (isset($patch['roles'])) {
                     $user->tokens()->delete();
+                }
+                // 改名后历史行仍写着旧名：立刻回填一次，把旧名对应的行补上 id，
+                // 这样"按 id 过滤"的新路径也不会漏（姓名兜底只是保险，不是主路）。
+                if (isset($patch['name'])) {
+                    staffDirectory()->flush();
+                    backfillStaffOwnerIds();
+                    invalidateBusinessCaches();
                 }
             }
             $detail = $detail ?: '资料更新';

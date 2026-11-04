@@ -280,7 +280,13 @@ final class TodayController extends Controller
                 $q->where(function ($w) use ($u, $keys) {
                     $w->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher'))->orWhere(staffOwnerFilter($u, 'trial_teacher_user_id', 'trial_teacher'));
                     if ($keys['phones'] !== []) {
-                        $w->orWhereIn('phone', $keys['phones']);
+                        // 私教课学员通道同样要过「客资已有真人服务老师」这道门槛
+                        // （与 scopeLeadsForUser / userCanAccessLead 同一口径）：
+                        // 否则无主客资仍会经由这里计进老师的漏斗与「我的客资」。
+                        $w->orWhere(function ($x) use ($keys) {
+                            $x->whereIn('phone', $keys['phones']);
+                            scopeAssignedLeads($x);
+                        });
                     }
                 });
             }, fn ($q) => $q->where(staffOwnerFilter($u, 'service_teacher_user_id', 'service_teacher')));
@@ -903,9 +909,10 @@ final class TodayController extends Controller
             if ($d['type'] === 'newLeads' && ! empty($d['leadId'])) {
                 $lead = Lead::find($d['leadId']);
                 if ($lead) {
-                    $canHandle = userHasAnyRole($u, ['R_SUPER', 'R_MANAGER'])
-                        || staffOwnsRow($u, $lead, 'service_teacher_user_id', 'service_teacher')
-                        || (string) $lead->service_teacher === '';
+                    // 判据统一走 userCanAccessLead()（helpers.php，中间件同一份）：
+                    // 待承接池已下线，未分配客资不再允许老师侧从待办里直接标记 ——
+                    // 否则「列表里看不到、待办/直达 URL 却能把状态改掉」。
+                    $canHandle = userCanAccessLead($u, $lead);
                     abort_unless($canHandle, 403, '无权处理该客资');
                     $next = match ($d['action']) {
                         '已首响' => '已联系',
@@ -952,9 +959,10 @@ final class TodayController extends Controller
                     }
                 }
                 if ($lead) {
-                    $canHandle = userHasAnyRole($u, ['R_SUPER', 'R_MANAGER'])
-                        || staffOwnsRow($u, $lead, 'service_teacher_user_id', 'service_teacher')
-                        || (string) $lead->service_teacher === '';
+                    // 判据统一走 userCanAccessLead()（helpers.php，中间件同一份）：
+                    // 待承接池已下线，未分配客资不再允许老师侧从待办里直接标记 ——
+                    // 否则「列表里看不到、待办/直达 URL 却能把状态改掉」。
+                    $canHandle = userCanAccessLead($u, $lead);
                     if ($enforceLeadPermission) {
                         abort_unless($canHandle, 403, '无权处理该客资');
                     }

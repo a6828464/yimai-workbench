@@ -212,20 +212,18 @@ final class BodyTestReportController extends Controller
             ->map(fn ($x) => $this->present($x))->all()]);
     }
 
-    /** 客资是否对该用户可见（与留资中间件同谓词，供体测写入校验复用） */
+    /**
+     * 客资是否对该用户可见 —— **直接复用单条准入的唯一判据** `userCanAccessLead()`。
+     *
+     * 这里原先自己写了一套：门店 + 店长 + 名下/体验课/**本人录入**。那套比留资侧松一档：
+     * 老师能凭 `created_by` 访问「无主客资」（service_teacher 为空/占位），而列表与
+     * PATCH/DELETE/history 早在 2026-11 就收口到「未分配只给超管/店长/新媒体」。
+     * 结果是一条侧门：列表里看不到的客资，还能靠体测报告写进去（并回填 lead_id）。
+     * 判据只留一份，任何新入口都不再各写一套。
+     */
     private function leadVisible(User $u, Lead $l): bool
     {
-        if (userHasRole($u, 'R_SUPER')) {
-            return true;
-        }
-        if ($l->venue !== $u->venue) {
-            return false;
-        }
-
-        return userHasRole($u, 'R_MANAGER')
-            || staffOwnsRow($u, $l, 'service_teacher_user_id', 'service_teacher')
-            || staffOwnsRow($u, $l, 'trial_teacher_user_id', 'trial_teacher')
-            || staffOwnsRow($u, $l, 'created_by_user_id', 'created_by');
+        return userCanAccessLead($u, $l);
     }
 
     /** GET /body-test-reports/{id} */

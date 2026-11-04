@@ -2920,7 +2920,30 @@ export interface PostClassCandidate {
   mainCard?: string
   remainTimes?: number | null
   hasReview: boolean
+  /**
+   * 课型分组键（v3.11 契约字段）：`private` = 私教，`group` = 小班/团课。
+   *
+   * 后端未就绪时缺省 —— 视图层按 `isTrial` / `kind` 文案兜底归类
+   * （`kind` 含「私教」→ 私教，其余算小班+团课），保证分组界面不空。
+   */
+  courseKind?: PostClassCourseKind | string | null
+  /** 最近一次上课时间（v3.11 契约字段；缺省用 `classAt` 兜底） */
+  lastClassAt?: string | null
+  /** 最近一次上课的课程名（v3.11 契约字段；缺省用 `courseName` 兜底） */
+  lastClassTitle?: string | null
 }
+
+/** 课后分析候选人的课型分组键（v3.11）：私教 / 小班+团课 */
+export type PostClassCourseKind = 'private' | 'group'
+
+/**
+ * 候选人分组的接口原样（v3.11 契约字段 `groups`）。
+ *
+ * 后端可能给 `{ private: [...], group: [...] }` 这种「已分好组」的形态；
+ * 也可能只给课程维度（如 `{ 私教: n, 小班: n }` 这类计数）。前端**只信任数组**：
+ * 非数组一律忽略，改用 `records` 自己归类，绝不因为解析不出而白屏。
+ */
+export type PostClassCandidateGroups = Partial<Record<PostClassCourseKind, unknown>>
 
 export interface PostClassReviewPayload {
   scene: string
@@ -2986,14 +3009,34 @@ export async function previewPostClassPlan(
   return apiPost<PostClassPlanResult>('/post-class-reviews/preview', input)
 }
 
-export async function queryPostClassCandidates(days = 7): Promise<{
+/** 候选人查询入参：`days` 时间窗 + `group` 课型分组（v3.11 新增 `group=all`） */
+export interface PostClassCandidateQuery {
+  /** 时间窗天数（默认 7；界面给 3 / 7 / 30 三档） */
+  days?: number
+  /**
+   * 课型筛选：`all` = 两类都要（默认，界面自己分组展示）；
+   * `private` / `group` 只在后端支持时使用，界面暂不单独请求。
+   */
+  group?: 'all' | PostClassCourseKind
+}
+
+export async function queryPostClassCandidates(
+  params: number | PostClassCandidateQuery = 7
+): Promise<{
   records: PostClassCandidate[]
   leads: PostClassCandidate[]
   members: PostClassCandidate[]
   pendingCount: number
+  /** v3.11：后端已分好组时原样带回（前端只认数组，见 PostClassCandidateGroups 注释） */
+  groups?: PostClassCandidateGroups | null
 }> {
   requirePostClassBackend()
-  return apiGet('/post-class-reviews/candidates', { days })
+  // 兼容旧调用点（`queryPostClassCandidates(days)`）：既接受数字也接受对象
+  const query: PostClassCandidateQuery = typeof params === 'number' ? { days: params } : params
+  return apiGet('/post-class-reviews/candidates', {
+    days: query.days ?? 7,
+    group: query.group ?? 'all'
+  })
 }
 
 export async function getPostClassPendingCount(days = 3): Promise<{ count: number }> {

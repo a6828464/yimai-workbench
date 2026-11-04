@@ -997,6 +997,13 @@ export interface MomentsPersona {
   expressionStyle?: string[]
   /** 是否开启人设自动推导（关闭则只用用户手填值） */
   autoDerive?: boolean
+  /**
+   * 自定义人格（v3.11）：用户在「人设设置」里写的自由文本，与身份/人群**并列**。
+   *
+   * 拼装位置固定在 `personaText()` 的**最后一段**（第三段），不覆盖身份角色、
+   * 不覆盖主要客群；空串/缺省时该段整体不出现，提示词与改造前逐字一致。
+   */
+  customPersona?: string
 }
 
 export interface MomentsInput {
@@ -1619,6 +1626,11 @@ export interface XhsProfile {
   styles?: string[]
   /** emoji 档位（复用朋友圈四档） */
   emojiUsageId?: string
+  /**
+   * 自定义人格（v3.11）：与朋友圈共用同一个 profile 键（`customPersona`）。
+   * 拼装位置在小红书 user 段**最后一行**（身份/客群/风格之后），不覆盖任何既有段。
+   */
+  customPersona?: string
 }
 
 export interface XhsInput {
@@ -1853,6 +1865,13 @@ function personaText(p: MomentsPersona): string {
   const specialties = unionUnique(p.specialties, derive.specialties)
   const audiences = unionUnique(p.audiences, derive.audiences)
   const styles = unionUnique(p.expressionStyle, derive.expressionStyle)
+  // 自定义人格：第三段人设，**追加**不覆盖（身份角色/主要客群/表达风格各自保留）。
+  // 多行输入按换行折成「/」连接，避免把分段拆成多条提示行、或让模型把换行当成新指令。
+  const custom = String(p.customPersona ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' / ')
   return [
     p.name && `姓名：${p.name}`,
     p.gender && `性别：${p.gender}`,
@@ -1863,7 +1882,8 @@ function personaText(p: MomentsPersona): string {
     `品牌：${p.brand || BRAND_NAME}`,
     `城市：${p.city || BRAND_CITY}`,
     audiences.length && `主要客群：${audiences.join('、')}`,
-    styles.length && `表达风格：${styles.join('、')}`
+    styles.length && `表达风格：${styles.join('、')}`,
+    custom && `自定义人格：${custom}`
   ]
     .filter(Boolean)
     .join('；')
@@ -2028,6 +2048,19 @@ export function resolveXhsEmojiMode(input: XhsInput): EmojiUsageMode {
   return findEmojiUsageMode(input.emojiUsageId ?? input.profile.emojiUsageId)
 }
 
+/**
+ * 小红书「自定义人格」段（v3.11）：空 → 返回空串（被 `.filter(Boolean)` 剃掉，
+ * 提示词与改造前逐字一致）；多行折成「/」连接，避免模型把换行当成新的一段指令。
+ */
+function xhsCustomPersonaLine(custom?: string): string {
+  const text = String(custom ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' / ')
+  return text ? `自定义人格：${text}` : ''
+}
+
 /** 小红书提示词组装（两种 IP 写法差异 + 同城三要素 + 封面/标题禁 emoji 均在 system 段） */
 export function buildXhsMessages(input: XhsInput): PromptLayer[] {
   const p = input.profile
@@ -2073,6 +2106,8 @@ export function buildXhsMessages(input: XhsInput): PromptLayer[] {
       `目标客群（最多${XHS_AUDIENCE_MAX}项）：${p.audiences.slice(0, XHS_AUDIENCE_MAX).join('、')}`,
     p.strengths.length && `专业擅长：${p.strengths.join('、')}`,
     `表达风格：${styles.join('、')}；默认转化方向：${p.conversion}`,
+    // 自定义人格（v3.11）：第三段人设，追加在身份/客群/风格之后，不改写任何既有段
+    xhsCustomPersonaLine(p.customPersona),
     input.category && `选题分类：${input.category}`,
     topic && `写作方向：${topic.promptHint}`,
     guide && guide,

@@ -128,6 +128,42 @@
     justify-content: flex-end;
   }
 
+  /*
+    人设入口条（v3.11）：营销工具主页**不再放人设编辑表单**，
+    只留一行只读摘要 + 「人设设置」按钮。样式写在这里（非 scoped + .mk-marketing 前缀），
+    因为卡片在子组件 modules/moments-tool.vue 的模板里，scoped 命中不到。
+  */
+  .mk-marketing .mk-persona-entry {
+    .mk-persona-entry__row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .mk-persona-entry__text {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 8px;
+    }
+
+    .mk-persona-entry__title {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--art-gray-900, #303133);
+    }
+
+    .mk-persona-entry__summary {
+      margin-top: 6px;
+      font-size: 12px;
+      line-height: 1.9;
+      color: var(--art-gray-500, #a8abb2);
+      word-break: break-all;
+    }
+  }
+
   // 卡片内的正文摘要：限 4 行，超出省略（卡片是速览，完整内容去「载入编辑」看）
   .mk-marketing .mk-card-text {
     display: -webkit-box;

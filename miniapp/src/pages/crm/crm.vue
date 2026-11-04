@@ -36,7 +36,8 @@ const bizEntries = computed<FeatureDef[]>(() => visibleFeatures(user.roles, 'biz
 /** 当前可见范围：角色 + 门店 + 入口数（让人一眼知道「为什么我看不到某些入口」） */
 const scopeText = computed(() => {
   const role = user.roleText || '未分配角色'
-  const venue = user.venue || (user.isSuper ? '双店' : '全部门店')
+  // 「双店」也按授权门店数判断（与门店切换同一口径），不再只看是不是超管
+  const venue = user.venue || ((user.venues ?? []).length > 1 ? '双店' : '全部门店')
   const count = crmEntries.value.length + bizEntries.value.length
   return `${role} · ${venue} · 可见 ${count} 项`
 })

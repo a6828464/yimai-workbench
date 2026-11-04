@@ -52,6 +52,19 @@ class LeadController extends Controller
      *
      * id 不随改名变化、也不怕同名，是归属判断的长期依据（姓名字段保留用于展示，
      * 同时兜住"姓名对不上任何账号"的历史行）。详见 helpers.php 的 staffUserId()。
+     *
+     * ## 解析不到账号时**不清空**已有的 id
+     *
+     * 这条规则是「客资归属没有同步到所属人」的直接成因之一。原来的写法是
+     * `$values[$idCol] = staffUserId($name)` —— 名字解析不到就写 null，于是：
+     *
+     *   1. 老师改过名、或他名下这条客资的姓名列被改成一个还没登记的名字，
+     *      这一行的 `*_user_id` 立刻被清成空；
+     *   2. 之后即使管理员补了别名，也只能靠一次全量回填才能恢复；
+     *   3. 「按 id 过滤」的新路径（如今日待办的部分查询）当场就认不出这个人。
+     *
+     * 现在的语义：**名字清空 → id 一起清空**（确实没主了）；**名字换成一个对不上账号的
+     * 写法 → 保留原 id**（宁可按旧主保留，等认领后自然纠正，也不让数据凭空消失）。
      */
     private function withStaffIds(array $values): array
     {
@@ -74,9 +87,24 @@ class LeadController extends Controller
         foreach (['service_teacher' => 'service_teacher_user_id',
             'trial_teacher' => 'trial_teacher_user_id',
             'created_by' => 'created_by_user_id'] as $nameCol => $idCol) {
-            if (array_key_exists($nameCol, $values)) {
-                $values[$idCol] = staffUserId((string) $values[$nameCol]);
+            if (! array_key_exists($nameCol, $values)) {
+                continue;
             }
+            $name = trim((string) $values[$nameCol]);
+            if ($name === '') {
+                // 名字被清空 = 这条数据确实没主了
+                $values[$idCol] = null;
+
+                continue;
+            }
+            $resolved = staffUserId($name);
+            if ($resolved !== null) {
+                $values[$idCol] = $resolved;
+                continue;
+            }
+            // 解析不到：不要写 null。删掉这个键，让 update 保持原值；
+            // store（新建）时它本来就不存在，DB 默认 null，语义也对。
+            unset($values[$idCol]);
         }
 
         return $values;
@@ -231,8 +259,8 @@ class LeadController extends Controller
     public function index(Request $r)
     {
         $u = $r->user();
-        // 按人隔离统一走 scopeLeadsForUser：服务老师＝本人名下＋待承接池；
-        // 授课老师＝本人客资＋本人上过体验课的＋本人私教学员的；新媒体＝本人录入的。
+        // 按人隔离统一走 scopeLeadsForUser：服务老师＝本人名下（待承接池已下线）；
+        // 授课老师＝本人客资＋本人上过体验课的＋本人私教学员的；新媒体＝部门录入的。
         // 这里不再按角色分支调用 —— 漏掉任何一个角色都等于把全量客资交出去。
         $q = scopeLeadsForUser(Lead::query(), $u);
         if ($n = $r->query('name')) {
@@ -310,6 +338,50 @@ class LeadController extends Controller
         return ok(['exists' => count($matches) > 0, 'matches' => $matches]);
     }
 
+    /**
+     * 归属姓名「认领」检测：写进去的名字若没有任何账号认领，当场提示。
+     *
+     * ## 为什么必须在这里提示
+     *
+     * 归属列存姓名，而录入是自由文本（电脑端可手输、小程序是输入框）。写进一个
+     * 谁都对不上的名字（随心瑜里的花名、离职同事、打错的字）之后，系统里**没有任何
+     * 报错** —— 只有"这个人看不到自己的客资"这一个后果，而且往往隔几天才发现。
+     *
+     * 以前这条线索只出现在「人员管理 → 归属映射」面板里，等于要求店长主动去巡检。
+     * 现在录入完立刻告诉他「这个顾问还没对应账号，他本人看不到」，并指明去哪儿修
+     * （人员管理 → 身份归一 → 认领）。**只提示，不阻断**：历史真实姓名与临时名字
+     * 都可能暂时没有账号，拦下来等于让业务录不进去。
+     *
+     * @return array<int, array{code: string, message: string, field: string, name: string}>
+     */
+    private function unmappedOwnerWarnings(array $values): array
+    {
+        $labels = ['service_teacher' => '会籍顾问', 'trial_teacher' => '上课老师'];
+        $out = [];
+
+        foreach ($labels as $column => $label) {
+            if (! array_key_exists($column, $values)) {
+                continue;
+            }
+            $name = trim((string) $values[$column]);
+            if ($name === '' || in_array($name, \App\Services\StaffDirectory::NON_PERSON_NAMES, true)) {
+                continue;
+            }
+            if (staffUserId($name) !== null) {
+                continue;
+            }
+            $out[] = [
+                'code' => 'owner_unmapped',
+                'field' => $column,
+                'name' => $name,
+                'message' => "「{$name}」还没有对应的工作台账号，这条客资的{$label}本人看不到。"
+                    .'请到「人员管理 → 身份归一」把这个名字认领到账号。',
+            ];
+        }
+
+        return $out;
+    }
+
     /** POST /leads */
     public function store(Request $r)
     {
@@ -319,6 +391,20 @@ class LeadController extends Controller
             'dealAt' => 'nullable|date',
         ], $this->channelRules(required: true), $this->referrerRules()), $this->channelMessages());
         $values = array_intersect_key(camelToSnake($r->all()), array_flip($this->leadFields)) + ['created_by' => $r->user()->name];
+        // **纯老师侧**录入的客资默认归本人（未填服务老师时补自己）。
+        //
+        // 待承接池下线后，老师录完一条不填顾问的客资会在她自己的列表里立刻消失 ——
+        // 谁都不敢录了。这里不是新开权限，而是给既有准入补默认值：老师只能把客资指派给
+        // 自己（见 EnsureUserIsEnabled::assertTeacherFields），所以「她录的」本来就等于「她的」。
+        //
+        // **但「管理层 + 老师」的多角色账号不补**（店长兼会籍顾问、超管兼老师、新媒体兼老师）：
+        // 这类账号是分配方，按「管理层录入保持未分配」的既有口径，它们录的客资本来就该留给
+        // 别人认领；自动挂到本人名下会让「未分配池」凭空少一条，也让归属统计失真。
+        $isManagerSide = userHasAnyRole($r->user(), ['R_MANAGER', 'R_SUPER', 'R_MEDIA']);
+        if (! $isManagerSide && userIsTeacherSide($r->user())
+            && trim((string) ($values['service_teacher'] ?? '')) === '') {
+            $values['service_teacher'] = (string) $r->user()->name;
+        }
         $values = $this->withStaffIds($values);
         $values = $this->withNormalizedPhone($values);
         // 清空的字段（null）按列定义落成该列能接受的形态：可空列写 null，非空文本列写 ''。
@@ -336,13 +422,22 @@ class LeadController extends Controller
         $lead = Lead::create($values);
         audit($r, '新增', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue, '录入客资');
         invalidateBusinessCaches('analytics');
-        // 新客资直接落到某位老师名下 → 通知该老师（方案 §6.4）。未填服务老师就不发。
-        $this->notifyLeadAssigned($lead, (string) $lead->service_teacher);
+        // 新客资直接落到某位老师名下 → 通知该老师（方案 §6.4）。未填服务老师就不发；
+        // 老师自己录给自己的也不必发（上面刚把归属补成本人，自通知只是噪音）。
+        if (staffUserId((string) $lead->service_teacher) !== (int) $r->user()->id) {
+            $this->notifyLeadAssigned($lead, (string) $lead->service_teacher);
+        }
 
         // 卡项限额软提示（S16）：**只附加，不阻断**。详见 leadDealCapWarnings()。
         // 金额取请求值而不是 $lead->deal_amount —— 后者是 float cast 后的结果，
         // 与本函数拿到的原始录入值可能有精度差；提示要对用户填的数字负责。
-        $warnings = leadDealCapWarnings($values['deal_amount'] ?? null);
+        //
+        // 归属未认领提示（owner_unmapped）与它同一条通道：录完当场就知道"这个顾问
+        // 本人看不到这条客资"，而不是等他自己来问。
+        $warnings = array_merge(
+            $this->unmappedOwnerWarnings($values),
+            leadDealCapWarnings($values['deal_amount'] ?? null)
+        );
         if ($warnings !== []) {
             // 超限本身要留痕：只有被记录过的偏差才能被复盘（否则「提示过」这件事
             // 随响应消失，谁也不知道当时到底录了多少）。
@@ -405,9 +500,11 @@ class LeadController extends Controller
         // 卡项限额软提示（S16）：与 store 同口径、同样**不阻断**。
         // 只在本次确实改动了成交金额时才提示 —— 否则「改个备注也弹超限」，
         // 提示会被训练成噪音（与 rules() 里 bombExpiredDays 的处理同一个教训）。
-        $warnings = array_key_exists('deal_amount', $changes)
-            ? leadDealCapWarnings($changes['deal_amount'])
-            : [];
+        // 归属未认领只对本次真的改动的字段提示（$changes 里没有就不查）。
+        $warnings = array_merge(
+            $this->unmappedOwnerWarnings($changes),
+            array_key_exists('deal_amount', $changes) ? leadDealCapWarnings($changes['deal_amount']) : []
+        );
         if ($warnings !== []) {
             audit($r, '提示', '前端客资', $id, "{$lead->name}（{$lead->source}）", $lead->venue,
                 implode('；', array_column($warnings, 'message')));
@@ -416,34 +513,19 @@ class LeadController extends Controller
         return ok(['before' => json_decode($before), 'after' => camel($lead), 'warnings' => $warnings]);
     }
 
-    /** DELETE /leads/{id}：删除留资，权限与「编辑」一致（店长本店 / 超管新媒体全部 / 老师本人或未分配），删除写留痕 */
+    /**
+     * DELETE /leads/{id}：删除留资，权限与「编辑」**逐字同口径**（`userCanAccessLead()`），删除写留痕。
+     *
+     * 未分配客资的删除准入随待承接池一起下线：原先只在 `service_teacher !== ''` 时才检查归属，
+     * 等于未分配客资谁都能删。现在**无条件**先过一遍单条准入（不依赖中间件先跑）：
+     * 中间件是横切配置，路由一旦被挪出 `api/leads/*` 前缀或换个里调用方式，这里就是最后一道闸。
+     * 能改的才能删，改不了的删不掉。
+     */
     public function destroy(Request $r, int $id)
     {
         $u = $r->user();
         $lead = Lead::findOrFail($id);
-        if (userHasRole($u, 'R_MANAGER') && $lead->venue !== $u->venue) {
-            abort(403, '无权限：仅可删除本店留资');
-        }
-        if (userIsTeacherSide($u)) {
-            if ($u->venue && $lead->venue !== $u->venue) {
-                abort(403, '无权限：仅可删除本店留资');
-            }
-            if (userHasRole($u, 'R_SERVICE')) {
-                if ($lead->service_teacher !== ''
-                    && ! staffOwnsRow($u, $lead, 'service_teacher_user_id', 'service_teacher')
-                    && ! staffOwnsRow($u, $lead, 'created_by_user_id', 'created_by')) {
-                    abort(403, '无权限：仅可删除自己名下或未分配的留资');
-                }
-            } else {
-                // 与范围过滤同口径：id 或姓名/别名任一命中都算本人的（改过名的历史留资要能删）
-                $mine = staffOwnsRow($u, $lead, 'service_teacher_user_id', 'service_teacher')
-                    || staffOwnsRow($u, $lead, 'trial_teacher_user_id', 'trial_teacher')
-                    || staffOwnsRow($u, $lead, 'created_by_user_id', 'created_by');
-                if (! $mine) {
-                    abort(403, '无权限：授课老师仅可删除自己相关的留资');
-                }
-            }
-        }
+        abort_unless(userCanAccessLead($u, $lead), 403, '无权限删除该客资');
         if (! userHasAnyRole($u, ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER', 'R_MEDIA'])) {
             abort(403, '无权限执行此操作');
         }

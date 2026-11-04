@@ -135,6 +135,75 @@
           </ElForm>
         </ElCard>
 
+        <!--
+          营销人设（v3.11）：身份 / 人群 / **自定义人格** 三件并列，随「我的信息」一起保存。
+
+          为什么放在个人中心而不是营销工具里：营销工具主页曾把同一份人设再摆一遍，
+          两处都能改就会出现「改了 A 处、B 处还是旧值」。现在**唯一编辑入口**在这里，
+          营销工具只读取（生成时自动带入）。
+          自定义人格是自由文本：身份/人群是下拉枚举，写不进「说话直接、爱开玩笑」这种
+          只有本人说得出的定位，所以给它一段独立的多行输入；生成提示词时它作为
+          **第三段**追加在身份、人群之后，不覆盖这两者（见 api/ai.ts::personaText）。
+        -->
+        <ElCard shadow="never" class="mb-3">
+          <template #header>
+            <div class="flex-cb">
+              <span class="font-500">营销人设</span>
+              <span class="text-xs text-g-400"
+                >营销工具生成内容时自动带入「身份 / 人群 / 自定义人格」</span
+              >
+            </div>
+          </template>
+          <ElForm label-width="90px" label-position="left">
+            <ElRow :gutter="12">
+              <ElCol :xs="24" :sm="12">
+                <ElFormItem label="身份">
+                  <ElSelect
+                    v-model="form.persona.role"
+                    class="w-full"
+                    placeholder="选择你的身份角色"
+                  >
+                    <ElOption v-for="r in PERSONA_ROLES" :key="r" :label="r" :value="r" />
+                  </ElSelect>
+                </ElFormItem>
+              </ElCol>
+              <ElCol :xs="24" :sm="12">
+                <ElFormItem label="人群">
+                  <ElSelect
+                    v-model="form.persona.audiences"
+                    multiple
+                    filterable
+                    allow-create
+                    default-first-option
+                    collapse-tags
+                    :max-collapse-tags="4"
+                    class="w-full"
+                    placeholder="你的典型客群，可多选、可自定义"
+                  >
+                    <ElOption v-for="a in AUDIENCE_OPTIONS" :key="a" :label="a" :value="a" />
+                  </ElSelect>
+                </ElFormItem>
+              </ElCol>
+              <ElCol :span="24">
+                <ElFormItem label="自定义人格">
+                  <ElInput
+                    v-model="form.persona.customPersona"
+                    type="textarea"
+                    :rows="3"
+                    maxlength="300"
+                    show-word-limit
+                    resize="vertical"
+                    placeholder="一句话写你自己的说话方式与定位，例：说话直接、爱开玩笑的产后康复老师，不端着，也不喊口号"
+                  />
+                </ElFormItem>
+                <div class="form-persona-hint">
+                  会作为第三段拼在「身份 / 人群」之后进入生成提示词，不覆盖这两项；留空则不拼接。
+                </div>
+              </ElCol>
+            </ElRow>
+          </ElForm>
+        </ElCard>
+
         <ElCard shadow="never">
           <template #header><span class="font-500">账号安全</span></template>
           <div class="flex items-center flex-wrap gap-3">
@@ -170,7 +239,7 @@
 <script setup lang="ts">
   import type { MyProfile } from '@/api/my'
   import { defaultMyProfile, fetchMyProfile, saveMyProfile, changeMyPassword } from '@/api/my'
-  import { SPECIALTY_OPTIONS } from '@/api/ai'
+  import { SPECIALTY_OPTIONS, PERSONA_ROLES, AUDIENCE_OPTIONS } from '@/api/ai'
   import { useUserStore } from '@/store/modules/user'
   import { ElMessage } from 'element-plus'
 
@@ -288,7 +357,15 @@
         gender: form.value.gender,
         age: form.value.age,
         years: form.value.years,
-        specialties: form.value.specialties
+        specialties: form.value.specialties,
+        // 营销人设与「我的信息」同一次保存：身份 / 人群 / 自定义人格
+        // 都写进同一个 profile.persona JSON（键名 customPersona），
+        // 后端只认 JSON 字段时也无需另开接口。
+        persona: {
+          role: form.value.persona.role,
+          audiences: [...form.value.persona.audiences],
+          customPersona: (form.value.persona.customPersona ?? '').trim()
+        }
       })
       form.value = saved
       userStore.setUserInfo({
@@ -338,3 +415,19 @@
     }
   }
 </script>
+
+<style lang="scss" scoped>
+  /* 「自定义人格」输入框下的口径说明：与 ElFormItem 的标签列对齐一点，避免贴着别的控件 */
+  .form-persona-hint {
+    margin: -6px 0 0 90px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--art-gray-400, #c0c4cc);
+  }
+
+  @media (max-width: 768px) {
+    .form-persona-hint {
+      margin-left: 0;
+    }
+  }
+</style>

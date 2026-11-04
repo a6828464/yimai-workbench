@@ -316,6 +316,37 @@ class WxSubscriptionTest extends TestCase
     }
 
     /**
+     * 别名/旧名/昵称写法的归属，也要能把提醒送到本人。
+     *
+     * 「谁能看到这条客资」与「提醒发给谁」必须是同一个判断（都走 StaffDirectory）。
+     * 否则会出现最难解释的故障：列表里明明看得到自己的客资，微信却从来没收到分配提醒。
+     */
+    public function test_lead_assignment_resolves_owner_written_as_alias(): void
+    {
+        config(['services.wechat.templates.leadAssigned.template_id' => 'TPL_LEAD_ASSIGNED']);
+
+        $teacher = $this->makeUser('苏米');
+        \App\Models\StaffAlias::create([
+            'user_id' => $teacher->id, 'alias' => '苏小米', 'source' => 'manual',
+        ]);
+        $manager = $this->makeUser('绿地店长', ['role' => 'R_MANAGER', 'roles' => ['R_MANAGER']]);
+        Sanctum::actingAs($manager);
+
+        $this->postJson('/api/leads', [
+            'name' => '别名归属的新客',
+            'source' => '转介绍',
+            'venue' => '绿地店',
+            'serviceTeacher' => '苏小米',
+        ])->assertOk();
+
+        $this->assertDatabaseHas('wx_subscription_logs', [
+            'user_id' => $teacher->id,
+            'template_key' => 'leadAssigned',
+            'status' => WxSubscriptionLog::STATUS_SKIPPED,
+        ]);
+    }
+
+    /**
      * 触发点 2：会员会籍顾问改到某人名下 → 新归属人收到待发流水。
      *
      * 同时钉住「原样回传不算变更」：同一请求里先改一次归属、再原样回传一次，

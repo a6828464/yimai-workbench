@@ -51,8 +51,8 @@
             </ElRadioGroup>
             <template v-if="sourceTab === 'class'">
               <span class="text-xs text-gray-500">范围</span>
-              <ElRadioGroup v-model="days" size="small" @change="loadCandidates">
-                <ElRadioButton :value="3">近 3 天</ElRadioButton>
+              <!-- 时间窗按任务口径收敛为 7 天 / 30 天（默认 7 天）：3 天档与空态快捷操作重复，去掉 -->
+              <ElRadioGroup v-model="days" size="small" @change="onDaysChange">
                 <ElRadioButton :value="7">近 7 天</ElRadioButton>
                 <ElRadioButton :value="30">近 30 天</ElRadioButton>
               </ElRadioGroup>
@@ -70,72 +70,120 @@
             <span class="text-xs text-gray-400">{{ sourceHint }}</span>
           </div>
 
-          <!-- ① 上过课：待填写课后分析（手持设备换成下方卡片列表） -->
-          <ElTable
-            v-if="!isHandheld && sourceTab === 'class'"
-            ref="candidateTableRef"
-            :data="filteredCandidates"
-            v-loading="loading"
-            size="default"
-            :max-height="candidateTableMaxHeight"
+          <!-- 接口降级提示：候选人接口不可用时不白屏，保留上一次结果并明说原因 -->
+          <ElAlert
+            v-if="sourceTab === 'class' && candidateLoadError"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="mb-2"
+            :title="`候选人接口暂不可用：${candidateLoadError}`"
           >
-            <ElTableColumn prop="date" label="日期" width="105" />
-            <ElTableColumn prop="time" label="时间" width="70" />
-            <ElTableColumn prop="studentName" label="学员" width="110" />
-            <ElTableColumn prop="courseName" label="课程" min-width="140" show-overflow-tooltip />
-            <ElTableColumn label="课型" width="130">
-              <template #default="{ row }">
-                <ElTag v-if="row.isTrial" size="small" type="warning" effect="dark">体验课</ElTag>
-                <ElTag
-                  v-else
-                  size="small"
-                  :type="row.kind === '私教' ? 'danger' : 'info'"
-                  effect="plain"
-                >
-                  {{ row.kind }}
-                </ElTag>
-              </template>
-            </ElTableColumn>
-            <ElTableColumn prop="teacherName" label="老师" width="90" />
-            <ElTableColumn label="来源" min-width="150">
-              <template #default="{ row }">
-                <ElTag
-                  v-if="row.personType === 'member'"
-                  size="small"
-                  type="success"
-                  effect="plain"
-                >
-                  老会员
-                </ElTag>
-                <ElTag
-                  v-else-if="row.personType === 'lead'"
-                  size="small"
-                  type="warning"
-                  effect="plain"
-                >
-                  新建客资
-                </ElTag>
-                <ElTag v-else size="small" type="info" effect="plain">未建档</ElTag>
-                <span v-if="row.personType === 'member'" class="ml-1 text-xs text-gray-500">
-                  {{ row.memberCard || '—' }}
-                  <span v-if="row.memberRemain !== null && row.memberRemain !== undefined">
-                    · 剩 {{ row.memberRemain }} 节
-                  </span>
-                </span>
-                <span v-else-if="row.leadStatus" class="ml-1 text-xs text-gray-500">
-                  {{ row.leadStatus }}
-                </span>
-              </template>
-            </ElTableColumn>
-            <ElTableColumn label="操作" width="110" fixed="right">
-              <template #default="{ row }">
-                <ElButton v-if="canWrite" link type="primary" size="small" @click="openWizard(row)">
-                  填写分析
-                </ElButton>
-                <span v-else class="text-xs text-gray-400">待老师填写</span>
-              </template>
-            </ElTableColumn>
-          </ElTable>
+            <template #default>
+              <span class="text-xs">下面是上一次加载的结果，点「刷新」可重试。</span>
+            </template>
+          </ElAlert>
+
+          <!--
+            ① 上过课：待填写课后分析（v3.11 按课型分两组：私教 / 小班 + 团课）
+
+            分组只影响**呈现顺序**，不影响后端给的候选人集合：每组一张表，
+            组头给条数；「来源」（老会员 / 新建客资）筛选与之**叠加**——
+            先按来源过滤，再按课型分桶，所以两组条数之和 = 当前来源下的总数。
+            两组都空时不渲染组块，交给下方 ElEmpty 说明「近 N 天没有上过课」。
+          -->
+          <div
+            v-if="!isHandheld && sourceTab === 'class' && filteredCandidates.length"
+            v-loading="loading"
+            class="pc-groups"
+          >
+            <div v-for="g in candidateGroups" :key="g.key" class="pc-group">
+              <div class="pc-group__head">
+                <span class="pc-group__title" :class="`is-${g.key}`">{{ g.label }}</span>
+                <ElTag size="small" effect="plain" :type="g.tagType">{{ g.rows.length }} 人</ElTag>
+                <span class="pc-group__hint">{{ g.hint }}</span>
+              </div>
+              <ElTable
+                v-if="g.rows.length"
+                :ref="g.bindRef"
+                :data="g.rows"
+                size="default"
+                :max-height="candidateGroupTableHeight"
+              >
+                <!-- 会员名 + 最近上课时间 + 课程名：三列一眼看完「谁、什么时候、上了什么课」 -->
+                <ElTableColumn prop="studentName" label="学员" width="110" />
+                <ElTableColumn label="最近上课" width="160">
+                  <template #default="{ row }">
+                    <span class="tabular-nums text-sm">{{ lastClassAtOf(row) }}</span>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="最近课程" min-width="150" show-overflow-tooltip>
+                  <template #default="{ row }">{{ lastClassTitleOf(row) }}</template>
+                </ElTableColumn>
+                <ElTableColumn label="课型" width="120">
+                  <template #default="{ row }">
+                    <ElTag v-if="row.isTrial" size="small" type="warning" effect="dark"
+                      >体验课</ElTag
+                    >
+                    <ElTag
+                      v-else
+                      size="small"
+                      :type="row.kind === '私教' ? 'danger' : 'info'"
+                      effect="plain"
+                    >
+                      {{ row.kind || (courseKindOf(row) === 'private' ? '私教' : '小班/团课') }}
+                    </ElTag>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn prop="teacherName" label="老师" width="90" />
+                <ElTableColumn label="来源" min-width="140">
+                  <template #default="{ row }">
+                    <ElTag
+                      v-if="row.personType === 'member'"
+                      size="small"
+                      type="success"
+                      effect="plain"
+                    >
+                      老会员
+                    </ElTag>
+                    <ElTag
+                      v-else-if="row.personType === 'lead'"
+                      size="small"
+                      type="warning"
+                      effect="plain"
+                    >
+                      新建客资
+                    </ElTag>
+                    <ElTag v-else size="small" type="info" effect="plain">未建档</ElTag>
+                    <span v-if="row.personType === 'member'" class="ml-1 text-xs text-gray-500">
+                      {{ row.memberCard || '—' }}
+                      <span v-if="row.memberRemain !== null && row.memberRemain !== undefined">
+                        · 剩 {{ row.memberRemain }} 节
+                      </span>
+                    </span>
+                    <span v-else-if="row.leadStatus" class="ml-1 text-xs text-gray-500">
+                      {{ row.leadStatus }}
+                    </span>
+                  </template>
+                </ElTableColumn>
+                <ElTableColumn label="操作" width="110" fixed="right">
+                  <template #default="{ row }">
+                    <ElButton
+                      v-if="canWrite"
+                      link
+                      type="primary"
+                      size="small"
+                      @click="openWizard(row)"
+                    >
+                      填写分析
+                    </ElButton>
+                    <span v-else class="text-xs text-gray-400">待老师填写</span>
+                  </template>
+                </ElTableColumn>
+              </ElTable>
+              <div v-else class="pc-group__empty">本组暂无待填写的课</div>
+            </div>
+          </div>
 
           <!-- ② 留资管理里分配给他的 -->
           <ElTable
@@ -183,8 +231,13 @@
           </ElTable>
 
           <!-- ③ 约课系统里会籍顾问归属他的会员 -->
+          <!--
+            条件必须写全 `sourceTab === 'member'`：① 现在多了 `filteredCandidates.length`
+            这一层（空态交给 ElEmpty），若这里仍靠 v-else 兜底，class 页签空列表时会
+            误渲染「我的会员」表（实测在「近 7 天没有上过课」空态下串出一张空会员表）。
+          -->
           <ElTable
-            v-else-if="!isHandheld"
+            v-else-if="!isHandheld && sourceTab === 'member'"
             ref="memberTableRef"
             :data="myMembers"
             v-loading="loading"
@@ -219,10 +272,35 @@
           </ElTable>
 
           <!-- 手持设备：三类来源共用一张卡片列表（905px 宽的表格在手机上只剩 278px 可见，
-               横滑也只能看到左右固定列），空态文案沿用 sourceEmptyText -->
+               横滑也只能看到左右固定列），空态文案沿用 sourceEmptyText。
+               「上过课」在卡片列表里同样按课型分组（组头 + 卡片），与桌面表格同口径。 -->
           <div v-if="isHandheld" v-loading="loading" class="m-card-list min-h-[120px]">
+            <template v-if="sourceTab === 'class' && filteredCandidates.length">
+              <template v-for="g in classCardGroups" :key="g.key">
+                <div v-if="g.rows.length" class="pc-group__head pc-group__head--mobile">
+                  <span class="pc-group__title" :class="`is-${g.key}`">{{ g.label }}</span>
+                  <ElTag size="small" effect="plain" :type="g.tagType"
+                    >{{ g.rows.length }} 人</ElTag
+                  >
+                </div>
+                <MobileCard
+                  v-for="item in g.rows"
+                  :key="item.id"
+                  :title="item.title"
+                  :subtitle="item.subtitle"
+                  :tags="item.tags"
+                  :metrics="item.metrics"
+                  :note="item.note?.text"
+                  :note-label="item.note?.label"
+                  :note-danger="item.note?.danger"
+                  :actions="item.actions"
+                >
+                  <div v-if="item.hint" class="pc-card__hint">{{ item.hint }}</div>
+                </MobileCard>
+              </template>
+            </template>
             <MobileCard
-              v-for="item in pendingCardRows"
+              v-for="item in sourceTab === 'class' ? [] : pendingCardRows"
               :key="item.id"
               :title="item.title"
               :subtitle="item.subtitle"
@@ -236,16 +314,42 @@
               <div v-if="item.hint" class="pc-card__hint">{{ item.hint }}</div>
             </MobileCard>
             <div v-if="!loading && currentSourceEmpty" class="m-card-list__empty">
-              {{ sourceEmptyText }}
+              <div>{{ sourceEmptyText }}</div>
+              <div v-if="sourceTab === 'class' && classEmptyFilterHint" class="m-card-list__hint">
+                {{ classEmptyFilterHint }}
+              </div>
+              <ElButton
+                v-if="sourceTab === 'class'"
+                class="mt-2"
+                size="small"
+                type="primary"
+                plain
+                @click="switchDays(days === 7 ? 30 : 7)"
+                >{{ days === 7 ? '改成 30 天' : '改回 7 天' }}</ElButton
+              >
             </div>
           </div>
 
           <!-- 卡片列表自带空态，ElEmpty 只在桌面端出现，避免两处重复提示 -->
-          <ElEmpty
-            v-if="!isHandheld && !loading && currentSourceEmpty"
-            :description="sourceEmptyText"
-            :image-size="70"
-          />
+          <ElEmpty v-if="!isHandheld && !loading && currentSourceEmpty" :image-size="70">
+            <template #description>
+              <div class="pc-empty">
+                <div class="pc-empty__title">{{ sourceEmptyText }}</div>
+                <div v-if="sourceTab === 'class' && classEmptyFilterHint" class="pc-empty__hint">
+                  {{ classEmptyFilterHint }}
+                </div>
+              </div>
+            </template>
+            <!-- 空态快捷操作：7 天没人就一句话切到 30 天，不用回顶部找范围开关 -->
+            <ElButton
+              v-if="sourceTab === 'class'"
+              size="small"
+              type="primary"
+              plain
+              @click="switchDays(days === 7 ? 30 : 7)"
+              >{{ days === 7 ? '改成 30 天' : '改回 7 天' }}</ElButton
+            >
+          </ElEmpty>
         </ElTabPane>
 
         <!-- 已填写记录 -->
@@ -494,7 +598,12 @@
 
   // 表格高度自适应：本页 4 张表（待填写 3 个来源 + 已分析），各持一个 ref。
   // 共用同一个 ref 会让后渲染的表覆盖先渲染的测量结果。
-  const { tableMaxHeight: candidateTableMaxHeight, tableRef: candidateTableRef } = useTableHeight()
+  //
+  // 「上过课」在 v3.11 拆成 私教 / 小班+团课 两张表：两张表共用同一个 max-height，
+  // 因此只把 ref 交给**第一张有数据的表**（见模板 firstNonEmptyGroupKey），
+  // 避免 v-for 里的同名 ref 变成数组、让 hook 量不到元素。
+  const { tableMaxHeight: candidateGroupTableHeight, tableRef: candidateTableRef } =
+    useTableHeight()
   const { tableMaxHeight: leadTableMaxHeight, tableRef: leadTableRef } = useTableHeight()
   const { tableMaxHeight: memberTableMaxHeight, tableRef: memberTableRef } = useTableHeight()
   const { tableMaxHeight: reviewTableMaxHeight, tableRef: reviewTableRef } = useTableHeight()
@@ -537,11 +646,120 @@
     if (sourceTab.value === 'lead') return myLeads.value.length === 0
     return myMembers.value.length === 0
   })
+  /** 候选人接口的错误信息（非空 = 降级态：保留旧数据 + 顶部提示，不白屏） */
+  const candidateLoadError = ref('')
+
+  /**
+   * 空态文案（v3.11）：**要说明是哪一段时间窗没有课**，不能只给一句「没有数据」。
+   * 任务口径：「近 7 天没有上过课的会员」+ 一个「改成 30 天」的快捷操作（见模板）。
+   */
+  const classEmptyText = computed(() => `近 ${days.value} 天没有上过课的会员`)
   const sourceEmptyText = computed(() => {
-    if (sourceTab.value === 'class') return '范围内没有待填写的课'
+    if (sourceTab.value === 'class') return classEmptyText.value
     if (sourceTab.value === 'lead') return '暂无分配给你的留资'
     return '暂无名下会员'
   })
+  /** 来源筛选把候选人筛空时要补一句，否则用户会以为是「真的没人上过课」 */
+  const classEmptyFilterHint = computed(() =>
+    personFilter.value === 'all'
+      ? ''
+      : `（当前只看${personFilter.value === 'member' ? '老会员' : '新建客资'}，可切回「全部」）`
+  )
+
+  // ---------- 课型分组（v3.11）：私教 / 小班 + 团课 ----------
+  //
+  // 后端契约新增 `courseKind`（private / group）+ `lastClassAt` / `lastClassTitle`。
+  // 未就绪时按 `kind` 文案与 `isTrial` 兜底归类，保证分组界面永远有内容、
+  // 不因为字段缺失变成「两组都空」。
+  type CandidateGroupKey = 'private' | 'group'
+
+  const CANDIDATE_GROUPS: {
+    key: CandidateGroupKey
+    label: string
+    hint: string
+    tagType: 'danger' | 'info'
+  }[] = [
+    { key: 'private', label: '私教', hint: '一对一私教 / 体验私教', tagType: 'danger' },
+    { key: 'group', label: '小班 + 团课', hint: '小班课与团课', tagType: 'info' }
+  ]
+
+  /** 单条候选人的课型归类：后端 `courseKind` 优先，其次看课型文案与体验课标记 */
+  function courseKindOf(row: PostClassCandidate): CandidateGroupKey {
+    const raw = String(row.courseKind ?? '').trim()
+    const lower = raw.toLowerCase()
+    if (lower === 'private' || raw === '私教') return 'private'
+    if (lower === 'group' || raw === '小班' || raw === '团课' || raw === '小班+团课') return 'group'
+    const kind = String(row.kind ?? '')
+    if (kind.includes('私教') || kind.includes('一对一')) return 'private'
+    if (kind.includes('团课') || kind.includes('小班')) return 'group'
+    // 体验课在一麦都是一对一体验：没有其它线索时按私教归类，与既有「体验课」标签一致
+    if (row.isTrial) return 'private'
+    return 'group'
+  }
+
+  /** 最近一次上课时间：`lastClassAt` 优先，缺省拼 `date` + `time`（旧字段） */
+  function lastClassAtOf(row: PostClassCandidate): string {
+    const raw = row.lastClassAt || row.classAt || ''
+    if (raw) return String(raw).replace('T', ' ').slice(0, 16)
+    return [row.date, row.time].filter(Boolean).join(' ') || '—'
+  }
+
+  /** 最近一次上课的课程名：`lastClassTitle` 优先，缺省用 `courseName` */
+  function lastClassTitleOf(row: PostClassCandidate): string {
+    return row.lastClassTitle || row.courseName || '—'
+  }
+
+  /** 组内排序：最近上课的排前面（时间倒序），同一时间按姓名稳定排序 */
+  function sortByLastClass(rows: PostClassCandidate[]): PostClassCandidate[] {
+    return [...rows].sort((a, b) => {
+      const ta = lastClassAtOf(a)
+      const tb = lastClassAtOf(b)
+      if (ta !== tb) return tb.localeCompare(ta)
+      return String(a.studentName ?? '').localeCompare(String(b.studentName ?? ''), 'zh')
+    })
+  }
+
+  /** 两组候选人（来源筛选已生效，叠加关系：先按来源筛，再按课型分桶） */
+  const candidateGroups = computed(() =>
+    CANDIDATE_GROUPS.map((g) => {
+      const rows = sortByLastClass(
+        filteredCandidates.value.filter((x) => courseKindOf(x) === g.key)
+      )
+      // 高度自适应只量「第一张有数据的表」：v-for 里的字符串 ref 会被 Vue 收成数组，
+      // 让 hook 的 resolveElement 认不出来（表格就没有 max-height 了），
+      // 所以每组给一个**函数 ref**，由 bindGroupTable 决定要不要交给 hook。
+      return { ...g, rows, bindRef: (el: unknown) => bindGroupTable(el, g.key) }
+    })
+  )
+
+  /** 高度自适应只量「第一张有数据的表」：两组表共用同一个 max-height */
+  const firstNonEmptyGroupKey = computed(
+    () => candidateGroups.value.find((g) => g.rows.length)?.key ?? ''
+  )
+
+  function bindGroupTable(el: unknown, key: CandidateGroupKey): void {
+    if (key !== firstNonEmptyGroupKey.value) return
+    candidateTableRef.value = el
+  }
+
+  /** 手持端：两组候选人各自映射成卡片行（与桌面两张表同口径） */
+  const classCardGroups = computed(() =>
+    candidateGroups.value.map((g) => ({
+      ...g,
+      rows: g.rows.map((row, i) => candidateCard(row, i))
+    }))
+  )
+
+  /** 切换时间窗：空态的「改成 30 天」也走这里，保证切完立刻重拉 */
+  function onDaysChange() {
+    void loadCandidates()
+  }
+  function switchDays(next: number) {
+    if (days.value === next) return
+    days.value = next
+    void loadCandidates()
+  }
+
   const reviews = ref<PostClassReviewRow[]>([])
   const summary = reactive({ total: 0, confirmed: 0, redFlag: 0 })
   const filter = reactive({ studentType: '', status: '', onlyRedFlag: false })
@@ -569,12 +787,17 @@
   async function loadCandidates() {
     loading.value = true
     try {
-      const r = await queryPostClassCandidates(days.value)
-      candidates.value = r.records.filter((x) => !x.hasReview)
+      // v3.11 契约：`days` 时间窗 + `group=all`（两类课型都要，界面自己分组）。
+      // 后端未就绪（404/字段缺失）时仍返回 records，前端按 kind 兜底归类，不报白屏。
+      const r = await queryPostClassCandidates({ days: days.value, group: 'all' })
+      candidates.value = (r.records ?? []).filter((x) => !x.hasReview)
       myLeads.value = r.leads ?? []
       myMembers.value = r.members ?? []
+      candidateLoadError.value = ''
     } catch (e) {
-      ElMessage.error(String((e as { message?: string })?.message ?? e).slice(0, 120))
+      // 接口不可用：保留上一次结果，并明确标注（不弹出未捕获错误、不白屏）
+      candidateLoadError.value = String((e as { message?: string })?.message ?? e).slice(0, 120)
+      ElMessage.error(candidateLoadError.value || '候选人加载失败')
     } finally {
       loading.value = false
     }
@@ -734,9 +957,9 @@
     return {
       id: candidateKey(row, index),
       title: row.studentName,
-      subtitle: [[row.date, row.time].filter(Boolean).join(' '), row.courseName || '—']
-        .filter(Boolean)
-        .join(' · '),
+      // v3.11：最近一次上课时间 + 课程名（后端 `lastClassAt` / `lastClassTitle`，
+      // 缺省回落到旧 `date/time` 与 `courseName`，与桌面两列同一套取值函数）
+      subtitle: [lastClassAtOf(row), lastClassTitleOf(row)].join(' · '),
       tags,
       metrics,
       note,
@@ -911,5 +1134,78 @@
     margin-top: 10px;
     font-size: 12px;
     color: var(--art-gray-500);
+  }
+
+  /* ---------- 课型分组（v3.11）：私教 / 小班 + 团课 ---------- */
+  .pc-groups {
+    min-height: 120px;
+  }
+
+  .pc-group {
+    & + & {
+      margin-top: 14px;
+    }
+
+    &__head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+
+      /* 手持端：组头贴在卡片列表里，需要一点上下留白把两组分开 */
+      &--mobile {
+        margin-top: 6px;
+      }
+    }
+
+    &__title {
+      font-size: 13px;
+      font-weight: 600;
+
+      /* 两组各用一种色：翻列表时靠颜色就能分出私教 / 团课 */
+      &.is-private {
+        color: var(--el-color-danger);
+      }
+
+      &.is-group {
+        color: var(--el-color-info);
+      }
+    }
+
+    &__hint {
+      font-size: 12px;
+      color: var(--art-gray-400, #c0c4cc);
+    }
+
+    &__empty {
+      padding: 6px 0 6px 8px;
+      font-size: 12px;
+      color: var(--art-gray-400, #c0c4cc);
+      border-left: 2px dashed var(--el-border-color-lighter);
+    }
+  }
+
+  /* 空态：一句说明 + 一句筛选提示（都是文字，不带图片，避免手机上占半屏） */
+  .pc-empty {
+    text-align: center;
+
+    &__title {
+      font-size: 14px;
+      color: var(--el-text-color-secondary);
+    }
+
+    &__hint {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--art-gray-400, #c0c4cc);
+    }
+  }
+
+  /* 手持端空态里的辅助提示与按钮 */
+  .m-card-list__hint {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--art-gray-400, #c0c4cc);
   }
 </style>

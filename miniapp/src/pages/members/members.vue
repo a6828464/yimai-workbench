@@ -17,8 +17,7 @@ import { computed, ref } from 'vue'
 import { onLoad, onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
-import { isSuper } from '@/utils/permission'
-import { useUserStore } from '@/store/user'
+import { useVenueFilter } from '@/utils/venue'
 import {
   MEMBER_LIST_OF_TAB,
   MEMBER_TABS,
@@ -40,24 +39,22 @@ const loading = ref(false)
 const loaded = ref(false)
 const failed = ref(false)
 
-const user = useUserStore()
-
 /**
- * 门店筛选。
- * 角色口径与后端一致（scopeCustomersForUser）：只有超管能跨店看；
- * 店长/服务/授课被后端锁在本店，这里只展示锁定标签，不发 venue 参数
- * （发了也是同一个 where，但少一个参数就少一处对不上的机会）。
+ * 门店筛选（口径见 utils/venue.ts，与留资页同一份实现）。
+ *
+ * 判据：**账号授权门店数 > 1**（不再只按超管）——两个门店权限的账号此前在会员页
+ * 看不到切换标签，名单被永久钉在一家店上。单店账号仍只显示锁定标签：
+ * 后端 scopeCustomersForUser 对该账号锁本店，给了 picker 也是假选项。
+ * 选择结果落 storage，切页返回仍生效。
  */
-const VENUE_ALL = '全部门店'
-const VENUE_OPTIONS = [
-  { label: '全部门店', value: VENUE_ALL },
-  { label: '绿地店', value: '绿地店' },
-  { label: '东部店', value: '东部店' }
-]
-const venue = ref(VENUE_ALL)
+const venueFilter = useVenueFilter()
+const canSwitchVenue = venueFilter.canSwitch
+const venueOptions = venueFilter.options
+const venue = venueFilter.venue
 /** 只有真的选了单店才发 venue 参数（"全部门店" 不发，保持后端默认范围） */
-const venueParam = computed(() => (venue.value === VENUE_ALL ? undefined : venue.value))
-const canSwitchVenue = computed(() => isSuper(user.roles))
+const venueParam = venueFilter.venueParam
+/** 单店账号展示的锁定标签 */
+const lockedVenue = venueFilter.lockedLabel
 
 /** 排序：纯前端重排已取到的行，不新增接口、不改请求参数 */
 const SORTS = [
@@ -160,8 +157,9 @@ function onTabChange(payload: { name: string | number }) {
   switchTab(String(payload.name))
 }
 
-/** 切换门店：回到第一页重新拉（清空已加载行） */
+/** 切换门店：记住这次选择，再回到第一页重新拉（清空已加载行） */
 function onVenueChange() {
+  venueFilter.commit()
   load(true)
 }
 
@@ -226,10 +224,9 @@ onLoad((options) => {
   // 中文清单名优先反查（?list=待续课 → renewal）；也兼容直接传页签 key（?list=renewal）
   const key = TAB_OF_LIST[raw] || (raw === 'all' || MEMBER_LIST_OF_TAB[raw] ? raw : '')
   if (key) tab.value = key
+  // venue 深链是明确意图 → 同样落盘（下次进页面沿用这家店）
   const v = String(opt.venue ?? '').trim()
-  if (v && canSwitchVenue.value && VENUE_OPTIONS.some((o) => o.value === v)) {
-    venue.value = v
-  }
+  if (v && canSwitchVenue.value) venueFilter.apply(v)
 })
 
 onShow(() => {
@@ -272,11 +269,11 @@ onReachBottom(() => {
       <view class="filters__row">
         <view class="filters__cell">
           <wd-drop-menu v-if="canSwitchVenue">
-            <wd-drop-menu-item v-model="venue" :options="VENUE_OPTIONS" @change="onVenueChange" />
+            <wd-drop-menu-item v-model="venue" :options="venueOptions" @change="onVenueChange" />
           </wd-drop-menu>
           <view v-else class="vlock">
             <wd-icon name="location" size="13px" />
-            <text class="vlock__text ym-ellipsis">{{ user.venue || '本店' }}</text>
+            <text class="vlock__text ym-ellipsis">{{ lockedVenue }}</text>
           </view>
         </view>
         <view class="filters__cell filters__cell--sort">

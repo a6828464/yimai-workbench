@@ -311,10 +311,21 @@ class StaffRenameRegressionTest extends TestCase
     }
 
     /**
-     * 请求内缓存语义保持：同一实例复用（不再查库），不同实例各自解析。
+     * 请求内缓存语义：同一实例复用（不再查库），**名字池变更后所有实例一起失效**。
      *
      * 「同 id 不同实例必须隔离」是原注释明确保护的性质（长驻进程/测试串跑时
-     * 函数级 static 会串数据），WeakMap 按实例作键，语义与修复前完全一致。
+     * 函数级 static 会串数据），WeakMap 按实例作键，这条仍然成立：两个实例各有
+     * 自己的缓存对象，不会互相读到对方的引用。
+     *
+     * ## 为什么「旧实例看不到新别名」这条断言被翻转过来了
+     *
+     * 原实现把名字全集缓存到请求结束，且没有任何失效机制。于是保存别名的那次请求里，
+     * 先解析过归属的那个模型实例（同一请求内被 `canAccessCustomer` 等调用过）
+     * 会继续返回**旧名字集** —— 表现就是「刚认领完，列表还是空的，刷新一次才有」。
+     *
+     * 现在 `StaffDirectory` 维护一个名字池版本号（别名/账号每次写入都自增，
+     * 见 `StaffAlias::booted()` 与 `User::booted()`），缓存条目带版本校验：
+     * 池子变了就整批重建。这仍然是"按实例缓存"，只是缓存的内容不再允许过期。
      */
     public function test_cache_is_per_instance_and_reused_within_instance(): void
     {
@@ -332,8 +343,8 @@ class StaffRenameRegressionTest extends TestCase
         $fresh = User::findOrFail($user->id);
         $this->assertSame(['缓存甲', '缓存旧名', '缓存新别名'], staffNames($fresh));
 
-        // 两个实例各自持有独立缓存：旧实例不会凭空看到新别名（与原语义一致）
-        $this->assertSame(['缓存甲', '缓存旧名'], staffNames($user));
+        // 名字池变了 → 旧实例也立刻看到（不再需要"刷新一次"）
+        $this->assertSame(['缓存甲', '缓存旧名', '缓存新别名'], staffNames($user));
     }
 
     /** 没有 id 的（未落库）实例也要能正确解析，不能因此报错。 */

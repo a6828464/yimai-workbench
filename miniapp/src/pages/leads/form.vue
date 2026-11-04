@@ -32,6 +32,8 @@ import {
   updateLead,
   type LeadPayload
 } from '@/api/leads'
+import { fetchStaffOptions, matchStaff, type StaffOption } from '@/api/staff'
+import { ROLE_SHORT, type RoleCode } from '@/utils/permission'
 import type { MiniappLead } from '@/types'
 
 const user = useUserStore()
@@ -71,6 +73,86 @@ const form = ref({
 const gradeIndex = computed(() => Math.max(0, LEAD_GRADES.indexOf(form.value.grade as never)))
 /** 等级在 UI 上是「未分级 / A / B / C」，提交值仍是 '' / A / B / C */
 const gradeLabel = computed(() => GRADE_LABELS[gradeIndex.value])
+
+/* ---------- 老师/顾问：选人（/staff/options）+ 手输兜底 ---------- */
+const staffSheet = ref(false)
+const staffList = ref<StaffOption[]>([])
+const staffLoading = ref(false)
+/** 人员清单请求是否成功返回过（成功=可以判定「这个名字不在账号里」） */
+const staffFetched = ref(false)
+/** 清单里是否真的有人（决定面板渲染列表还是空提示） */
+const staffLoaded = computed(() => staffList.value.length > 0)
+const staffKeyword = ref('')
+const manualTeacher = ref('')
+
+const staffFiltered = computed(() => matchStaff(staffList.value, staffKeyword.value))
+
+/**
+ * 当前值是不是「不在账号清单里」的历史写法。
+ * 只有清单加载成功后才敢判断 —— 接口失败时一律当真（不能把历史名字说成不存在）。
+ */
+const teacherHistorical = computed(
+  () =>
+    staffFetched.value &&
+    !!form.value.serviceTeacher &&
+    !staffList.value.some((s) => s.name === form.value.serviceTeacher)
+)
+
+function staffMeta(s: StaffOption): string {
+  const roles = s.roles
+    .map((r) => ROLE_SHORT[r as RoleCode] ?? r)
+    .filter(Boolean)
+    .join('/')
+  return [roles, s.venue || ''].filter(Boolean).join(' · ')
+}
+
+/** 打开面板：首次打开才拉清单（一次会话内不重复打接口） */
+function openStaffPicker(): void {
+  staffSheet.value = true
+  staffKeyword.value = ''
+  manualTeacher.value = ''
+  void loadStaff()
+}
+
+function closeStaffPicker(): void {
+  staffSheet.value = false
+}
+
+async function loadStaff(): Promise<void> {
+  if (staffFetched.value || staffLoading.value) return
+  staffLoading.value = true
+  try {
+    staffList.value = await fetchStaffOptions()
+    staffFetched.value = true
+  } catch {
+    /* 静默：接口不可用就只剩手输，不阻塞录入 */
+  } finally {
+    staffLoading.value = false
+  }
+}
+
+/** 选中账号 → 写入**规范名**（后端靠它解析归属 user_id） */
+function pickStaff(s: StaffOption): void {
+  form.value.serviceTeacher = s.name
+  staffSheet.value = false
+}
+
+/** 手输兜底：历史写法 / 临时名字 / 接口挂了都能录 */
+function applyManual(): void {
+  const v = manualTeacher.value.trim()
+  if (!v) {
+    uni.showToast({ title: '请先输入名字', icon: 'none' })
+    return
+  }
+  form.value.serviceTeacher = v
+  staffSheet.value = false
+}
+
+function clearTeacher(): void {
+  form.value.serviceTeacher = ''
+  manualTeacher.value = ''
+  staffSheet.value = false
+}
 
 /** 首屏把渠道清单补全（列表接口随响应下发 enums，是唯一权威来源） */
 async function loadEnums() {
@@ -264,6 +346,8 @@ onShow(() => {
     inited.value = true
     applyDraft()
     loadEnums()
+    // 顺手预取人员清单：点开选人面板时通常已经加载好（失败也不影响录入）
+    void loadStaff()
   }
 })
 </script>
@@ -333,12 +417,17 @@ onShow(() => {
         label-width="200rpx"
         @confirm="onPickPlatform"
       />
-      <wd-input
-        v-model="form.serviceTeacher"
-        label="老师/顾问"
-        placeholder="选填"
-        label-width="200rpx"
-      />
+      <!-- 老师/顾问：从账号里选（写规范名），历史写法可手输 -->
+      <view class="pick-row ym-tap" @click="openStaffPicker">
+        <text class="pick-row__label">老师/顾问</text>
+        <view class="pick-row__value">
+          <text class="pick-row__text" :class="{ 'pick-row__text--ph': !form.serviceTeacher }">
+            {{ form.serviceTeacher || '选填 · 点这里选人' }}
+          </text>
+          <text v-if="teacherHistorical" class="pick-row__flag">手输值</text>
+          <wd-icon name="arrow-right" size="14px" color="#8A948F" />
+        </view>
+      </view>
     </ym-section>
 
     <ym-section title="需求与跟进">
@@ -386,6 +475,83 @@ onShow(() => {
         :maxlength="500"
       />
     </ym-section>
+
+    <!-- 选人面板：可搜索 + 手输兜底 + 清除 -->
+    <view v-if="staffSheet" class="picker" @click="closeStaffPicker">
+      <view class="picker__panel" @click.stop>
+        <view class="picker__head">
+          <text class="picker__title">老师/顾问</text>
+          <view class="picker__close ym-tap" @click="closeStaffPicker">
+            <wd-icon name="close" size="16px" color="#8A948F" />
+          </view>
+        </view>
+        <text class="picker__hint">
+          选中后写入账号规范名，本人才能在「我的客资」里看到这条记录。
+        </text>
+
+        <view class="picker__search">
+          <wd-icon name="search" size="14px" color="#8A948F" />
+          <input
+            v-model="staffKeyword"
+            class="picker__input"
+            placeholder="搜名字 / 花名"
+            confirm-type="search"
+          />
+        </view>
+
+        <scroll-view v-if="staffLoaded" scroll-y class="picker__list">
+          <view
+            v-for="s in staffFiltered"
+            :key="s.id || s.name"
+            class="sitem ym-tap"
+            @click="pickStaff(s)"
+          >
+            <view class="sitem__main">
+              <view class="sitem__row">
+                <text class="sitem__name">{{ s.name }}</text>
+                <text v-if="s.self" class="sitem__tag">我</text>
+              </view>
+              <text class="sitem__meta ym-ellipsis">{{ staffMeta(s) }}</text>
+            </view>
+            <wd-icon
+              v-if="form.serviceTeacher === s.name"
+              name="check"
+              size="16px"
+              color="#2E7D5B"
+            />
+          </view>
+          <view v-if="!staffFiltered.length" class="picker__empty">
+            没有匹配的账号，可直接在下面手输
+          </view>
+        </scroll-view>
+        <view v-else class="picker__state">
+          {{
+            staffLoading
+              ? '正在读取人员清单…'
+              : staffFetched
+                ? '还没有可选的账号，可直接在下面手输'
+                : '人员清单读取失败，可在下面手输'
+          }}
+        </view>
+
+        <view class="picker__manual">
+          <input
+            v-model="manualTeacher"
+            class="picker__input picker__input--manual"
+            placeholder="手输名字（历史写法 / 临时名字）"
+            confirm-type="done"
+            @confirm="applyManual"
+          />
+          <view class="picker__manual-btn ym-tap" @click="applyManual">
+            <text class="picker__manual-text">用手输</text>
+          </view>
+        </view>
+
+        <view v-if="form.serviceTeacher" class="picker__clear ym-tap" @click="clearTeacher">
+          <text class="picker__clear-text">清除当前选择</text>
+        </view>
+      </view>
+    </view>
 
     <view class="actions">
       <wd-button type="primary" size="large" block :loading="saving" @click="submit">
@@ -466,5 +632,220 @@ onShow(() => {
   background: $white;
   border-top: 2rpx solid $hairline;
   box-shadow: 0 -8rpx 24rpx rgba(16, 24, 21, 0.04);
+}
+
+/* ---------- 老师/顾问：选人行 ---------- */
+.pick-row {
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 96rpx;
+  padding: 12px 0;
+  border-bottom: 2rpx solid $hairline;
+}
+
+.pick-row__label {
+  flex-shrink: 0;
+  width: 200rpx;
+  font-size: 28rpx;
+  color: $ink-700;
+}
+
+.pick-row__value {
+  display: flex;
+  flex: 1;
+  gap: 10rpx;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.pick-row__text {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 28rpx;
+  color: $ink-800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pick-row__text--ph {
+  color: $ink-300;
+}
+
+.pick-row__flag {
+  flex-shrink: 0;
+  padding: 2rpx 10rpx;
+  font-size: 20rpx;
+  color: $warn-600;
+  background: $warn-100;
+  border-radius: 999rpx;
+}
+
+/* ---------- 选人面板 ---------- */
+.picker {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(16, 24, 21, 0.5);
+}
+
+.picker__panel {
+  width: 100%;
+  padding: 30rpx 28rpx calc(24rpx + env(safe-area-inset-bottom));
+  background: $white;
+  border-radius: $r-xl $r-xl 0 0;
+  box-shadow: $shadow-float;
+}
+
+.picker__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.picker__title {
+  font-size: 33rpx;
+  font-weight: 600;
+  color: $ink-800;
+}
+
+.picker__close {
+  padding: 8rpx;
+}
+
+.picker__hint {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 21rpx;
+  line-height: 1.5;
+  color: $ink-400;
+}
+
+.picker__search {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+  height: 84rpx;
+  padding: 0 22rpx;
+  margin-top: 18rpx;
+  background: $ink-50;
+  border-radius: 999rpx;
+}
+
+.picker__input {
+  flex: 1;
+  min-width: 0;
+  font-size: 27rpx;
+  color: $ink-800;
+}
+
+.picker__list {
+  height: 44vh;
+  margin-top: 14rpx;
+}
+
+.sitem {
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 104rpx;
+  padding: 16rpx 6rpx;
+  border-bottom: 2rpx solid $hairline;
+}
+
+.sitem__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6rpx;
+  min-width: 0;
+}
+
+.sitem__row {
+  display: flex;
+  gap: 10rpx;
+  align-items: center;
+  min-width: 0;
+}
+
+.sitem__name {
+  font-size: 29rpx;
+  font-weight: 500;
+  color: $ink-800;
+}
+
+.sitem__tag {
+  padding: 0 10rpx;
+  font-size: 19rpx;
+  line-height: 1.7;
+  color: $brand-700;
+  background: $brand-100;
+  border-radius: 999rpx;
+}
+
+.sitem__meta {
+  font-size: 21rpx;
+  color: $ink-400;
+}
+
+.picker__empty,
+.picker__state {
+  display: block;
+  padding: 36rpx 6rpx;
+  font-size: 23rpx;
+  color: $ink-400;
+  text-align: center;
+}
+
+.picker__manual {
+  display: flex;
+  gap: 14rpx;
+  align-items: center;
+  padding-top: 18rpx;
+  margin-top: 8rpx;
+  border-top: 2rpx solid $hairline;
+}
+
+.picker__input--manual {
+  height: 84rpx;
+  padding: 0 22rpx;
+  background: $ink-50;
+  border-radius: 999rpx;
+}
+
+.picker__manual-btn {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  height: 84rpx;
+  padding: 0 30rpx;
+  color: $white;
+  background: linear-gradient(135deg, $brand-500, $brand-700);
+  border-radius: 999rpx;
+}
+
+.picker__manual-text {
+  font-size: 26rpx;
+  font-weight: 500;
+}
+
+.picker__clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 76rpx;
+  margin-top: 12rpx;
+}
+
+.picker__clear-text {
+  font-size: 24rpx;
+  color: $danger-600;
 }
 </style>

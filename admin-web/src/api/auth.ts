@@ -165,13 +165,48 @@ export interface AccountRow {
   aliases?: string[]
 }
 
-/** 人员归属映射总览 */
+/** 系统为某个悬空姓名猜的账号（带理由与可信度；只建议，不自动绑定） */
+export interface StaffSuggestion {
+  id: number
+  key: string
+  name: string
+  /** 为什么猜是他（同表已绑定过 / 昵称一致 / 姓名互为包含） */
+  reason: string
+  confidence: 'high' | 'medium' | 'low'
+}
+
+/** 某个归属列的 id 覆盖率：还差多少行没落 id */
+export interface StaffCoverage {
+  ref: string
+  label: string
+  total: number
+  withId: number
+  missing: number
+}
+
+/** 人员身份归一总览 */
 export interface StaffMapping {
-  accounts: { key: string; name: string; aliases: string[] }[]
+  accounts: {
+    key: string
+    name: string
+    nickname?: string
+    aliases: string[]
+    roles?: string[]
+    venue?: string | null
+    status?: string
+    /** 该账号名下的数据行数（按姓名 + id 并集），认领/改名后会立刻变化 */
+    footprint?: Record<string, number>
+  }[]
   /** 业务数据里出现过、但对不上任何账号的姓名 —— 非空即表示有数据的归属悬空了 */
-  unmapped: { name: string; counts: Record<string, number> }[]
+  unmapped: {
+    name: string
+    counts: Record<string, number>
+    suggestions?: StaffSuggestion[]
+  }[]
   /** 归属 id 指向已不存在账号的行（账号删掉重建留下的），需要清理 */
   staleIds: { table: string; column: string; user_id: number; rows: number }[]
+  coverage?: StaffCoverage[]
+  totals?: { unmapped: number; missingIds: number }
 }
 
 export async function listAccounts(): Promise<AccountRow[]> {
@@ -208,7 +243,14 @@ export async function createAccount(data: {
 export async function updateAccount(
   key: string,
   action: 'update' | 'disable' | 'enable' | 'resetPassword' | 'delete',
-  data?: { roles?: string[]; roleCode?: string; venues?: string[]; password?: string }
+  data?: {
+    /** 姓名＝归属名（改名时后端会把旧名登记为别名，历史数据不断链） */
+    name?: string
+    roles?: string[]
+    roleCode?: string
+    venues?: string[]
+    password?: string
+  }
 ): Promise<{ ok: boolean }> {
   if (!USE_BACKEND) throw new Error('演示模式不支持账号变更')
   return apiPatch<{ ok: boolean }>(`/accounts/${encodeURIComponent(key)}`, {
@@ -234,4 +276,62 @@ export async function saveStaffAliases(
 ): Promise<{ aliases: string[] }> {
   if (!USE_BACKEND) throw new Error('演示模式不支持修改别名')
   return apiPut<{ aliases: string[] }>(`/accounts/${encodeURIComponent(key)}/aliases`, { aliases })
+}
+
+/**
+ * 认领一个悬空姓名到某个账号（仅超管）。
+ *
+ * 「随心瑜叫苏米、留资写蒙澍南、工作台注册叫澍南」的统一动作：认领后写进别名表，
+ * 并回填所有历史行的归属 id —— 本人刷新即能看到。
+ */
+export async function assignStaffName(
+  name: string,
+  userKey: string
+): Promise<{ alias: string; user: number; backfilled: number }> {
+  if (!USE_BACKEND) throw new Error('演示模式不支持认领归属')
+  return apiPost<{ alias: string; user: number; backfilled: number }>(
+    '/accounts/staff-mapping/assign',
+    { name, userKey }
+  )
+}
+
+/** 全量补齐归属 id（仅超管，可重复执行） */
+export async function repairStaffMapping(opts?: {
+  clearStale?: boolean
+}): Promise<{ backfilled: number; cleared: number; coverage: StaffCoverage[] }> {
+  if (!USE_BACKEND) throw new Error('演示模式不支持修复归属')
+  return apiPost<{ backfilled: number; cleared: number; coverage: StaffCoverage[] }>(
+    '/accounts/staff-mapping/repair',
+    { ...opts }
+  )
+}
+
+/** 账号合并：把 from 里的人连数据一起并进 into（仅超管） */
+export async function mergeStaffAccount(
+  into: string,
+  from: string[]
+): Promise<{ into: number; rows: number; aliases: number; backfilled: number; skipped: string[] }> {
+  if (!USE_BACKEND) throw new Error('演示模式不支持合并账号')
+  return apiPost<{ into: number; rows: number; aliases: number; backfilled: number; skipped: string[] }>(
+    '/accounts/staff-mapping/merge',
+    { into, from }
+  )
+}
+
+/** 归属下拉的数据源：账号（规范名），而不是历史自由文本 */
+export interface StaffOption {
+  id: number
+  /** 归属列里应该写入的规范名 */
+  name: string
+  /** 该账号的全部可用名字（含别名/昵称） */
+  aliases: string[]
+  roles: string[]
+  venue: string | null
+  self: boolean
+}
+
+export async function listStaffOptions(): Promise<StaffOption[]> {
+  if (!USE_BACKEND) return []
+  const data = await apiGet<{ staff: StaffOption[] }>('/staff/options')
+  return data.staff ?? []
 }

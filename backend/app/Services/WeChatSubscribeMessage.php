@@ -468,10 +468,18 @@ class WeChatSubscribeMessage
     }
 
     /**
-     * 按 `users.name` 解析在职账号。
+     * 按归属姓名解析接收人（唯一命中才发）。
      *
-     * 只认**唯一命中**：同名两个账号时宁可不发（父账号/离职重建的重复姓名在本仓真实存在，
-     * 发错人的代价比不发大）。与 helpers.php 的 staffUserId() 同口径，只是这里需要 User 实例。
+     * 口径统一到 `StaffDirectory`（`staffUserId()`）而不是自己查 `users.name`：
+     * 通知的收件人是「这条客资归谁」，和「谁能看到这条客资」必须是同一个判断 ——
+     * 否则会出现最难解释的一种故障：**列表里能看到自己的客资，微信却收不到分配提醒**。
+     *
+     * 三种以前会漏发、现在能命中的写法：
+     *  - 随心瑜里的别名（`苏小米` → 苏米）；
+     *  - 改名前的旧名（改名时自动登记为别名）；
+     *  - 昵称（前端历史版本写进归属列的那种）。
+     *
+     * 歧义（同名两个账号）仍然不发：父子账号/离职重建在本仓真实存在，发错人的代价更大。
      */
     private function resolveStaff(string $name): ?User
     {
@@ -480,16 +488,21 @@ class WeChatSubscribeMessage
             return null;
         }
 
-        $hits = User::where('name', $name)->limit(2)->get();
-        if ($hits->count() !== 1) {
-            if ($hits->count() > 1) {
+        $id = staffUserId($name);
+        if ($id === null) {
+            $dupes = User::where('name', $name)->count();
+            if ($dupes > 1) {
                 Log::warning('[wx-subscribe] 姓名对应多个账号，跳过通知', ['name' => $name]);
+            } else {
+                // 未认领：这条客资/任务/会员的归属人对不上账号，本人也不会收到提醒。
+                // 记 info 而不是 warning 之外的东西 —— 它需要运维去「身份归一」修，不是系统异常。
+                Log::info('[wx-subscribe] 归属姓名未对应任何账号，跳过通知', ['name' => $name]);
             }
 
             return null;
         }
 
-        return $hits->first();
+        return User::find($id);
     }
 
     // ---------------------------------------------------------------------

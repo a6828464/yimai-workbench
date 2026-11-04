@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Services\StaffDirectory;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
@@ -14,7 +15,16 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        /*
+        | 人员身份中心按请求共享一份。
+        |
+        | 它内部缓存「名字 → 账号」全表映射与账号目录。一次列表请求里 `staffNames()`
+        | 会被调用几十次，若每次重建映射，会员列表会从 2 次查询变成上百次。
+        |
+        | 唯一性约束：写完别名 / 合并账号后必须 `flush()`（`StaffDirectory::assign()`
+        | 与 `merge()` 内部已做），否则同一请求内后续的归属判断仍是旧口径。
+        */
+        $this->app->singleton(StaffDirectory::class);
     }
 
     /**
