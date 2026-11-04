@@ -2,8 +2,8 @@
   "name": "一麦工作台",
   "appid": "wx3a5379d124e2499c",
   "description": "一麦瑜伽员工工作台小程序",
-  "versionName": "0.1.0",
-  "versionCode": "100",
+  "versionName": "0.9.0",
+  "versionCode": "900",
   "transformPx": false,
   "app-plus": {
     "usingComponents": true,

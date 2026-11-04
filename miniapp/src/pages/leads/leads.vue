@@ -8,10 +8,16 @@
  * 权限：按人隔离走后端 scopeLeadsForUser()（服务老师=本人名下+待承接池，
  * 授课老师=本人客资+上过体验课的+私教学员，新媒体=本人录入）。
  * 前端不做二次过滤——过滤只能有一处，否则口径迟早分叉。
+ *
+ * 视觉层（2026-11 重构）：筛选头（wd-search + 状态页签）、白卡列表、三态、
+ * 悬浮「记一条」。请求参数与分页口径零改动。
  */
 import { computed, ref } from 'vue'
-import { onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
+import { onLoad, onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
 import { requireLogin } from '@/utils/guard'
+import { requireFeature } from '@/utils/nav'
+import { canUse, isMediaOnly, isSuper } from '@/utils/permission'
+import { useUserStore } from '@/store/user'
 import { LEAD_STATUSES, fetchLeads, stageLeadDraft } from '@/api/leads'
 import type { LeadEnums, MiniappLead } from '@/types'
 
@@ -24,8 +30,34 @@ const total = ref(0)
 const page = ref(1)
 const loading = ref(false)
 const loaded = ref(false)
+const failed = ref(false)
+
+const user = useUserStore()
+
+/**
+ * 门店筛选。
+ *  超管 / 新媒体（双店账号）→ 可选全部或单店，切了才发 venue 参数；
+ *  店长/服务/授课 → 后端 scopeLeadsForUser 已锁本店，这里只展示锁定标签。
+ */
+const VENUE_ALL = '全部门店'
+const VENUE_OPTIONS = [
+  { label: '全部门店', value: VENUE_ALL },
+  { label: '绿地店', value: '绿地店' },
+  { label: '东部店', value: '东部店' }
+]
+const venue = ref(VENUE_ALL)
+/** 只有真的选了单店才发 venue 参数 */
+const venueParam = computed(() => (venue.value === VENUE_ALL ? undefined : venue.value))
+const canSwitchVenue = computed(() => isSuper(user.roles) || isMediaOnly(user.roles))
+
+/** 新建入口按功能权限判断（不写死角色）：能看留资就能记一条，后端 store 不再拦截 */
+const canCreate = computed(() => canUse(user.roles, 'leads'))
+/** 当前是否处于「被筛选过」的状态——决定空态是「没有客资」还是「没有匹配」 */
+const hasFilter = computed(() => Boolean(submitted.value || status.value || venueParam.value))
 
 const statusChips = computed(() => ['全部', ...LEAD_STATUSES])
+/** 页签显示值：status 为空时落在「全部」 */
+const activeChip = computed(() => status.value || '全部')
 
 function keywordParams(): { name?: string; phone?: string } {
   const k = submitted.value.trim()
@@ -41,6 +73,7 @@ async function load(reset = false) {
     const res = await fetchLeads({
       ...keywordParams(),
       status: status.value || undefined,
+      venue: venueParam.value,
       current: page.value,
       size: 20
     })
@@ -48,8 +81,10 @@ async function load(reset = false) {
     list.value = reset ? (res.records ?? []) : [...list.value, ...(res.records ?? [])]
     if (res.enums?.sources?.length) enums.value = res.enums
     loaded.value = true
+    failed.value = false
   } catch {
     /* http 层已 toast */
+    failed.value = true
   } finally {
     loading.value = false
   }
@@ -57,6 +92,15 @@ async function load(reset = false) {
 
 function pickStatus(s: string) {
   status.value = s === '全部' ? '' : s
+  load(true)
+}
+
+function onTabChange(payload: { name: string | number }) {
+  pickStatus(String(payload.name))
+}
+
+/** 切换门店：回到第一页重新拉 */
+function onVenueChange() {
   load(true)
 }
 
@@ -71,11 +115,14 @@ function clearSearch() {
   load(true)
 }
 
-function statusClass(s: string): string {
-  if (s === '已成交') return 'lead-card__status--ok'
-  if (s === '已流失') return 'lead-card__status--mute'
-  if (s === '爽约' || s === '新留资') return 'lead-card__status--danger'
-  return 'lead-card__status--warn'
+/** 状态色（纯视觉映射，状态取值仍以后端为准） */
+function statusTone(s: string): 'brand' | 'gold' | 'warn' | 'danger' | 'info' | 'muted' {
+  if (s === '已成交') return 'brand'
+  if (s === '已流失') return 'muted'
+  if (s === '爽约') return 'danger'
+  if (s === '新留资') return 'warn'
+  if (s === '已联系') return 'info'
+  return 'gold'
 }
 
 function createNew() {
@@ -102,8 +149,24 @@ function trialLine(row: MiniappLead): string {
     .join('；')
 }
 
+/**
+ * 深链：/pages/leads/leads?status=新留资&venue=绿地店
+ * 参数只做**初值**，进入后仍可改状态/门店/搜索；onShow 不重置用户选择。
+ */
+onLoad((options) => {
+  const opt = (options ?? {}) as Record<string, string>
+  const st = String(opt.status ?? '').trim()
+  if (st && (LEAD_STATUSES as readonly string[]).includes(st)) status.value = st
+  const v = String(opt.venue ?? '').trim()
+  if (v && canSwitchVenue.value && VENUE_OPTIONS.some((o) => o.value === v)) {
+    venue.value = v
+  }
+})
+
 onShow(() => {
-  if (requireLogin()) load(true)
+  if (!requireLogin()) return
+  if (!requireFeature('leads')) return
+  load(true)
 })
 
 onPullDownRefresh(async () => {
@@ -121,218 +184,339 @@ onReachBottom(() => {
 
 <template>
   <view class="ym-page leads">
-    <view class="leads__search">
-      <input
+    <!-- 筛选头 -->
+    <view class="filters">
+      <wd-search
         v-model="keyword"
-        class="leads__input"
-        type="text"
         placeholder="搜姓名 或 手机号/尾号/微信"
-        confirm-type="search"
-        @confirm="search"
+        cancel-txt="搜索"
+        @search="search"
+        @cancel="search"
+        @clear="clearSearch"
       />
-      <text v-if="keyword" class="leads__clear" @click="clearSearch">✕</text>
-      <text class="leads__go" @click="search">搜索</text>
-    </view>
 
-    <scroll-view class="leads__tabs" scroll-x :show-scrollbar="false">
-      <view class="leads__tabs-inner">
-        <view
-          v-for="s in statusChips"
-          :key="s"
-          class="leads__tab"
-          :class="{ 'leads__tab--active': (status || '全部') === s }"
-          @click="pickStatus(s)"
-        >
-          {{ s }}
+      <wd-tabs :model-value="activeChip" :slidable-num="5" @change="onTabChange">
+        <wd-tab v-for="s in statusChips" :key="s" :title="s" :name="s" />
+      </wd-tabs>
+
+      <view class="filters__row">
+        <view class="filters__cell">
+          <wd-drop-menu v-if="canSwitchVenue">
+            <wd-drop-menu-item v-model="venue" :options="VENUE_OPTIONS" @change="onVenueChange" />
+          </wd-drop-menu>
+          <view v-else class="vlock">
+            <wd-icon name="location" size="13px" />
+            <text class="vlock__text ym-ellipsis">{{ user.venue || '本店' }}</text>
+          </view>
+        </view>
+        <view v-if="canCreate" class="create-btn ym-tap" @click="createNew">
+          <wd-icon name="add" size="14px" />
+          <text class="create-btn__text">记一条</text>
         </view>
       </view>
-    </scroll-view>
+    </view>
 
-    <view v-for="row in list" :key="row.id" class="ym-card lead-card" @click="edit(row)">
-      <view class="lead-card__head">
-        <text class="lead-card__name">{{ row.name }}</text>
-        <text class="lead-card__status" :class="statusClass(row.status)">{{ row.status }}</text>
-        <text class="lead-card__phone">{{ row.phone || `尾号${row.phoneTail || ''}` }}</text>
-      </view>
+    <view class="hint">
+      <text class="hint__text ym-ellipsis">按人隔离：只显示你有权限跟进的客资</text>
+      <text class="hint__count ym-num">共 {{ total }} 条</text>
+    </view>
 
-      <text class="ym-muted lead-card__meta">{{ metaLine(row) }}</text>
+    <!-- 三态 -->
+    <view v-if="failed && !list.length" class="ym-card">
+      <ym-empty
+        icon="warning"
+        text="留资列表加载失败"
+        desc="网络或服务异常，可下拉刷新重试"
+        action-text="重试"
+        @action="load(true)"
+      />
+    </view>
 
-      <view v-if="row.demand" class="lead-card__line">
-        <text class="lead-card__label">需求：</text>
-        <text>{{ row.demand }}</text>
-      </view>
-      <view v-if="trialLine(row)" class="lead-card__line">
-        <text class="lead-card__label">体验课：</text>
-        <text>{{ trialLine(row) }}</text>
-      </view>
-      <view v-if="row.dealAmount" class="lead-card__line">
-        <text class="lead-card__label">成交：</text>
-        <text>¥{{ row.dealAmount }}<text v-if="row.dealCard"> · {{ row.dealCard }}</text></text>
-      </view>
-      <view v-if="row.remark" class="lead-card__line">
-        <text class="lead-card__label">备注：</text>
-        <text>{{ row.remark }}</text>
+    <view v-else-if="loading && !list.length" class="ym-card">
+      <view v-for="i in 3" :key="i" class="sk-row">
+        <wd-skeleton
+          theme="text"
+          animation="gradient"
+          :row-col="[{ width: '40%' }, { width: '70%' }, { width: '88%' }]"
+        />
       </view>
     </view>
 
-    <view v-if="loaded && !list.length" class="ym-empty">没有符合条件的留资</view>
-    <view v-if="loading" class="ym-empty">加载中…</view>
-    <view v-else-if="list.length && list.length >= total" class="leads__end">
-      <text class="ym-muted">共 {{ total }} 条留资</text>
+    <ym-empty
+      v-else-if="loaded && !list.length"
+      icon="chat"
+      :text="hasFilter ? '没有符合条件的客资' : '还没有客资'"
+      :desc="
+        hasFilter
+          ? '换个状态或门店再看，也可以点右下角「记一条」'
+          : '点右下角「记一条」，30 秒登记一位到店客户'
+      "
+      :action-text="canCreate ? '记一条' : ''"
+      @action="createNew"
+    />
+
+    <view v-for="row in list" :key="row.id" class="lcard ym-tap" @click="edit(row)">
+      <view class="lcard__main">
+        <view class="lcard__id">
+          <view class="lcard__name-row">
+            <text class="lcard__name ym-ellipsis">{{ row.name }}</text>
+            <ym-badge :text="row.status" :tone="statusTone(row.status)" />
+            <ym-badge v-if="row.grade" :text="`${row.grade} 级`" tone="gold" plain />
+          </view>
+          <text class="lcard__meta ym-ellipsis">{{ metaLine(row) }}</text>
+        </view>
+        <text class="lcard__phone ym-num">{{ row.phone || `尾号${row.phoneTail || ''}` }}</text>
+        <view class="lcard__chevron"><wd-icon name="chevron-right" size="14px" /></view>
+      </view>
+
+      <view v-if="row.demand || trialLine(row) || row.dealAmount || row.remark" class="lcard__body">
+        <view v-if="row.demand" class="lcard__line">
+          <text class="lcard__label">需求</text>
+          <text class="lcard__text">{{ row.demand }}</text>
+        </view>
+        <view v-if="trialLine(row)" class="lcard__line">
+          <text class="lcard__label">体验课</text>
+          <text class="lcard__text">{{ trialLine(row) }}</text>
+        </view>
+        <view v-if="row.dealAmount" class="lcard__line">
+          <text class="lcard__label">成交</text>
+          <text class="lcard__text lcard__text--deal ym-num">
+            ¥{{ row.dealAmount }}<text v-if="row.dealCard"> · {{ row.dealCard }}</text>
+          </text>
+        </view>
+        <view v-if="row.remark" class="lcard__line">
+          <text class="lcard__label">备注</text>
+          <text class="lcard__text">{{ row.remark }}</text>
+        </view>
+      </view>
     </view>
 
-    <view class="leads__fab" @click="createNew">
-      <text class="leads__fab-plus">＋</text>
-      <text class="leads__fab-text">记一条</text>
+    <wd-loadmore v-if="loading && list.length" state="loading" loading-text="正在加载更多" />
+    <wd-loadmore
+      v-else-if="list.length && list.length >= total"
+      state="finished"
+      finished-text="已经到底了"
+    />
+
+    <view v-if="canCreate" class="fab ym-tap" @click="createNew">
+      <wd-icon name="add" size="18px" />
+      <text class="fab__text">记一条</text>
     </view>
   </view>
 </template>
 
 <style lang="scss" scoped>
+@import '@/styles/tokens.scss';
+
 .leads {
-  padding-bottom: 200rpx;
+  padding-bottom: calc(200rpx + env(safe-area-inset-bottom));
 
-  &__search {
-    display: flex;
-    align-items: center;
-    background: #fff;
-    margin: 20rpx 24rpx 0;
-    padding: 0 24rpx;
-    height: 84rpx;
-    border-radius: 16rpx;
-  }
+  --wot-search-padding: 18rpx 0 6rpx 24rpx;
+  --wot-search-input-height: 68rpx;
+  --wot-tabs-nav-height: 88rpx;
+  --wot-tabs-nav-fs: 27rpx;
+}
 
-  &__input {
-    flex: 1;
-    font-size: 28rpx;
-  }
+/* ---------- 筛选头 ---------- */
+.filters {
+  background: $white;
+  border-bottom: 2rpx solid $hairline;
+}
 
-  &__clear {
-    color: #b8bcc4;
-    font-size: 28rpx;
-    padding: 0 16rpx;
-  }
+.filters__row {
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+  padding-right: 20rpx;
+  border-top: 2rpx solid $hairline;
+}
 
-  &__go {
-    color: #2e7d5b;
-    font-size: 28rpx;
-    padding-left: 16rpx;
-  }
+.filters__cell {
+  flex: 1;
+  min-width: 0;
+}
 
-  &__tabs {
-    margin-top: 18rpx;
-    white-space: nowrap;
-  }
+/* 门店锁定（店长/服务/授课）：只展示本店，不给切换入口 */
+.vlock {
+  display: flex;
+  gap: 8rpx;
+  align-items: center;
+  min-height: 96rpx;
+  padding: 0 24rpx;
+  color: $ink-500;
+}
 
-  &__tabs-inner {
-    display: inline-flex;
-    padding: 0 24rpx;
-  }
+.vlock__text {
+  min-width: 0;
+  font-size: 26rpx;
+}
 
-  &__tab {
-    display: inline-flex;
-    align-items: center;
-    height: 68rpx;
-    padding: 0 24rpx;
-    margin-right: 16rpx;
-    border-radius: 999rpx;
-    background: #fff;
-    font-size: 26rpx;
-    color: #4e5969;
-  }
+/* 顶部「记一条」：与右下角悬浮按钮同源，避免只依赖一个固定定位元素 */
+.create-btn {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6rpx;
+  align-items: center;
+  height: 88rpx;
+  padding: 0 26rpx;
+  color: $white;
+  background: linear-gradient(135deg, $brand-500, $brand-700);
+  border-radius: 999rpx;
+  box-shadow: 0 6rpx 16rpx rgba(28, 96, 71, 0.24);
+}
 
-  &__tab--active {
-    background: #2e7d5b;
-    color: #fff;
-  }
+.create-btn__text {
+  font-size: 26rpx;
+  font-weight: 500;
+}
 
-  &__end {
-    text-align: center;
-    padding: 30rpx 0 10rpx;
-  }
+.hint {
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18rpx 30rpx 4rpx;
+}
 
-  &__fab {
-    position: fixed;
-    right: 32rpx;
-    bottom: 60rpx;
-    display: flex;
-    align-items: center;
-    gap: 8rpx;
-    height: 96rpx;
-    padding: 0 32rpx;
-    border-radius: 999rpx;
-    background: #2e7d5b;
-    color: #fff;
-    box-shadow: 0 8rpx 24rpx rgba(46, 125, 91, 0.35);
-  }
+.hint__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 22rpx;
+  color: $ink-400;
+}
 
-  &__fab-plus {
-    font-size: 40rpx;
-    line-height: 1;
-  }
+.hint__count {
+  flex-shrink: 0;
+  font-size: 22rpx;
+  color: $ink-400;
+}
 
-  &__fab-text {
-    font-size: 28rpx;
+/* ---------- 骨架 ---------- */
+.sk-row {
+  padding: 20rpx 0;
+
+  & + & {
+    border-top: 2rpx solid $hairline;
   }
 }
 
-.lead-card {
-  &__head {
-    display: flex;
-    align-items: center;
-    gap: 14rpx;
-  }
+/* ---------- 留资卡 ---------- */
+.lcard {
+  padding: 26rpx 28rpx;
+  margin: 20rpx 24rpx;
+  background: $card-bg;
+  border-radius: $r-lg;
+  box-shadow: $shadow-card;
+}
 
-  &__name {
-    font-size: 32rpx;
-    font-weight: 600;
-  }
+.lcard__main {
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+  min-height: 88rpx;
+}
 
-  &__status {
-    font-size: 20rpx;
-    padding: 4rpx 14rpx;
-    border-radius: 999rpx;
-  }
+.lcard__id {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8rpx;
+  min-width: 0;
+}
 
-  &__status--ok {
-    background: #e8f5ee;
-    color: #1f7a4c;
-  }
+.lcard__name-row {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+  min-width: 0;
+}
 
-  &__status--warn {
-    background: #eef4f1;
-    color: #2e7d5b;
-  }
+.lcard__name {
+  display: block;
+  flex-shrink: 1;
+  min-width: 0;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: $ink-800;
+}
 
-  &__status--danger {
-    background: #fdeceb;
-    color: #c0392b;
-  }
+.lcard__meta {
+  display: block;
+  font-size: 23rpx;
+  color: $ink-400;
+}
 
-  &__status--mute {
-    background: #f2f3f5;
-    color: #8a8f99;
-  }
+.lcard__phone {
+  flex-shrink: 0;
+  font-size: 24rpx;
+  color: $ink-500;
+}
 
-  &__phone {
-    margin-left: auto;
-    font-size: 24rpx;
-    color: #4e5969;
-  }
+.lcard__chevron {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  color: $ink-300;
+}
 
-  &__meta {
-    display: block;
-    margin-top: 10rpx;
-  }
+.lcard__body {
+  padding-top: 16rpx;
+  margin-top: 16rpx;
+  border-top: 2rpx solid $hairline;
+}
 
-  &__line {
-    margin-top: 12rpx;
-    font-size: 26rpx;
-    line-height: 1.5;
-  }
+.lcard__line {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 10rpx;
 
-  &__label {
-    color: #8a8f99;
+  &:first-child {
+    margin-top: 0;
   }
+}
+
+.lcard__label {
+  flex-shrink: 0;
+  width: 108rpx;
+  font-size: 23rpx;
+  color: $ink-400;
+}
+
+.lcard__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 26rpx;
+  line-height: 1.5;
+  color: $ink-700;
+  word-break: break-all;
+}
+
+.lcard__text--deal {
+  color: $gold-600;
+  font-weight: 600;
+}
+
+/* ---------- 悬浮记一条 ---------- */
+.fab {
+  position: fixed;
+  right: 32rpx;
+  /* 先给不支持 env() 的机型一个兜底，再用安全区覆盖 */
+  bottom: 48rpx;
+  bottom: calc(48rpx + env(safe-area-inset-bottom));
+  z-index: 20;
+  display: flex;
+  gap: 8rpx;
+  align-items: center;
+  height: 96rpx;
+  padding: 0 34rpx;
+  color: $white;
+  background: linear-gradient(135deg, $brand-500, $brand-700);
+  border-radius: 999rpx;
+  box-shadow: 0 12rpx 28rpx rgba(28, 96, 71, 0.32);
+}
+
+.fab__text {
+  font-size: 28rpx;
+  font-weight: 500;
 }
 </style>

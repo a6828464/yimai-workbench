@@ -9,7 +9,11 @@ export interface UserInfo {
   venue: string | null
   venues: string[]
   buttons: string[]
-  email: string | null
+  /**
+   * 邮箱：小程序端已下线（不展示、不提交）。后端可能仍下发老值，
+   * 因此这里保留可选字段只为兼容响应，页面不要读它。
+   */
+  email?: string | null
   phone?: string | null
   avatar?: string | null
   status?: string

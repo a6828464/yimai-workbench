@@ -105,6 +105,11 @@ function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
       timeout,
       header: {
         'Content-Type': 'application/json',
+        // 必须显式声明 JSON：Laravel 对「不是 JSON 期望」的请求会把 ValidationException
+        // 渲染成 302 重定向（登录密码错时前端因此拿不到 422 文案，只看到跳转后的 404/HTML）。
+        // 这是登录报「服务异常（404）」的根因，不是网络问题。
+        Accept: 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...header
       },
@@ -117,13 +122,22 @@ function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
           return
         }
         if (status === 403) {
-          const msg = (res.data as RawBody)?.message || '无权限执行此操作'
+          const b = res.data as RawBody | undefined
+          const msg = b?.message || b?.emsg || '无权限执行此操作'
           if (!silent) uni.showToast({ title: msg, icon: 'none' })
           reject(new HttpError(msg, 403, 403))
           return
         }
         if (status < 200 || status >= 300) {
-          const msg = (res.data as RawBody)?.message || `服务异常（${status}）`
+          // 三形态错误体都要能读出人话：主契约 {code,message}，KeepYoga 风格 {ok,message/emsg}、
+          // {errno,emsg}。只读 message 时，`POST /shares/disable` 的 503 `{errno,emsg}`
+          // 会被降级成「服务异常（503）」，用户拿不到「数据库结构升级未完成」这种可操作提示。
+          const b = res.data as RawBody | undefined
+          const msg =
+            b?.message ||
+            b?.emsg ||
+            b?.msg ||
+            (status === 404 ? '接口不存在（404），请检查小程序环境或后端部署' : `服务异常（${status}）`)
           if (!silent) uni.showToast({ title: msg, icon: 'none' })
           reject(new HttpError(msg, status, status))
           return

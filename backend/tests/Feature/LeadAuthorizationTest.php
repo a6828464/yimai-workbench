@@ -294,8 +294,11 @@ class LeadAuthorizationTest extends TestCase
         $this->assertStringNotContainsString('卡项临近到期', $mediaAlerts);
     }
 
-    /** 新媒体账号的客资列表只返回自己录入的（此前的实现返回双店全量） */
-    public function test_media_lead_list_only_shows_own_entries(): void
+    /**
+     * 新媒体账号的客资列表 = **整个部门**录入的（此前的实现返回双店全量；
+     * 2026-11 真机反馈后又从「只看本人」放开到「部门共享」，见 LeadScopeMediaShareTest）。
+     */
+    public function test_media_lead_list_is_department_scoped(): void
     {
         $this->lead('自己录入', '13800000021', '绿地店', '', '新媒体小张');
         $this->lead('绿地同事录入', '13800000022', '绿地店', '', '绿地店长');
@@ -336,8 +339,10 @@ class LeadAuthorizationTest extends TestCase
     {
         Task::create(['title' => '东部任务', 'customer_name' => '甲', 'venue' => '东部店', 'owner' => '东部老师', 'status' => '待接收']);
         Task::create(['title' => '新媒体任务', 'customer_name' => '乙', 'venue' => '东部店', 'owner' => '新媒体', 'status' => '待接收']);
-        Lead::create(['lead_date' => now()->toDateString(), 'name' => '东部客资', 'source' => '测试', 'venue' => '东部店', 'status' => '已成交', 'deal_amount' => 100]);
-        Lead::create(['lead_date' => now()->toDateString(), 'name' => '绿地客资', 'source' => '小红书', 'venue' => '绿地店', 'status' => '新留资']);
+        // created_by 必须写成新媒体账号的人名：新媒体客资范围是「整个部门」（t9 调整），
+        // 没有录入人的行不属于任何部门，谁都不该看到。
+        Lead::create(['lead_date' => now()->toDateString(), 'name' => '东部客资', 'source' => '测试', 'venue' => '东部店', 'status' => '已成交', 'deal_amount' => 100, 'created_by' => '新媒体']);
+        Lead::create(['lead_date' => now()->toDateString(), 'name' => '绿地客资', 'source' => '小红书', 'venue' => '绿地店', 'status' => '新留资', 'created_by' => '新媒体']);
 
         $media = $this->user('media-scope', '新媒体', 'R_MEDIA', null);
         Sanctum::actingAs($media);
@@ -348,6 +353,7 @@ class LeadAuthorizationTest extends TestCase
 
         $this->getJson('/api/analytics/channels')->assertOk()->assertJsonPath('data.total', 2);
         $this->getJson('/api/analytics/channels?venue='.urlencode('东部店'))->assertOk()->assertJsonPath('data.total', 1);
+        // 走势按「部门」口径：两位新媒体登记的客资都算（t9 之前是门店口径，会把全店留资算进来）
         $this->getJson('/api/analytics/trends')->assertOk()->assertJsonPath('data.summary.leadCount', 2);
         $this->getJson('/api/analytics/platforms')->assertOk()->assertJsonPath('data.totalDeal', 100);
 
@@ -358,7 +364,10 @@ class LeadAuthorizationTest extends TestCase
         $this->getJson('/api/analytics/trends?venue='.urlencode('东部店'))->assertForbidden();
         $this->getJson('/api/analytics/platforms?venue='.urlencode('东部店'))->assertForbidden();
         $this->getJson('/api/analytics/channels')->assertOk()->assertJsonPath('data.total', 1);
-        $this->getJson('/api/analytics/trends')->assertOk()->assertJsonPath('data.summary.leadCount', 1);
+        // 授权门店只剩绿地店，但客资是**部门**口径（跨门店共享）：另一个新媒体登记的东部客资也算。
+        // 这条与上面 channels 的 1 不矛盾：channels 是门店业绩（applyVenueScope），
+        // trends 的留资数是「我能跟进的客资」，新媒体要能接手同事跨店登记的客资。
+        $this->getJson('/api/analytics/trends')->assertOk()->assertJsonPath('data.summary.leadCount', 2);
         $this->getJson('/api/analytics/platforms')->assertOk()->assertJsonPath('data.totalDeal', 0);
     }
 

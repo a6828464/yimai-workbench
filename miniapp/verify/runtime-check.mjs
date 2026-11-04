@@ -7,11 +7,19 @@
  * 用法：node verify/runtime-check.mjs [ws://127.0.0.1:9421]
  */
 import automator from 'miniprogram-automator'
-import { resolve } from 'node:path'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 
+const __dirname = dirname(fileURLToPath(import.meta.url))
 const WS = process.argv[2] ?? 'ws://127.0.0.1:9421'
-const OUT = resolve('verify/out')
+/**
+ * ⚠️ 只清自己的子目录 `out/runtime-check/`，绝不碰 `out/` 整目录。
+ * 2026-11-04 事故：本文件与 http-gate.test.mjs 都曾 `rmSync('verify/out')`，
+ * 误删 7 张 preview-qr-*.png + 6 个 upload-info*.json + preview-info.json（不可恢复）。
+ * 新增/修改验证脚本一律写 `out/<脚本名>/`。
+ */
+const OUT = resolve(__dirname, 'out/runtime-check')
 rmSync(OUT, { recursive: true, force: true })
 mkdirSync(OUT, { recursive: true })
 

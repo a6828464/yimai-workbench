@@ -3,11 +3,47 @@
 namespace App\Http\Controllers;
 
 use App\Models\Task;
+use App\Services\WeChatSubscribeMessage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 final class TaskController extends Controller
 {
+    /**
+     * 新待办提醒（微信订阅消息，模板 todoReminder）。
+     *
+     * 放 defer() 里：先把任务保存结果返回，微信调用在响应结束后执行 —— 微信慢、模板没配、
+     * 负责人姓名对不上账号，用户都不会看到异常，任务照常创建（与客资/会员通知同一纪律）。
+     *
+     * 只在负责人能解析到**唯一**账号时发：「未分配」与未开通账号的人名在任务表里真实存在
+     * （店长手写人名），那种情况由服务层静默跳过并记 skipped 流水，绝不阻断创建。
+     */
+    private function notifyTodoReminder(Task $task): void
+    {
+        $owner = trim((string) $task->owner);
+        if ($owner === '' || $owner === '未分配') {
+            return;
+        }
+
+        defer(function () use ($task, $owner) {
+            try {
+                app(WeChatSubscribeMessage::class)->notifyTodoReminder(
+                    $owner,
+                    (string) $task->title,
+                    (string) $task->deadline,
+                    (string) $task->venue
+                );
+            } catch (\Throwable $e) {
+                Log::warning('[wx-subscribe] 待办通知失败', [
+                    'task_id' => $task->id,
+                    'owner' => $owner,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+    }
+
     /** GET /tasks */
     public function index(Request $r)
     {
@@ -61,6 +97,8 @@ final class TaskController extends Controller
         ]);
         invalidateBusinessCaches('analytics');
         audit($r, '新增', '任务中心', $task->id, "{$task->title}·{$task->customer_name}", $task->venue, "创建任务，负责人[{$task->owner}]，验收标准[{$task->standard}]");
+        // 指派给具体某人 → 微信提醒（模板未配时服务层自然 skipped）
+        $this->notifyTodoReminder($task);
 
         return ok(camel($task));
     }

@@ -765,7 +765,35 @@ final class AnalyticsController extends Controller
 
     private function computeTrends($u, string $venue, string $start, string $end): array
     {
-        $leadQ = applyVenueScope(Lead::query(), $u, $venue);
+        // ---- 范围：超管/店长按门店，老师侧与新媒体按「个人 / 部门」 ----
+        //
+        // 真机反馈：服务老师端工作台显示的是**全品牌 30 天走势**（本店甚至双店的留资、预约、
+        // 到店、成交），本人名下只有 3 条客资却看到 40 条。看板口径必须与「我的」列表同源，
+        // 否则同一屏上「我的客户 3 个 / 我的留资 40 条」自相矛盾。
+        //
+        // 口径来源一律走既有收口函数，不在这里另写角色分支：
+        //  - 客资：scopeLeadsForUser()（服务老师=本人+待承接池；授课老师=本人相关；新媒体=部门）
+        //  - 排课：scopeBookingsForUser()（授课老师按姓名；服务老师按名下会员手机号；新媒体空集）
+        //  - 会员：scopeCustomersForUser()（下方 $custQ，本来就是按人收窄）
+        //
+        // 三者必须一起换：只换客资不换排课，「到店/成交」仍会从整店预约里冒出来，
+        // 分子分母就不同源了（task 明确要求 visit/deal 不得再用旧的全店集合）。
+        $personal = ! userHasAnyRole($u, ['R_SUPER', 'R_MANAGER']);
+
+        if ($personal) {
+            // 新媒体是双店账号：显式指定门店时仍按 applyVenueScope 的老口径做准入校验，
+            // 越界门店继续 403（这条断言在 LeadAuthorizationTest 里钉着）。
+            if ($venue !== '' && userHasRole($u, 'R_MEDIA')) {
+                $allowed = array_values(array_intersect((array) $u->venues, ['绿地店', '东部店']));
+                abort_unless(in_array($venue, $allowed, true), 403, '无权查看该门店');
+            }
+            $leadQ = scopeLeadsForUser(Lead::query(), $u);
+            if ($venue !== '') {
+                $leadQ->where('venue', $venue);
+            }
+        } else {
+            $leadQ = applyVenueScope(Lead::query(), $u, $venue);
+        }
 
         $leads = (clone $leadQ)->whereBetween('lead_date', [$start, $end])->get();
 
@@ -838,10 +866,17 @@ final class AnalyticsController extends Controller
         }
 
         // 随心瑜体验预约是实际排课事实；按日、门店、人员去重后补足 CRM 留资状态统计。
-        $bookingQ = applyVenueScope(
-            KyBooking::query()->whereBetween('start_at', [$start.' 00:00:00', $end.' 23:59:59']),
-            $u, $venue
-        );
+        // 老师侧/新媒体换成「本人排课」（同一个收口函数，与 Today 今日预约共用），
+        // 这样 VisitMetrics 的到店/成交也只从本人预约里取，与本人客资同源。
+        $bookingBase = KyBooking::query()->whereBetween('start_at', [$start.' 00:00:00', $end.' 23:59:59']);
+        if ($personal) {
+            $bookingQ = scopeBookingsForUser($bookingBase, $u);
+            if ($venue !== '') {
+                $bookingQ->where('venue', $venue);
+            }
+        } else {
+            $bookingQ = applyVenueScope($bookingBase, $u, $venue);
+        }
         $kyByDate = [];
         $bookings = $bookingQ->get();
         foreach ($bookings as $booking) {

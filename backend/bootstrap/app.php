@@ -34,6 +34,15 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->api(append: [EnsureUserIsEnabled::class, LogApiRequest::class]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        // /api/* 一律按 JSON 渲染错误。
+        //
+        // 为什么必须有：小程序 uni.request 默认不带 Accept: application/json 时，
+        // Laravel 会把 ValidationException 当成「网页表单」处理 → 302 重定向到 /，
+        // 前端拿到的就是 HTML/404 而不是 422+中文文案（线上「密码错却报服务异常」的根因）。
+        // 客户端已经补了 Accept 头，但历史版本与第三方调用不一定带，服务端这层是兜底。
+        $exceptions->shouldRenderJsonWhen(
+            fn (Request $request, Throwable $e) => $request->is('api/*') || $request->expectsJson()
+        );
         $exceptions->render(function (AuthenticationException $e, Request $request) {
             if ($request->is('api/*')) {
                 return response()->json(['message' => 'Unauthenticated.'], 401);

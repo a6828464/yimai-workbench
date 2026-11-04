@@ -6,6 +6,7 @@ use App\Models\AppSetting;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Services\KyMemberSyncService;
+use App\Services\WeChatSubscribeMessage;
 use App\Models\KyBooking;
 use App\Models\Lead;
 use App\Models\RenewalEvaluation;
@@ -18,6 +19,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class CustomerController extends Controller
 {
@@ -256,6 +258,9 @@ class CustomerController extends Controller
         $patch = collect(camelToSnake($r->all()))->only([
             'renewal_plan', 'decline', 'stop_reason', 'expected_return',
             'last_touch', 'needs_help', 'in_revive', 'birthday',
+            // 归属（会籍顾问 consultant / 负责人 owner）：小程序「客户经营」要能把会员
+            // 落到具体老师名下，否则新会员永远停在「未分配」。准入与通知见 collectAssignmentChanges()。
+            'consultant', 'owner',
         ])->all();
         // 清空的字段按列定义落地：可空列（最近沟通/生日）写 null，非空文本列（停练原因/预期复活）写 ''。
         // 这里不能再写 `($patch[$f] ?? '') === ''` 那种兜底 —— 键缺失和值为空是两件事，
@@ -266,6 +271,8 @@ class CustomerController extends Controller
                 $patch[$f] = filter_var($patch[$f], FILTER_VALIDATE_BOOLEAN);
             }
         }
+        // 归属变更：先判「真的换人」，再要权限、补 user_id、攒通知名单
+        $assignments = $this->collectAssignmentChanges($r, $c, $patch);
         $c->update($patch);
         if (array_key_exists('in_revive', $patch)) {
             invalidateBusinessCaches('member_lists');
@@ -279,7 +286,94 @@ class CustomerController extends Controller
         }
         audit($r, $r->input('_action', '修改'), '会员管理', $id, "{$c->name}（{$c->venue}）", $c->venue, '工作流字段更新');
 
+        // 归属变更 → 通知新归属人（微信订阅消息）。放 defer + try/catch：微信侧任何问题
+        // 都只写日志，绝不让会员保存失败（方案 §6.4）。
+        foreach ($assignments as [$staffName, $roleLabel]) {
+            $this->notifyMemberAssigned($c, $staffName, $roleLabel);
+        }
+
         return ok(camel($c));
+    }
+
+    /**
+     * 会员归属（会籍顾问 consultant / 负责人 owner）变更的准入、双写与待通知名单。
+     *
+     * 三条纪律 —— 每一条都对应一个真实会出事的场景：
+     *  1. **值没变就当没传**：前端 updateMemberFields() 是把整个对象 spread 回传的，
+     *     如果「原样带回来的归属」算成变更，那么专管员改个续费备注就会被 403 挡住，
+     *     同时给本人发一条「你被分配了」的假通知。
+     *  2. **换人要权限**：只有 R_SUPER / R_MANAGER 能改归属。老师/会籍只能改工作流字段，
+     *     否则任何人都能把自己写成某会员的负责人 —— 等于自造数据权限。
+     *  3. **姓名 + user_id 双写**：沿用 helpers 的 staffUserId()（唯一命中才认），
+     *     id 防改名、姓名兜住姓名对不上账号的历史行。
+     *
+     * @param  array<string, mixed>  $patch  按引用修改：可能删键或补 *_user_id
+     * @return array<int, array{0: string, 1: string}> 待通知的 [姓名, 归属身份]
+     */
+    private function collectAssignmentChanges(Request $r, Customer $c, array &$patch): array
+    {
+        $fields = [
+            'consultant' => ['column' => 'consultant_user_id', 'label' => '会籍顾问'],
+            'owner' => ['column' => 'owner_user_id', 'label' => '负责人'],
+        ];
+
+        $changes = [];
+        foreach ($fields as $field => $meta) {
+            if (! array_key_exists($field, $patch)) {
+                continue;
+            }
+
+            $newName = trim((string) $patch[$field]);
+            $oldName = trim((string) $c->{$field});
+
+            if ($newName === $oldName) {
+                // 原样回传：不重写、不校验权限、不发通知
+                unset($patch[$field]);
+
+                continue;
+            }
+
+            abort_unless(
+                userHasRole($r->user(), 'R_SUPER') || userHasRole($r->user(), 'R_MANAGER'),
+                403,
+                '仅店长/超管可变更会员归属'
+            );
+
+            $patch[$meta['column']] = staffUserId($newName);
+            // 「未分配」是页面上的占位值，不是真实员工，不该给人发通知
+            if ($newName !== '' && $newName !== '未分配') {
+                $changes[] = [$newName, $meta['label']];
+            }
+        }
+
+        return $changes;
+    }
+
+    /**
+     * 归属变更通知新归属人（微信订阅消息，模板 memberAssigned）。
+     *
+     * 走 defer()：响应先返回，微信调用在响应结束后执行。微信慢、模板没配、
+     * 姓名对不上账号、同一姓名多个账号 —— 都只写一条日志，会员保存照常成功。
+     */
+    private function notifyMemberAssigned(Customer $c, string $staffName, string $roleLabel): void
+    {
+        defer(function () use ($c, $staffName, $roleLabel) {
+            try {
+                app(WeChatSubscribeMessage::class)->notifyMemberAssigned(
+                    $staffName,
+                    (string) $c->name,
+                    (string) $c->venue,
+                    $roleLabel,
+                    (string) $c->phone
+                );
+            } catch (\Throwable $e) {
+                Log::warning('[wx-subscribe] 会员归属通知失败', [
+                    'customer_id' => $c->id,
+                    'staff' => $staffName,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
     }
 
     /** GET /customers/{id}：客户360，主档 + 会员工作流留痕 + 按手机号关联的前端客资 */

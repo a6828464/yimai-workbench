@@ -5,11 +5,48 @@ namespace App\Http\Controllers;
 use App\Models\AuditLog;
 use App\Models\Customer;
 use App\Models\Lead;
+use App\Services\WeChatSubscribeMessage;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 
 class LeadController extends Controller
 {
+    /**
+     * 客资分配通知（微信订阅消息，模板 leadAssigned）。
+     *
+     * 放 defer() 里：先回响应，微信调用在响应结束后执行 —— 微信慢/挂、模板没配、
+     * 姓名对不上账号，用户都不会看到任何异常，客资照常保存（方案 §6.4）。
+     * 通知失败只写一条 warning；注意它打的是「失败」，不是「未发」：
+     * 未配置/未绑定/次数用完这几种情况由服务自己记 skipped 流水，不算异常。
+     */
+    private function notifyLeadAssigned(Lead $lead, string $teacher): void
+    {
+        $teacher = trim($teacher);
+        if ($teacher === '') {
+            return;
+        }
+
+        defer(function () use ($lead, $teacher) {
+            try {
+                app(WeChatSubscribeMessage::class)->notifyLeadAssigned(
+                    $teacher,
+                    (string) $lead->name,
+                    (string) $lead->venue,
+                    // 模板「客户分配提醒」含 phone_number4（客户手机）：没号码时服务层会跳过发送，
+                    // 因为 phone_number 类型不接受占位符，硬发只会 47003 白耗一次授权。
+                    (string) $lead->phone
+                );
+            } catch (\Throwable $e) {
+                Log::warning('[wx-subscribe] 客资分配通知失败', [
+                    'lead_id' => $lead->id,
+                    'teacher' => $teacher,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        });
+    }
+
     /**
      * 归属列双写：姓名字段随请求进来，这里补上对应的 user id。
      *
@@ -299,6 +336,8 @@ class LeadController extends Controller
         $lead = Lead::create($values);
         audit($r, '新增', '前端客资', $lead->id, "{$lead->name}（{$lead->source}）", $lead->venue, '录入客资');
         invalidateBusinessCaches('analytics');
+        // 新客资直接落到某位老师名下 → 通知该老师（方案 §6.4）。未填服务老师就不发。
+        $this->notifyLeadAssigned($lead, (string) $lead->service_teacher);
 
         // 卡项限额软提示（S16）：**只附加，不阻断**。详见 leadDealCapWarnings()。
         // 金额取请求值而不是 $lead->deal_amount —— 后者是 float cast 后的结果，
@@ -318,6 +357,8 @@ class LeadController extends Controller
     public function update(Request $r, int $id)
     {
         $lead = Lead::findOrFail($id);
+        // 归属变化判定基准：必须在 $lead->update() 之前抓，详见下方通知处注释
+        $beforeTeacher = trim((string) $lead->service_teacher);
         $before = json_encode(camel($lead), JSON_UNESCAPED_UNICODE);
         // 渠道枚举：库里现值原样带回时放行（见 channelRules 的说明）。
         // 「显式传 null 想清空 source」走严格校验并按 422 处理：source 本就不可清空
@@ -355,6 +396,11 @@ class LeadController extends Controller
         $lead->update($changes);
         audit($r, '修改', '前端客资', $id, "{$lead->name}（{$lead->source}）", $lead->venue, '字段更新');
         invalidateBusinessCaches('analytics');
+        // 服务老师「由空变非空」或「换人」才通知（同一人反复保存备注不重复骚扰）
+        $afterTeacher = trim((string) $lead->service_teacher);
+        if ($afterTeacher !== '' && $afterTeacher !== $beforeTeacher) {
+            $this->notifyLeadAssigned($lead, $afterTeacher);
+        }
 
         // 卡项限额软提示（S16）：与 store 同口径、同样**不阻断**。
         // 只在本次确实改动了成交金额时才提示 —— 否则「改个备注也弹超限」，

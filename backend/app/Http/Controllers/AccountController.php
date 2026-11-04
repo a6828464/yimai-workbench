@@ -212,7 +212,13 @@ final class AccountController extends Controller
 
     /** POST /accounts */
     public function store(Request $r)
-    {        requireSuper($r);
+    {
+        requireSuper($r);
+        // 邮箱是可选字段：前端传空串（表单清空）等价于「不填」，先归一成 null 再校验 ——
+        // `email` 规则对 '' 会判为格式错误，那是把「不填」当成了「填错」。
+        // 也不再伪造 `{userName}@yimai.local`：那批假邮箱既不能收信，又会在人员列表里
+        // 冒充真实联系方式，管理员无法区分「真邮箱」与「系统占位」。
+        $r->merge(['email' => filled($r->input('email')) ? $r->input('email') : null]);
         $d = $r->validate([
             'userName' => 'required|string|max:20',
             'name' => 'nullable|string|max:20',
@@ -222,7 +228,9 @@ final class AccountController extends Controller
             'roleCode' => 'nullable|string|in:R_SUPER,R_MANAGER,R_SERVICE,R_TEACHER,R_MEDIA',
             'venues' => 'required|array|min:1',
             'venues.*' => 'string|in:绿地店,东部店',
-            'email' => 'nullable|email|max:60',
+            // 唯一性保留：同一个邮箱不能挂两个账号（DB 上也有唯一索引兜底）。
+            // null 不参与 unique 校验，所以「不填邮箱」的账号可以有很多个。
+            'email' => 'nullable|email|max:60|unique:users,email',
             'password' => 'required|string|min:8|max:64',
         ]);
         abort_unless(User::where('username', $d['userName'])->doesntExist(), 422, '登录名已存在');
@@ -239,7 +247,7 @@ final class AccountController extends Controller
         $user = User::create([
             'name' => $name,
             'username' => $d['userName'],
-            'email' => $d['email'] ?? ($d['userName'].'@yimai.local'),
+            'email' => $d['email'] ?? null,
             'password' => $d['password'],
             'role' => primaryRole($roles),
             'roles' => $roles,

@@ -24,6 +24,7 @@ use App\Http\Controllers\SystemController;
 use App\Http\Controllers\TaskController;
 use App\Http\Controllers\TodayController;
 use App\Http\Controllers\TrainingPlanController;
+use App\Http\Controllers\WxSubscriptionController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -69,6 +70,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/wx-identity', [AuthController::class, 'wxIdentity']);
     Route::put('/auth/wx-self-bind', [AuthController::class, 'wxSelfBind'])->middleware('throttle:6,1');
     Route::post('/auth/logout', [AuthController::class, 'logout']);
+
+    // ---------- 微信订阅消息（模板通知）：授权状态 / 记授权 / 自测发一条 ----------
+    // 口径见 docs/miniapp-migration/11 工作台四板块重构方案 §6.3。
+    // 只要求登录：每个人都有自己的一份授权账本，不涉及他人数据。
+    Route::get('/wx/subscriptions', [WxSubscriptionController::class, 'index']);
+    Route::post('/wx/subscriptions', [WxSubscriptionController::class, 'store']);
+    // 自测：每次都会真发一条微信消息，按「接口成本」限流（一人 1 分钟最多 6 次够用）
+    Route::post('/wx/subscriptions/test', [WxSubscriptionController::class, 'test'])->middleware('throttle:6,1');
 
     // ---------- 个人中心（账号自助资料 / 密码 / 营销人设，按用户持久化，多设备共用） ----------
     Route::get('/my/profile', [ProfileController::class, 'myProfile']);

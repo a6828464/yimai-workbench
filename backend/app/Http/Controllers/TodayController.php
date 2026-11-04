@@ -10,6 +10,7 @@ use App\Models\Lead;
 use App\Models\PostClassReview;
 use App\Models\Task;
 use App\Models\TodoAction;
+use App\Models\User;
 use App\Services\VisitMetrics;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -102,6 +103,44 @@ final class TodayController extends Controller
         $setting = AppSetting::oldest('id')->first();
         $snap = $setting?->snapshot;
 
+        // ---- 今日排课口径（真机反馈：老师侧看到的是全店预约） ----
+        //  超管/店长 → 读同步快照（全店，本店键有值、另一店键 0）
+        //  老师侧    → **本人今日排课**（授课老师按 teacher_name，服务老师按名下会员手机号）
+        //  新媒体    → 0（它没有自己的课；此前 venue 为空，两个门店键都会命中快照，
+        //              于是新媒体工作台显示双店全量预约）
+        // 老师侧不再读快照：快照是「店」的聚合，拿它当「我的」只能靠猜。
+        $teacherSide = userIsTeacherSide($u) && ! userHasAnyRole($u, ['R_SUPER', 'R_MANAGER']);
+        $mediaSide = ! $teacherSide && userHasRole($u, 'R_MEDIA') && ! userHasAnyRole($u, ['R_SUPER', 'R_MANAGER']);
+        $zeroKinds = ['私教' => 0, '小班' => 0, '团课' => 0];
+
+        if ($teacherSide) {
+            [$todayBookings, $trialBookings, $todayKinds] = $this->personalTodaySchedule($u);
+            $scopeLabel = $u->venue ? "我的 · {$u->venue}" : '我的';
+            // 数据来自预约表事实（不是快照），不存在「未同步」的歧义
+            $snapshotAvailable = true;
+        } elseif ($mediaSide) {
+            $todayBookings = ['绿地店' => 0, '东部店' => 0];
+            $trialBookings = ['绿地店' => 0, '东部店' => 0];
+            $todayKinds = ['绿地店' => $zeroKinds, '东部店' => $zeroKinds];
+            $scopeLabel = $u->venue ? "本店 · {$u->venue}" : '双店';
+            $snapshotAvailable = true;
+        } else {
+            $todayBookings = [
+                '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['todayBookings']['绿地店'] ?? 0) : 0,
+                '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['todayBookings']['东部店'] ?? 0) : 0,
+            ];
+            $trialBookings = [
+                '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['trialBookings']['绿地店'] ?? 0) : 0,
+                '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['trialBookings']['东部店'] ?? 0) : 0,
+            ];
+            $todayKinds = isset($snap['todayKinds']) ? [
+                '绿地店' => (! $u->venue || $u->venue === '绿地店') ? (array) ($snap['todayKinds']['绿地店'] ?? $zeroKinds) : $zeroKinds,
+                '东部店' => (! $u->venue || $u->venue === '东部店') ? (array) ($snap['todayKinds']['东部店'] ?? $zeroKinds) : $zeroKinds,
+            ] : null;
+            $scopeLabel = $u->venue ? "本店 · {$u->venue}" : '双店';
+            $snapshotAvailable = $snap !== null && is_array($snap['todayBookings'] ?? null);
+        }
+
         return ok([
             // 新客资口径 = 「前端客资」谓词（P5 且非 ky: 来源）+ 未跟进的留资记录。
             // 不能直接数 layer='P5'：卡项全部过期的**正式会员**也会落 P5，
@@ -111,25 +150,58 @@ final class TodayController extends Controller
             'expiringMembers' => $expiringMembers,
             'riskCount' => $overdueTasks + $scopedCustomers->where('owner', '未分配')->count() + $leads->where('status', '新留资')->count(),
             'pendingApprovals' => userHasRole($u, 'R_MEDIA') ? 0 : Approval::where('status', 'like', '待%')->when(userHasRole($u, 'R_MANAGER'), fn ($q) => $q->where('venue', $u->venue))->count(),
-            'todayBookings' => [
-                '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['todayBookings']['绿地店'] ?? 0) : 0,
-                '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['todayBookings']['东部店'] ?? 0) : 0,
-            ],
-            'trialBookings' => [
-                '绿地店' => (! $u->venue || $u->venue === '绿地店') ? ($snap['trialBookings']['绿地店'] ?? 0) : 0,
-                '东部店' => (! $u->venue || $u->venue === '东部店') ? ($snap['trialBookings']['东部店'] ?? 0) : 0,
-            ],
-            'todayKinds' => isset($snap['todayKinds']) ? [
-                '绿地店' => (! $u->venue || $u->venue === '绿地店') ? (array) ($snap['todayKinds']['绿地店'] ?? ['私教' => 0, '小班' => 0, '团课' => 0]) : ['私教' => 0, '小班' => 0, '团课' => 0],
-                '东部店' => (! $u->venue || $u->venue === '东部店') ? (array) ($snap['todayKinds']['东部店'] ?? ['私教' => 0, '小班' => 0, '团课' => 0]) : ['私教' => 0, '小班' => 0, '团课' => 0],
-            ] : null,
-            'scopeLabel' => $u->venue ? "本店 · {$u->venue}" : '双店',
+            'todayBookings' => $todayBookings,
+            'trialBookings' => $trialBookings,
+            'todayKinds' => $todayKinds,
+            'scopeLabel' => $scopeLabel,
             'snapshotTime' => userHasAnyRole($u, ['R_SUPER', 'R_MANAGER'])
                 ? (is_array($snap['fetchedAt'] ?? null) ? implode(' / ', array_values(array_filter((array) $snap['fetchedAt']))) : (string) ($snap['fetchedAt'] ?? ''))
                 : '',
             // 区分「今天真没预约」与「该店从未同步/快照缺失」，前端据此给出可读提示而非误显示 0
-            'snapshotAvailable' => $snap !== null && is_array($snap['todayBookings'] ?? null),
+            'snapshotAvailable' => $snapshotAvailable,
         ]);
+    }
+
+    /**
+     * 老师侧「本人今日排课」：按门店汇总的预约数 / 体验课数 / 课型构成。
+     *
+     * 口径与 `KyMemberSyncService` 写快照时完全一致（排除 cancelled / no_show），
+     * 否则同一个「今日预约」在店长页与老师页会对不上。
+     *
+     * @return array{0: array<string, int>, 1: array<string, int>, 2: array<string, array<string, int>>}
+     */
+    private function personalTodaySchedule(User $u): array
+    {
+        $rows = scopeBookingsForUser(
+            KyBooking::query()->whereBetween('start_at', [now()->startOfDay(), now()->endOfDay()]),
+            $u
+        )->get(['venue', 'start_at', 'status', 'course_kind', 'is_trial', 'raw']);
+
+        $bookings = ['绿地店' => 0, '东部店' => 0];
+        $trials = ['绿地店' => 0, '东部店' => 0];
+        $kinds = [
+            '绿地店' => ['私教' => 0, '小班' => 0, '团课' => 0],
+            '东部店' => ['私教' => 0, '小班' => 0, '团课' => 0],
+        ];
+
+        foreach ($rows as $b) {
+            if (in_array((string) $b->status, ['cancelled', 'no_show'], true)) {
+                continue;
+            }
+            $venue = (string) $b->venue;
+            if (! array_key_exists($venue, $bookings)) {
+                // 非两店的脏数据不计：多出一个键会让前端门店卡片错位
+                continue;
+            }
+            $bookings[$venue]++;
+            if ($b->is_trial) {
+                $trials[$venue]++;
+            }
+            $kind = KyBooking::KIND_LABELS[$b->courseKind()] ?? '团课';
+            $kinds[$venue][$kind] = ($kinds[$venue][$kind] ?? 0) + 1;
+        }
+
+        return [$bookings, $trials, $kinds];
     }
 
     /**

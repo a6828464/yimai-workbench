@@ -9,7 +9,7 @@
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "lib": ["ES2020", "DOM"],
-    "types": ["@dcloudio/types", "vite/client"],
+    "types": ["@dcloudio/types", "vite/client", "wot-design-uni/global"],
     "paths": {
       "@/*": ["./src/*"]
     }

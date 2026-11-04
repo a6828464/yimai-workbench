@@ -16,7 +16,15 @@ import { dirname, resolve } from 'node:path'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const OUT = resolve(__dirname, 'out')
+/**
+ * ⚠️ 只清自己的子目录 `out/http-gate/`，绝不碰 `out/` 整目录。
+ *
+ * 历史实现是 `rmSync(resolve(__dirname,'out'), {recursive:true})`，2026-11-04 实测
+ * 连带删掉了同目录其它脚本的产物：7 张 preview-qr-0.2.0~0.7.1.png、6 个 upload-info*.json、
+ * preview-info.json（均已不可恢复，只能重新用 wechat cli preview/upload 生成）。
+ * 新增验证脚本一律用 `out/<脚本名>/` 独立子目录，禁止清 whole out。
+ */
+const OUT = resolve(__dirname, 'out/http-gate')
 rmSync(OUT, { recursive: true, force: true })
 mkdirSync(OUT, { recursive: true })
 const BUNDLE = resolve(OUT, 'http.bundle.cjs')

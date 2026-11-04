@@ -28,9 +28,15 @@ final class ProfileController extends Controller
     /** PUT /my/profile */
     public function updateMyProfile(Request $r)
     {
+        // 邮箱是可选字段（人员管理开通账号已不再伪造 @yimai.local）：
+        // 前端把输入框清空后提交的是空串，先归一成 null 再校验 ——
+        // 否则 `required`/`email` 会把「不填」判成「填错」，连昵称头像都保存不了。
+        if ($r->exists('email') && ! filled($r->input('email'))) {
+            $r->merge(['email' => null]);
+        }
         $d = $r->validate([
             'nickname' => 'nullable|string|max:30',
-            'email' => 'sometimes|required|email|max:255|unique:users,email,'.$r->user()->id,
+            'email' => 'sometimes|nullable|email|max:255|unique:users,email,'.$r->user()->id,
             'phone' => ['nullable', 'string', 'max:20', 'regex:/^\+?[0-9][0-9\s-]{5,19}$/'],
             // 头像为前端 canvas 压缩后的 data URI（96~128px jpeg，通常 <30KB）
             'avatar' => 'nullable|string',
@@ -67,7 +73,8 @@ final class ProfileController extends Controller
             $u->nickname = trim((string) ($d['nickname'] ?? '')) ?: null;
         }
         if (array_key_exists('email', $d)) {
-            $u->email = strtolower(trim((string) $d['email']));
+            // 空值 = 清空邮箱（落 NULL，不是 ''：'' 会撞唯一索引，第二个无邮箱账号存不进来）
+            $u->email = filled($d['email'] ?? null) ? strtolower(trim((string) $d['email'])) : null;
         }
         if (array_key_exists('phone', $d)) {
             $u->phone = trim((string) ($d['phone'] ?? '')) ?: null;

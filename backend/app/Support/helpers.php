@@ -1155,14 +1155,20 @@ function scopeCustomersForUser($query, User $user)
  *  店长  → 本店全部
  *  服务老师 → 本店 + 本人名下 + 待承接池
  *  授课老师 → 本店 + 本人名下 + 本人上过体验课的 + 本人私教学员
- *  新媒体 → 自己录入的客资
+ *  新媒体 → **全体新媒体账号**录入的客资（部门共享，跨门店）
  *
  * **新媒体必须在这里收窄**。这个函数此前对 media 直接返回未加条件的查询，注释写的是
  * 「由调用方按场景叠加自己的过滤」—— 但 `/leads` 列表与 `/today/alerts` 都没叠加，
  * 结果是新媒体账号能拉到双店全部留资（姓名/手机号/微信/成交金额）。"调用方记得补"
  * 这种约定只要有一处漏掉就是一次客户名单泄露，所以口径收回到这里，调用方只管调用。
  *
- * 新媒体不叠加门店条件：它是双店账号（`venue` 为空），锁门店会把范围压成空集；
+ * **新媒体的可见范围是「部门」而不是「个人」**（2026-11 真机反馈后调整）：线上运营是
+ * 几个人轮班接管同一个账号池，A 休假时 B 必须能接着跟进 A 登记的客资；此前只放
+ * 「本人录入」，导致换人值班就看不到在跟的客资、也无法交接。现在放「所有 R_MEDIA
+ * 账号录入的」：`created_by_user_id in (部门账号 id)`，历史行（只有姓名没有 id）
+ * 用 `created_by in (部门账号姓名)` 兜住。
+ *
+ * 不叠加门店条件：新媒体是双店账号（`venue` 为空），锁门店会把范围压成空集；
  * 它看到什么由「谁录入的」决定，本身就跨门店。
  */
 function scopeLeadsForUser($query, User $user)
@@ -1177,7 +1183,7 @@ function scopeLeadsForUser($query, User $user)
     }
 
     $storeScopes = [];  // 坐店角色（服务老师/授课老师）：本店 + 按人
-    $mediaScope = null; // 新媒体：跨门店，只看自己录入的
+    $mediaScope = null; // 新媒体：跨门店，整个部门（所有 R_MEDIA 账号）共享
 
     if (in_array('R_SERVICE', $roles, true)) {
         // 服务老师是客资承接主体：本人名下的 + 待承接池
@@ -1196,7 +1202,28 @@ function scopeLeadsForUser($query, User $user)
         };
     }
     if (in_array('R_MEDIA', $roles, true)) {
-        $mediaScope = fn ($q) => $q->where(staffOwnerFilter($user, 'created_by_user_id', 'created_by'));
+        // 部门账号名单**一次性**取出来再进闭包：闭包是在 SQL 编译期执行的，
+        // 里面再查库就会变成每条客资一次查询（N+1）。
+        $deptIds = [];
+        $deptNames = [];
+        foreach (User::query()
+            // roles 是 JSON 数组列，用 LIKE 命中角色码；role 单值列兜住历史账号
+            ->where(fn ($q) => $q->where('role', 'R_MEDIA')->orWhere('roles', 'like', '%R_MEDIA%'))
+            ->get(['id', 'name']) as $member) {
+            $deptIds[] = (int) $member->id;
+            $name = trim((string) $member->name);
+            if ($name !== '') {
+                $deptNames[$name] = true;
+            }
+        }
+        $deptNames = array_keys($deptNames);
+        $mediaScope = function ($q) use ($deptIds, $deptNames) {
+            $q->whereIn('created_by_user_id', $deptIds);
+            if ($deptNames !== []) {
+                // 历史行只有姓名（user_id 列是后加的）：按部门账号姓名兜住
+                $q->orWhereIn('created_by', $deptNames);
+            }
+        };
     }
 
     if ($storeScopes === [] && $mediaScope === null) {
@@ -1217,6 +1244,76 @@ function scopeLeadsForUser($query, User $user)
         }
         if ($mediaScope !== null) {
             $outer->orWhere($mediaScope);
+        }
+    });
+}
+
+/**
+ * 本人名下会员的手机号集合（去重、纯字符串）。
+ *
+ * 服务老师没有「自己的课表」，只能靠会员手机号把 `ky_bookings` 关联回来：
+ * 预约表的 `phone` 与会员档案的 `phone` 同源（随心瑜同步写入），这是唯一稳定的连接键。
+ *
+ * 范围取 `scopeCustomersForUser()`（会籍顾问 / 负责人任一名下），与「我的会员」页完全同源 ——
+ * 另写一份「本人名下」的条件必然与会员页分裂，出现「会员页有 30 人、排课只认出 20 人」。
+ *
+ * @return array<int, string>
+ */
+function staffMemberPhones(User $user): array
+{
+    $cache = modelScopedCache($user);
+    if (isset($cache->staffMemberPhones)) {
+        return $cache->staffMemberPhones;
+    }
+
+    $phones = scopeCustomersForUser(Customer::query(), $user)
+        ->where('phone', '!=', '')
+        ->pluck('phone')
+        ->map(fn ($p) => trim((string) $p))
+        ->filter()
+        ->unique()
+        ->values()
+        ->all();
+
+    return $cache->staffMemberPhones = $phones;
+}
+
+/**
+ * 老师侧「本人排课」范围 —— Analytics 趋势与 Today 今日预约的**唯一收口点**。
+ *
+ *  授课老师 → `teacher_name` 命中本人（含别名）/ `teacher_user_id` 命中本人
+ *  服务老师 → 本人名下会员手机号匹配的预约（见 staffMemberPhones）
+ *  两类都不是（新媒体等）→ 空集
+ *
+ * 为什么必须收口：这两个出口此前都走 `applyVenueScope()`，于是服务老师/授课老师在工作台上
+ * 看到的是**整店**的排课与走势（真机反馈：「我只有 3 节课，页面显示 40 节」）。
+ * 口径写两遍必然漂移，所以只在这里写一次，两个出口共用。
+ *
+ * 多角色取并集（既是授课老师又是会籍顾问时，两种关系都算本人的）。
+ */
+function scopeBookingsForUser($query, User $user)
+{
+    $scopes = [];
+
+    if (userHasRole($user, 'R_TEACHER')) {
+        $scopes[] = fn ($q) => $q->where(staffOwnerFilter($user, 'teacher_user_id', 'teacher_name'));
+    }
+    if (userHasRole($user, 'R_SERVICE')) {
+        $phones = staffMemberPhones($user);
+        // 名下没有会员时显式空集：`whereIn([], ...)` 在部分驱动上会退化成「不过滤」，
+        // 那等于把整店排课发给一个本该看不到课的人。
+        $scopes[] = fn ($q) => $phones === []
+            ? $q->whereRaw('1 = 0')
+            : $q->whereIn('phone', $phones);
+    }
+
+    if ($scopes === []) {
+        return $query->whereRaw('1 = 0');
+    }
+
+    return $query->where(function ($outer) use ($scopes) {
+        foreach ($scopes as $scope) {
+            $outer->orWhere($scope);
         }
     });
 }

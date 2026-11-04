@@ -10,10 +10,14 @@
  *  - 现场最常用、且是单值（不需要并排核对表格）；
  *  - 卡项、续费评估这类**计算派生**字段在手机上只读展示，改动一律回桌面，
  *    避免「手机上改一个数、桌面口径对不上」。
+ *
+ * 视觉层（2026-11 重构）：客户 360 头卡 + 指标区 + 信息行 + 可维护区 + 留痕，
+ * 表单控件换 wd-switch / wd-button，业务字段与提交口径一字未改。
  */
 import { computed, ref } from 'vue'
-import { onLoad, onPullDownRefresh } from '@dcloudio/uni-app'
+import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { requireLogin } from '@/utils/guard'
+import { requireFeature } from '@/utils/nav'
 import { fetchCustomerDetail, updateCustomer, type CustomerPatch } from '@/api/members'
 import type { CustomerDetail } from '@/types'
 
@@ -21,6 +25,9 @@ const id = ref(0)
 const detail = ref<CustomerDetail | null>(null)
 const loading = ref(false)
 const saving = ref(false)
+const failed = ref(false)
+/** 首次加载是否已完成（onShow 只在首个 show 拉一次，回退不重复请求） */
+const inited = ref(false)
 
 /** 本地编辑态（与服务端值分离，保存成功后才回写） */
 const form = ref({ lastTouch: '', birthday: '', inRevive: false })
@@ -50,12 +57,15 @@ function syncForm() {
 
 async function load() {
   if (!id.value) return
+  inited.value = true
   loading.value = true
   try {
     detail.value = await fetchCustomerDetail(id.value)
     syncForm()
+    failed.value = false
   } catch {
     /* http 层已 toast */
+    failed.value = true
   } finally {
     loading.value = false
   }
@@ -78,16 +88,6 @@ function copyPhone() {
 
 function onDateChange(e: { detail: { value: string } }, field: 'lastTouch' | 'birthday') {
   form.value[field] = e.detail.value
-}
-
-/**
- * uni 的 <switch> 事件：@change 回传 { detail: { value: boolean } }。
- * 这里按通用 Event 接再断言，是因为 vue-tsc 会把同名标签当作 SVG 的 <switch>，
- * 直接写 { detail } 的参数类型会与 SVG 的 (payload: Event) 冲突。
- */
-function onToggleRevive(e: Event) {
-  const v = (e as unknown as { detail?: { value?: boolean } })?.detail?.value
-  form.value.inRevive = Boolean(v)
 }
 
 async function save() {
@@ -134,10 +134,58 @@ function toLeadForm(leadId: number) {
   uni.navigateTo({ url: `/pages/leads/leads?focus=${leadId}` })
 }
 
+/* ---------- 客户分析（结论层，只用 GET /customers/{id} 已返回字段） ---------- */
+
+type TrendTone = 'down' | 'up' | 'flat' | 'none'
+
+/** 出勤三档：M1 最早、M3 最近 30 天（与「近三档出勤」同序） */
+const attendTrend = computed<{ text: string; tone: TrendTone }>(() => {
+  const row = c.value
+  if (!row) return { text: '暂无', tone: 'none' }
+  const m1 = row.attendM1 ?? 0
+  const m2 = row.attendM2 ?? 0
+  const m3 = row.attendM3 ?? 0
+  if (m1 === 0 && m2 === 0 && m3 === 0) return { text: '近三月无出勤', tone: 'none' }
+  if (m1 > m2 && m2 > m3) return { text: `连续下降（${m1}→${m3}）`, tone: 'down' }
+  if (m1 < m2 && m2 < m3) return { text: `连续上升（${m1}→${m3}）`, tone: 'up' }
+  if (m1 === m3) return { text: '基本持平', tone: 'flat' }
+  return m3 < m1 ? { text: `总体下降（${m1}→${m3}）`, tone: 'down' } : { text: `总体上升（${m1}→${m3}）`, tone: 'up' }
+})
+
+/** 分层与清单：只摆后端已给的事实，猜规则留给电脑端 */
+const listSignals = computed(() => {
+  const row = c.value
+  if (!row) return ''
+  const out: string[] = []
+  if (row.inRevive) out.push('待复活')
+  if (row.mainCard) out.push(`主卡 ${row.mainCard}`)
+  if (row.status) out.push(`状态 ${row.status}`)
+  return out.join(' · ')
+})
+
+/** 滚到操作留痕（锚点 id 在模板里，见 #logs） */
+function scrollToLogs() {
+  uni.pageScrollTo({ selector: '#logs', duration: 300, fail: () => {} })
+}
+
+function layerTone(layer?: string): 'brand' | 'gold' | 'warn' | 'info' | 'muted' {
+  if (layer === 'P0' || layer === 'P1') return 'brand'
+  if (layer === 'P2') return 'gold'
+  if (layer === 'P3') return 'info'
+  if (layer === 'P4') return 'warn'
+  return 'muted'
+}
+
 onLoad((options) => {
   id.value = Number((options as Record<string, string>)?.id ?? 0)
-  // onLoad 里才拿到 id，因此首次加载放在这里（setup 顶层执行时 id 仍是 0）
-  if (requireLogin()) load()
+})
+
+// 权限：先登录，再校验功能权限（暂无权限 -> toast + 返回）
+onShow(() => {
+  if (!requireLogin()) return
+  if (!requireFeature('members')) return
+  // onLoad 里才拿到 id，首次 show 时才真正拉数据
+  if (!inited.value) load()
 })
 
 onPullDownRefresh(async () => {
@@ -148,246 +196,530 @@ onPullDownRefresh(async () => {
 
 <template>
   <view class="ym-page member-detail">
-    <view v-if="!c && loading" class="ym-empty">加载中…</view>
-    <view v-if="!c && !loading" class="ym-empty">未找到该会员</view>
+    <!-- 三态 -->
+    <view v-if="failed && !c" class="ym-card">
+      <ym-empty icon="warning" text="会员资料加载失败" desc="网络或服务异常" action-text="重试" @action="load" />
+    </view>
+
+    <view v-else-if="!c && loading" class="ym-card">
+      <wd-skeleton
+        theme="text"
+        animation="gradient"
+        :row-col="[{ width: '42%' }, { width: '66%' }, { width: '86%' }, { width: '54%' }]"
+      />
+    </view>
+
+    <ym-empty v-else-if="!c" icon="user" text="未找到该会员" desc="可能已被合并或删除" />
 
     <template v-if="c">
-      <view class="ym-card detail__head">
-        <view class="detail__head-row">
-          <text class="detail__name">{{ c.name }}</text>
-          <text class="ym-tag">{{ c.layer }}</text>
+      <!-- 客户 360 头卡 -->
+      <view class="dhead">
+        <view class="dhead__row">
+          <ym-avatar :name="c.name" :size="96" />
+          <view class="dhead__id">
+            <view class="dhead__name-row">
+              <text class="dhead__name ym-ellipsis">{{ c.name }}</text>
+              <ym-badge v-if="c.layer" :text="c.layer" :tone="layerTone(c.layer)" size="md" />
+            </view>
+            <text class="dhead__sub ym-ellipsis">
+              {{ c.venue }}<text v-if="c.consultant"> · 会籍顾问 {{ c.consultant }}</text>
+            </text>
+          </view>
         </view>
-        <text class="ym-muted">{{ c.venue }}<text v-if="c.consultant"> · 会籍顾问 {{ c.consultant }}</text></text>
-        <view class="detail__phone-row">
-          <text class="detail__phone">{{ c.phone || `尾号 ${c.phoneTail}` }}</text>
-          <text class="detail__link" @click="copyPhone">复制</text>
-          <text class="detail__link" @click="call">拨打</text>
+
+        <view class="dhead__phone-row">
+          <text class="dhead__phone ym-num">{{ c.phone || `尾号 ${c.phoneTail}` }}</text>
+          <view class="dhead__acts">
+            <wd-button size="medium" plain @click="copyPhone">复制</wd-button>
+            <wd-button size="medium" plain @click="call">拨打</wd-button>
+          </view>
         </view>
-        <view class="detail__tags">
-          <text v-if="c.source" class="ym-tag">来源 {{ c.source }}</text>
-          <text v-if="c.status" class="ym-tag">{{ c.status }}</text>
-          <text v-if="c.nextAction" class="ym-tag ym-tag--warn">{{ c.nextAction }}</text>
+
+        <view v-if="c.source || c.status || c.nextAction" class="dhead__tags">
+          <ym-badge v-if="c.source" :text="`来源 ${c.source}`" tone="muted" />
+          <ym-badge v-if="c.status" :text="c.status" tone="info" />
+          <ym-badge v-if="c.nextAction" :text="c.nextAction" tone="warn" />
         </view>
       </view>
 
-      <view class="ym-card">
-        <text class="ym-title">卡项与出勤</text>
-        <view class="detail__grid">
-          <view class="detail__cell">
-            <text class="detail__cell-value">{{ c.remainTimes ?? '—' }}</text>
-            <text class="detail__cell-label">剩余课时</text>
+      <!-- 卡项与出勤 -->
+      <ym-section title="卡项与出勤" desc="派生字段，只读">
+        <view class="grid">
+          <view class="grid__cell">
+            <text class="grid__value ym-num">{{ c.remainTimes ?? '—' }}</text>
+            <text class="grid__label">剩余课时</text>
           </view>
-          <view class="detail__cell">
-            <text class="detail__cell-value">{{ toDateStr(c.expireDate) || '—' }}</text>
-            <text class="detail__cell-label">到期日</text>
+          <view class="grid__cell">
+            <text class="grid__value ym-num">{{ toDateStr(c.expireDate) || '—' }}</text>
+            <text class="grid__label">到期日</text>
           </view>
-          <view class="detail__cell">
-            <text class="detail__cell-value">{{ c.attendM3 ?? 0 }}</text>
-            <text class="detail__cell-label">近30天出勤</text>
+          <view class="grid__cell">
+            <text class="grid__value ym-num">{{ c.attendM3 ?? 0 }}</text>
+            <text class="grid__label">近30天出勤</text>
           </view>
-          <view class="detail__cell">
-            <text class="detail__cell-value">{{ money(c.cardPaidAmount) }}</text>
-            <text class="detail__cell-label">累计购买</text>
+          <view class="grid__cell">
+            <text class="grid__value ym-num">{{ money(c.cardPaidAmount) }}</text>
+            <text class="grid__label">累计购买</text>
           </view>
         </view>
-        <view v-if="c.mainCard" class="detail__line">
-          <text class="ym-muted">主卡</text>
-          <text>{{ c.mainCard }}</text>
-        </view>
-        <view class="detail__line">
-          <text class="ym-muted">近三档出勤</text>
-          <text>{{ c.attendM1 ?? 0 }} / {{ c.attendM2 ?? 0 }} / {{ c.attendM3 ?? 0 }}</text>
-        </view>
-        <view class="detail__line">
-          <text class="ym-muted">最近到店</text>
-          <text>{{ toDateStr(c.lastVisit) || '无记录' }}</text>
-        </view>
-      </view>
 
-      <view class="ym-card">
-        <text class="ym-title">续费评估</text>
-        <view class="detail__line">
-          <text class="ym-muted">30 天评估</text>
-          <text>{{ levelText() }}</text>
+        <view class="rows">
+          <ym-cell-row v-if="c.mainCard" label="主卡" :value="c.mainCard" divider />
+          <ym-cell-row
+            label="近三档出勤"
+            :value="`${c.attendM1 ?? 0} / ${c.attendM2 ?? 0} / ${c.attendM3 ?? 0}`"
+            divider
+          />
+          <ym-cell-row label="最近到店" :value="toDateStr(c.lastVisit) || '无记录'" />
         </view>
-        <view v-if="c.evalAt" class="detail__line">
-          <text class="ym-muted">评估时间</text>
-          <text>{{ toDateStr(c.evalAt) }}</text>
-        </view>
-        <view v-if="c.renewalPlan?.time" class="detail__line">
-          <text class="ym-muted">续课计划</text>
-          <text>{{ c.renewalPlan.intent }} · {{ c.renewalPlan.time }}</text>
-        </view>
-        <view v-if="c.decline?.reason" class="detail__line">
-          <text class="ym-muted">下降原因</text>
-          <text>{{ c.decline.reason }}</text>
-        </view>
-      </view>
+      </ym-section>
 
-      <view class="ym-card">
-        <text class="ym-title">移动端可维护</text>
-        <text class="ym-muted detail__tip">只改这三项；卡项与评估结果请回电脑端操作</text>
+      <!-- 客户分析：三行结论（续费 / 出勤 / 分层），字段缺失显示「暂无」 -->
+      <ym-section title="客户分析" desc="结论来自卡项、出勤与分层事实">
+        <view class="ana">
+          <view class="ana__row">
+            <view class="ana__head">
+              <text class="ana__label">续费评估</text>
+              <text class="ana__value ym-num">{{ levelText() }}</text>
+            </view>
+            <text class="ana__hint">{{ c.evalAt ? `评估于 ${toDateStr(c.evalAt)}` : '暂无评估记录' }}</text>
+          </view>
 
-        <view class="detail__line detail__line--tap">
-          <text>最近沟通</text>
+          <view class="ana__row">
+            <view class="ana__head">
+              <text class="ana__label">出勤趋势</text>
+              <text class="ana__value ym-num" :class="`is-${attendTrend.tone}`">
+                {{ attendTrend.text }}
+              </text>
+            </view>
+            <text class="ana__hint">
+              近三档 {{ c.attendM1 ?? 0 }} / {{ c.attendM2 ?? 0 }} / {{ c.attendM3 ?? 0 }}（左→右由远到近）
+            </text>
+          </view>
+
+          <view class="ana__row">
+            <view class="ana__head">
+              <text class="ana__label">分层与清单</text>
+              <text class="ana__value">{{ c.layer || '暂无' }}</text>
+            </view>
+            <text class="ana__hint ym-ellipsis">{{ listSignals || '暂无清单命中' }}</text>
+          </view>
+        </view>
+
+        <view v-if="detail?.logs?.length" class="ana__link ym-tap" @click="scrollToLogs">
+          <text class="ana__link-text">查看全部留痕（{{ detail?.logs?.length }} 条）</text>
+          <wd-icon name="arrow-down" size="13px" />
+        </view>
+        <text v-else class="ana__link-empty">暂无操作留痕</text>
+      </ym-section>
+
+      <!-- 续费评估 -->
+      <ym-section title="续费评估" desc="回填受控，手机端只读">
+        <view class="rows">
+          <ym-cell-row label="30 天评估" :value="levelText()" divider />
+          <ym-cell-row v-if="c.evalAt" label="评估时间" :value="toDateStr(c.evalAt)" divider />
+          <ym-cell-row
+            v-if="c.renewalPlan?.time"
+            label="续课计划"
+            :value="`${c.renewalPlan.intent} · ${c.renewalPlan.time}`"
+            divider
+          />
+          <ym-cell-row v-if="c.decline?.reason" label="下降原因" :value="c.decline.reason" />
+        </view>
+      </ym-section>
+
+      <!-- 移动端可维护 -->
+      <ym-section title="移动端可维护" desc="只改这三项；卡项与评估结果请回电脑端操作">
+        <view class="edit">
           <picker mode="date" :value="form.lastTouch" @change="onDateChange($event, 'lastTouch')">
-            <text :class="form.lastTouch ? 'detail__value' : 'ym-muted'">{{ form.lastTouch || '未填写' }}</text>
+            <view class="edit__row ym-tap">
+              <text class="edit__label">最近沟通</text>
+              <view class="edit__right">
+                <text :class="form.lastTouch ? 'edit__value' : 'edit__placeholder'">{{ form.lastTouch || '未填写' }}</text>
+                <view class="edit__chevron"><wd-icon name="chevron-right" size="14px" /></view>
+              </view>
+            </view>
           </picker>
-        </view>
 
-        <view class="detail__line detail__line--tap">
-          <text>生日</text>
           <picker mode="date" :value="form.birthday || todayStr()" @change="onDateChange($event, 'birthday')">
-            <text :class="form.birthday ? 'detail__value' : 'ym-muted'">{{ form.birthday || '未填写' }}</text>
+            <view class="edit__row ym-tap">
+              <text class="edit__label">生日</text>
+              <view class="edit__right">
+                <text :class="form.birthday ? 'edit__value' : 'edit__placeholder'">{{ form.birthday || '未填写' }}</text>
+                <view class="edit__chevron"><wd-icon name="chevron-right" size="14px" /></view>
+              </view>
+            </view>
           </picker>
-        </view>
 
-        <view class="detail__line detail__line--tap">
-          <text>标记待复活</text>
-          <switch :checked="form.inRevive" color="#2E7D5B" @change="onToggleRevive" />
-        </view>
-
-        <button class="ym-btn detail__save" :disabled="saving" @click="save">
-          {{ saving ? '保存中…' : '保存' }}
-        </button>
-      </view>
-
-      <view v-if="detail?.leads?.length" class="ym-card">
-        <text class="ym-title">关联留资（同手机号）</text>
-        <view v-for="l in detail.leads" :key="l.id" class="detail__lead" @click="toLeadForm(l.id)">
-          <view class="detail__lead-row">
-            <text>{{ l.name }}</text>
-            <text class="ym-tag">{{ l.status }}</text>
+          <view class="edit__row edit__row--switch">
+            <text class="edit__label">标记待复活</text>
+            <wd-switch v-model="form.inRevive" />
           </view>
-          <text class="ym-muted">{{ l.leadDate?.slice(0, 10) }} · {{ l.source }} · {{ l.demand || '未填需求' }}</text>
         </view>
-      </view>
 
-      <view v-if="detail?.logs?.length" class="ym-card">
-        <text class="ym-title">操作留痕</text>
-        <view v-for="log in detail.logs.slice(0, 8)" :key="log.id" class="detail__log">
-          <text class="detail__log-main">{{ log.action }} · {{ log.detail }}</text>
-          <text class="ym-muted">{{ logTime(log.createdAt) }}<text v-if="log.operator"> · {{ log.operator }}</text></text>
+        <view class="edit__submit">
+          <wd-button type="primary" size="large" block :loading="saving" @click="save">
+            {{ saving ? '保存中…' : '保存改动' }}
+          </wd-button>
         </view>
+      </ym-section>
+
+      <!-- 关联留资 -->
+      <ym-section v-if="detail?.leads?.length" title="关联留资" desc="同手机号命中">
+        <view
+          v-for="l in detail.leads"
+          :key="l.id"
+          class="lead-row ym-tap"
+          @click="toLeadForm(l.id)"
+        >
+          <view class="lead-row__main">
+            <view class="lead-row__top">
+              <text class="lead-row__name ym-ellipsis">{{ l.name }}</text>
+              <ym-badge :text="l.status" tone="gold" />
+            </view>
+            <text class="lead-row__meta ym-ellipsis">
+              {{ l.leadDate?.slice(0, 10) }} · {{ l.source }} · {{ l.demand || '未填需求' }}
+            </text>
+          </view>
+          <view class="lead-row__chevron"><wd-icon name="chevron-right" size="14px" /></view>
+        </view>
+      </ym-section>
+
+      <!-- 操作留痕（客户分析里的「查看全部留痕」锚点指向这里） -->
+      <view id="logs">
+        <ym-section v-if="detail?.logs?.length" title="操作留痕" desc="最近 8 条">
+          <view v-for="log in detail.logs.slice(0, 8)" :key="log.id" class="log-row">
+            <view class="log-row__dot" />
+            <view class="log-row__main">
+              <text class="log-row__text">{{ log.action }} · {{ log.detail }}</text>
+              <text class="log-row__time ym-num">
+                {{ logTime(log.createdAt) }}<text v-if="log.operator"> · {{ log.operator }}</text>
+              </text>
+            </view>
+          </view>
+        </ym-section>
       </view>
     </template>
   </view>
 </template>
 
 <style lang="scss" scoped>
+@import '@/styles/tokens.scss';
+
 .member-detail {
   padding-top: 20rpx;
+  padding-bottom: calc(40rpx + env(safe-area-inset-bottom));
+
+  /* 触控按钮统一 84rpx */
+  --wot-button-medium-height: 84rpx;
+  --wot-button-medium-fs: 26rpx;
 }
 
-.detail {
-  &__head-row {
-    display: flex;
-    align-items: center;
-    gap: 14rpx;
+/* ---------- 头卡 ---------- */
+.dhead {
+  padding: 28rpx;
+  margin: 20rpx 24rpx;
+  background: linear-gradient(150deg, $brand-50, $white 58%);
+  border: 2rpx solid $brand-100;
+  border-radius: $r-lg;
+}
+
+.dhead__row {
+  display: flex;
+  gap: 22rpx;
+  align-items: center;
+}
+
+.dhead__id {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8rpx;
+  min-width: 0;
+}
+
+.dhead__name-row {
+  display: flex;
+  gap: 14rpx;
+  align-items: center;
+  min-width: 0;
+}
+
+.dhead__name {
+  flex-shrink: 1;
+  min-width: 0;
+  font-size: 40rpx;
+  font-weight: 600;
+  color: $ink-800;
+}
+
+.dhead__sub {
+  display: block;
+  font-size: 24rpx;
+  color: $ink-500;
+}
+
+.dhead__phone-row {
+  display: flex;
+  gap: 20rpx;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 22rpx;
+  margin-top: 22rpx;
+  border-top: 2rpx solid $brand-100;
+}
+
+.dhead__phone {
+  font-size: 30rpx;
+  font-weight: 500;
+  color: $ink-800;
+}
+
+.dhead__acts {
+  display: flex;
+  flex-shrink: 0;
+  gap: 12rpx;
+}
+
+.dhead__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  margin-top: 20rpx;
+}
+
+/* ---------- 客户分析 ---------- */
+.ana {
+  border-top: 2rpx solid $hairline;
+}
+
+.ana__row {
+  padding: 18rpx 0;
+  border-bottom: 2rpx solid $hairline;
+}
+
+.ana__head {
+  display: flex;
+  gap: 16rpx;
+  align-items: baseline;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.ana__label {
+  flex-shrink: 0;
+  font-size: 26rpx;
+  color: $ink-500;
+}
+
+.ana__value {
+  flex-shrink: 1;
+  min-width: 0;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: $ink-800;
+  text-align: right;
+
+  &.is-down {
+    color: $danger-600;
   }
 
-  &__name {
-    font-size: 40rpx;
-    font-weight: 600;
+  &.is-up {
+    color: $brand-600;
   }
 
-  &__phone-row {
-    display: flex;
-    align-items: center;
-    margin-top: 18rpx;
-    gap: 22rpx;
+  &.is-flat,
+  &.is-none {
+    color: $ink-500;
   }
+}
 
-  &__phone {
-    font-size: 30rpx;
-  }
+.ana__hint {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: $ink-400;
+}
 
-  &__link {
-    color: #2e7d5b;
-    font-size: 26rpx;
-  }
+.ana__link {
+  display: flex;
+  gap: 6rpx;
+  align-items: center;
+  justify-content: center;
+  min-height: 88rpx;
+  margin-top: 6rpx;
+  color: $brand-600;
+}
 
-  &__tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12rpx;
-    margin-top: 18rpx;
-  }
+.ana__link-text {
+  font-size: 24rpx;
+}
 
-  &__grid {
-    display: flex;
-    flex-wrap: wrap;
-    margin-top: 18rpx;
-  }
+.ana__link-empty {
+  display: block;
+  padding: 20rpx 0 6rpx;
+  font-size: 22rpx;
+  color: $ink-400;
+  text-align: center;
+}
 
-  &__cell {
-    width: 50%;
-    padding: 14rpx 0;
-    display: flex;
-    flex-direction: column;
-  }
+/* ---------- 指标格 ---------- */
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 8rpx 0 4rpx;
+}
 
-  &__cell-value {
-    font-size: 32rpx;
-    font-weight: 600;
-  }
+.grid__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+  width: 50%;
+  padding: 14rpx 0;
+}
 
-  &__cell-label {
-    margin-top: 6rpx;
-    font-size: 22rpx;
-    color: #8a8f99;
-  }
+.grid__value {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: $ink-800;
+}
 
-  &__line {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    min-height: 80rpx;
-    border-top: 2rpx solid #f0f1f3;
-    font-size: 27rpx;
-  }
+.grid__label {
+  font-size: 21rpx;
+  color: $ink-400;
+}
 
-  &__line--tap {
-    border-top: 2rpx solid #f0f1f3;
-  }
+.rows {
+  margin-top: 8rpx;
+}
 
-  &__tip {
-    display: block;
-    margin-top: 8rpx;
-  }
+/* ---------- 可维护区 ---------- */
+.edit {
+  border-top: 2rpx solid $hairline;
+}
 
-  &__value {
-    color: #2e7d5b;
-  }
+.edit__row {
+  display: flex;
+  gap: 16rpx;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 96rpx;
+  border-bottom: 2rpx solid $hairline;
 
-  &__save {
-    margin-top: 26rpx;
+  &--switch {
+    border-bottom: none;
   }
+}
 
-  &__lead {
-    margin-top: 18rpx;
-    padding-top: 18rpx;
-    border-top: 2rpx solid #f0f1f3;
-  }
+.edit__label {
+  font-size: 28rpx;
+  color: $ink-700;
+}
 
-  &__lead-row {
-    display: flex;
-    align-items: center;
-    gap: 12rpx;
-    margin-bottom: 6rpx;
-  }
+.edit__right {
+  display: flex;
+  gap: 6rpx;
+  align-items: center;
+}
 
-  &__log {
-    display: flex;
-    flex-direction: column;
-    margin-top: 16rpx;
-    padding-top: 16rpx;
-    border-top: 2rpx solid #f0f1f3;
-  }
+.edit__value {
+  font-size: 27rpx;
+  color: $brand-600;
+}
 
-  &__log-main {
-    font-size: 26rpx;
-    margin-bottom: 6rpx;
-  }
+.edit__placeholder {
+  font-size: 27rpx;
+  color: $ink-400;
+}
+
+.edit__chevron {
+  display: flex;
+  align-items: center;
+  color: $ink-300;
+}
+
+.edit__submit {
+  margin-top: 26rpx;
+}
+
+/* ---------- 关联留资 ---------- */
+.lead-row {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+  min-height: 96rpx;
+  padding: 16rpx 0;
+  border-top: 2rpx solid $hairline;
+}
+
+.lead-row__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.lead-row__top {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+  margin-bottom: 8rpx;
+  min-width: 0;
+}
+
+.lead-row__name {
+  display: block;
+  flex-shrink: 1;
+  min-width: 0;
+  font-size: 28rpx;
+  font-weight: 500;
+  color: $ink-800;
+}
+
+.lead-row__meta {
+  display: block;
+  font-size: 22rpx;
+  color: $ink-400;
+}
+
+.lead-row__chevron {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  color: $ink-300;
+}
+
+/* ---------- 留痕 ---------- */
+.log-row {
+  display: flex;
+  gap: 16rpx;
+  padding: 16rpx 0;
+  border-top: 2rpx solid $hairline;
+}
+
+.log-row__dot {
+  flex-shrink: 0;
+  width: 12rpx;
+  height: 12rpx;
+  margin-top: 14rpx;
+  background: $brand-200;
+  border-radius: 50%;
+}
+
+.log-row__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6rpx;
+  min-width: 0;
+}
+
+.log-row__text {
+  font-size: 26rpx;
+  line-height: 1.5;
+  color: $ink-700;
+}
+
+.log-row__time {
+  font-size: 21rpx;
+  color: $ink-400;
 }
 </style>
