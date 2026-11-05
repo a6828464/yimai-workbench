@@ -144,13 +144,65 @@ function metaLine(row: MiniappLead): string {
   return parts.filter(Boolean).join(' · ')
 }
 
-function trialLine(row: MiniappLead): string {
-  const cards = row.trialCards ?? []
-  if (!cards.length) return ''
-  return cards
-    .map((c) => `${c.time || '待定'} ${c.topic || ''} ${c.teacher || ''}`.trim())
-    .filter(Boolean)
-    .join('；')
+/** 逐节体验课卡片的元素类型（后端 trial_cards 的结构） */
+type TrialCard = NonNullable<MiniappLead['trialCards']>[number]
+
+/** 单节时间：优先 date+time，只给 time 就原样截断到分钟（"2026-11-03 19:20" → "11-03 19:20"） */
+function cardWhen(c: TrialCard): string {
+  const raw = String(c.date || c.time || '').trim()
+  if (!raw) return ''
+  const m = raw.match(/(\d{4})-(\d{2})-(\d{2})[ T]?(\d{2}:\d{2})?/)
+  if (m) return `${m[2]}-${m[3]}${m[4] ? ' ' + m[4] : ''}`
+  return raw.slice(0, 16)
+}
+
+/** 单节摘要：时间 · 课程 · 老师 */
+function cardLine(c: TrialCard): string {
+  return [cardWhen(c), c.topic, c.teacher].filter(Boolean).join(' · ')
+}
+
+/**
+ * 单节状态标签。与网页端「体验课 / 券码」列同口径：
+ * 爽约 > 已上课 > 已取消（一行只打一个主标签，取消与到店互斥）
+ */
+function cardStatus(c: TrialCard): { text: string; tone: 'brand' | 'danger' | 'muted' } | null {
+  if (c.noShow) return { text: '已爽约', tone: 'danger' }
+  if (c.attended) return { text: '已上课', tone: 'brand' }
+  if (c.cancelled) return { text: '已取消', tone: 'muted' }
+  return null
+}
+
+/** 单节券码：券名 券码（剩 N / 共 M 次 · 核销 ¥X） */
+function cardVoucher(c: TrialCard): string {
+  const parts: string[] = []
+  if (c.couponName) parts.push(c.couponName)
+  if (c.voucherCode) parts.push(c.voucherCode)
+  if (c.total !== null && c.total !== undefined) {
+    parts.push(`剩 ${c.remaining ?? c.total} / 共 ${c.total} 次`)
+  }
+  if (c.redeem) parts.push(`核销 ¥${c.redeem}`)
+  return parts.join('  ')
+}
+
+/** 行级券码（没有逐节卡片时的兜底，与网页端同口径） */
+function voucherText(row: MiniappLead): string {
+  const parts: string[] = []
+  if (row.couponName) parts.push(row.couponName)
+  if (row.voucherCode) parts.push(row.voucherCode)
+  if (row.couponTotal !== null && row.couponTotal !== undefined) {
+    parts.push(`剩 ${row.couponRemaining ?? row.couponTotal} / 共 ${row.couponTotal} 次`)
+  }
+  return parts.join('  ')
+}
+
+/** 这一行有没有券码/核销可看（含只有核销金额、没有券码的历史行） */
+function hasVoucher(row: MiniappLead): boolean {
+  return Boolean(voucherText(row)) || Boolean(row.redeemAmount)
+}
+
+/** 上课记录节数（含已取消，标题用） */
+function cardCount(row: MiniappLead): number {
+  return row.trialCards?.length ?? 0
 }
 
 /**
@@ -272,14 +324,53 @@ onReachBottom(() => {
         <view class="lcard__chevron"><wd-icon name="chevron-right" size="14px" /></view>
       </view>
 
-      <view v-if="row.demand || trialLine(row) || row.dealAmount || row.remark" class="lcard__body">
+      <view
+        v-if="row.demand || cardCount(row) || hasVoucher(row) || row.dealAmount || row.remark"
+        class="lcard__body"
+      >
         <view v-if="row.demand" class="lcard__line">
           <text class="lcard__label">需求</text>
           <text class="lcard__text">{{ row.demand }}</text>
         </view>
-        <view v-if="trialLine(row)" class="lcard__line">
-          <text class="lcard__label">体验课</text>
-          <text class="lcard__text">{{ trialLine(row) }}</text>
+
+        <!-- 上课记录：逐节体验课（网页端「体验课 / 券码」列的移动端形态） -->
+        <view v-if="cardCount(row)" class="lcard__rec">
+          <text class="lcard__label">上课</text>
+          <view class="lcard__rec-list">
+            <view class="lcard__rec-head">
+              <text class="lcard__rec-title">上课记录</text>
+              <text class="lcard__rec-count ym-num">共 {{ cardCount(row) }} 节</text>
+            </view>
+            <view v-for="(c, i) in row.trialCards" :key="i" class="lcard__rec-item">
+              <view class="lcard__rec-row">
+                <text class="lcard__rec-session">第{{ c.session ?? i + 1 }}节</text>
+                <ym-badge
+                  v-if="cardStatus(c)"
+                  :text="cardStatus(c)!.text"
+                  :tone="cardStatus(c)!.tone"
+                  plain
+                />
+                <text class="lcard__rec-main ym-ellipsis">{{ cardLine(c) || '时间待定' }}</text>
+              </view>
+              <text v-if="cardVoucher(c)" class="lcard__rec-code ym-ellipsis">
+                {{ cardVoucher(c) }}
+              </text>
+            </view>
+          </view>
+        </view>
+
+        <!-- 平台核销券码：行级券名/券码 + 核销总额（逐节券码在上面每节里） -->
+        <view v-if="hasVoucher(row)" class="lcard__rec">
+          <text class="lcard__label">券码</text>
+          <view class="lcard__rec-list">
+            <view class="lcard__rec-head">
+              <text class="lcard__rec-title">平台核销券码</text>
+              <text v-if="row.redeemAmount" class="lcard__rec-amount ym-num">
+                已核销 ¥{{ row.redeemAmount }}
+              </text>
+            </view>
+            <text class="lcard__rec-code">{{ voucherText(row) || '仅记录核销金额' }}</text>
+          </view>
         </view>
         <view v-if="row.dealAmount" class="lcard__line">
           <text class="lcard__label">成交</text>
@@ -497,6 +588,82 @@ onReachBottom(() => {
 .lcard__text--deal {
   color: $gold-600;
   font-weight: 600;
+}
+
+/* ---------- 上课记录 / 券码核销（移动端紧凑列表） ---------- */
+.lcard__rec {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 14rpx;
+}
+
+.lcard__rec-list {
+  flex: 1;
+  min-width: 0;
+  padding: 14rpx 16rpx;
+  background: $ink-50;
+  border-radius: 12rpx;
+}
+
+.lcard__rec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12rpx;
+  margin-bottom: 8rpx;
+}
+
+.lcard__rec-title {
+  font-size: 23rpx;
+  font-weight: 600;
+  color: $ink-500;
+}
+
+.lcard__rec-count {
+  font-size: 21rpx;
+  color: $ink-400;
+}
+
+.lcard__rec-item {
+  margin-top: 8rpx;
+
+  &:first-of-type {
+    margin-top: 0;
+  }
+}
+
+.lcard__rec-row {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.lcard__rec-session {
+  flex-shrink: 0;
+  font-size: 22rpx;
+  color: $ink-500;
+}
+
+.lcard__rec-main {
+  flex: 1;
+  min-width: 0;
+  font-size: 23rpx;
+  color: $ink-700;
+}
+
+.lcard__rec-code {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 21rpx;
+  line-height: 1.4;
+  color: $ink-400;
+  word-break: break-all;
+}
+
+.lcard__rec-amount {
+  font-size: 22rpx;
+  font-weight: 600;
+  color: $gold-600;
 }
 
 /* ---------- 悬浮记一条 ---------- */

@@ -67,6 +67,10 @@ const form = ref({
   grade: '',
   dealCard: '',
   dealAmount: '',
+  // 平台核销券码：券名 / 券码 / 核销金额（逐节券码由后端 trial_cards 维护，这里录整单）
+  couponName: '',
+  voucherCode: '',
+  redeemAmount: '',
   remark: ''
 })
 
@@ -179,6 +183,10 @@ function hydrate(lead: MiniappLead) {
     grade: lead.grade || '',
     dealCard: lead.dealCard || '',
     dealAmount: lead.dealAmount ? String(lead.dealAmount) : '',
+    couponName: lead.couponName || '',
+    voucherCode: lead.voucherCode || '',
+    redeemAmount:
+      lead.redeemAmount !== null && lead.redeemAmount !== undefined ? String(lead.redeemAmount) : '',
     remark: (lead.remark as string) || ''
   }
 }
@@ -243,6 +251,9 @@ function buildCreatePayload(): LeadPayload {
     grade: f.grade || undefined,
     dealCard: f.dealCard.trim() || undefined,
     dealAmount: f.dealAmount === '' ? null : Number(f.dealAmount),
+    couponName: f.couponName.trim() || undefined,
+    voucherCode: f.voucherCode.trim() || undefined,
+    redeemAmount: f.redeemAmount === '' ? null : Number(f.redeemAmount),
     remark: f.remark.trim() || undefined
   }
 }
@@ -267,6 +278,13 @@ function buildPatch(): Partial<LeadPayload> {
   if (cmp(f.dealCard.trim(), o.dealCard)) patch.dealCard = f.dealCard.trim()
   const oAmount = o.dealAmount === null || o.dealAmount === undefined ? '' : String(o.dealAmount)
   if (cmp(f.dealAmount, oAmount)) patch.dealAmount = f.dealAmount === '' ? null : Number(f.dealAmount)
+  if (cmp(f.couponName.trim(), o.couponName)) patch.couponName = f.couponName.trim()
+  if (cmp(f.voucherCode.trim(), o.voucherCode)) patch.voucherCode = f.voucherCode.trim()
+  const oRedeem =
+    o.redeemAmount === null || o.redeemAmount === undefined ? '' : String(o.redeemAmount)
+  if (cmp(f.redeemAmount, oRedeem)) {
+    patch.redeemAmount = f.redeemAmount === '' ? null : Number(f.redeemAmount)
+  }
   if (cmp(f.remark.trim(), o.remark)) patch.remark = f.remark.trim()
   return patch
 }
@@ -466,6 +484,25 @@ onShow(() => {
         label="成交金额"
         type="digit"
         placeholder="未成交可留空"
+        label-width="200rpx"
+      />
+      <wd-input
+        v-model="form.couponName"
+        label="券名"
+        placeholder="平台核销券名称，如体验课次卡"
+        label-width="200rpx"
+      />
+      <wd-input
+        v-model="form.voucherCode"
+        label="券码"
+        placeholder="平台核销券码（可选）"
+        label-width="200rpx"
+      />
+      <wd-input
+        v-model="form.redeemAmount"
+        label="核销金额"
+        type="digit"
+        placeholder="已核销金额，可留空"
         label-width="200rpx"
       />
       <wd-textarea

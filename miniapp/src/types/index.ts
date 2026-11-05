@@ -205,6 +205,8 @@ export interface MiniappLead {
   couponRemaining?: number | null
   trialCards?: Array<{
     session: number
+    /** 卡片日期（部分历史卡片只有 time 没有 date） */
+    date?: string
     time: string
     topic: string
     teacher: string
@@ -212,6 +214,14 @@ export interface MiniappLead {
     voucherCode: string
     platform: string
     total?: number | null
+    /** 券剩余次数（与 total 配对展示「剩 N / 共 M 次」） */
+    remaining?: number | null
+    /** 单节核销金额（元）；行级 redeemAmount 是各节之和 */
+    redeem?: number | null
+    /** 到店/爽约/取消三态：网页端「体验课 / 券码」列按这三项打标签 */
+    attended?: boolean
+    noShow?: boolean
+    cancelled?: boolean
   }>
   remark?: string
   createdBy?: string
