@@ -418,6 +418,13 @@ export async function getCustomerDetail(id: number): Promise<CustomerDetail> {
 export interface YimaiCustomer extends StoreCustomer {
   externalId?: string
   /**
+   * 人工维护的会员经营状态（正常 / 待续费 / 待复活 / 已暂停 / 已流失）。
+   *
+   * 与 layer（算出来的分层）、status（档案完善度）、inRevive（待复活开关）分工不同：
+   * 这一项是"人说了算"的，供列表与详情一眼识别；选「待复活」时后端会同步打开 inRevive。
+   */
+  memberState?: string
+  /**
    * 有效卡汇总（同步写入）：次卡剩余/绑定、时间卡剩余/总天数，供待续费阈值判定。
    *
    * v3.9 起新增 `historyCards` / `entitlement` / `dataVersion` 等键（§1.4）——

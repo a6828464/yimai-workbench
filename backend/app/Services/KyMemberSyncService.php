@@ -286,7 +286,11 @@ class KyMemberSyncService
                         // 所以这里绝不能写死 P4 —— 那正是「所有同步会员恒为 P4」的成因。
                         'layer' => 'P5', 'status' => '待完善', 'owner' => $consultant ?: '未分配',
                         'owner_user_id' => $staffIds[$consultant] ?? null,
-                        'next_action' => '分配负责人并完善会员档案', 'external_id' => $externalId,
+                        // 待办文案按「到底还缺什么」决定：上游已经给了会籍顾问 = 负责人已定，
+                        // 再挂「分配负责人」是自相矛盾（馆主 2026-11-05 反馈：明明有顾问，
+                        // 详情里还挂着「分配负责人并完善会员档案」标签）。
+                        'next_action' => $consultant !== '' ? '完善会员档案' : '分配负责人并完善会员档案',
+                        'external_id' => $externalId,
                     ]);
                     $created++;
 
@@ -303,7 +307,7 @@ class KyMemberSyncService
                 if ($customer->main_card === '待同步卡项') {
                     $changes += [
                         'status' => '待完善', 'owner' => $consultant ?: '未分配',
-                        'next_action' => '分配负责人并完善会员档案',
+                        'next_action' => $consultant !== '' ? '完善会员档案' : '分配负责人并完善会员档案',
                     ];
                     // 与 consultant_user_id 同一条规则：解析不到账号就不写，别把人工归属抹掉
                     if ($consultantUserId !== null || $consultant === '') {

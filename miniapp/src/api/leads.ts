@@ -113,6 +113,21 @@ export interface LeadPayload {
   couponName?: string
   couponTotal?: number | null
   couponRemaining?: number | null
+  /** 逐节体验课卡片（后端 trial_cards JSON 透传；网页端同一结构） */
+  trialCards?: Array<{
+    session: number
+    date?: string
+    time: string
+    topic: string
+    teacher: string
+    couponName: string
+    voucherCode: string
+    redeem: number | null
+    total: number | null
+    attended: boolean
+    noShow: boolean
+    cancelled: boolean
+  }>
   remark?: string
 }
 

@@ -257,10 +257,12 @@ class CustomerController extends Controller
             'birthday' => 'nullable|date_format:Y-m-d',
             'needsHelp' => 'nullable|boolean',
             'inRevive' => 'nullable|boolean',
+            // 人工经营状态：待复活与 in_revive 联动，见下方写入逻辑
+            'memberState' => ['nullable', 'string', \Illuminate\Validation\Rule::in(Customer::MEMBER_STATES)],
         ]);
         $patch = collect(camelToSnake($r->all()))->only([
             'renewal_plan', 'decline', 'stop_reason', 'expected_return',
-            'last_touch', 'needs_help', 'in_revive', 'birthday',
+            'last_touch', 'needs_help', 'in_revive', 'birthday', 'member_state',
             // 归属（会籍顾问 consultant / 负责人 owner）：小程序「客户经营」要能把会员
             // 落到具体老师名下，否则新会员永远停在「未分配」。准入与通知见 collectAssignmentChanges()。
             'consultant', 'owner',
@@ -273,6 +275,11 @@ class CustomerController extends Controller
             if (array_key_exists($f, $patch) && ! is_bool($patch[$f])) {
                 $patch[$f] = filter_var($patch[$f], FILTER_VALIDATE_BOOLEAN);
             }
+        }
+        // 人工状态与 in_revive 联动：选「待复活」= 打开开关，选其它 = 关掉。
+        // 否则会出现「状态写着正常、五清单却按待复活统计」的自相矛盾。
+        if (array_key_exists('member_state', $patch)) {
+            $patch['in_revive'] = $patch['member_state'] === '待复活';
         }
         // 归属变更：先判「真的换人」，再要权限、补 user_id、攒通知名单
         $assignments = $this->collectAssignmentChanges($r, $c, $patch);

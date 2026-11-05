@@ -18,7 +18,20 @@ import { computed, ref } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
-import { fetchCustomerDetail, updateCustomer, type CustomerPatch } from '@/api/members'
+import {
+  EVAL_DIMENSIONS,
+  EVAL_RISKS,
+  evalLevelLabel,
+  evalTotalScore,
+  fetchCustomerDetail,
+  fetchRenewalEvaluation,
+  saveRenewalEvaluation,
+  updateCustomer,
+  type CustomerPatch,
+  type RenewalEvalDimension,
+  type RenewalEvaluationAnswers,
+  type RenewalEvaluationContext
+} from '@/api/members'
 import type { CustomerCard, CustomerDetail } from '@/types'
 
 const id = ref(0)
@@ -30,7 +43,11 @@ const failed = ref(false)
 const inited = ref(false)
 
 /** 本地编辑态（与服务端值分离，保存成功后才回写） */
-const form = ref({ lastTouch: '', birthday: '', inRevive: false })
+const form = ref({ lastTouch: '', birthday: '', memberState: '正常' })
+
+/** 会员经营状态（与后端 Customer::MEMBER_STATES 同源；「待复活」会联动 in_revive） */
+const MEMBER_STATES = ['正常', '待续费', '待复活', '已暂停', '已流失']
+const stateIndex = computed(() => Math.max(0, MEMBER_STATES.indexOf(form.value.memberState)))
 
 const c = computed(() => detail.value?.customer ?? null)
 
@@ -65,8 +82,18 @@ const cardSections = computed(() => {
 })
 
 /** 卡项剩余：单位取自后端（节/天/元），未知就写「剩余未知」而不是 0 */
+/**
+ * 卡项剩余。
+ *
+ * 后端没返回剩余量时不再写「剩余未知」——那四个字既占地方又让人以为是系统算错了。
+ * 按卡的性质给可读口径：
+ *  - 期限卡（天）：本来就没有"次数"，写「按到期日计」；
+ *  - 其余（次卡/储值卡）：写「—」，由下方「卡号」和状态说明承担信息量。
+ */
 function cardRemain(card: CustomerCard): string {
-  if (card.remaining === null || card.remaining === undefined) return '剩余未知'
+  if (card.remaining === null || card.remaining === undefined) {
+    return card.unit === '天' ? '按到期日计' : '—'
+  }
   const unit = card.unit || '节'
   return `剩 ${card.remaining} ${unit}`
 }
@@ -94,7 +121,114 @@ function syncForm() {
   form.value = {
     lastTouch: toDateStr(row.lastTouch),
     birthday: toDateStr(row.birthday),
-    inRevive: Boolean(row.inRevive)
+    memberState: String((row as { memberState?: string }).memberState || '正常')
+  }
+}
+
+/* ---------- 续费评估（五维 + 风险，口径与网页端完全一致） ---------- */
+
+const evalCtx = ref<RenewalEvaluationContext | null>(null)
+const evalOpen = ref(false)
+const evalSaving = ref(false)
+const evalRemark = ref('')
+const evalAnswers = ref<RenewalEvaluationAnswers>({
+  goal: 'none',
+  feedback: 'none',
+  wechat: 'no_response',
+  intent: 'none',
+  service: 'normal',
+  risks: []
+})
+
+/** 实时得分（含出勤与卡项窗口，与后端同一条公式；保存后以服务端为准） */
+const evalScoreNow = computed(() =>
+  evalTotalScore({
+    ...evalAnswers.value,
+    attendanceCount: evalCtx.value?.attendanceCount ?? 0,
+    cardWindow: evalCtx.value?.cardWindow ?? 0
+  })
+)
+
+const evalLevelNow = computed(() =>
+  evalLevelLabel(evalScoreNow.value >= 70 ? 'high' : evalScoreNow.value >= 40 ? 'medium' : 'low')
+)
+
+function dimValue(dim: RenewalEvalDimension): string {
+  return String((evalAnswers.value as unknown as Record<string, string>)[dim.key] || '')
+}
+
+function dimIndex(dim: RenewalEvalDimension): number {
+  return Math.max(
+    0,
+    dim.options.findIndex((o) => o.key === dimValue(dim))
+  )
+}
+
+function dimLabel(dim: RenewalEvalDimension): string {
+  return dim.options.find((o) => o.key === dimValue(dim))?.label || '请选择'
+}
+
+function onDimPick(dim: RenewalEvalDimension, e: { detail: { value: string | number } }): void {
+  const opt = dim.options[Number(e.detail.value)]
+  if (opt) {
+    ;(evalAnswers.value as unknown as Record<string, string>)[dim.key] = opt.key
+  }
+}
+
+function riskOn(key: string): boolean {
+  return evalAnswers.value.risks.includes(key)
+}
+
+function toggleRisk(key: string): void {
+  const list = evalAnswers.value.risks
+  if (list.includes(key)) {
+    evalAnswers.value.risks = list.filter((k) => k !== key)
+    return
+  }
+  // 与网页端一致：最多同时命中的 3 个风险项
+  evalAnswers.value.risks = [...list, key].slice(0, 3)
+}
+
+async function loadEval(): Promise<void> {
+  if (!id.value) return
+  try {
+    evalCtx.value = await fetchRenewalEvaluation(id.value)
+  } catch {
+    // 评估接口失败不影响会员详情本身，静默（展开时还能再试）
+  }
+}
+
+function openEval(): void {
+  const latest = evalCtx.value?.latest
+  if (latest?.answers) {
+    evalAnswers.value = {
+      goal: latest.answers.goal || 'none',
+      feedback: latest.answers.feedback || 'none',
+      wechat: latest.answers.wechat || 'no_response',
+      intent: latest.answers.intent || 'none',
+      service: latest.answers.service || 'normal',
+      risks: [...(latest.answers.risks ?? [])]
+    }
+    evalRemark.value = latest.remark || ''
+  }
+  evalOpen.value = true
+}
+
+async function submitEval(): Promise<void> {
+  if (!c.value || evalSaving.value) return
+  evalSaving.value = true
+  try {
+    await saveRenewalEvaluation(c.value.id, {
+      answers: { ...evalAnswers.value, risks: [...evalAnswers.value.risks] },
+      remark: evalRemark.value.trim()
+    })
+    uni.showToast({ title: '评估已保存', icon: 'success' })
+    evalOpen.value = false
+    await Promise.all([load(), loadEval()])
+  } catch {
+    /* http 层已 toast */
+  } finally {
+    evalSaving.value = false
   }
 }
 
@@ -104,6 +238,7 @@ async function load() {
   loading.value = true
   try {
     detail.value = await fetchCustomerDetail(id.value)
+    void loadEval()
     syncForm()
     failed.value = false
   } catch {
@@ -133,6 +268,12 @@ function onDateChange(e: { detail: { value: string } }, field: 'lastTouch' | 'bi
   form.value[field] = e.detail.value
 }
 
+/** 会员状态选择：待复活 → 后端会同步把 in_revive 打开（五清单口径不变） */
+function onStateChange(e: { detail: { value: string | number } }): void {
+  const i = Number(e.detail.value)
+  form.value.memberState = MEMBER_STATES[i] ?? '正常'
+}
+
 async function save() {
   if (!c.value || saving.value) return
   saving.value = true
@@ -141,9 +282,10 @@ async function save() {
       lastTouch: form.value.lastTouch || null,
       birthday: form.value.birthday || null
     }
-    // inRevive 只在发生变化时提交：它触发后端重算 layer，无谓写入会白跑一次重算
-    if (form.value.inRevive !== Boolean(c.value.inRevive)) {
-      patch.inRevive = form.value.inRevive
+    // 状态只在变化时提交：它联动 in_revive 并触发后端重算 layer，无谓写入会白跑一次重算
+    const currentState = String((c.value as { memberState?: string }).memberState || '正常')
+    if (form.value.memberState !== currentState) {
+      ;(patch as Record<string, unknown>).memberState = form.value.memberState
     }
     await updateCustomer(c.value.id, patch, '移动端维护')
     uni.showToast({ title: '已保存', icon: 'success' })
@@ -399,6 +541,86 @@ onPullDownRefresh(async () => {
         </view>
       </ym-section>
 
+      <!-- 续费评估：五维 + 风险，评分口径与网页端一致（出勤/卡项窗口由后端算） -->
+      <ym-section title="续费评估" desc="五维 + 风险，与服务端同一评分口径">
+        <view v-if="evalCtx?.latest && !evalOpen" class="evsum">
+          <view class="evsum__row">
+            <text class="evsum__score ym-num">{{ evalCtx.latest.score }}</text>
+            <view class="evsum__meta">
+              <ym-badge :text="evalLevelLabel(evalCtx.latest.level)" tone="gold" />
+              <text class="evsum__by">
+                {{ evalCtx.latest.evaluatorName }} · {{ String(evalCtx.latest.evaluatedAt).slice(0, 10) }}
+              </text>
+            </view>
+            <wd-button size="small" plain @click="openEval">重新评估</wd-button>
+          </view>
+          <text v-if="evalCtx.latest.remark" class="evsum__remark">{{ evalCtx.latest.remark }}</text>
+        </view>
+
+        <view v-else-if="!evalOpen" class="evsum evsum--empty">
+          <text class="evsum__hint">还没有续费评估</text>
+          <wd-button size="small" type="primary" plain @click="openEval">开始评估</wd-button>
+        </view>
+
+        <view v-if="evalOpen" class="evform">
+          <view class="evform__base">
+            出勤 {{ evalCtx?.attendanceCount ?? 0 }} 次 · 卡项窗口 {{ evalCtx?.cardWindow ?? 0 }} 分
+            <text class="evform__base-tip">（只读，来自后端上下文）</text>
+          </view>
+
+          <view v-for="dim in EVAL_DIMENSIONS" :key="dim.key" class="evdim">
+            <text class="evdim__title">{{ dim.title }}</text>
+            <picker
+              mode="selector"
+              :range="dim.options"
+              range-key="label"
+              :value="dimIndex(dim)"
+              @change="onDimPick(dim, $event)"
+            >
+              <view class="evdim__pick ym-tap">
+                <text class="evdim__label">{{ dimLabel(dim) }}</text>
+                <wd-icon name="chevron-right" size="13px" />
+              </view>
+            </picker>
+          </view>
+
+          <view class="evrisk">
+            <text class="evrisk__title">风险项（最多 3 项，命中扣分）</text>
+            <view class="evrisk__chips">
+              <view
+                v-for="r in EVAL_RISKS"
+                :key="r.key"
+                class="evchip ym-tap"
+                :class="{ 'evchip--on': riskOn(r.key) }"
+                @click="toggleRisk(r.key)"
+              >
+                {{ r.label }}
+              </view>
+            </view>
+          </view>
+
+          <wd-textarea
+            v-model="evalRemark"
+            label="备注"
+            placeholder="补充判断依据（可选）"
+            :maxlength="500"
+          />
+
+          <view class="evscore">
+            <text class="evscore__label">本次得分</text>
+            <text class="evscore__value ym-num">{{ evalScoreNow }}</text>
+            <ym-badge :text="evalLevelNow" tone="gold" />
+          </view>
+
+          <view class="evactions">
+            <wd-button size="small" plain @click="evalOpen = false">取消</wd-button>
+            <wd-button size="small" type="primary" :loading="evalSaving" @click="submitEval">
+              保存评估
+            </wd-button>
+          </view>
+        </view>
+      </ym-section>
+
       <!-- 移动端可维护 -->
       <ym-section title="移动端可维护" desc="只改这三项；卡项与评估结果请回电脑端操作">
         <view class="edit">
@@ -422,10 +644,20 @@ onPullDownRefresh(async () => {
             </view>
           </picker>
 
-          <view class="edit__row edit__row--switch">
-            <text class="edit__label">标记待复活</text>
-            <wd-switch v-model="form.inRevive" />
-          </view>
+          <picker
+            mode="selector"
+            :range="MEMBER_STATES"
+            :value="stateIndex"
+            @change="onStateChange"
+          >
+            <view class="edit__row ym-tap">
+              <text class="edit__label">会员状态</text>
+              <view class="edit__right">
+                <text class="edit__value">{{ form.memberState }}</text>
+                <view class="edit__chevron"><wd-icon name="chevron-right" size="14px" /></view>
+              </view>
+            </view>
+          </picker>
         </view>
 
         <view class="edit__submit">
@@ -476,6 +708,153 @@ onPullDownRefresh(async () => {
 
 <style lang="scss" scoped>
 @import '@/styles/tokens.scss';
+
+/* ---------- 续费评估 ---------- */
+.evsum {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+
+.evsum--empty {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.evsum__hint {
+  font-size: 24rpx;
+  color: $ink-400;
+}
+
+.evsum__row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.evsum__score {
+  font-size: 44rpx;
+  font-weight: 700;
+  color: $gold-600;
+}
+
+.evsum__meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+}
+
+.evsum__by {
+  font-size: 21rpx;
+  color: $ink-400;
+}
+
+.evsum__remark {
+  font-size: 23rpx;
+  line-height: 1.5;
+  color: $ink-600;
+}
+
+.evform {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.evform__base {
+  padding: 12rpx 16rpx;
+  font-size: 22rpx;
+  color: $ink-500;
+  background: $ink-50;
+  border-radius: 10rpx;
+}
+
+.evform__base-tip {
+  color: $ink-400;
+}
+
+.evdim__title {
+  display: block;
+  font-size: 24rpx;
+  font-weight: 500;
+  color: $ink-700;
+  margin-bottom: 8rpx;
+}
+
+.evdim__pick {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12rpx;
+  padding: 16rpx 18rpx;
+  background: $ink-50;
+  border-radius: 12rpx;
+}
+
+.evdim__label {
+  flex: 1;
+  min-width: 0;
+  font-size: 24rpx;
+  color: $ink-700;
+}
+
+.evrisk__title {
+  display: block;
+  font-size: 24rpx;
+  font-weight: 500;
+  color: $ink-700;
+  margin-bottom: 10rpx;
+}
+
+.evrisk__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.evchip {
+  padding: 10rpx 18rpx;
+  font-size: 22rpx;
+  color: $ink-600;
+  background: $ink-50;
+  border: 2rpx solid transparent;
+  border-radius: 999rpx;
+}
+
+.evchip--on {
+  color: $gold-600;
+  background: rgba(191, 145, 61, 0.1);
+  border-color: rgba(191, 145, 61, 0.4);
+}
+
+.evscore {
+  display: flex;
+  align-items: baseline;
+  gap: 12rpx;
+  padding: 14rpx 18rpx;
+  background: $ink-50;
+  border-radius: 12rpx;
+}
+
+.evscore__label {
+  font-size: 23rpx;
+  color: $ink-500;
+}
+
+.evscore__value {
+  font-size: 38rpx;
+  font-weight: 700;
+  color: $gold-600;
+}
+
+.evactions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 16rpx;
+}
 
 /* ---------- 全部卡项 ---------- */
 .cards {

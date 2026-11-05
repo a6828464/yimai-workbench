@@ -883,6 +883,18 @@
               {{ memberDlg.row.venue || '—' }} · 顾问
               {{ memberDlg.row.consultant || '待分配' }}
             </div>
+            <!-- 会员状态：人工维护，与「待复活」开关联动（选待复活→五清单按待复活统计） -->
+            <div class="mdt-head__state">
+              <span class="mdt-head__state-label">会员状态</span>
+              <ElSelect
+                :model-value="memberDlg.row.memberState || '正常'"
+                size="small"
+                style="width: 108px"
+                @change="onMemberState(memberDlg.row.id, String($event))"
+              >
+                <ElOption v-for="s in MEMBER_STATES" :key="s" :label="s" :value="s" />
+              </ElSelect>
+            </div>
           </div>
           <div class="mdt-head__stat">
             <div
@@ -1651,6 +1663,26 @@
       // 主卡高亮：按会员主卡名匹配，仍留在本组内当一项（不抽到顶部）
       isMain: Boolean(mainCard) && mainCard !== '—' && card.title === mainCard,
       note
+    }
+  }
+
+  /** 会员经营状态（与后端 Customer::MEMBER_STATES 同源） */
+  const MEMBER_STATES = ['正常', '待续费', '待复活', '已暂停', '已流失']
+
+  /**
+   * 改会员状态：写 member_state（后端联动 in_revive 并重算 layer）。
+   * 改完刷列表 —— 清单/徽标是按状态与分层算的，不刷新会看到旧标签。
+   */
+  async function onMemberState(id: number, value: string) {
+    try {
+      await updateMemberFields(id, { memberState: value } as Partial<YimaiCustomer>, '会员状态')
+      if (memberDlg.row && memberDlg.row.id === id) {
+        ;(memberDlg.row as Record<string, unknown>).memberState = value
+      }
+      ElMessage.success(`会员状态已改为「${value}」`)
+      await load()
+    } catch {
+      ElMessage.error('状态更新失败，请稍后重试')
     }
   }
 
@@ -2985,6 +3017,18 @@
 
     &__meta {
       margin-top: 2px;
+      font-size: 12px;
+      color: var(--art-gray-500, #a8abb2);
+    }
+
+    &__state {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    &__state-label {
       font-size: 12px;
       color: var(--art-gray-500, #a8abb2);
     }

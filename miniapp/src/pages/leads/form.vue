@@ -54,7 +54,24 @@ const opts = ref<Record<string, string> | null>(null)
 const sources = ref<string[]>([...FALLBACK_LEAD_ENUMS.sources])
 const platforms = ref<string[]>([...FALLBACK_LEAD_ENUMS.orderPlatforms])
 
+/** 逐节体验课卡片（与网页端同一结构：后端 trial_cards JSON 透传） */
+type TrialCardDraft = {
+  session: number
+  date: string
+  time: string
+  topic: string
+  teacher: string
+  couponName: string
+  voucherCode: string
+  redeem: string
+  total: string
+  attended: boolean
+  noShow: boolean
+  cancelled: boolean
+}
+
 const form = ref({
+  trialCards: [] as TrialCardDraft[],
   name: '',
   phone: '',
   wechat: '',
@@ -187,7 +204,26 @@ function hydrate(lead: MiniappLead) {
     voucherCode: lead.voucherCode || '',
     redeemAmount:
       lead.redeemAmount !== null && lead.redeemAmount !== undefined ? String(lead.redeemAmount) : '',
-    remark: (lead.remark as string) || ''
+    remark: (lead.remark as string) || '',
+    trialCards: (lead.trialCards ?? []).map((c, i) => {
+      const raw = String(c.time || '')
+      // 后端 time 常是 "2026-11-03 19:20"（日期+时间），拆成两个 picker 的初值
+      const m = raw.match(/^(\d{4}-\d{2}-\d{2})[ T]?(\d{2}:\d{2})?/)
+      return {
+        session: c.session ?? i + 1,
+        date: m?.[1] || String(c.date || ''),
+        time: m?.[2] || '',
+        topic: c.topic || '',
+        teacher: c.teacher || '',
+        couponName: c.couponName || '',
+        voucherCode: c.voucherCode || '',
+        redeem: c.redeem !== null && c.redeem !== undefined ? String(c.redeem) : '',
+        total: c.total !== null && c.total !== undefined ? String(c.total) : '',
+        attended: Boolean(c.attended),
+        noShow: Boolean(c.noShow),
+        cancelled: Boolean(c.cancelled)
+      }
+    })
   }
 }
 
@@ -203,6 +239,66 @@ function onPickSource(e: PickerPayload) {
 
 function onPickPlatform(e: PickerPayload) {
   form.value.orderPlatform = String(e.value)
+}
+
+/* ---------- 体验课卡片（上课记录 / 券码 / 核销） ----------
+ * 网页端留资编辑弹窗里是「逐节卡片」，手机端此前只能看不能录。
+ * 这里把同一份 trial_cards 结构搬过来：日期/时间/课程/老师/券名/券码/总次数/核销金额/状态。
+ * 提交时 session 按数组顺序重排，后端 withStaffIds 会把第一节老师镜像到 trial_teacher。
+ */
+const CARD_STATES = ['未开始', '已上课', '已爽约', '已取消']
+
+function cardStateIndex(c: TrialCardDraft): number {
+  if (c.noShow) return 2
+  if (c.attended) return 1
+  if (c.cancelled) return 3
+  return 0
+}
+
+function cardStateLabel(c: TrialCardDraft): string {
+  return CARD_STATES[cardStateIndex(c)]
+}
+
+function onCardState(i: number, e: PickerPayload): void {
+  const v = Number(e.value)
+  const c = form.value.trialCards[i]
+  if (!c) return
+  c.attended = v === 1
+  c.noShow = v === 2
+  c.cancelled = v === 3
+}
+
+function onCardDate(i: number, e: PickerPayload): void {
+  const c = form.value.trialCards[i]
+  if (c) c.date = String(e.value)
+}
+
+function onCardTime(i: number, e: PickerPayload): void {
+  const c = form.value.trialCards[i]
+  if (c) c.time = String(e.value)
+}
+
+function addCard(): void {
+  const today = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  form.value.trialCards.push({
+    session: form.value.trialCards.length + 1,
+    date: `${today.getFullYear()}-${p(today.getMonth() + 1)}-${p(today.getDate())}`,
+    time: '',
+    topic: '',
+    teacher: form.value.serviceTeacher || '',
+    couponName: '',
+    voucherCode: '',
+    redeem: '',
+    total: '',
+    attended: false,
+    noShow: false,
+    cancelled: false
+  })
+}
+
+function removeCard(i: number): void {
+  form.value.trialCards.splice(i, 1)
 }
 
 function onPickStatus(e: PickerPayload) {
@@ -254,6 +350,20 @@ function buildCreatePayload(): LeadPayload {
     couponName: f.couponName.trim() || undefined,
     voucherCode: f.voucherCode.trim() || undefined,
     redeemAmount: f.redeemAmount === '' ? null : Number(f.redeemAmount),
+    trialCards: f.trialCards.map((c, i) => ({
+      session: i + 1,
+      date: c.date || undefined,
+      time: [c.date, c.time].filter(Boolean).join(' '),
+      topic: c.topic.trim(),
+      teacher: c.teacher.trim(),
+      couponName: c.couponName.trim(),
+      voucherCode: c.voucherCode.trim(),
+      redeem: c.redeem === '' ? null : Number(c.redeem),
+      total: c.total === '' ? null : Number(c.total),
+      attended: c.attended,
+      noShow: c.noShow,
+      cancelled: c.cancelled
+    })),
     remark: f.remark.trim() || undefined
   }
 }
@@ -470,6 +580,51 @@ onShow(() => {
         label-width="200rpx"
         @confirm="onPickGrade"
       />
+    </ym-section>
+
+    <ym-section
+      title="体验课 / 上课记录"
+      :desc="`共 ${form.trialCards.length} 节；录完在客资卡片上能看到每节状态、课程与券码`"
+    >
+      <view v-for="(c, i) in form.trialCards" :key="i" class="tcard">
+        <view class="tcard__head">
+          <text class="tcard__title">第 {{ i + 1 }} 节</text>
+          <view class="tcard__del ym-tap" @click="removeCard(i)">
+            <wd-icon name="delete" size="14px" />
+            <text class="tcard__del-text">删除</text>
+          </view>
+        </view>
+
+        <view class="tcard__row">
+          <picker mode="date" :value="c.date" @change="onCardDate(i, $event)">
+            <view class="tcard__cell ym-tap">{{ c.date || '选日期' }}</view>
+          </picker>
+          <picker mode="time" :value="c.time" @change="onCardTime(i, $event)">
+            <view class="tcard__cell ym-tap">{{ c.time || '选时间' }}</view>
+          </picker>
+          <picker
+            :range="CARD_STATES"
+            :value="cardStateIndex(c)"
+            @change="onCardState(i, $event)"
+          >
+            <view class="tcard__cell ym-tap">{{ cardStateLabel(c) }}</view>
+          </picker>
+        </view>
+
+        <wd-input v-model="c.topic" label="课程" placeholder="如 内观流 / 核心床小班" label-width="140rpx" />
+        <wd-input v-model="c.teacher" label="老师" placeholder="上课老师" label-width="140rpx" />
+        <wd-input v-model="c.couponName" label="券名" placeholder="平台核销券名称（选填）" label-width="140rpx" />
+        <wd-input v-model="c.voucherCode" label="券码" placeholder="券码（选填）" label-width="140rpx" />
+        <view class="tcard__row">
+          <wd-input v-model="c.total" label="总次数" type="digit" placeholder="选填" label-width="140rpx" class="tcard__half" />
+          <wd-input v-model="c.redeem" label="核销额" type="digit" placeholder="元" label-width="140rpx" class="tcard__half" />
+        </view>
+      </view>
+
+      <view class="tcard__add ym-tap" @click="addCard">
+        <wd-icon name="add" size="14px" />
+        <text class="tcard__add-text">添加一节体验课</text>
+      </view>
     </ym-section>
 
     <ym-section title="成交与备注">
@@ -884,5 +1039,78 @@ onShow(() => {
 .picker__clear-text {
   font-size: 24rpx;
   color: $danger-600;
+}
+
+/* ---------- 体验课卡片编辑 ---------- */
+.tcard {
+  padding: 16rpx 0;
+  border-bottom: 2rpx solid $hairline;
+
+  &:last-of-type {
+    border-bottom: none;
+  }
+}
+
+.tcard__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10rpx;
+}
+
+.tcard__title {
+  font-size: 25rpx;
+  font-weight: 600;
+  color: $ink-700;
+}
+
+.tcard__del {
+  display: flex;
+  align-items: center;
+  gap: 4rpx;
+  font-size: 21rpx;
+  color: $ink-400;
+}
+
+.tcard__del-text {
+  font-size: 21rpx;
+}
+
+.tcard__row {
+  display: flex;
+  gap: 12rpx;
+  margin-bottom: 10rpx;
+}
+
+.tcard__cell {
+  flex: 1;
+  padding: 14rpx 12rpx;
+  font-size: 23rpx;
+  text-align: center;
+  color: $ink-600;
+  background: $ink-50;
+  border-radius: 10rpx;
+}
+
+.tcard__half {
+  flex: 1;
+}
+
+.tcard__add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  margin-top: 16rpx;
+  padding: 18rpx;
+  font-size: 24rpx;
+  color: $brand-600;
+  background: rgba(38, 113, 79, 0.06);
+  border: 2rpx dashed rgba(38, 113, 79, 0.35);
+  border-radius: 12rpx;
+}
+
+.tcard__add-text {
+  font-size: 24rpx;
 }
 </style>
