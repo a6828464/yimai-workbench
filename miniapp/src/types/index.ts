@@ -165,6 +165,37 @@ export interface CustomerDetail {
   }[]
   /** 按手机号关联的前端客资 */
   leads: MiniappLead[]
+  /**
+   * 该会员的**全部卡项**（三态：在用 current / 未开卡 unactivated / 已过期 history）。
+   *
+   * 与 `customer.cardsList` 的区别：后者是判定层输入（只有在用 + 未开卡），
+   * 这里由 `GET /customers/{id}` 的顶层下发，详情页要展示"主卡以外还有哪些卡"就读它。
+   */
+  cardsList?: CustomerCard[]
+  /** 各态卡项数量（active/unactivated/expired/total），标题上的计数用 */
+  cardGroups?: { active?: number; unactivated?: number; expired?: number; total?: number }
+}
+
+/** 会员卡项实例（后端 cards_list / historyCards 的归一化形状，只读） */
+export interface CustomerCard {
+  id?: number | string | null
+  cardNo?: string | null
+  title?: string
+  type?: string
+  unit?: string
+  statusCode?: string | null
+  /** current=在用 / unactivated=未开卡 / history=已过期 */
+  state?: 'current' | 'unactivated' | 'history' | string
+  /** 中文态名（后端下发；缺失时前端按 state 兜底） */
+  stateLabel?: string
+  /** 是否为当前主卡 */
+  isMain?: boolean
+  remaining?: number | null
+  bound?: number | null
+  validDays?: number | null
+  deadline?: string | null
+  daysUntil?: number | null
+  [key: string]: unknown
 }
 
 /* ==========================================================================

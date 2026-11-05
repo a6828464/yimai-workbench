@@ -504,6 +504,53 @@ const todoDesc = computed(() =>
   todoAll.value.length > 0 ? `${todoAll.value.length} 项待处理` : '今日已清空'
 )
 
+/* ---------- 经营概览 / 双店对比（与网页端 boss-dashboard 同源接口） ----------
+ *
+ * 网页端超管工作台有「经营总览 / 双店对比 / 收入结构」，小程序此前只有 4 张今日卡 +
+ * 趋势 + 漏斗。这里用**已有接口**（/today/summary、/analytics/summary）补齐，
+ * 不新增后端：口径完全一致，不会出现"两个端说的不是一回事"。
+ */
+const kpiRows = computed(() => {
+  const a = anaSummary.value
+  if (!a) return []
+  const fmt = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  return [
+    { label: '会员总数', value: fmt(a.totalMembers), unit: '人' },
+    { label: '客户总数', value: fmt(a.totalCustomers), unit: '人' },
+    { label: '待续课', value: fmt(a.renewalTasks), unit: '人' },
+    { label: '未分配', value: fmt(a.unassigned), unit: '人' },
+    { label: '留资分配率', value: fmt(a.assignRate), unit: '%' },
+    { label: '客户闭环率', value: fmt(a.closureRate), unit: '%' },
+    { label: '续费处理率', value: fmt(a.renewalRate), unit: '%' },
+    { label: '任务完成率', value: fmt(a.taskRate), unit: '%' }
+  ]
+})
+
+const revenueRows = computed(() => {
+  const mix = anaSummary.value?.revenueMix
+  if (!mix) return []
+  return [mix.private, mix.small, mix.group].map((x) => ({
+    label: x.label,
+    amount: num(x.amount),
+    share: Math.max(0, Math.min(100, Math.round(num(x.share))))
+  }))
+})
+
+/**
+ * 双店对比：后端 todayBookings 在超管/双店账号下是 `{绿地店:n, 东部店:n}`，
+ * 单店账号是数字（这里直接不渲染 —— 一个数没有"对比"的意义）。
+ */
+const venueRows = computed(() => {
+  const raw = todaySummary.value.todayBookings
+  if (!raw || typeof raw !== 'object') return []
+  const trials = (todaySummary.value.trialBookings ?? {}) as Record<string, unknown>
+  return Object.entries(raw as Record<string, unknown>).map(([venue, count]) => ({
+    venue,
+    bookings: num(count),
+    trials: num(trials?.[venue])
+  }))
+})
+
 function goTodo(): void {
   goPath('/pages/todo/todo')
 }
@@ -695,6 +742,50 @@ function goBrandHome(): void {
         </template>
       </ym-section>
 
+      <ym-section
+        v-if="venueRows.length"
+        title="双店对比"
+        desc="今日预约 / 体验预约（门店键由后端下发）"
+      >
+        <view class="vrows">
+          <view v-for="v in venueRows" :key="v.venue" class="vrow">
+            <text class="vrow__name ym-ellipsis">{{ v.venue }}</text>
+            <view class="vrow__stat">
+              <text class="vrow__num ym-num">{{ v.bookings }}</text>
+              <text class="vrow__unit">预约</text>
+            </view>
+            <view class="vrow__stat">
+              <text class="vrow__num ym-num">{{ v.trials }}</text>
+              <text class="vrow__unit">体验</text>
+            </view>
+          </view>
+        </view>
+      </ym-section>
+
+      <ym-section v-if="kpiRows.length" title="经营概览" desc="与网页端同一份口径，按可见范围收窄">
+        <view class="kpis">
+          <view v-for="k in kpiRows" :key="k.label" class="kpis__cell">
+            <text class="kpis__value ym-num"
+              >{{ k.value }}<text class="kpis__unit">{{ k.unit }}</text></text
+            >
+            <text class="kpis__label">{{ k.label }}</text>
+          </view>
+        </view>
+        <view v-if="revenueRows.length" class="rev">
+          <view class="rev__head">
+            <text class="rev__title">收入结构</text>
+            <text class="rev__total ym-num">售卡 {{ num(anaSummary?.revenueMix?.cardSales) }} 元</text>
+          </view>
+          <view v-for="r in revenueRows" :key="r.label" class="rev__row">
+            <text class="rev__label">{{ r.label }}</text>
+            <view class="rev__bar">
+              <view class="rev__fill" :style="{ width: r.share + '%' }" />
+            </view>
+            <text class="rev__num ym-num">{{ r.share }}%</text>
+          </view>
+        </view>
+      </ym-section>
+
       <ym-section title="今日待办" :desc="todoDesc" action-text="全部" @action="goTodo">
         <ym-empty v-if="!todoTop.length" compact text="今日待办已清空" desc="没有需要现在处理的事项" />
         <view v-else class="wb__todos">
@@ -732,6 +823,142 @@ function goBrandHome(): void {
 
 <style lang="scss" scoped>
 @import '@/styles/tokens.scss';
+
+/* ---------- 双店对比 ---------- */
+.vrows {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.vrow {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 16rpx 18rpx;
+  background: $ink-50;
+  border-radius: 12rpx;
+}
+
+.vrow__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 25rpx;
+  color: $ink-800;
+}
+
+.vrow__stat {
+  display: flex;
+  align-items: baseline;
+  gap: 4rpx;
+  min-width: 110rpx;
+  justify-content: flex-end;
+}
+
+.vrow__num {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: $brand-600;
+}
+
+.vrow__unit {
+  font-size: 21rpx;
+  color: $ink-400;
+}
+
+/* ---------- 经营概览 ---------- */
+.kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.kpis__cell {
+  width: calc(25% - 9rpx);
+  padding: 14rpx 10rpx;
+  text-align: center;
+  background: $ink-50;
+  border-radius: 12rpx;
+}
+
+.kpis__value {
+  display: block;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: $ink-800;
+}
+
+.kpis__unit {
+  font-size: 20rpx;
+  color: $ink-400;
+}
+
+.kpis__label {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 20rpx;
+  color: $ink-400;
+}
+
+.rev {
+  margin-top: 20rpx;
+  padding-top: 16rpx;
+  border-top: 2rpx solid $hairline;
+}
+
+.rev__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10rpx;
+}
+
+.rev__title {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: $ink-600;
+}
+
+.rev__total {
+  font-size: 21rpx;
+  color: $ink-400;
+}
+
+.rev__row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-top: 10rpx;
+}
+
+.rev__label {
+  flex-shrink: 0;
+  width: 80rpx;
+  font-size: 22rpx;
+  color: $ink-500;
+}
+
+.rev__bar {
+  flex: 1;
+  height: 12rpx;
+  background: $ink-100;
+  border-radius: 999rpx;
+  overflow: hidden;
+}
+
+.rev__fill {
+  height: 100%;
+  background: linear-gradient(90deg, $brand-400, $brand-600);
+  border-radius: 999rpx;
+}
+
+.rev__num {
+  flex-shrink: 0;
+  width: 66rpx;
+  text-align: right;
+  font-size: 21rpx;
+  color: $ink-500;
+}
 
 .wb {
   padding-bottom: calc(40rpx + env(safe-area-inset-bottom));

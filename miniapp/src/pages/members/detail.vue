@@ -19,7 +19,7 @@ import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
 import { fetchCustomerDetail, updateCustomer, type CustomerPatch } from '@/api/members'
-import type { CustomerDetail } from '@/types'
+import type { CustomerCard, CustomerDetail } from '@/types'
 
 const id = ref(0)
 const detail = ref<CustomerDetail | null>(null)
@@ -33,6 +33,49 @@ const inited = ref(false)
 const form = ref({ lastTouch: '', birthday: '', inRevive: false })
 
 const c = computed(() => detail.value?.customer ?? null)
+
+/* ---------- 全部卡项（GET /customers/{id} 顶层 cardsList，三态全量） ----------
+ *
+ * 为什么要在详情页单独展示：会员列表只给「主卡 + 剩余 + 到期」三列摘要，
+ * 判断"这个人还有几张卡、有没有过期卡没消课、是不是刚开卡还没上"全靠翻电脑。
+ * 网页端会员详情已经有完整卡项（v3.11），小程序这里对齐同一份数据。
+ */
+const cards = computed<CustomerCard[]>(() => detail.value?.cardsList ?? [])
+
+const CARD_STATE_LABEL: Record<string, string> = {
+  current: '在用',
+  unactivated: '未开卡',
+  history: '已过期'
+}
+
+/** 按 在用 / 未开卡 / 已过期 三档分组；空档不渲染（不占屏幕） */
+const cardSections = computed(() => {
+  const buckets: Record<string, CustomerCard[]> = { current: [], unactivated: [], history: [] }
+  for (const card of cards.value) {
+    const state = String(card.state || 'current')
+    ;(buckets[state] ?? buckets.current).push(card)
+  }
+  return ['current', 'unactivated', 'history']
+    .filter((state) => buckets[state].length > 0)
+    .map((state) => ({
+      state,
+      label: CARD_STATE_LABEL[state] ?? state,
+      items: buckets[state]
+    }))
+})
+
+/** 卡项剩余：单位取自后端（节/天/元），未知就写「剩余未知」而不是 0 */
+function cardRemain(card: CustomerCard): string {
+  if (card.remaining === null || card.remaining === undefined) return '剩余未知'
+  const unit = card.unit || '节'
+  return `剩 ${card.remaining} ${unit}`
+}
+
+/** 卡项到期日（只到天） */
+function cardDeadline(card: CustomerCard): string {
+  const d = String(card.deadline || '')
+  return d ? `到期 ${d.slice(0, 10)}` : ''
+}
 
 function todayStr(): string {
   const d = new Date()
@@ -272,6 +315,34 @@ onPullDownRefresh(async () => {
           />
           <ym-cell-row label="最近到店" :value="toDateStr(c.lastVisit) || '无记录'" />
         </view>
+
+        <!-- 全部卡项：主卡以外还有哪些卡、哪几张已过期，判读续费时最常看这一块 -->
+        <view v-if="cards.length" class="cards">
+          <view class="cards__head">
+            <text class="cards__title">全部卡项</text>
+            <text class="cards__count ym-num">{{ cards.length }} 张</text>
+          </view>
+          <view v-for="g in cardSections" :key="g.state" class="cards__group">
+            <view class="cards__group-head">
+              <text class="cards__group-title">{{ g.label }}</text>
+              <text class="cards__group-count ym-num">{{ g.items.length }} 张</text>
+            </view>
+            <view
+              v-for="(card, i) in g.items"
+              :key="`${card.id ?? card.cardNo ?? i}`"
+              class="cards__item"
+            >
+              <view class="cards__item-top">
+                <text class="cards__item-title ym-ellipsis">{{ card.title || '卡项' }}</text>
+                <ym-badge v-if="card.isMain" text="主卡" tone="brand" plain />
+              </view>
+              <text class="cards__item-meta ym-num">
+                {{ cardRemain(card) }}<text v-if="cardDeadline(card)"> · {{ cardDeadline(card) }}</text>
+              </text>
+              <text v-if="card.cardNo" class="cards__item-no ym-ellipsis">卡号 {{ card.cardNo }}</text>
+            </view>
+          </view>
+        </view>
       </ym-section>
 
       <!-- 客户分析：三行结论（续费 / 出勤 / 分层），字段缺失显示「暂无」 -->
@@ -405,6 +476,87 @@ onPullDownRefresh(async () => {
 
 <style lang="scss" scoped>
 @import '@/styles/tokens.scss';
+
+/* ---------- 全部卡项 ---------- */
+.cards {
+  margin-top: 24rpx;
+  padding-top: 20rpx;
+  border-top: 2rpx solid $hairline;
+}
+
+.cards__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.cards__title {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: $ink-700;
+}
+
+.cards__count {
+  font-size: 22rpx;
+  color: $ink-400;
+}
+
+.cards__group {
+  margin-top: 12rpx;
+}
+
+.cards__group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 6rpx 0;
+}
+
+.cards__group-title {
+  font-size: 23rpx;
+  color: $ink-500;
+}
+
+.cards__group-count {
+  font-size: 21rpx;
+  color: $ink-400;
+}
+
+.cards__item {
+  padding: 14rpx 16rpx;
+  margin-top: 8rpx;
+  background: $ink-50;
+  border-radius: 12rpx;
+}
+
+.cards__item-top {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.cards__item-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 25rpx;
+  font-weight: 500;
+  color: $ink-800;
+}
+
+.cards__item-meta {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 23rpx;
+  color: $ink-600;
+}
+
+.cards__item-no {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 21rpx;
+  color: $ink-400;
+}
 
 .member-detail {
   padding-top: 20rpx;
