@@ -1015,6 +1015,15 @@ onShareAppMessage(() => {
               </view>
       </block>
 
+      <!--
+        编辑主题的后半段：视频号 → 门店实景 → 到店路线 → 换门店。
+
+        ⚠️ 这段从 v3.16 的 oriental 移植起就**裸露在主题条件之外**，导致东方主题下
+        它和 oriental 那套一起渲染 —— 真机上「门店实景 / 到店路线」出现两份就是这个原因。
+        现在单独套一层 !isOriental，和上面那半段（头/地址/按钮）条件一致。
+        （没有把两段合并成一个 block：搬 140 行风险高于收益，条件覆盖即可。）
+      -->
+      <block v-if="!isOriental">
       <!-- 视频号（UI 上不出现那两个字；channelsLive 字段仍在，只是没有入口） -->
       <view class="vcard">
         <view class="vcard__head">
@@ -1156,6 +1165,7 @@ onShareAppMessage(() => {
       <view class="switch ym-tap" @click="switchVenue">
         <text class="switch__text">换一家门店</text>
       </view>
+      </block>
     </block>
   </view>
 </template>
