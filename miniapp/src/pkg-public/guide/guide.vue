@@ -695,8 +695,8 @@ onShareAppMessage(() => {
 <template>
   <view class="ym-page guide" :class="`guide--${guideTheme}`">
     <!-- 第一步：选门店。两套主题是两种语言（editorial 大留白排版 / oriental 竖排题签），各写一份 -->
-    <template v-if="choosing">
-      <template v-if="!isOriental">
+    <block v-if="choosing">
+      <block v-if="!isOriental">
         <view class="pick">
                 <text class="pick__title">你到哪家店？</text>
                 <text class="pick__desc">选门店后给出地址、电话、到店路线和门店视频号</text>
@@ -716,8 +716,8 @@ onShareAppMessage(() => {
 
                 <text class="pick__tip">不确定先去哪家？两家都能约课，选离你近的一家就行。</text>
         </view>
-      </template>
-      <template v-if="isOriental">
+      </block>
+      <block v-if="isOriental">
         <view class="pick">
                 <view class="pick__gold">
                   <view class="pick__gold-line" />
@@ -760,17 +760,17 @@ onShareAppMessage(() => {
                   <text class="pick__foot-text">一麦瑜伽·普拉提</text>
                 </view>
         </view>
-      </template>
-    </template>
+      </block>
+    </block>
 
     <!-- 第二步：门店引导（用独立 v-if 而不是 v-else：条件互斥，结果确定） -->
-    <template v-if="!choosing">
+    <block v-if="!choosing">
       <!--
         头部与动作两套主题结构不同，各写一份（editorial：沉浸头 + B 方案按钮；oriental：静奢东方）。
         editorial 的 ghead 才接 heroStyle；oriental 用 heroStyleOriental（渐变末段沉入米灰）。
       -->
       <!-- editorial：沉浸头 + 地址外置 + B 方案按钮 -->
-      <template v-if="!isOriental">
+      <block v-if="!isOriental">
         <view class="ghead is-editorial" :style="heroStyle">
           <text class="ghead__label">YIMAI · PILATES</text>
           <text class="ghead__name">{{ current.key }}</text>
@@ -809,8 +809,8 @@ onShareAppMessage(() => {
             </view>
           </view>
         </view>
-      </template>
-      <template v-if="isOriental">
+      </block>
+      <block v-if="isOriental">
         <!--
           oriental：静奢东方（A 方案，移植自 miniapp-ui-a 定稿实现）
           ⚠️ 这段注释必须留在 template **内部**：v-else 与上面的 </template> 之间
@@ -967,7 +967,7 @@ onShareAppMessage(() => {
                 </view>
 
                 <!-- ① 这一段有视频：直链内嵌，非直链退化成跳转按钮 -->
-                <template v-if="activeRoute.videoUrl">
+                <block v-if="activeRoute.videoUrl">
                   <video
                     v-if="directVideo(activeRoute.videoUrl)"
                     class="videoblk__player"
@@ -980,10 +980,10 @@ onShareAppMessage(() => {
                   <view v-else class="vbtn vbtn--wide ym-tap" @click="openExternalVideo(activeRoute.videoUrl)">
                     <text class="vbtn__text">点开看这段路线视频</text>
                   </view>
-                </template>
+                </block>
 
                 <!-- ② 没视频但有图：只渲染这一段的图 -->
-                <template v-else-if="activeRoute.images.length">
+                <block v-else-if="activeRoute.images.length">
                   <view
                     v-for="(img, i) in activeRoute.images"
                     :key="img.src + i"
@@ -997,7 +997,7 @@ onShareAppMessage(() => {
                       <text class="fig__zoom">点击放大</text>
                     </view>
                   </view>
-                </template>
+                </block>
 
                 <!-- ③ 视频和图片都没有：说清是这一段没配，而不是页面坏了 -->
                 <view v-else class="rtempty">
@@ -1013,7 +1013,7 @@ onShareAppMessage(() => {
                 <text class="switch__text">换一家门店</text>
                 <view class="switch__line" />
               </view>
-      </template>
+      </block>
 
       <!-- 视频号（UI 上不出现那两个字；channelsLive 字段仍在，只是没有入口） -->
       <view class="vcard">
@@ -1108,7 +1108,7 @@ onShareAppMessage(() => {
         </view>
 
         <!-- ① 这一段有视频：直链内嵌，非直链（视频号链接）退化成跳转按钮 -->
-        <template v-if="activeRoute.videoUrl">
+        <block v-if="activeRoute.videoUrl">
           <video
             v-if="directVideo(activeRoute.videoUrl)"
             class="videoblk__player"
@@ -1126,10 +1126,10 @@ onShareAppMessage(() => {
             <wd-icon name="play-circle" size="16px" color="#FFFFFF" />
             <text class="vbtn__text">点开看这段路线视频</text>
           </view>
-        </template>
+        </block>
 
         <!-- ② 没视频但有图：只渲染这一段的图 -->
-        <template v-else-if="activeRoute.images.length">
+        <block v-else-if="activeRoute.images.length">
           <view
             v-for="(img, i) in activeRoute.images"
             :key="img.src + i"
@@ -1142,7 +1142,7 @@ onShareAppMessage(() => {
               <text class="imgcard__zoom">点击放大</text>
             </view>
           </view>
-        </template>
+        </block>
 
         <!-- ③ 视频和图片都没有：说清是这一段没配，而不是页面坏了 -->
         <view v-else class="rtempty">
@@ -1156,7 +1156,7 @@ onShareAppMessage(() => {
       <view class="switch ym-tap" @click="switchVenue">
         <text class="switch__text">换一家门店</text>
       </view>
-    </template>
+    </block>
   </view>
 </template>
 
