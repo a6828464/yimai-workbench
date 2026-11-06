@@ -1,0 +1,58 @@
+{
+  "_readme": [
+    "角色 → 角色集合 → 功能可见性的唯一事实来源（single source of truth）。",
+    "",
+    "消费方（只有这两处，新增消费方必须先在这里登记）：",
+    "  - admin-web/src/router/modules/yimai.ts —— 每条路由的 meta.roles 取自 groups。",
+    "  - miniapp/src/utils/permission.ts  —— FEATURES 每项的 roles 取自 groups[featureGroups[key]]。",
+    "",
+    "为什么没有走后端 /me 下发 features[]（本任务允许的降级方案，理由必须留档）：",
+    "  1. 后端**没有**功能/入口这个概念。它的鉴权是数据范围（scopeCustomersForUser / scopeLeadsForUser /\n     userHasRole 逐处内联），从来没有一张「功能 id → 角色」的表。让 /me 下发 features[] 等于要求\n     后端新造一张 PHP 侧的功能表 —— 那不是收敛重复事实源，而是新增第四份。",
+    "  2. 本文件也删不掉网页端路由的 meta.roles（31 条路由 ≠ 15 个小程序功能），所以「两端各自定义」\n     这件事只能靠共用一份数据解决，不能靠后端下发解决。",
+    "  3. 部署拓扑：make-release.sh 只把 backend/ 打成后端包（$COMMON/backend），本目录不进发布物。\n     后端运行时读不到本文件，硬读会在生产直接 500。",
+    "  因此采用「两端构建时共同引用本 JSON」；后端继续以 helpers.php 的逐处内联判定为数据边界的唯一权威。",
+    "",
+    "铁律：改这个文件等于改权限。改完必须跑",
+    "  node packages/shared-types/verify-role-matrix.mjs --dump /tmp/after.json",
+    "并与基线逐格比对；矩阵任何一格变化都要在评审里显式说明。"
+  ],
+  "version": 1,
+  "roles": ["R_SUPER", "R_MANAGER", "R_SERVICE", "R_TEACHER", "R_MEDIA"],
+  "_groupsReadme": [
+    "具名角色集合。网页端只能整组引用，不允许就地手写 'R_SUPER', 'R_MANAGER' 这类字面量数组。",
+    "ALL      = 全部 5 个角色",
+    "OPS      = 运营岗：除新媒体外全部",
+    "TEACHING = 老师侧（服务老师 = 会籍顾问 / 授课老师 = 私教主教练）",
+    "MGMT     = 店长及以上",
+    "SUPER    = 仅超管"
+  ],
+  "groups": {
+    "ALL": ["R_SUPER", "R_MANAGER", "R_SERVICE", "R_TEACHER", "R_MEDIA"],
+    "OPS": ["R_SUPER", "R_MANAGER", "R_SERVICE", "R_TEACHER"],
+    "TEACHING": ["R_SUPER", "R_MANAGER", "R_TEACHER"],
+    "MGMT": ["R_SUPER", "R_MANAGER"],
+    "SUPER": ["R_SUPER"]
+  },
+  "_featureGroupsReadme": [
+    "小程序 FEATURES 注册表（miniapp/src/utils/permission.ts）每项的角色来源。",
+    "这里只声明「走哪个具名组」，不重复抄角色码；角色码只在上面 groups 里出现一次。",
+    "新增小程序页面必须在 FEATURES 与这里同时登记，否则 permission-matrix.test.mjs 第 0 节会拦下。"
+  ],
+  "featureGroups": {
+    "todo": "ALL",
+    "members": "OPS",
+    "newMembers": "ALL",
+    "leads": "ALL",
+    "pool": "SUPER",
+    "tasks": "OPS",
+    "approvals": "MGMT",
+    "reviews": "OPS",
+    "plans": "TEACHING",
+    "marketing": "ALL",
+    "sales": "MGMT",
+    "profileEdit": "ALL",
+    "notifications": "ALL",
+    "persona": "ALL",
+    "password": "ALL"
+  }
+}

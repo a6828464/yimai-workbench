@@ -20,24 +20,6 @@
       }
     },
     {
-      "path": "pages/guide/guide",
-      "style": {
-        "navigationBarTitleText": "到店指引",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/book/book",
-      "style": {
-        "navigationBarTitleText": "约课",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0e1a16",
-        "backgroundColor": "#ffffff"
-      }
-    },
-    {
       "path": "pages/login/login",
       "style": {
         "navigationBarTitleText": "登录",
@@ -86,176 +68,6 @@
         "backgroundColorTop": "#0F1B16",
         "backgroundColorBottom": "#F2F4F2"
       }
-    },
-    {
-      "path": "pages/crm/new-members",
-      "style": {
-        "navigationBarTitleText": "新客培养",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/crm/pool",
-      "style": {
-        "navigationBarTitleText": "客户经营池",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/todo/todo",
-      "style": {
-        "navigationBarTitleText": "今日待办",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/members/members",
-      "style": {
-        "navigationBarTitleText": "会员管理",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/members/detail",
-      "style": {
-        "navigationBarTitleText": "会员详情",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/leads/leads",
-      "style": {
-        "navigationBarTitleText": "留资管理",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/leads/form",
-      "style": {
-        "navigationBarTitleText": "留资录入",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/ai/marketing",
-      "style": {
-        "navigationBarTitleText": "营销工具",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/ai/sales",
-      "style": {
-        "navigationBarTitleText": "谈单工具",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/profile/edit",
-      "style": {
-        "navigationBarTitleText": "个人信息",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/profile/persona",
-      "style": {
-        "navigationBarTitleText": "人设设置",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/profile/notify",
-      "style": {
-        "navigationBarTitleText": "模板通知",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/tasks/tasks",
-      "style": {
-        "navigationBarTitleText": "任务中心",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/approvals/approvals",
-      "style": {
-        "navigationBarTitleText": "价格审批",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/review/review",
-      "style": {
-        "navigationBarTitleText": "课后分析",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2",
-        "enablePullDownRefresh": true
-      }
-    },
-    {
-      "path": "pages/review/detail",
-      "style": {
-        "navigationBarTitleText": "课后分析详情",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/plan/plan",
-      "style": {
-        "navigationBarTitleText": "训练计划",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
-    },
-    {
-      "path": "pages/plan/detail",
-      "style": {
-        "navigationBarTitleText": "训练计划详情",
-        "navigationBarTextStyle": "white",
-        "navigationBarBackgroundColor": "#0F1B16",
-        "backgroundColor": "#F2F4F2"
-      }
     }
   ],
   "globalStyle": {
@@ -297,5 +109,221 @@
         "selectedIconPath": "static/tabbar/me-active.png"
       }
     ]
-  }
+  },
+  "subPackages": [
+    {
+      "root": "pkg-crm",
+      "pages": [
+        {
+          "path": "crm/new-members",
+          "style": {
+            "navigationBarTitleText": "新客培养",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "crm/pool",
+          "style": {
+            "navigationBarTitleText": "客户经营池",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "members/members",
+          "style": {
+            "navigationBarTitleText": "会员管理",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "members/detail",
+          "style": {
+            "navigationBarTitleText": "会员详情",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "leads/leads",
+          "style": {
+            "navigationBarTitleText": "留资管理",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "leads/form",
+          "style": {
+            "navigationBarTitleText": "留资录入",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pkg-biz",
+      "pages": [
+        {
+          "path": "todo/todo",
+          "style": {
+            "navigationBarTitleText": "今日待办",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "tasks/tasks",
+          "style": {
+            "navigationBarTitleText": "任务中心",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "approvals/approvals",
+          "style": {
+            "navigationBarTitleText": "价格审批",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "review/review",
+          "style": {
+            "navigationBarTitleText": "课后分析",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "review/detail",
+          "style": {
+            "navigationBarTitleText": "课后分析详情",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "plan/plan",
+          "style": {
+            "navigationBarTitleText": "训练计划",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "plan/detail",
+          "style": {
+            "navigationBarTitleText": "训练计划详情",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pkg-ai",
+      "pages": [
+        {
+          "path": "ai/marketing",
+          "style": {
+            "navigationBarTitleText": "营销工具",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "ai/sales",
+          "style": {
+            "navigationBarTitleText": "谈单工具",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pkg-me",
+      "pages": [
+        {
+          "path": "profile/edit",
+          "style": {
+            "navigationBarTitleText": "个人信息",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "profile/persona",
+          "style": {
+            "navigationBarTitleText": "人设设置",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "profile/notify",
+          "style": {
+            "navigationBarTitleText": "模板通知",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pkg-public",
+      "pages": [
+        {
+          "path": "guide/guide",
+          "style": {
+            "navigationBarTitleText": "到店指引",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "book/book",
+          "style": {
+            "navigationBarTitleText": "约课",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0e1a16",
+            "backgroundColor": "#ffffff"
+          }
+        }
+      ]
+    }
+  ]
 }

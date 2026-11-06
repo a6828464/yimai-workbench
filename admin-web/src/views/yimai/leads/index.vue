@@ -655,6 +655,7 @@
     MobileCardTag
   } from '@/components/business/mobile-card/types'
   import { toLocalDateString } from '@/utils'
+  import { showApiError } from '@/api/backend'
   import { ElMessage, ElMessageBox } from 'element-plus'
 
   defineOptions({ name: 'YimaiLeads' })
@@ -962,8 +963,7 @@
         platformOptions.value = [...res.enums.orderPlatforms]
       }
     } catch (e) {
-      console.error('[leads.load]', e)
-      ElMessage.error('留资列表加载失败，请稍后重试')
+      showApiError(e, '留资列表加载')
     } finally {
       loading.value = false
     }
@@ -1112,7 +1112,7 @@
       history.visible = true
     } catch (e) {
       console.error('[leads.history]', e)
-      ElMessage.error('变更记录加载失败，请稍后重试')
+      showApiError(e, '变更记录加载')
     }
   }
 
@@ -1241,7 +1241,7 @@
       await load()
     } catch (e) {
       console.error('[leads.remove]', e)
-      ElMessage.error(e instanceof Error ? e.message : '删除失败，请稍后重试')
+      showApiError(e, '删除留资')
     }
   }
 

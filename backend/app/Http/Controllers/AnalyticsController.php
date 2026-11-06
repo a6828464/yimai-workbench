@@ -16,6 +16,30 @@ use Illuminate\Support\Facades\Cache;
 final class AnalyticsController extends Controller
 {
     /**
+     * 收入类字段（售卡实收 / 课时耗卡金额）的可见性：**仅管理层（超管 / 店长）**。
+     *
+     * ## 为什么是「字段级收敛」而不是给 7 个端点整体加 requireSuper
+     *
+     * 馆主的提成按销售金额计算，所以「本店售卡实收」对一线可见就等于公开了提成基数 ——
+     * 这是一条薪酬侧信道（P0）。但**不能**把整个 /analytics/* 收成超管专属：
+     * 其中 5 个端点对老师是按人 scope 的（scopeCustomersForUser / scopeBookingsForUser），
+     * 老师的今日视图、待续课、任务完成率都靠它们，整块收会直接打断老师端。
+     *
+     * 所以只收「金额」这一层：`summary.revenueMix` 与 `trends` 的售卡列。
+     * 其余指标（会员数 / 待续课 / 任务完成率 / 留资分配率…）对老师保持原样。
+     *
+     * ## 为什么判据写成 R_SUPER + R_MANAGER，而不是「非老师侧」
+     *
+     * 与小程序 `pages/workbench/workbench.vue:525` 的 `canSeeRevenue = isManagerOrAbove(roles)`
+     * 逐字同口径：前后端两道闸各自独立成立，任一侧先上都不会漏。R_MEDIA 不在其中 ——
+     * 新媒体是营销岗，售卡实收不属于它的业务口径。
+     */
+    private static function canSeeRevenue(?User $u): bool
+    {
+        return userHasAnyRole($u, ['R_SUPER', 'R_MANAGER']);
+    }
+
+    /**
      * 看板聚合缓存键：按角色范围 + 查询参数隔离，版本号随业务写入失效，TTL 60 秒兜底。
      */
     private static function cacheKey(string $endpoint, User $u, string $venue, string $start, string $end): string
@@ -108,8 +132,12 @@ final class AnalyticsController extends Controller
             'taskRate' => $taskRate,                // 任务完成率
             'doneTasks' => $tasks->where('status', '已完成')->count(),
             'totalTasks' => $tasks->count(),
-            // S10 收入结构：按课型聚合课时耗卡金额 ÷ 售卡金额（口径见 computeRevenueMix）
-            'revenueMix' => $this->computeRevenueMix($u),
+            // S10 收入结构：按课型聚合课时耗卡金额 ÷ 售卡金额（口径见 computeRevenueMix）。
+            // **仅管理层可见**：这两组数字（卡项实收合计、课时耗卡金额）直接构成提成基数，
+            // 对一线可见即等于公开了一条薪酬侧信道。非管理层给 null（键保留，
+            // 前端都按 `if (!mix) return []` / `v-if="revenueMix"` 处理，无需改动）。
+            // 判定口径与小程序 canSeeRevenue（isManagerOrAbove）逐字一致，见 canSeeRevenue()。
+            'revenueMix' => self::canSeeRevenue($u) ? $this->computeRevenueMix($u) : null,
         ];
     }
 
@@ -840,19 +868,31 @@ final class AnalyticsController extends Controller
 
         // 售卡张数/金额：以随心瑜会员卡表落库的售卡事实为准，按售卡时间与实收金额统计，
         // 排除体验/赠卡（is_taste）与退卡；不再依赖工作台留资手动登记的成交卡项。
-        $cardQ = applyVenueScope(
-            KyCard::query()
-                ->where('is_taste', false)
-                ->where('status_format', '!=', '退卡')
-                ->whereNotNull('sold_at')
-                ->whereBetween('sold_at', [$start, $end]),
-            $u, $venue
-        );
-        foreach ($cardQ->get() as $card) {
-            $date = (string) $card->sold_at;
-            $cardVenue = $card->venue ?: '双店';
-            $byDate[$date][$cardVenue]['card_sales'] = ($byDate[$date][$cardVenue]['card_sales'] ?? 0) + 1;
-            $byDate[$date][$cardVenue]['amount'] = ($byDate[$date][$cardVenue]['amount'] ?? 0) + (float) $card->deal_price;
+        //
+        // **仅管理层**（canSeeRevenue）：这段是「本店/双店售卡实收」的唯一来源，
+        // 非管理层直接跳过查询、让 daily[*].cardSales / daily[*].amount /
+        // summary.cardSalesCount / summary.dealAmount 全部保留为 0（键不删，前端
+        // `sum('cardSales')` 之类才不会算出 NaN）。UI 本来就没给一线渲染这两列（t5 抓包发现），
+        // 这里堵的是「UI 没渲染 ≠ 抓包拿不到」。顺带省掉一次 ky_cards 区间查询。
+        //
+        // 这个变量被下面 3 处复用（daily.redeem / summary 的 dealAmount+redeemAmount+
+        // registeredDealAmount / mediaPerformance 的提成公式），不要再各自重复判一次。
+        $canSeeRevenue = self::canSeeRevenue($u);
+        if ($canSeeRevenue) {
+            $cardQ = applyVenueScope(
+                KyCard::query()
+                    ->where('is_taste', false)
+                    ->where('status_format', '!=', '退卡')
+                    ->whereNotNull('sold_at')
+                    ->whereBetween('sold_at', [$start, $end]),
+                $u, $venue
+            );
+            foreach ($cardQ->get() as $card) {
+                $date = (string) $card->sold_at;
+                $cardVenue = $card->venue ?: '双店';
+                $byDate[$date][$cardVenue]['card_sales'] = ($byDate[$date][$cardVenue]['card_sales'] ?? 0) + 1;
+                $byDate[$date][$cardVenue]['amount'] = ($byDate[$date][$cardVenue]['amount'] ?? 0) + (float) $card->deal_price;
+            }
         }
         $redeems = (clone $leadQ)->where('redeem_amount', '>', 0)
             ->where(function ($q) use ($start, $end) {
@@ -1007,11 +1047,13 @@ final class AnalyticsController extends Controller
 
         // 新媒体线上运营业绩（到店奖励 + 核销提成）—— 只算**2 个月时效内**的线上新客。
         // 口径见 computeMediaPerformance() 的注释（含用户确认的分子分母同源要求）。
+        // 第 10 个参数 $canSeeRevenue：非管理层拿不到任何金额，也看不到提成公式（见该方法注释）。
         $media = $this->computeMediaPerformance(
             $leadQ, $start, $end,
             $onlineIdentities, $onlineLeadDates,
             $onlineVisitIdentities, $visitDates,
-            $onlineDealIdentities, $dealDates
+            $onlineDealIdentities, $dealDates,
+            $canSeeRevenue
         );
 
         // 到店人数的来源构成（仅供核对口径，不参与计算）：
@@ -1042,7 +1084,8 @@ final class AnalyticsController extends Controller
         }
 
         return [
-            'daily' => array_values(collect($byDate)->sortKeys()->map(function ($venues, $date) {
+            // daily 的金额两列要在闭包里判可见性，所以把判据 use 进来（闭包不继承外层变量）
+            'daily' => array_values(collect($byDate)->sortKeys()->map(function ($venues, $date) use ($canSeeRevenue) {
                 $out = ['date' => $date];
                 foreach ($venues as $v => $c) {
                     $out[$v] = [
@@ -1052,8 +1095,10 @@ final class AnalyticsController extends Controller
                         'deals' => $c['deals'] ?? 0,
                         'cardSales' => $c['card_sales'] ?? 0,
                         'classes' => $c['classes'] ?? 0,
-                        'amount' => round((float) ($c['amount'] ?? 0), 2),
-                        'redeem' => round((float) ($c['redeem'] ?? 0), 2),
+                        // 金额两列：非管理层归 0（键必须保留 —— 前端 `sum('amount')` 依赖它存在）。
+                        // amount = 售卡实收（提成基数），redeem = 核销金额；两者与 revenueMix 同一个洞。
+                        'amount' => $canSeeRevenue ? round((float) ($c['amount'] ?? 0), 2) : 0,
+                        'redeem' => $canSeeRevenue ? round((float) ($c['redeem'] ?? 0), 2) : 0,
                         // 线上（新媒体登记来源）单独一套，供新媒体工作台做同口径漏斗
                         'onlineLeads' => $c['online_leads'] ?? 0,
                         'onlineVisits' => $c['online_experienced'] ?? 0,
@@ -1081,11 +1126,14 @@ final class AnalyticsController extends Controller
                 'privateClassCount' => $privateClasses,
                 'smallClassCount' => $smallClasses,
                 'groupClassCount' => $groupClasses,
-                'dealAmount' => round((float) $totalAmount, 2),
-                'redeemAmount' => round((float) $totalRedeem, 2),
+                // 金额三项：非管理层归 0（键保留、结构不变）。
+                // dealAmount = 售卡实收，redeemAmount = 核销金额，registeredDealAmount = 留资登记成交金额 ——
+                // 三者都是「客单价 × 成交数 = 营收」这一类，抓包即可反推提成基数，故一并收。
+                'dealAmount' => $canSeeRevenue ? round((float) $totalAmount, 2) : 0,
+                'redeemAmount' => $canSeeRevenue ? round((float) $totalRedeem, 2) : 0,
                 // 留资登记成交（按成交日 deal_at 落在窗口、含全部来源）：改一笔留资成交即联动，区别于上方按售卡实收的 dealAmount
                 'registeredDealCount' => $sales->count(),
-                'registeredDealAmount' => round((float) $sales->sum('deal_amount'), 2),
+                'registeredDealAmount' => $canSeeRevenue ? round((float) $sales->sum('deal_amount'), 2) : 0,
                 'dealRate' => $visitCount > 0 ? round($dealCount / $visitCount * 100, 1) : 0,
                 'leadToVisitRate' => $totalLeads > 0 ? min(100, round($visitCount / $totalLeads * 100, 1)) : 0,
                 // 线上新客口径（新媒体登记来源：美团/大众点评/抖音/小红书/视频号/线上/团购）：
@@ -1148,7 +1196,8 @@ final class AnalyticsController extends Controller
         $leadQ, string $start, string $end,
         array $onlineIdentities, array $onlineLeadDates,
         array $onlineVisitIdentities, array $visitDates,
-        array $onlineDealIdentities, array $dealDates
+        array $onlineDealIdentities, array $dealDates,
+        bool $canSeeRevenue = true
     ): array {
         $params = mediaPerformanceParams();
         $validMonths = $params['validMonths'];
@@ -1202,38 +1251,46 @@ final class AnalyticsController extends Controller
         // ---- 时效内线上核销金额 ----
         // 「当月核销」按核销事件日归期（redeemed_at，缺失回退留资日，与看板其它统计同口径），
         // 再叠加时效：只有 2 个月窗口内的线上核销才算进提成基数。
-        $redeemRows = (clone $leadQ)->where('redeem_amount', '>', 0)
-            ->where(function ($q) use ($start, $end) {
-                $q->whereBetween('redeemed_at', [$start.' 00:00:00', $end.' 23:59:59'])
-                    ->orWhere(fn ($q2) => $q2->whereNull('redeemed_at')->whereBetween('lead_date', [$start, $end]));
-            })->get(['phone', 'name', 'source', 'order_platform', 'lead_date', 'redeemed_at', 'redeem_amount']);
-
+        //
+        // **仅管理层**：这段直接决定 commissionAmount（提成金额）。非管理层连查询都不跑 ——
+        // 少一次 leads 区间查询，也保证金额不会进到 PHP 内存里被别处顺手带出去。
         $validRedeemAmount = 0.0;
         $excludedRedeemAmount = 0.0;
-        foreach ($redeemRows as $row) {
-            $identity = VisitMetrics::identityOf($row->phone, (string) $row->name);
-            $eventDate = $row->redeemed_at?->toDateString() ?: (string) $row->lead_date;
-            $amount = (float) $row->redeem_amount;
-            // 线下来源与越期核销都不计；分别归入排除额，便于运营核对差额
-            if (! isset($onlineIdentities[$identity]) || ! $within($identity, [$identity => $eventDate])) {
-                $excludedRedeemAmount += $amount;
-                continue;
+        if ($canSeeRevenue) {
+            $redeemRows = (clone $leadQ)->where('redeem_amount', '>', 0)
+                ->where(function ($q) use ($start, $end) {
+                    $q->whereBetween('redeemed_at', [$start.' 00:00:00', $end.' 23:59:59'])
+                        ->orWhere(fn ($q2) => $q2->whereNull('redeemed_at')->whereBetween('lead_date', [$start, $end]));
+                })->get(['phone', 'name', 'source', 'order_platform', 'lead_date', 'redeemed_at', 'redeem_amount']);
+
+            foreach ($redeemRows as $row) {
+                $identity = VisitMetrics::identityOf($row->phone, (string) $row->name);
+                $eventDate = $row->redeemed_at?->toDateString() ?: (string) $row->lead_date;
+                $amount = (float) $row->redeem_amount;
+                // 线下来源与越期核销都不计；分别归入排除额，便于运营核对差额
+                if (! isset($onlineIdentities[$identity]) || ! $within($identity, [$identity => $eventDate])) {
+                    $excludedRedeemAmount += $amount;
+                    continue;
+                }
+                $validRedeemAmount += $amount;
             }
-            $validRedeemAmount += $amount;
         }
 
-        $visitRewardAmount = round($validVisitCount * $reward, 2);
+        // 提成金额：非管理层归 0（口径与 revenueMix / 客单价一致）；计数类（到店人数、成交数、
+        // 成交率）一律照给 —— 那是员工的工作抓手，不是薪酬信息。
+        $visitRewardAmount = $canSeeRevenue ? round($validVisitCount * $reward, 2) : 0.0;
         $dealRate = $validVisitCount > 0 ? $validDealCount / $validVisitCount : 0.0;
-        $commissionAmount = round($dealRate * $validRedeemAmount, 2);
+        $commissionAmount = $canSeeRevenue ? round($dealRate * $validRedeemAmount, 2) : 0.0;
 
         return [
             'enabled' => true,
             'params' => [
-                'visitReward' => $reward,
+                // 单人到店奖励的**单价**：同样属于提成口径，非管理层给 0（键保留，结构不变）
+                'visitReward' => $canSeeRevenue ? $reward : 0,
                 'validMonths' => $validMonths,
                 'rule' => "留资月 + 下一个自然月内到店/成交有效（{$validMonths} 个月时效）",
             ],
-            // 三项显示值
+            // 三项显示值（金额两项非管理层为 0；dealRate 是比率，照给）
             'visitRewardAmount' => $visitRewardAmount,
             'dealRate' => round($dealRate * 100, 2),
             'commissionAmount' => $commissionAmount,
@@ -1249,11 +1306,16 @@ final class AnalyticsController extends Controller
                 'unpairedVisitCount' => $unpairedVisitCount,
                 'unpairedDealCount' => $unpairedDealCount,
             ],
-            // 口径说明：页面上要能自证，避免运营按记忆里的 /10 核对不上
+            // 口径说明：页面上要能自证，避免运营按记忆里的 /10 核对不上。
+            // **非管理层版本必须去掉所有金额**（原文案「× 20 元」「× 时效内核销金额」直接写着提成公式）。
             'formula' => [
-                'visitReward' => "有效到店人数（{$validVisitCount}）× {$reward} 元",
+                'visitReward' => $canSeeRevenue
+                    ? "有效到店人数（{$validVisitCount}）× {$reward} 元"
+                    : "有效到店人数（{$validVisitCount}）人",
                 'dealRate' => "有效成交人数（{$validDealCount}）÷ 有效到店人数（{$validVisitCount}）",
-                'commission' => "成交率（{$validDealCount}/{$validVisitCount}）× 时效内核销金额",
+                'commission' => $canSeeRevenue
+                    ? "成交率（{$validDealCount}/{$validVisitCount}）× 时效内核销金额"
+                    : "成交率（{$validDealCount}/{$validVisitCount}）",
             ],
         ];
     }
@@ -1320,6 +1382,11 @@ final class AnalyticsController extends Controller
         // 排序保持既有口径（按留资数倒序），不得改成按四列里的新列排 —— 已有前端在消费顺序
         uasort($channels, fn ($a, $b) => $b['leads'] <=> $a['leads']);
 
+        // 金额三列仅管理层可见：渠道级「成交金额 / 客单价 / 核销金额」，
+        // 客单价 × 成交条数 = 营收，等价泄露提成基数。计数三列（leads / deals / redeemCount）
+        // 与两个比率一律照给 —— 那是员工的工作抓手。排序用的是 leads，与金额无关，故归零不影响顺序。
+        $canSeeRevenue = self::canSeeRevenue($u);
+
         $rows = [];
         foreach ($channels as $name => $v) {
             $rows[] = [
@@ -1332,29 +1399,32 @@ final class AnalyticsController extends Controller
                 //    本地没有「券售出数」这个独立事实列，故不假装它是严格售出量。
                 'redeemCount' => $v['redeemCount'],
                 'redeemRate' => $v['leads'] > 0 ? round($v['redeemCount'] / $v['leads'] * 100, 1) : 0,
-                'redeemAmount' => round($v['redeemAmount'], 2),
+                'redeemAmount' => $canSeeRevenue ? round($v['redeemAmount'], 2) : 0,
                 // 成交率：按成交事件归期统计的成交条数 ÷ 该渠道留资数（与 platforms 的 deal 同源）
                 'deals' => $v['deals'],
                 'dealRate' => $v['leads'] > 0 ? round($v['deals'] / $v['leads'] * 100, 1) : 0,
                 // 客单价：成交金额 ÷ 成交条数（不是除以留资数）
-                'dealAmount' => round($v['dealAmount'], 2),
-                'avgDealAmount' => $v['deals'] > 0 ? round($v['dealAmount'] / $v['deals'], 2) : 0,
+                'dealAmount' => $canSeeRevenue ? round($v['dealAmount'], 2) : 0,
+                'avgDealAmount' => $canSeeRevenue && $v['deals'] > 0 ? round($v['dealAmount'] / $v['deals'], 2) : 0,
             ];
         }
 
         return [
             'rows' => $rows,
             'total' => $leads->count(),
-            // 四列的合计与整体比率（与 rows 逐个相加一致，供前端做合计行）
+            // 四列的合计与整体比率（与 rows 逐个相加一致，供前端做合计行）。
+            // 金额三项同样仅管理层可见（与 rows 同一套判据，避免「行是 0、合计不是 0」的分裂）。
             'summary' => [
                 'leads' => $leads->count(),
                 'deals' => $sales->count(),
                 'redeemCount' => $redeems->count(),
-                'dealAmount' => round((float) $sales->sum('deal_amount'), 2),
-                'redeemAmount' => round((float) $redeems->sum('redeem_amount'), 2),
+                'dealAmount' => $canSeeRevenue ? round((float) $sales->sum('deal_amount'), 2) : 0,
+                'redeemAmount' => $canSeeRevenue ? round((float) $redeems->sum('redeem_amount'), 2) : 0,
                 'dealRate' => $leads->count() > 0 ? round($sales->count() / $leads->count() * 100, 1) : 0,
                 'redeemRate' => $leads->count() > 0 ? round($redeems->count() / $leads->count() * 100, 1) : 0,
-                'avgDealAmount' => $sales->count() > 0 ? round((float) $sales->sum('deal_amount') / $sales->count(), 2) : 0,
+                'avgDealAmount' => $canSeeRevenue && $sales->count() > 0
+                    ? round((float) $sales->sum('deal_amount') / $sales->count(), 2)
+                    : 0,
             ],
             'formula' => [
                 'redeemRate' => '核销留资数 ÷ 该渠道留资数（本地无独立「券售出数」列，故以留资数为代理分母）',
@@ -1422,12 +1492,26 @@ final class AnalyticsController extends Controller
                 'leads' => $v['leads'],
             ];
         }
+        // 排序在归零**之前**做：这个列表按「成交 + 核销金额」倒序，先归零会让顺序变成任意值、
+        // 前端看到的行序随之变化（那是结构性变化，不在本任务允许的范围内）。
+        // 代价可接受：行序仍暴露相对大小，但不暴露任何数值。
         usort($rows, fn ($a, $b) => $b['deal'] + $b['redeem'] <=> $a['deal'] + $a['redeem']);
+
+        // 金额两列仅管理层可见（平台级成交金额 / 核销金额，与 channels 同源同口径）；
+        // 计数（leads / dealCount）保留。
+        $canSeeRevenue = self::canSeeRevenue($u);
+        if (! $canSeeRevenue) {
+            foreach ($rows as &$row) {
+                $row['redeem'] = 0;
+                $row['deal'] = 0;
+            }
+            unset($row); // 断掉引用，避免后续误写回 $rows 最后一个元素
+        }
 
         return [
             'rows' => $rows,
-            'totalDeal' => round((float) $sales->sum('deal_amount'), 2),
-            'totalRedeem' => round((float) $redeems->sum('redeem_amount'), 2),
+            'totalDeal' => $canSeeRevenue ? round((float) $sales->sum('deal_amount'), 2) : 0,
+            'totalRedeem' => $canSeeRevenue ? round((float) $redeems->sum('redeem_amount'), 2) : 0,
             'dealCount' => $sales->count(),
         ];
     }

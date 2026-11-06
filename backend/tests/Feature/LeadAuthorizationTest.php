@@ -577,7 +577,11 @@ class LeadAuthorizationTest extends TestCase
         $this->getJson('/api/analytics/channels?venue='.urlencode('东部店'))->assertOk()->assertJsonPath('data.total', 1);
         // 走势按「部门」口径：两位新媒体登记的客资都算（t9 之前是门店口径，会把全店留资算进来）
         $this->getJson('/api/analytics/trends')->assertOk()->assertJsonPath('data.summary.leadCount', 2);
-        $this->getJson('/api/analytics/platforms')->assertOk()->assertJsonPath('data.totalDeal', 100);
+        // 门店范围的守卫改用**计数**断言（dealCount 1 / 0），不再用 totalDeal：
+        // B2/B3 起金额只对管理层可见（canSeeRevenue），新媒体账号的金额一律归 0。
+        // 这条测试要证明的是「门店范围生效」，不是「新媒体能看金额」，故换成计数。
+        $this->getJson('/api/analytics/platforms')->assertOk()->assertJsonPath('data.dealCount', 1);
+        $this->getJson('/api/analytics/platforms')->assertOk()->assertJsonPath('data.totalDeal', 0);
 
         $greenOnly = $this->user('media-green', '绿地新媒体', 'R_MEDIA', null);
         $greenOnly->update(['venues' => ['绿地店']]);
@@ -590,6 +594,7 @@ class LeadAuthorizationTest extends TestCase
         // 这条与上面 channels 的 1 不矛盾：channels 是门店业绩（applyVenueScope），
         // trends 的留资数是「我能跟进的客资」，新媒体要能接手同事跨店登记的客资。
         $this->getJson('/api/analytics/trends')->assertOk()->assertJsonPath('data.summary.leadCount', 2);
+        $this->getJson('/api/analytics/platforms')->assertOk()->assertJsonPath('data.dealCount', 0);
         $this->getJson('/api/analytics/platforms')->assertOk()->assertJsonPath('data.totalDeal', 0);
     }
 

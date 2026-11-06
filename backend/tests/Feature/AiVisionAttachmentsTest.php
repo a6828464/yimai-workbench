@@ -442,7 +442,7 @@ class AiVisionAttachmentsTest extends TestCase
         $this->postJson('/api/ai/chat', [
             'messages' => [['role' => 'user', 'content' => '按图写']],
             'attachments' => [$this->pngDataUrl()],
-        ])->assertOk();
+        ])->assertStatus(502);   // B2-3：上游失败不再是 200（否则流式调用会退化成「空响应」）
 
         $record = ModelGenerationRecord::where('user_id', $user->id)->latest('id')->firstOrFail();
         $this->assertStringStartsWith('HTTP 402', (string) $record->error_message);
@@ -584,7 +584,7 @@ class AiVisionAttachmentsTest extends TestCase
             'attachments' => [$this->pngDataUrl()],
         ]);
 
-        $resp->assertStatus(200);
+        $resp->assertStatus(502);   // B2-3：上游 402 → 网关 502（body 结构不变）
         $this->assertStringContainsString('大模型接口返回异常（HTTP 402）', (string) $resp->json('message'));
         $this->assertNull($resp->json('visionUnsupported'));
     }
@@ -600,7 +600,7 @@ class AiVisionAttachmentsTest extends TestCase
         )]);
 
         $this->postJson('/api/ai/chat', ['messages' => [['role' => 'user', 'content' => '你好']]])
-            ->assertOk()
+            ->assertStatus(502)   // B2-3：上游 400 也是上游失败
             ->assertJsonPath('visionUnsupported', null);
     }
 
@@ -706,6 +706,7 @@ class AiVisionAttachmentsTest extends TestCase
         // 老行为不变：完全空 body 仍是 422 messages 必填（不是 413）
         $resp = $this->postJson('/api/ai/chat', []);
         $resp->assertStatus(422);
-        $this->assertStringContainsString('messages', (string) $resp->json('message'));
+        // B2-2：语言包改成 zh_CN 之后，字段名走 validation.attributes（messages => 对话内容）
+        $this->assertStringContainsString('对话内容', (string) $resp->json('message'));
     }
 }

@@ -100,7 +100,6 @@ try {
   statusBarHeight.value = 20
 }
 
-const pages = getCurrentPages()
 const safeTop = computed(() => `${statusBarHeight.value + 24}px`)
 
 onShow(() => {
@@ -163,7 +162,7 @@ function copyLink() {
  * 变成两套滚动逻辑；独立页还能被后端卡片直链（?venue=绿地店）。
  */
 function goGuide() {
-  uni.navigateTo({ url: '/pages/guide/guide' })
+  uni.navigateTo({ url: '/pkg-public/guide/guide' })
 }
 
 /** 底部 slogan 是内部入口：已登录直接进工作台，未登录去登录页 */
@@ -174,9 +173,6 @@ function goStaff() {
   }
   uni.navigateTo({ url: '/pages/login/login' })
 }
-
-// getCurrentPages 只是为了让模板里能引用，避免未使用告警
-void pages
 </script>
 
 <template>

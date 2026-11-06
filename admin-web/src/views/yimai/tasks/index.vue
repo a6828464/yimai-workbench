@@ -161,8 +161,11 @@
             @click="transit('待验收')"
             >提报完成（待验收）</ElButton
           >
+          <!-- 验收动作后端只认店长及以上（TaskController::update 里
+               abort_unless(userHasAnyRole(... ['R_SUPER','R_MANAGER']), 403, '仅店长及以上可验收')），
+               所以用 v-roles 在渲染层直接收口；canVerify 继续管「状态是否允许」 -->
           <ElButton
-            v-if="isManager || isSuper"
+            v-roles="['R_SUPER', 'R_MANAGER']"
             type="success"
             size="small"
             :disabled="!canVerify"
@@ -170,7 +173,7 @@
             >验收通过</ElButton
           >
           <ElButton
-            v-if="isManager || isSuper"
+            v-roles="['R_SUPER', 'R_MANAGER']"
             type="danger"
             size="small"
             plain
@@ -179,7 +182,8 @@
             >验收退回</ElButton
           >
           <ElButton
-            v-if="(isManager || isSuper) && detailDlg.row?.status === '待接收'"
+            v-if="detailDlg.row?.status === '待接收'"
+            v-roles="['R_SUPER', 'R_MANAGER']"
             type="warning"
             size="small"
             plain
@@ -198,6 +202,7 @@
   import { queryTasks, createTask, updateTask } from '@/api/yimai'
   import type { YimaiTask } from '@/api/yimai'
   import { useUserStore } from '@/store/modules/user'
+  import { showApiError } from '@/api/backend'
   import { useDevice } from '@/hooks/core/useDevice'
   import type {
     MobileCardAction,
@@ -422,7 +427,7 @@
       await getData()
     } catch (e) {
       console.error('[tasks.transit]', e)
-      ElMessage.error('操作失败，请稍后重试')
+      showApiError(e, '任务流转')
     }
   }
 
@@ -441,7 +446,7 @@
       await getData()
     } catch (e) {
       console.error('[tasks.startTask]', e)
-      ElMessage.error('操作失败，请稍后重试')
+      showApiError(e, '认领任务')
     }
   }
 
@@ -460,7 +465,7 @@
       await getData()
     } catch (e) {
       console.error('[tasks.assignOwner]', e)
-      ElMessage.error('分配失败，请稍后重试')
+      showApiError(e, '分配负责人')
     }
   }
 

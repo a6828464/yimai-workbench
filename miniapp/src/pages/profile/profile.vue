@@ -190,15 +190,15 @@ function toggleWxPanel(): void {
 }
 
 function goEdit(tab?: 'password'): void {
-  goPath(tab === 'password' ? '/pages/profile/edit?tab=password' : '/pages/profile/edit')
+  goPath(tab === 'password' ? '/pkg-me/profile/edit?tab=password' : '/pkg-me/profile/edit')
 }
 
 function goPersona(): void {
-  goPath('/pages/profile/persona')
+  goPath('/pkg-me/profile/persona')
 }
 
 function goNotify(): void {
-  goPath('/pages/profile/notify')
+  goPath('/pkg-me/profile/notify')
 }
 
 function showAbout(): void {

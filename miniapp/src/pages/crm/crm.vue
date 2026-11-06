@@ -144,19 +144,36 @@ function stamp(): string {
   return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
 }
 
+/** 请求在途时又被要求刷新（onShow 紧跟下拉刷新）：本轮结束后补跑一次，别把后一次丢掉 */
+let pendingRefresh = false
+/** 请求序号：真出现并发时（后续代码直接调 loadCounts）旧回包不能覆盖新角标 */
+let countsSeq = 0
+
 async function loadCounts(): Promise<void> {
-  if (loading.value) return
+  // 旧写法 `if (loading.value) return` 会把下拉刷新直接丢掉：await 立刻返回、
+  // stopPullDownRefresh 收起，「刷新完了」但角标还是旧值。
+  if (loading.value) {
+    pendingRefresh = true
+    return
+  }
+  const seq = ++countsSeq
   loading.value = true
   try {
     const [todo, review] = await Promise.all([
       fetchTodayTodo().catch(() => null),
       fetchReviewPendingCount().catch(() => null)
     ])
+    // 晚到的旧回包不写：角标只认最新一次请求的口径
+    if (seq !== countsSeq) return
     todoPending.value = countTodoPending(todo)
     reviewPending.value = normalizeCount(review)
     updatedAt.value = stamp()
   } finally {
     loading.value = false
+    if (pendingRefresh) {
+      pendingRefresh = false
+      void loadCounts()
+    }
   }
 }
 

@@ -499,34 +499,79 @@ function serializePlan(plan: TrainingPlan): Record<string, unknown> {
 
 /* ==========================================================================
  * 本地草稿：后端没有 GET /training-plans/{id}，详情只能由列表把整行传过去
+ *
+ * ## 为什么要加 cachedAt / TTL（F19）
+ * 草稿此前是「整行原样存、读到就用」，没有任何时效与版本判断：
+ * 电脑端改过计划后，手机点进来看到的还是当时那份快照，页面上也没有「可能不是最新」的提示。
+ * 现在写入时带 `at` 时间戳，读取时给出 stale 标记，由详情页决定信不信、要不要回查服务端。
+ *
+ * 后端 `present()` **不下发 updatedAt**（只回 id + payload + sourceReviewId/sourceBodyTestId/venue），
+ * 所以「与列表行比对版本」只能比整行内容指纹 —— 具体比对在 plan/detail.vue 的 loadPlan 里做。
  * ========================================================================== */
 
 const PLAN_DRAFT_PREFIX = 'yimai-plan-draft-'
 
-/** 列表点击时调用：整行存草稿，详情页按 id 取回 */
+/** 草稿保鲜期：超过这个时间的快照不再可信（默认 30 分钟，与任务口径一致） */
+export const PLAN_DRAFT_TTL_MS = 30 * 60 * 1000
+
+interface PlanDraftEnvelope {
+  /** 写入时刻（ms） */
+  at: number
+  plan: TrainingPlan
+}
+
+export interface PlanDraft {
+  plan: TrainingPlan
+  /** 写入时刻；0 = 老格式草稿（分包前写入、没有 at 字段），一律按过期处理 */
+  cachedAt: number
+  /** 是否过期：老格式或超过 TTL */
+  stale: boolean
+}
+
+/** 列表点击时调用：整行 + 写入时间存草稿，详情页按 id 取回 */
 export function savePlanDraft(plan: TrainingPlan): void {
   try {
-    setJSON(`${PLAN_DRAFT_PREFIX}${plan.id}`, plan)
+    const envelope: PlanDraftEnvelope = { at: Date.now(), plan }
+    setJSON(`${PLAN_DRAFT_PREFIX}${plan.id}`, envelope)
   } catch {
     /* 存不下就靠详情页「回查列表」兜底 */
   }
 }
 
-export function readPlanDraft(id: number): TrainingPlan | null {
+/**
+ * 读草稿。兼容两种历史格式：
+ *  - 新：`{ at, plan }`
+ *  - 老（分包前写入的）：直接把 plan 摊在顶层 —— 没有 at，无法判断新旧，按 stale 返回，
+ *    调用方会用服务端数据覆盖一次，正好把这批老草稿自然淘汰掉。
+ */
+export function readPlanDraft(id: number): PlanDraft | null {
   const raw = getJSON<unknown>(`${PLAN_DRAFT_PREFIX}${id}`)
   if (!raw || typeof raw !== 'object') return null
-  const plan = normalizePlan(raw)
-  return plan.id ? plan : null
+  const obj = raw as Record<string, unknown>
+  const hasEnvelope = typeof obj.at === 'number' && !!obj.plan && typeof obj.plan === 'object'
+  const cachedAt = hasEnvelope ? (obj.at as number) : 0
+  const plan = normalizePlan(hasEnvelope ? obj.plan : raw)
+  if (!plan.id) return null
+  return {
+    plan,
+    cachedAt,
+    stale: cachedAt === 0 || Date.now() - cachedAt > PLAN_DRAFT_TTL_MS
+  }
+}
+
+/** 删除计划成功后清掉草稿，避免以后主键复用时刻读到一份已删计划的快照 */
+export function removePlanDraft(id: number): void {
+  try {
+    storage.removeItem(`${PLAN_DRAFT_PREFIX}${id}`)
+  } catch {
+    /* noop */
+  }
 }
 
 /** 新建成功后把草稿迁到服务端 id 上（否则详情页拿 clientId 找不到） */
 export function movePlanDraft(fromId: number, plan: TrainingPlan): void {
   if (fromId && fromId !== plan.id) {
-    try {
-      storage.removeItem(`${PLAN_DRAFT_PREFIX}${fromId}`)
-    } catch {
-      /* noop */
-    }
+    removePlanDraft(fromId)
   }
   savePlanDraft(plan)
 }

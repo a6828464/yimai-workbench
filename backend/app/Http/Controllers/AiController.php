@@ -14,6 +14,27 @@ use Throwable;
 
 final class AiController extends Controller
 {
+    /*
+    |--------------------------------------------------------------------------
+    | 错误响应的状态码口径（改之前先读，别退回 200）
+    |--------------------------------------------------------------------------
+    |
+    | 本控制器曾有几处 `return response()->json(['code' => 1, 'message' => …])` **不带状态码**，
+    | 也就是 HTTP 200 配一个失败码。主契约（`{code, data}`）本来靠 code 判失败，所以非流式调用
+    | 能忍；但**流式调用会当场塌掉**：
+    |
+    |   admin-web `api/ai.ts` 的 readSse() 只判 `resp.ok`（200 就算成功），然后把 body 当 SSE 逐行读，
+    |   非 `data:` 开头的行被丢弃（:2322）→ 累计内容为空 → 抛 `LLM_EMPTY_RESPONSE`（:2350）。
+    |   用户看到的是英文内部码，而不是「大模型接口返回异常（HTTP 500），请稍后重试」。
+    |   小程序侧 `utils/http.ts` 的非 2xx 分支会把 message 原样 toast —— 前提是服务端真回非 2xx。
+    |
+    | 口径固定为：
+    |  - 422  请求本身有问题（未配置 Key / 模型不支持图片 / 空 body）
+    |  - 502  上游（OpenAI 兼容网关）不可达、返回非 2xx、或返回体缺内容
+    |  - 200  仅用于成功（含 SSE 流）
+    | body 结构保持 `{code: 1, message: …}`，只补状态码，前端结构与解析都不用改。
+    */
+
     /** POST /ai/chat */
     public function chat(Request $r)
     {
@@ -127,7 +148,7 @@ final class AiController extends Controller
         } catch (Throwable $e) {
             finishModelRecord($record, 'failed', $startedAt, '', $e->getMessage());
 
-            return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
+            return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)], 502);
         }
         if (! $resp->successful()) {
             // 上游响应体只落内部记录，不回传前端，避免泄露服务商内部报错/请求头回显
@@ -151,7 +172,7 @@ final class AiController extends Controller
                 ], 422);
             }
 
-            return response()->json(['code' => 1, 'message' => '大模型接口返回异常（HTTP '.$resp->status().'），请稍后重试']);
+            return response()->json(['code' => 1, 'message' => '大模型接口返回异常（HTTP '.$resp->status().'），请稍后重试'], 502);
         }
 
         if ($stream) {
@@ -189,7 +210,7 @@ final class AiController extends Controller
         if ($content === null) {
             finishModelRecord($record, 'failed', $startedAt, '', '大模型响应缺少内容');
 
-            return response()->json(['code' => 1, 'message' => '大模型响应缺少内容，请重试']);
+            return response()->json(['code' => 1, 'message' => '大模型响应缺少内容，请重试'], 502);
         }
 
         finishModelRecord($record, 'success', $startedAt, (string) $content, null, (array) ($resp->json('usage') ?? []));
@@ -275,10 +296,10 @@ final class AiController extends Controller
                 ->withOptions(['allow_redirects' => false])
                 ->get(rtrim($d['baseUrl'], '/').'/models');
         } catch (Throwable $e) {
-            return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
+            return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)], 502);
         }
         if (! $resp->successful()) {
-            return response()->json(['code' => 1, 'message' => '获取模型列表失败（HTTP '.$resp->status().'），请检查接口地址与 Key']);
+            return response()->json(['code' => 1, 'message' => '获取模型列表失败（HTTP '.$resp->status().'），请检查接口地址与 Key'], 502);
         }
 
         // OpenAI 兼容格式：{data:[{id}]}；部分厂商为 {data:{...}} 或 {models:[...]}
@@ -314,10 +335,10 @@ final class AiController extends Controller
                     'max_tokens' => 512,
                 ]);
         } catch (Throwable $e) {
-            return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)]);
+            return response()->json(['code' => 1, 'message' => '无法连接大模型接口: '.mb_substr($e->getMessage(), 0, 160)], 502);
         }
         if (! $resp->successful()) {
-            return response()->json(['code' => 1, 'message' => '大模型接口返回异常（HTTP '.$resp->status().'），请检查接口地址与 Key']);
+            return response()->json(['code' => 1, 'message' => '大模型接口返回异常（HTTP '.$resp->status().'），请检查接口地址与 Key'], 502);
         }
 
         return ok(['content' => (string) ($resp->json('choices.0.message.content') ?? '')]);

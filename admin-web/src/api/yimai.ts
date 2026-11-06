@@ -258,106 +258,38 @@ export async function setMemberRules(rules: MemberRules): Promise<MemberRules> {
 }
 
 /**
- * 清单归入引擎（口径来源：卓越店长训练营会员管理板块）
- * - 待续费（多卡口径 v3.1.24，任一命中即标记）：
- *   ① 次卡库存：全部有效次卡合计剩余节数 ≤ 阈值（含未开卡；无次卡不参与，避免误判 0 节）
- *   ② 次卡占比：合计剩余 / 合计绑定(剩余+已用) ≤ N%（捕捉大卡进入尾段，0=关闭）
- *   ③ 到期提醒：最早到期日在 N 天内
- *   ④ 有效期占比：时间卡剩余天数 / 有效期天数 ≤ N%（默认 0=关闭）
- * - 出勤降低：strict=M1>M2>M3 连续三月递减 / recent=M2>M3
- * - VIP：会员卡实收金额 ≥ 阈值（默认 30000 元）
- * - 预流失：上月出勤、本月停训（M2>0且M3=0），或15-30天未到店
- * - 待复活：30天以上未到店但仍有卡项资产
- */
-export function computeMemberLists(c: YimaiCustomer): MemberListKey[] {
-  const rules = getMemberRules()
-  const m1 = c.attendM1 ?? 0
-  const m2 = c.attendM2 ?? 0
-  const m3 = c.attendM3 ?? 0
-  const out: MemberListKey[] = []
-
-  const predropMin = rules.predropMin ?? 15
-  const predropMax = rules.predropMax ?? 30
-  const reviveDays = rules.reviveDays ?? 30
-  const days = lastVisitDays(c.lastVisit)
-  const hasAsset = Boolean(c.mainCard && !['—', '待同步卡项'].includes(c.mainCard))
-  const expireDays = c.expireDate
-    ? Math.floor((new Date(c.expireDate).getTime() - Date.now()) / 86400000)
-    : null
-  const revive = Boolean(c.inRevive) || (days !== null && days > reviveDays && hasAsset)
-  const preLoss =
-    !revive && days !== null && ((m2 > 0 && m3 === 0) || (days >= predropMin && days <= predropMax))
-  const declining =
-    !revive && !preLoss && (rules.declineMode === 'strict' ? m1 > m2 && m2 > m3 : m2 > m3)
-
-  // 次卡剩余：优先取有效卡汇总；无汇总的历史数据退回旧的单主卡字段
-  const stats = c.cardStats ?? null
-  const countResidue = stats && stats.countResidue !== null ? stats.countResidue : c.remainTimes
-  const countBound = stats?.countBound ?? 0
-  const countPercent = rules.renewalCountPercent ?? 0
-  const countHit =
-    countResidue !== null &&
-    m3 > 0 &&
-    (countResidue <= (rules.renewalThreshold ?? 10) ||
-      (countPercent > 0 && countBound > 0 && (countResidue / countBound) * 100 <= countPercent))
-  const expireDaysHit =
-    expireDays !== null && expireDays >= 0 && expireDays <= (rules.renewalExpireDays ?? 30)
-  const expirePercent = rules.renewalExpirePercent ?? 0
-  const expirePercentHit =
-    expirePercent > 0 &&
-    stats?.daysLeft !== null &&
-    stats?.daysLeft !== undefined &&
-    (stats?.daysTotal ?? 0) > 0 &&
-    (stats.daysLeft / (stats.daysTotal as number)) * 100 <= expirePercent
-
-  if (hasAsset && (countHit || expireDaysHit || expirePercentHit)) {
-    out.push('待续课')
-  }
-  if (declining) out.push('出勤降低')
-  if ((c.cardPaidAmount ?? 0) >= (rules.vipAmountThreshold ?? 30000)) out.push('VIP')
-  if (preLoss) out.push('预流失')
-  if (revive) out.push('待复活')
-  if (isBombMember(c)) out.push('炸弹会员')
-
-  return out
-}
-
-/**
- * 【mock-only · 非权威】炸弹会员判定，仅供 `USE_BACKEND === false` 的本地 mock 分支。
+ * 会员清单（待续课 / 出勤降低 / VIP / 预流失 / 待复活 / 炸弹会员 / 过期有余额）的判定：
+ * **前端没有实现，也不允许有第二份**。
  *
- * ⚠️ **权威判定在后端**：`helpers.php::customerDecision()` 的 `$bomb` +
- * `computeMemberLists()` 的 `lists['炸弹会员']`。真实后端模式下
- * （`USE_BACKEND === true`，即线上/测试服）前端**从不调用本函数**，
- * 只消费 `memberListIds` / `queryMemberListCounts` 返回的 id 与计数。
+ * ## 唯一权威
+ * 后端 `backend/app/Support/helpers.php::computeMemberLists()`（经 `memberListIds()` /
+ * `memberListCache()` 的 120 秒缓存）是唯一实现。前端只消费三个出口：
+ *   - `GET /customers/list-counts`    → 页签徽标数（键 = 清单名）
+ *   - `GET /customers/list-ids`       → 各清单的会员 id 集合（渲染「属于哪几个清单」标签）
+ *   - `GET /customers?list=<清单名>`  → 该清单的行
  *
- * 这里的实现刻意保持「够用但不等价」：mock 的 `YimaiCustomer` 里
- * **没有** `card_stats.expiredCards` 这个由同步服务写入的保留区字段
- * （过期卡的 residue/deadline 只在后端保留区里），所以本分支只能基于
- * mock 自身能看到的字段做一个近似判断，**不得**被当作口径来源引用。
- * 这也是为什么它必须带 mock-only 标记：避免后人误以为前端有第二份权威实现。
+ * ## 为什么原来那份镜像必须「删掉」而不是「留着备用」
+ * 收敛前本文件有一份 `computeMemberLists()` 镜像，它已经**过期**：缺 m3 门槛修正、缺逐卡尾段判定、
+ * 缺 90 天过期窗。后果是 `members/index.vue` 的清单标签与「今日待办」「页签徽标」三处对不上
+ * （该页 1815 行的注释曾自认「镜像没跟上」）。一份会算错的镜像比没有镜像更糟：它让
+ * 「前端裁剪只是体验、判定只归后端」这条边界失效，变成「前端也在判定业务口径」。
+ *
+ * ## mock（`VITE_USE_BACKEND !== 'true'`）分支：明确不支持，不再静默给错数
+ * mock 数据里没有 `card_stats.expiredCards` / `cards_list` 这些由同步服务写入的保留区字段，
+ * 物理上算不出与后端等价的结果。所以 mock 分支统一**抛错**，而不是返回一份「看起来像」的清单
+ * —— 空数组会被渲染成「0 个待续课」，那是一个错误的业务结论，比报错难查得多。
+ *
+ * 若将来要恢复 mock 的清单能力，**正确做法是在 mock 种子数据上预置 `memberLists` 字段（数据）**，
+ * 不要在 TypeScript 里再写一份判定（逻辑）：数据可以重灌，逻辑只会悄悄漂移。
+ *
+ * 可达性：`.env.development` 与 `.env.production` 都把 `VITE_USE_BACKEND` 设为 `true`，
+ * 该分支只在 `--mode probe`（`.env.probe`，本地视觉探针）下可达；正式环境不受影响。
  */
-function isBombMember(c: YimaiCustomer): boolean {
-  // mock 数据里 `cardStats.expiredCards` 若存在则按其判定；不存在则判否
-  // （宁可漏判，也不要在 mock 里造一个与后端不同的口径）
-  const expired = c.cardStats?.expiredCards
-  if (!expired || expired.length === 0) return false
-
-  const SIX_MONTHS_DAYS = 183
-  const cutoff = Date.now() - SIX_MONTHS_DAYS * 86400000
-
-  return expired.some((card) => {
-    if (card.type !== '1') return false
-    if (!(Number(card.residue ?? 0) > 0)) return false
-    if (!card.deadline) return false
-
-    // 严格「超过」6 个月：deadline 必须**早于**「今天 − 183 天」
-    return new Date(card.deadline).getTime() < cutoff
-  })
-}
-
-function lastVisitDays(date: string | null): number | null {
-  if (!date) return null
-  return Math.floor((Date.now() - new Date(date).getTime()) / 86400000)
+function mockListUnsupported(what: string): never {
+  throw new Error(
+    `本地演示模式（VITE_USE_BACKEND !== 'true'）不支持「${what}」：会员清单口径的唯一实现是后端 ` +
+      'helpers.php::computeMemberLists()。请在 mock 种子里预置 memberLists 字段，或连接真实后端。'
+  )
 }
 
 export async function updateMemberFields(
@@ -981,9 +913,10 @@ export async function queryCustomerOptions(): Promise<{ consultants: string[] }>
  *   但他在业务上仍是会员，不能从会员列表里消失。所以这里是 `||` 而不是 `&&`。
  * - `lead`：落 P5 **且** 不是同步会员。
  *
- * 抽成一处是刻意的：**徽标计数与列表查询必须共用同一个判定**。
- * 两边各写一份就会重演「徽标显示 4、点进去只有 3 行」那类口径分裂
- * （t16/t17 修的正是这个缺陷）。
+ * 抽成一处是刻意的：徽标计数（`list-counts`）与列表查询（`/customers`）在**后端**共用同一个
+ * `type` 过滤，mock 侧只服务列表查询一条路径。两边各写一份就会重演「徽标显示 4、点进去只有 3 行」
+ * 那类口径分裂（t16/t17 修的正是这个缺陷；X-1 收敛后 mock 的徽标计数已直接报「不支持」，
+ * 不再有第二条实现可以漂移）。
  *
  * ⚠️ 改这里必须同步改后端 `CustomerController::applyTypeFilter()`（那边的唯一定义处）。
  */
@@ -1010,22 +943,52 @@ export async function queryMemberListCounts(type?: string): Promise<Record<strin
     )
     return d.counts ?? {}
   }
-  const a = actor()
-  let pool = allCustomers().filter((c) => inScope(c.venue, a.scopeVenue))
-  if (a.isTeacher) pool = pool.filter((c) => c.owner === a.userName || c.consultant === a.userName)
-  pool = pool.filter((c) => mockCustomerTypeMatches(c, type))
-  const out: Record<string, number> = {}
-  for (const key of [
-    '待续课',
-    '出勤降低',
-    'VIP',
-    '预流失',
-    '待复活',
-    '炸弹会员'
-  ] as MemberListKey[]) {
-    out[key] = pool.filter((c) => computeMemberLists(c).includes(key)).length
+  // mock：清单计数没有前端实现（原镜像已删，见 mockListUnsupported 的说明）
+  mockListUnsupported('五清单徽标计数')
+}
+
+/**
+ * 七个清单各自的会员 id 集合（**一次请求**）。
+ *
+ * ## 为什么需要它
+ *
+ * 会员管理页要在每行渲染「这个会员属于哪几个清单」的标签。改造前前端只能：
+ * `GET /customers?list=待续课&size=5000&current=N` —— 七个清单并行、每个清单最多翻
+ * 20 页（`members/index.vue` 的 `fetchMemberListIds()`），**最坏 140 次分页请求**
+ * （7 × 20；t3 当时按 5 个估成 100，t24 实测 FILTER_KEYS 为 6 个页签 + 过期有余额 = 7），
+ * 而且每一行都把 `cards_list` / `card_stats` 两个 JSON 列一并拖回来，只为读一个 `id`
+ * （t3-W02，全站最重的一次首屏 IO）。
+ *
+ * 后端 `GET /customers/list-ids` 直接回 `memberListIds()`（超管路径 0 次额外查询、
+ * 带 120s 缓存），且与 `GET /customers?list=<清单名>` 用的是**同一个**
+ * `memberListIds()` / `filteredIds()` —— 两个出口同源，所以「标签说有、列表里没有」
+ * 这类口径分裂在服务端就被消掉了。
+ *
+ * ## 返回值
+ *
+ * `Record<清单名, 会员 id 数组>`，键集合与 `/customers/list-counts` 的 `counts` 一致
+ * （待续课 / 出勤降低 / VIP / 预流失 / 待复活 / 炸弹会员 / 过期有余额）。
+ * 这里**显式把 id 转成 number**：JSON 跨边界后 int 可能以字符串形态出现，
+ * 而页面用 `memberListIds[row.id]` 取值 —— 类型不齐会静默查不到，标签就整列消失。
+ *
+ * 调用方（会员页）对失败做降级：这是辅助信息，挂了不该让列表不可用。
+ */
+export async function queryMemberListIds(): Promise<Record<string, number[]>> {
+  if (USE_BACKEND) {
+    const d = await apiGet<{ lists?: Record<string, Array<number | string>> }>(
+      '/customers/list-ids'
+    )
+    const out: Record<string, number[]> = {}
+    for (const [key, raw] of Object.entries(d?.lists ?? {})) {
+      if (!Array.isArray(raw)) continue
+      out[key] = raw.map((v) => Number(v)).filter((n) => Number.isFinite(n))
+    }
+    return out
   }
-  return Promise.resolve(out)
+  // mock：清单归属同样没有前端镜像（见 mockListUnsupported 的说明）。
+  // 这里返回空集合而不是抛错 —— 与改造前 `if (!USE_BACKEND) return []` 的行为逐字一致，
+  // 演示态下标签本来就是空的，没必要每次进页面都抛一次。
+  return {}
 }
 
 /**
@@ -1204,12 +1167,12 @@ export function queryCustomers(
   if (a.isTeacher) {
     list = list.filter((c) => c.owner === a.userName || c.consultant === a.userName)
   }
-  // 与徽标计数共用同一个判定（mockCustomerTypeMatches），不要再在这里写第三份。
+  // type 过滤统一走 mockCustomerTypeMatches，不要再在这里写第三份。
   // 这里曾经写成 `layer !== 'P5' && mainCard !== '—'`，与后端 `|| external_id like 'ky:%'`
   // 语义不同 —— 两处不一致就会重演「徽标 4、点进去 3 行」。
   list = list.filter((c) => mockCustomerTypeMatches(c, params.type))
-  if (params.list)
-    list = list.filter((c) => computeMemberLists(c).includes(params.list as MemberListKey))
+  // mock：按清单筛选没有前端实现（原镜像已删，见 mockListUnsupported 的说明）
+  if (params.list) mockListUnsupported('按清单筛选会员')
   if (params.name) list = list.filter((c) => c.name.includes(String(params.name)))
   if (params.phone) {
     const p = String(params.phone)
@@ -3423,7 +3386,8 @@ export function getTodaySummary(): Promise<TodaySummary> {
       scopedCustomers.filter((c) => c.layer === 'P5').length +
       leads.filter((l) => l.status === '新留资').length,
     pendingFollowup: scopedCustomers.filter((c) => c.nextActionTime <= '2026-08-27').length,
-    expiringMembers: scopedCustomers.filter((c) => computeMemberLists(c).includes('待续课')).length,
+    // mock：expiringMembers 依赖清单判定，前端已无第二份实现（见 mockListUnsupported）
+    expiringMembers: mockListUnsupported('今日概览 · 待续课人数'),
     riskCount:
       scopedTasks.filter((t) => t.status === '已逾期').length +
       scopedCustomers.filter((c) => c.owner === '未分配').length +
@@ -3666,12 +3630,13 @@ export function getTodayTodo(): Promise<TodayTodo> {
   // 本地演示模式：从本地演示数据派生；预约明细不含（仅快照计数）
   const a = actor()
   const userVenue = a.scopeVenue
-  const scoped = allCustomers().filter(
-    (c) =>
-      inScope(c.venue, userVenue) &&
-      (!a.isTeacher || c.owner === a.userName || c.consultant === a.userName)
-  )
-  const customers = scoped.map((c) => ({ c, lists: computeMemberLists(c) }))
+  // 客户集合原本在这里按角色范围过滤后逐行算清单。清单判定已无前端实现，所以过滤一并删掉
+  // （它只服务于清单派生卡片；留一个不用的 scoped 会被 lint 拦下，也会让后人误以为它还在起作用）。
+  // mock：待续课 / 预流失 / 待复活 / 出勤降低 四类卡片全部由清单判定派生，
+  // 前端已无第二份实现（见 mockListUnsupported）。显式标类型是为了让「恒抛」的 never
+  // 仍然通过类型检查，而不是把下面整段派生逻辑改成死代码。
+  const customers: { c: YimaiCustomer; lists: MemberListKey[] }[] =
+    mockListUnsupported('今日待办 · 清单派生卡片')
   const snap = useYimaiStore().state.snapshot
   const today = todayIso()
 

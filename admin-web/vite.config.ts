@@ -68,10 +68,23 @@ export default ({ mode }: { mode: string }) => {
         output: {
           // 大体积供应商独立分包：主业务改动时浏览器可继续命中缓存，
           // 避免 element-plus/echarts 全量打进单个 1.4MB 主 chunk
+          //
+          // ⚠️ 这里**故意不写 `return 'vendor'` 兜底**（t12 改）：
+          // 兜底会把所有没被显式归类的 node_modules 一锅塞进 vendor，而 vendor 是
+          // index.html 里 modulepreload 的首屏 chunk。最典型的受害者是 crypto-js
+          // （PBKDF2/HMAC，620KB 源）——它唯一的调用方是懒加载的 art-screen-lock，
+          // 却因为兜底被拉到首屏（vendor 305.5KB / 106.6KB gz）。
+          // 兜底去掉后 rollup 按真实引用关系切分：只被懒加载组件引用的依赖会跟着
+          // 那个懒 chunk 走，不再污染首屏。真需要再拆时按包名显式加分支。
           manualChunks(id: string) {
             if (!id.includes('node_modules')) return undefined
-            // highlight.js 走动态 import（v-highlight 指令首次使用才加载），不归入静态 vendor
-            if (id.includes('highlight.js')) return undefined
+            // ⚠️ highlight.js 已**整体摘除**（t12 改），这里不再有「动态 import 的
+            // highlight.js 要放行」这种分支 —— 原来那行 `if (id.includes('highlight.js'))
+            // return undefined` 是死代码：`directives/business/highlight.ts` 现在不 import
+            // 任何 highlight.js，全仓唯一的提及是那段「本指令不做语法高亮」的注释。
+            // 保留一行假注释比留着 bug 更贵：下一个人会照着它去找那个不存在的动态 import。
+            // 若将来真要恢复语法高亮，正确做法是 highlight.js/lib/core + 按语言注册
+            // （见 highlight.ts 抬头注释），届时再按需加回分支。
             if (id.includes('echarts') || id.includes('zrender')) return 'echarts'
             if (
               id.includes('element-plus') ||
@@ -92,7 +105,7 @@ export default ({ mode }: { mode: string }) => {
               id.includes('deep-pick-omit')
             )
               return 'vue-vendor'
-            return 'vendor'
+            return undefined
           }
         }
       },

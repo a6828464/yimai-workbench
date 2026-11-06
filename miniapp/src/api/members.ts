@@ -35,7 +35,21 @@ export interface CustomerQuery {
   size?: number
 }
 
-/** 会员页页签 → 后端清单名。与 admin-web/src/views/yimai/members/index.vue 的 TAB_KEY_TO_LIST 同源 */
+/**
+ * 会员页页签 → 后端清单名。**只做 tab → 清单名的映射，判定完全由后端完成。**
+ *
+ * 键（页签）在本地，值（清单名）必须与后端 `helpers.php::computeMemberLists()` 里
+ * `$lists` 的键**逐字一致**（待续课 / 出勤降低 / VIP / 预流失 / 待复活 / 炸弹会员），
+ * 因为 `GET /customers?list=<清单名>` 走的是 `filteredIds($list)`：
+ * 名字对不上不会报错，只会**静默返回空数组**（`memberListIds()[$list] ?? []`）。
+ * 所以这里改一个字都必须同步跑 `packages/shared-types/verify-role-matrix.mjs`
+ * 与后端 `php artisan test`，两处任一对不上都会立刻表现为「页签有、列表空」。
+ *
+ * 与网页端 `admin-web/src/views/yimai/members/index.vue` 的 `TAB_KEY_TO_LIST` 同源
+ * （同一个映射在两端各有一份字符串表，这是**允许**的：它是路由/文案层的键名对齐，
+ * 不承载任何判定逻辑；判定逻辑的唯一实现在后端，网页端原先那份 computeMemberLists()
+ * 镜像已在 X-1 收敛中删除）。
+ */
 export const MEMBER_LIST_OF_TAB: Record<string, string> = {
   renewal: '待续课',
   decline: '出勤降低',

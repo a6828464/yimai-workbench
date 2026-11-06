@@ -1,0 +1,5 @@
+{
+    "(and :count more error)": "（另 :count 项错误）",
+    "(and :count more errors)": "（另 :count 项错误）",
+    "The given data was invalid.": "提交的数据不合法。"
+}

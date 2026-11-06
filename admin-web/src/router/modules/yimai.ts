@@ -1,11 +1,26 @@
+import rolesMatrix from '../../../../packages/shared-types/roles.json'
 import { AppRouteRecord } from '@/types/router'
 
-const ALL = ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER', 'R_MEDIA']
-const OPS = ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER']
+/**
+ * 具名角色集合：唯一事实来源是仓库根的 `packages/shared-types/roles.json`。
+ *
+ * 收敛前这里是 5 行字面量数组，与 `admin-web/src/api/yimai.ts` 的 actor()、
+ * `miniapp/src/utils/permission.ts` 的同名四组、以及后端 helpers.php 的逐处内联判定
+ * 一共四份事实源。现在两端都从这份 JSON 派生，改角色集合只需改 JSON 一处。
+ *
+ * 铁律：**不要**在这个文件里就地手写 `['R_SUPER', 'R_MANAGER']` 这类数组。
+ * `node packages/shared-types/verify-role-matrix.mjs` 会逐条检查每条路由的 meta.roles
+ * 是否原样等于某个具名组，就地手写会当场 FAIL。
+ *
+ * 为什么不改成「后端 /me 下发 features[]」：见 roles.json 的 `_readme`
+ * （后端没有功能/入口这个概念；31 条路由 ≠ 15 个小程序功能；packages/ 不进后端发布包）。
+ */
+const ALL = rolesMatrix.groups.ALL
+const OPS = rolesMatrix.groups.OPS
 // 老师侧：服务老师（会籍顾问）与授课老师（私教主教练）
-const TEACHING = ['R_SUPER', 'R_MANAGER', 'R_TEACHER']
-const MGMT = ['R_SUPER', 'R_MANAGER']
-const SUPER = ['R_SUPER']
+const TEACHING = rolesMatrix.groups.TEACHING
+const MGMT = rolesMatrix.groups.MGMT
+const SUPER = rolesMatrix.groups.SUPER
 
 /**
  * 一麦工作台 · 菜单结构（按业务域分级）
@@ -215,6 +230,14 @@ export const yimaiRoutes: AppRouteRecord[] = [
         name: 'YimaiAiConfig',
         component: '/yimai/ai-config',
         meta: { title: '模型配置', icon: 'ri:cpu-line', roles: SUPER, keepAlive: false }
+      },
+      {
+        // 小程序设置：维护两家店在顾客端「到店指引」页展示的副标题/地址/电话/坐标/引导图。
+        // 数据走后端 GET/PUT /miniapp/config（门店数量与名称由后端固定，页面上不可增删）。
+        path: '/yimai/miniapp-config',
+        name: 'YimaiMiniappConfig',
+        component: '/yimai/miniapp-config',
+        meta: { title: '小程序设置', icon: 'ri:wechat-line', roles: SUPER, keepAlive: false }
       },
       {
         path: '/yimai/audit',

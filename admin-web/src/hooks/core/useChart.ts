@@ -49,11 +49,91 @@
  * @author Art Design Pro Team
  */
 
-import { echarts, type EChartsOption } from '@/plugins/echarts'
+import type { EChartsOption } from '@/plugins/echarts'
 import { storeToRefs } from 'pinia'
 import { useSettingStore } from '@/store/modules/setting'
 import { getCssVar } from '@/utils/ui'
 import type { BaseChartProps, ChartThemeConfig, UseChartOptions } from '@/types/component/chart'
+
+/**
+ * echarts 异步边界（2026-11 t21）
+ *
+ * ## 为什么这里必须动态 import
+ *
+ * 改造前本文件顶部是 `import { echarts } from '@/plugins/echarts'`，
+ * 而 4 份工作台（boss / manager / teacher / media dashboard）全部 import 这个
+ * useChart —— 于是无论哪个角色登录、无论页面画不画图，**echarts 都在首屏依赖图里**，
+ * 每人白付 597 KB raw / 197.7 KiB gz（t3/t12 实测）。
+ *
+ * 现在改成 `import()`：只有真正渲染图表的组件在挂载后才会触发下载。
+ * `@/plugins/echarts` 模块顶部的 `echarts.use([...])` 是模块级副作用，
+ * 动态 import 的 promise resolve 时注册已经完成 —— 所以**先注册、再 init**，
+ * 不会出现「图表空白 / Component xxx is not exists」。
+ */
+type EChartsNamespace = typeof import('echarts/core')
+type EChartsInstance = import('echarts/core').ECharts
+
+let echartsNamespace: EChartsNamespace | null = null
+let echartsLoading: Promise<EChartsNamespace> | null = null
+
+/**
+ * 加载 echarts（模块级单例，多次调用共享同一个 promise）。
+ * 任意图表组件第一次挂载时调用一次即可。
+ *
+ * ## 失败必须重置单例（t25，R1 复核发现）
+ *
+ * `echartsLoading` 是模块级单例：如果 `import()` reject 之后**不把它清掉**，
+ * 这个变量会一直持有一个 **rejected promise**，而 `echartsNamespace` 仍是 null。
+ * 于是本次会话里**所有**图表的 `loadEcharts()` 都会立刻拿到同一个失败结果 ——
+ * 一次网络抖动（弱网、CDN 504、被运营商劫持）就让用户「永久白图」，
+ * 只能刷新页面才能自救。图表是工作台的主体内容，这个代价不能接受。
+ *
+ * 所以：reject 时把单例置回 null，下一次调用会**重新发起 import**（浏览器对失败的
+ * 模块请求不会缓存成成功模块，重试是真实重试）。成功路径不受影响，成功后走
+ * `echartsNamespace` 快路径，不会重复请求。
+ */
+export function loadEcharts(): Promise<EChartsNamespace> {
+  if (echartsNamespace) return Promise.resolve(echartsNamespace)
+  if (!echartsLoading) {
+    echartsLoading = import('@/plugins/echarts')
+      .then((mod) => {
+        echartsNamespace = mod.echarts as EChartsNamespace
+        return echartsNamespace
+      })
+      .catch((err) => {
+        // 关键：不重置的话，一次失败会毒化整个会话的图表（永久白图）
+        echartsLoading = null
+        throw err
+      })
+  }
+  return echartsLoading
+}
+
+/**
+ * 线性渐变（纯对象形式）。
+ *
+ * 等价于 `new echarts.graphic.LinearGradient(x, y, x2, y2, stops)`，但**不需要**
+ * 先加载 echarts —— 组件在生成 options 时就能同步构建，从而把 echarts 的加载
+ * 推迟到真正 init 的那一刻。echarts 渲染层接受这种纯对象（graphic.LinearGradient
+ * 内部也是先转成同样的对象），视觉效果一致。
+ */
+export interface LinearGradientColor {
+  type: 'linear'
+  x: number
+  y: number
+  x2: number
+  y2: number
+  colorStops: Array<{ offset: number; color: string }>
+  global: boolean
+}
+
+export const linearGradient = (
+  x: number,
+  y: number,
+  x2: number,
+  y2: number,
+  colorStops: Array<{ offset: number; color: string }>
+): LinearGradientColor => ({ type: 'linear', x, y, x2, y2, colorStops, global: false })
 
 // 图表主题配置
 export const useChartOps = (): ChartThemeConfig => ({
@@ -89,7 +169,7 @@ export function useChart(options: UseChartOptions = {}) {
   const { isDark, menuOpen, menuType } = storeToRefs(settingStore)
 
   const chartRef = ref<HTMLElement>()
-  let chart: echarts.ECharts | null = null
+  let chart: EChartsInstance | null = null
   let intersectionObserver: IntersectionObserver | null = null
   let pendingOptions: EChartsOption | null = null
   let resizeTimeoutId: number | null = null
@@ -380,6 +460,30 @@ export function useChart(options: UseChartOptions = {}) {
     }
   }
 
+  /**
+   * 确保图表实例存在（异步）。
+   *
+   * echarts 走动态 import，所以「拿到实例」这件事本身是异步的：
+   * 先 await 加载（此时 `echarts.use()` 已注册完毕），再 init。
+   * 组件侧不用改：`initChart` / `updateChart` 仍是同步签名，内部走这里。
+   */
+  const ensureInstance = async (): Promise<EChartsInstance | null> => {
+    if (chart) return chart
+    if (isDestroyed || !chartRef.value) return null
+
+    const echarts = await loadEcharts()
+    // 加载期间组件可能已卸载（快速切页/切 tab），必须再判一次
+    if (isDestroyed || !chartRef.value) return null
+
+    if (!chart) {
+      chart = echarts.init(chartRef.value)
+      // 图表创建后立即设置监听器
+      setupMenuWatchers()
+      setupThemeWatcher()
+    }
+    return chart
+  }
+
   // 创建IntersectionObserver
   const createIntersectionObserver = () => {
     if (intersectionObserver || !chartRef.value) return
@@ -391,23 +495,23 @@ export function useChart(options: UseChartOptions = {}) {
             // 使用 requestAnimationFrame 确保在下一帧初始化图表
             requestAnimationFrame(() => {
               if (!isDestroyed && pendingOptions) {
-                try {
-                  // 元素变为可见，初始化图表
-                  if (!chart) {
-                    chart = echarts.init(entry.target as HTMLElement)
-                  }
+                // echarts 是异步边界：先 await 加载（use() 注册在 import 完成时已生效）
+                void ensureInstance()
+                  .then((instance) => {
+                    if (!instance || isDestroyed || !entry.target) return
 
-                  // 触发自定义事件，让组件处理动画逻辑
-                  const event = new CustomEvent('chartVisible', {
-                    detail: { options: pendingOptions }
+                    // 触发自定义事件，让组件处理动画逻辑
+                    const event = new CustomEvent('chartVisible', {
+                      detail: { options: pendingOptions }
+                    })
+                    entry.target.dispatchEvent(event)
+
+                    pendingOptions = null
+                    cleanupIntersectionObserver()
                   })
-                  entry.target.dispatchEvent(event)
-
-                  pendingOptions = null
-                  cleanupIntersectionObserver()
-                } catch (error) {
-                  console.error('图表初始化失败:', error)
-                }
+                  .catch((error) => {
+                    console.error('图表初始化失败:', error)
+                  })
               }
             })
           }
@@ -435,16 +539,23 @@ export function useChart(options: UseChartOptions = {}) {
 
   // 图表初始化核心逻辑
   const performChartInit = (options: EChartsOption) => {
-    if (!chart && chartRef.value && !isDestroyed) {
-      chart = echarts.init(chartRef.value)
-      // 图表创建后立即设置监听器
-      setupMenuWatchers()
-      setupThemeWatcher()
-    }
     if (chart && !isDestroyed) {
       chart.setOption(options)
       pendingOptions = null
+      return
     }
+    if (isDestroyed) return
+
+    // 首次渲染：等 echarts 异步加载完成再 init + setOption
+    void ensureInstance()
+      .then((instance) => {
+        if (!instance || isDestroyed) return
+        instance.setOption(options)
+        pendingOptions = null
+      })
+      .catch((error) => {
+        console.error('图表初始化失败:', error)
+      })
   }
 
   // 空状态管理器

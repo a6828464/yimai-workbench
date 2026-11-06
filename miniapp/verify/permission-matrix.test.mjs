@@ -150,6 +150,10 @@ check('isSuper / isManagerOrAbove / isMediaOnly 口径',
 {
   const pagesJson = JSON.parse(readFileSync(resolve(__dirname, '../src/pages.json'), 'utf8'))
   const registered = new Set((pagesJson.pages || []).map((p) => '/' + p.path))
+  // W7-2：分包页也算注册（route = /<root>/<path>），否则 20 个分包页会被误报「未注册」
+  for (const sub of pagesJson.subPackages ?? []) {
+    for (const p of sub.pages) registered.add('/' + sub.root + '/' + p.path)
+  }
   const tabPages = new Set((pagesJson.tabBar?.list || []).map((t) => '/' + t.pagePath))
   const missing = Object.values(FEATURES)
     .map((f) => f.path.split('?')[0])

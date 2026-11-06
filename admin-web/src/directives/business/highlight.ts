@@ -1,12 +1,36 @@
 /**
- * v-highlight 代码高亮指令
+ * v-highlight 代码块增强指令
  *
- * 为代码块提供语法高亮、行号显示和一键复制功能。
- * 基于 highlight.js 实现，支持多种编程语言的语法高亮。
+ * 为代码块提供**行号显示**与**一键复制**，并自动跟随后续 DOM 变化。
+ *
+ * > ⚠️ **本指令不做语法高亮。** `v-highlight` 当前全仓 0 调用点。
+ * > 若将来真需要高亮，用 `highlight.js/lib/core` + `registerLanguage` **按语言注册**
+ * > （并补一份局部 d.ts）；**不要**直接 `import('highlight.js')` 全量包 ——
+ * > 那会产出一个 940KB 的 chunk。
+ *
+ * ## ⚠️ 语法高亮能力已移除（2026-11 t12，captain 已裁定接受）
+ *
+ * 本指令原先 `await import('highlight.js')` 动态加载 **highlight.js 全量语言包**，
+ * 产出一个 963,181 B（gzip 300,295 B 左右）的独立 chunk。实测全仓
+ * `grep -rn "v-highlight" src --include=*.vue` → **0 处使用**，即这份体积纯属死重。
+ *
+ * 为什么选「移除高亮」而不是「改 `highlight.js/lib/core` + registerLanguage 按语言注册」：
+ * 1. 本项目 `tsconfig.json` 是 `moduleResolution: "node"`，而 `highlight.js` 的
+ *    `exports` 只给 `"."` 出口声明了 types；`lib/core` 靠同目录 `lib/core.d.ts`
+ *    侥幸可解析，但 `lib/languages/*` 没有随包 d.ts，按语言注册会触发 TS7016，
+ *    要么加 `@ts-expect-error`（与「vue-tsc 零错误」的红线冲突），要么新增 d.ts
+ *    补丁（超出本次改动范围）。
+ * 2. 即便改成 lib/core + 4 种语言，因为调用点是 0，仍然会产出 20KB+ gz 的死 chunk；
+ *    收益为零，风险不为零。
+ * 3. 删除整个指令文件需要同步改 `src/directives/index.ts` 与 `src/types/directive`
+ *    （不在本次改动范围内），所以这里保留文件与导出签名，只摘掉 highlight.js 依赖。
+ *
+ * 若将来真的需要语法高亮，正确做法是：在 `plugins/` 下建一个按语言注册的
+ * highlight 实例（`highlight.js/lib/core` + `registerLanguage` + 一份局部 d.ts），
+ * 再在 `processBlock()` 里调用，而不是把全量语言包塞进构建产物。
  *
  * ## 主要功能
  *
- * - 语法高亮 - 使用 highlight.js 自动识别并高亮代码
  * - 行号显示 - 自动为每行代码添加行号
  * - 一键复制 - 提供复制按钮，点击即可复制代码（自动过滤行号）
  * - 性能优化 - 批量处理代码块，避免阻塞渲染
@@ -17,14 +41,11 @@
  *
  * ```vue
  * <template>
- *   <!-- 基础用法 -->
  *   <div v-highlight v-html="codeContent"></div>
  *
- *   <!-- 配合 Markdown 渲染 -->
  *   <div v-highlight>
  *     <pre><code class="language-javascript">
  *       const hello = 'world';
- *       console.log(hello);
  *     </code></pre>
  *   </div>
  * </template>
@@ -44,13 +65,6 @@
 import { App, Directive } from 'vue'
 
 export type HighlightDirective = Directive<HTMLElement>
-
-// 高亮代码（按需动态加载 highlight.js：全语言包 ~1MB，项目暂无调用方，
-// 动态 import 使其独立成 chunk，只有真正使用 v-highlight 时才会下载）
-async function highlightCode(block: HTMLElement) {
-  const hljs = (await import('highlight.js')).default
-  hljs.highlightElement(block)
-}
 
 // 插入行号
 function insertLineNumbers(block: HTMLElement) {
@@ -115,7 +129,9 @@ function processBlock(block: HTMLElement) {
   }
 
   try {
-    highlightCode(block)
+    // 同步执行：改造前这里是「先 fire-and-forget 一个 async 高亮，再立刻插入行号」，
+    // 高亮 resolve 后会用 highlightElement 覆写 innerHTML，把刚插进去的行号冲掉；
+    // 去掉 highlight.js 之后这个竞态自然消失。
     insertLineNumbers(block)
     addCopyButton(block)
     markBlockAsProcessed(block)
@@ -182,7 +198,7 @@ function retryProcessing(el: HTMLElement, maxRetries: number = 3, delay: number 
   tryProcess()
 }
 
-// 代码高亮、插入行号、复制按钮
+// 行号 + 复制按钮
 const highlightDirective: HighlightDirective = {
   mounted(el: HTMLElement) {
     // 立即尝试处理一次

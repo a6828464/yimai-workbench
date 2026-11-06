@@ -173,7 +173,8 @@ const cards = computed<StatCard[]>(() => {
     bookingsHint = `其中体验课 ${trials} 人`
   }
 
-  return [
+  // 先按完整口径拼满四张，再在函数尾按账号身份裁剪（新媒体少一张，见下方 filter 注释）
+  const list: StatCard[] = [
     {
       key: 'bookings',
       label: '今日预约',
@@ -183,7 +184,7 @@ const cards = computed<StatCard[]>(() => {
       trend: !isTeacherSide.value && !snapshotAvailable ? '未同步' : '',
       trendTone: 'flat',
       tone: 'brand',
-      to: '/pages/todo/todo?tab=bookings'
+      to: '/pkg-biz/todo/todo?tab=bookings'
     },
     {
       key: 'leads',
@@ -194,7 +195,7 @@ const cards = computed<StatCard[]>(() => {
       trend: '',
       trendTone: 'flat',
       tone: risk > 0 ? 'gold' : 'light',
-      to: '/pages/leads/leads?status=新留资'
+      to: '/pkg-crm/leads/leads?status=新留资'
     },
     {
       key: 'followup',
@@ -211,7 +212,7 @@ const cards = computed<StatCard[]>(() => {
       trendTone: 'flat',
       tone: 'light',
       // 待跟进 = 今日待办里的「新客首响」组；无数据也允许进空页，不在这里判空
-      to: '/pages/todo/todo?tab=newLeads'
+      to: '/pkg-biz/todo/todo?tab=newLeads'
     },
     {
       key: 'expiring',
@@ -225,9 +226,14 @@ const cards = computed<StatCard[]>(() => {
       trend: '',
       trendTone: 'flat',
       tone: 'light',
-      to: '/pages/members/members?list=待续课'
+      to: '/pkg-crm/members/members?list=待续课'
     }
   ]
+
+  // 新媒体账号不渲染「卡项临期」：该卡跳 /pkg-crm/members/members，而 members 属 OPS_ROLES
+  // （permission.ts 的 OPS_ROLES 不含 R_MEDIA）→ 点了会被 requireFeature 弹回，是一条
+  // 「点了没反应」的死链。与其留个死按钮，不如直接不渲染（与上文 isMediaAccount 口径一致）。
+  return isMediaAccount.value ? list.filter((c) => c.key !== 'expiring') : list
 })
 
 /**
@@ -510,23 +516,56 @@ const todoDesc = computed(() =>
  * 趋势 + 漏斗。这里用**已有接口**（/today/summary、/analytics/summary）补齐，
  * 不新增后端：口径完全一致，不会出现"两个端说的不是一回事"。
  */
+/**
+ * 收入结构可见性：管理层（R_SUPER / R_MANAGER）才看。
+ *
+ * 单一判据，既给 revenueRows 用，也给模板的 v-if 用 —— 模板不能只判 `.length`，
+ * 否则「后端哪天把 revenueMix 又放回响应里」就会绕过前端这道闸。
+ */
+const canSeeRevenue = computed(() => isManagerOrAbove(user.roles))
+
+/**
+ * 经营概览 KPI：**按角色收敛**（P0-3）。
+ *
+ * 分层口径（与本文件 isTeacherSide 是同一条产品判断）：
+ *  - 店长及以上：8 项全给。「会员总数 / 客户总数 / 留资分配率 / 客户闭环率 / 续费处理率」
+ *    本来就是店长的考核项，藏掉等于砍功能。
+ *  - 一线（服务 / 授课 / 新媒体）：只留 3 项与本人当天动作直接挂钩的
+ *    「待续课（要跟进的会员）/ 未分配（待认领客资）/ 任务完成率（任务中心闭环）」。
+ *    其余 5 项是**门店大盘口径**，一线看了既不能指导动作，又会让「门店数据」和「本人业绩」
+ *    混在同一屏 —— 真机上已经出现过老师把门店数字当成自己业绩的误解。
+ *  - 没有选「整块隐藏」：那 3 项恰是老师/新媒体每天要盯的抓手，藏掉只剩空白区。
+ */
 const kpiRows = computed(() => {
   const a = anaSummary.value
   if (!a) return []
   const fmt = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
-  return [
-    { label: '会员总数', value: fmt(a.totalMembers), unit: '人' },
-    { label: '客户总数', value: fmt(a.totalCustomers), unit: '人' },
-    { label: '待续课', value: fmt(a.renewalTasks), unit: '人' },
-    { label: '未分配', value: fmt(a.unassigned), unit: '人' },
-    { label: '留资分配率', value: fmt(a.assignRate), unit: '%' },
-    { label: '客户闭环率', value: fmt(a.closureRate), unit: '%' },
-    { label: '续费处理率', value: fmt(a.renewalRate), unit: '%' },
-    { label: '任务完成率', value: fmt(a.taskRate), unit: '%' }
+  const rows = [
+    { key: 'members', label: '会员总数', value: fmt(a.totalMembers), unit: '人' },
+    { key: 'customers', label: '客户总数', value: fmt(a.totalCustomers), unit: '人' },
+    { key: 'renewalTasks', label: '待续课', value: fmt(a.renewalTasks), unit: '人' },
+    { key: 'unassigned', label: '未分配', value: fmt(a.unassigned), unit: '人' },
+    { key: 'assignRate', label: '留资分配率', value: fmt(a.assignRate), unit: '%' },
+    { key: 'closureRate', label: '客户闭环率', value: fmt(a.closureRate), unit: '%' },
+    { key: 'renewalRate', label: '续费处理率', value: fmt(a.renewalRate), unit: '%' },
+    { key: 'taskRate', label: '任务完成率', value: fmt(a.taskRate), unit: '%' }
   ]
+  if (isManagerOrAbove(user.roles)) return rows
+  // 一线只留 3 项（键而非中文标签做判据，避免改文案时静默漏筛）
+  const FRONTLINE_KEYS = new Set(['renewalTasks', 'unassigned', 'taskRate'])
+  return rows.filter((r) => FRONTLINE_KEYS.has(r.key))
 })
 
+/**
+ * 收入结构（售卡实收 / 三类课耗占比）：**仅管理层可见**（P0-3）。
+ *
+ * 为什么是硬收敛：提成按销售金额计算，「本店售卡实收」对一线可见即可反推提成基数，
+ * 这是一条薪酬侧信道。前端在这里直接不产出数据行；同一轮 backend-audit 会给
+ * /analytics/* 的 revenueMix 加 requireSuper 守卫，但前端**不依赖**那次改动 ——
+ * 两道闸各自独立成立，先后端后前端都不会漏。
+ */
 const revenueRows = computed(() => {
+  if (!canSeeRevenue.value) return []
   const mix = anaSummary.value?.revenueMix
   if (!mix) return []
   return [mix.private, mix.small, mix.group].map((x) => ({
@@ -551,8 +590,20 @@ const venueRows = computed(() => {
   }))
 })
 
-function goTodo(): void {
-  goPath('/pages/todo/todo')
+/**
+ * 待办跳转：带上分组 type 做深链，落地即停在对应分组。
+ *
+ * 以前摘要三行都调无参 goTodo()，全部落到「全部」，用户还得自己再点一次分组 ——
+ * 明明点的是「生日关怀」，进去看到的却是一屏混排。type 取自 /today/todo 的分组键；
+ * todo.vue 的 onLoad 只认 TAB_TYPES 里的值，未知键自动回落「全部」，不会白屏。
+ *
+ * ⚠️ 已知一处降级（不属本文件职责，todo.vue 另有人在改）：
+ *   本文件 TODO_LABELS 有 8 组（含 tasks「今日任务」），而 todo.vue 的 GROUPS 只有 7 组、
+ *   不含 tasks → row.type === 'tasks' 时 `?tab=tasks` 会被回落成「全部」。
+ *   行为与改动前等价（都是「全部」），没有变差；等 todo.vue 补上 tasks 分组后自动生效。
+ */
+function goTodo(type?: string): void {
+  goPath(type ? `/pkg-biz/todo/todo?tab=${encodeURIComponent(type)}` : '/pkg-biz/todo/todo')
 }
 
 /* ==========================================================================
@@ -586,22 +637,51 @@ async function load(options: { silent?: boolean } = {}): Promise<void> {
   if (!options.silent) loading.value = true
   errorText.value = ''
 
+  // 主数据先发出去：只有这两项决定骨架何时消失（先建 Promise 再挂副数据，保证它们抢到连接）
+  const primary = Promise.all([
+    fetchTodaySummary(),
+    fetchTrends({ start: dateOffset(-29), end: dateOffset(0) })
+  ])
+
+  /* ---- 副数据：跟着发出去，与主数据并发，但**不 await**（P0-4） ------------------
+   * 以前这 3 个塞在同一个 Promise.all 里，`.catch(()=>null)` 只吞异常不放行，
+   * 任意一个慢/挂都会把 loading 攥到 http.ts 的 20s 超时 —— 主数据早回来了也用不上。
+   * 现在它们「发出但不等」，各自独立赋值；失败静默（接口本身已 silent，页面也不再弹）。
+   * 赋值前仍判 seq === requestSeq：连续 onShow / 下拉刷新时旧回包不能盖掉新数据
+   * （与主数据同一套 requestSeq 竞态防线，不引入新竞态）。
+   * 失败时**不赋值**（旧版写 `= null` 会让「今日待办」误报「已清空」、让经营概览整块消失）。
+   */
+  void fetchAnalyticsSummary()
+    .then((res) => {
+      if (seq === requestSeq) anaSummary.value = res
+    })
+    .catch(() => {
+      /* 经营概览缺数据不阻断首屏，也不弹提示 */
+    })
+  void fetchTodayTodo()
+    .then((res) => {
+      if (seq === requestSeq) todoRaw.value = res
+    })
+    .catch(() => {
+      /* 待办摘要失败保持上一次结果，不伪造成「已清空」 */
+    })
+  void fetchReviewPendingCount()
+    .then((res) => {
+      if (seq === requestSeq) {
+        pendingReviews.value =
+          typeof res === 'number' ? res : num((res as { count?: number } | null)?.count)
+      }
+    })
+    .catch(() => {
+      /* 角标缺失不影响入口本身，静默 */
+    })
+
   try {
-    const [today, trendRes, anaRes, todoRes, reviewRes] = await Promise.all([
-      fetchTodaySummary(),
-      fetchTrends({ start: dateOffset(-29), end: dateOffset(0) }),
-      fetchAnalyticsSummary().catch(() => null),
-      fetchTodayTodo().catch(() => null),
-      fetchReviewPendingCount().catch(() => null)
-    ])
+    const [today, trendRes] = await primary
     if (seq !== requestSeq) return
 
     todaySummary.value = today
     trends.value = trendRes
-    anaSummary.value = anaRes
-    todoRaw.value = todoRes
-    pendingReviews.value =
-      typeof reviewRes === 'number' ? reviewRes : num((reviewRes as { count?: number } | null)?.count)
   } catch (e) {
     if (seq !== requestSeq) return
     errorText.value = e instanceof Error ? e.message : '数据加载失败'
@@ -764,14 +844,15 @@ function goBrandHome(): void {
 
       <ym-section v-if="kpiRows.length" title="经营概览" desc="与网页端同一份口径，按可见范围收窄">
         <view class="kpis">
-          <view v-for="k in kpiRows" :key="k.label" class="kpis__cell">
+          <view v-for="k in kpiRows" :key="k.key" class="kpis__cell">
             <text class="kpis__value ym-num"
               >{{ k.value }}<text class="kpis__unit">{{ k.unit }}</text></text
             >
             <text class="kpis__label">{{ k.label }}</text>
           </view>
         </view>
-        <view v-if="revenueRows.length" class="rev">
+        <!-- 收入结构：不能只判 length —— 再叠一道 canSeeRevenue，后端即使回传 revenueMix 也不渲染 -->
+        <view v-if="canSeeRevenue && revenueRows.length" class="rev">
           <view class="rev__head">
             <text class="rev__title">收入结构</text>
             <text class="rev__total ym-num">售卡 {{ num(anaSummary?.revenueMix?.cardSales) }} 元</text>
@@ -786,10 +867,11 @@ function goBrandHome(): void {
         </view>
       </ym-section>
 
-      <ym-section title="今日待办" :desc="todoDesc" action-text="全部" @action="goTodo">
+      <ym-section title="今日待办" :desc="todoDesc" action-text="全部" @action="goTodo()">
         <ym-empty v-if="!todoTop.length" compact text="今日待办已清空" desc="没有需要现在处理的事项" />
         <view v-else class="wb__todos">
-          <view v-for="row in todoTop" :key="row.key" class="wb__todo ym-tap" @click="goTodo">
+          <!-- 深链：点哪一行就落在哪一组（row.type 即 /today/todo 的分组键） -->
+          <view v-for="row in todoTop" :key="row.key" class="wb__todo ym-tap" @click="goTodo(row.type)">
             <view class="wb__todo-main">
               <text class="wb__todo-title ym-ellipsis">{{ row.title }}</text>
               <text v-if="row.hint" class="wb__todo-hint ym-ellipsis">{{ row.hint }}</text>

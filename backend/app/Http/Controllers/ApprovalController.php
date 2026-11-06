@@ -57,6 +57,11 @@ final class ApprovalController extends Controller
         ]);
         audit($r, '发起', '价格审批', $a->id, "价格审批单 #{$a->id}", '双店', "申请[{$a->card_name}] {$a->apply_time} 特价{$a->request_price}/标准{$a->standard_price}");
 
+        // 新建审批单会让 /today/summary 的 pendingApprovals +1，而那个接口现在有 60 秒缓存
+        // （B1/t11 引入）。不在这里失效的话，店长刚提交完、切回工作台看到的还是旧角标，
+        // 属可感知的「保存没生效」。与 decide() 同口径（那里一直是 'analytics'）。
+        invalidateBusinessCaches('analytics');
+
         return ok(camel($a));
     }
 

@@ -4,9 +4,14 @@
 </template>
 
 <script setup lang="ts">
-  import { useChartOps, useChartComponent } from '@/hooks/core/useChart'
+  import {
+    linearGradient,
+    useChartOps,
+    useChartComponent,
+    type LinearGradientColor
+  } from '@/hooks/core/useChart'
   import { getCssVar } from '@/utils/ui'
-  import { graphic, type EChartsOption } from '@/plugins/echarts'
+  import type { EChartsOption } from '@/plugins/echarts'
   import type { BarChartProps, BarDataItem } from '@/types/component/chart'
 
   defineOptions({ name: 'ArtBarChart' })
@@ -55,7 +60,7 @@
     }
 
     // 默认渐变色
-    return new graphic.LinearGradient(0, 0, 0, 1, [
+    return linearGradient(0, 0, 0, 1, [
       {
         offset: 0,
         color: getCssVar('--el-color-primary-light-4')
@@ -69,7 +74,7 @@
 
   // 创建渐变色
   const createGradientColor = (color: string) => {
-    return new graphic.LinearGradient(0, 0, 0, 1, [
+    return linearGradient(0, 0, 0, 1, [
       {
         offset: 0,
         color: color
@@ -82,9 +87,7 @@
   }
 
   // 获取基础样式配置
-  const getBaseItemStyle = (
-    color: string | InstanceType<typeof graphic.LinearGradient> | undefined
-  ) => ({
+  const getBaseItemStyle = (color: string | LinearGradientColor | undefined) => ({
     borderRadius: props.borderRadius,
     color: typeof color === 'string' ? createGradientColor(color) : color
   })
@@ -93,7 +96,7 @@
   const createSeriesItem = (config: {
     name?: string
     data: number[]
-    color?: string | InstanceType<typeof graphic.LinearGradient>
+    color?: string | LinearGradientColor
     barWidth?: string | number
     stack?: string
   }) => {

@@ -6,6 +6,21 @@
  *  tabBar 页（工作台 / 客户经营 / AI 助手 / 我的）→ uni.switchTab
  *  其余页面 → uni.navigateTo
  * 这里用一份白名单收口，页面里不再各写一遍。
+ *
+ * ── 分包（W7-2，2026-11-06）──────────────────────────────────────────────
+ * 主包只留 6 页：pages/home、pages/login 和 4 个 tabBar 页；
+ * 其余 20 页拆进分包（pages.json 的 subPackages 是唯一事实来源）：
+ *   pkg-crm    /pkg-crm/{crm/new-members, crm/pool, members/members, members/detail, leads/leads, leads/form}
+ *   pkg-biz    /pkg-biz/{todo/todo, tasks/tasks, approvals/approvals, review/review, review/detail, plan/plan, plan/detail}
+ *   pkg-ai     /pkg-ai/ai/{marketing, sales}
+ *   pkg-me     /pkg-me/profile/{edit, persona, notify}
+ *   pkg-public /pkg-public/{guide/guide, book/book}
+ *
+ * 两条硬约束（改分包时必看）：
+ *  1. **tabBar 4 页必须在主包**，微信不允许 tabBar 指向分包页；
+ *     所以 TAB_PAGES 里这 4 条路径永远不能加 pkg- 前缀，switchTab 也只对这些路径成立。
+ *  2. 分包页之间用 navigateTo/redirectTo 互跳（分包不能互相 require 代码，
+ *     但 @/api、@/utils、@/components 都在主包，任何分包页都能引用）。
  */
 
 import { FEATURES, canUse, type FeatureDef } from './permission'

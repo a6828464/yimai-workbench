@@ -36,6 +36,10 @@ const count = (text, re) => (text ? (text.match(re) ?? []).length : 0)
 /* ---------------- 页面注册表 ---------------- */
 const pagesJson = JSON.parse(read('src/pages.json'))
 const registered = new Set(pagesJson.pages.map((p) => '/' + p.path))
+// W7-2 分包：subPackages 里的页面同样是「已注册」，路线 = /<root>/<path>
+for (const sub of pagesJson.subPackages ?? []) {
+  for (const p of sub.pages) registered.add('/' + sub.root + '/' + p.path)
+}
 const tabPages = new Set(pagesJson.tabBar.list.map((t) => '/' + t.pagePath))
 
 const results = []
@@ -65,23 +69,23 @@ function hits(rel, re, label) {
 }
 
 /* ---------------- A. 新增页面已注册且文件真实存在 ---------------- */
-check('A1', 'pages.json 注册 pages/profile/persona', () => ({
-  ok: registered.has('/pages/profile/persona'),
-  detail: registered.has('/pages/profile/persona') ? '' : '未注册'
+check('A1', 'pages.json 注册 pkg-me/profile/persona', () => ({
+  ok: registered.has('/pkg-me/profile/persona'),
+  detail: registered.has('/pkg-me/profile/persona') ? '' : '未注册'
 }))
-check('A2', 'pages.json 注册 pages/review/detail', () => ({
-  ok: registered.has('/pages/review/detail'),
-  detail: registered.has('/pages/review/detail') ? '' : '未注册'
+check('A2', 'pages.json 注册 pkg-biz/review/detail', () => ({
+  ok: registered.has('/pkg-biz/review/detail'),
+  detail: registered.has('/pkg-biz/review/detail') ? '' : '未注册'
 }))
-check('A3', 'pages.json 注册 pages/plan/detail', () => ({
-  ok: registered.has('/pages/plan/detail'),
-  detail: registered.has('/pages/plan/detail') ? '' : '未注册'
+check('A3', 'pages.json 注册 pkg-biz/plan/detail', () => ({
+  ok: registered.has('/pkg-biz/plan/detail'),
+  detail: registered.has('/pkg-biz/plan/detail') ? '' : '未注册'
 }))
 /** 陷阱：注册了但 .vue 不存在 —— 编译只出警告（pages/xxx not found），产物只有孤儿 json，运行即空白页 */
 for (const [id, rel] of [
-  ['A4', 'src/pages/profile/persona.vue'],
-  ['A5', 'src/pages/review/detail.vue'],
-  ['A6', 'src/pages/plan/detail.vue']
+  ['A4', 'src/pkg-me/profile/persona.vue'],
+  ['A5', 'src/pkg-biz/review/detail.vue'],
+  ['A6', 'src/pkg-biz/plan/detail.vue']
 ]) {
   check(id, `${rel} 文件真实存在`, () => {
     const ok = existsSync(resolve(ROOT, rel))
@@ -92,7 +96,7 @@ for (const [id, rel] of [
 /* ---------------- B. 工作台 4 张指标卡可点击 ---------------- */
 const wbRel = 'src/pages/workbench/workbench.vue'
 check('B1', '工作台定义了 ≥4 张卡的跳转目标（to 字段）', () => {
-  const n = count(read(wbRel), /\bto:\s*['"]\/pages\//g)
+  const n = count(read(wbRel), /\bto:\s*['"]\/(?:pages|pkg-[a-z]+)\//g)
   return { ok: n >= 4, detail: `to= ${n} 个` }
 })
 check('B2', '工作台模板把卡片点击接到跳转函数（openCard + v-for cards）', () => {
@@ -103,13 +107,13 @@ check('B2', '工作台模板把卡片点击接到跳转函数（openCard + v-for
 })
 check('B3', '工作台卡片目标路径全部已在 pages.json 注册', () => {
   const t = read(wbRel) ?? ''
-  const targets = [...t.matchAll(/\bto:\s*['"](\/pages\/[^'"?]+)/g)].map((m) => m[1])
+  const targets = [...t.matchAll(/\bto:\s*['"](\/(?:pages|pkg-[a-z]+)\/[^'"?]+)/g)].map((m) => m[1])
   const bad = targets.filter((p) => !registered.has(p))
   return { ok: targets.length > 0 && bad.length === 0, detail: bad.length ? `未注册: ${bad.join(',')}` : `${targets.length} 个全部命中` }
 })
 
 /* ---------------- C. 今日待办顶部可切换标签 ---------------- */
-const todoRel = 'src/pages/todo/todo.vue'
+const todoRel = 'src/pkg-biz/todo/todo.vue'
 check('C1', 'todo 顶部标签条 sticky 吸顶', () => hits(todoRel, /position:\s*sticky/g, 'sticky'))
 check('C2', 'todo 有标签容器（.tabbar + scroll-view，按实际实现）', () => {
   const t = read(todoRel) ?? ''
@@ -145,10 +149,10 @@ check('C4', 'todo 支持 ?tab= 直达（onLoad 读 options.tab 并校验合法�
 
 /* ---------------- D. 四个列表页带门店参数 ---------------- */
 for (const [id, rel, label] of [
-  ['D1', 'src/pages/members/members.vue', '会员管理'],
-  ['D2', 'src/pages/leads/leads.vue', '留资管理'],
-  ['D3', 'src/pages/crm/pool.vue', '客户经营池'],
-  ['D4', 'src/pages/crm/new-members.vue', '新客培养']
+  ['D1', 'src/pkg-crm/members/members.vue', '会员管理'],
+  ['D2', 'src/pkg-crm/leads/leads.vue', '留资管理'],
+  ['D3', 'src/pkg-crm/crm/pool.vue', '客户经营池'],
+  ['D4', 'src/pkg-crm/crm/new-members.vue', '新客培养']
 ]) {
   check(id, `${label} 请求带 venue 门店参数`, () => {
     const t = read(rel)
@@ -161,17 +165,17 @@ for (const [id, rel, label] of [
 
 /* ---------------- E. 留资 FAB 走权限判定，不写死角色 ---------------- */
 check('E1', '留资悬浮录入按权限判定（canUse(user.roles,\'leads\')）', () => {
-  const t = read('src/pages/leads/leads.vue') ?? ''
+  const t = read('src/pkg-crm/leads/leads.vue') ?? ''
   const n = count(t, /canUse\([^)]*['"]leads['"]/g)
   return { ok: n > 0, detail: `canUse(…'leads') =${n} 处` }
 })
 check('E2', '留资页不写死角色码（roles.includes(R_xxx) 为 0）', () => {
-  const n = count(read('src/pages/leads/leads.vue'), /roles[^\n]{0,20}includes\(\s*['"]R_/g)
+  const n = count(read('src/pkg-crm/leads/leads.vue'), /roles[^\n]{0,20}includes\(\s*['"]R_/g)
   return { ok: n === 0, detail: `写死角色=${n} 处` }
 })
 
 /* ---------------- F. 邮箱在 miniapp 渲染层彻底下线 ---------------- */
-check('F1', 'src/pages 与 src/components 的 .vue 不再出现 email（渲染层 0 处）', () => {
+check('F1', 'src 下所有 .vue（主包 + 5 个分包）不再出现 email（渲染层 0 处）', () => {
   const offenders = []
   for (const rel of vueFiles()) {
     const n = count(read(rel), /email/i)
@@ -191,24 +195,24 @@ check('G1', '「我的」页有 persona 入口', () => {
   return { ok: n > 0, detail: `persona 出现=${n} 次` }
 })
 check('G2', '营销工具页有 persona 入口', () => {
-  const t = read('src/pages/ai/marketing.vue') ?? ''
+  const t = read('src/pkg-ai/ai/marketing.vue') ?? ''
   const n = count(t, /persona/g)
   return { ok: n > 0, detail: `persona 出现=${n} 次` }
 })
 
 /* ---------------- H. 授课老师端：列表可点 + 详情 + 写接口 ---------------- */
 check('H1', '课后分析列表行可点并跳 review/detail', () => {
-  const t = read('src/pages/review/review.vue') ?? ''
+  const t = read('src/pkg-biz/review/review.vue') ?? ''
   return {
-    ok: count(t, /@(click|tap)=/g) > 0 && /\/pages\/review\/detail/.test(t),
-    detail: `@click=${count(t, /@(click|tap)=/g)} 处；跳 detail=${/\/pages\/review\/detail/.test(t)}`
+    ok: count(t, /@(click|tap)=/g) > 0 && /\/pkg-biz\/review\/detail/.test(t),
+    detail: `@click=${count(t, /@(click|tap)=/g)} 处；跳 detail=${/\/pkg-biz\/review\/detail/.test(t)}`
   }
 })
 check('H2', '训练计划列表行可点并跳 plan/detail', () => {
-  const t = read('src/pages/plan/plan.vue') ?? ''
+  const t = read('src/pkg-biz/plan/plan.vue') ?? ''
   return {
-    ok: count(t, /@(click|tap)=/g) > 0 && /\/pages\/plan\/detail/.test(t),
-    detail: `@click=${count(t, /@(click|tap)=/g)} 处；跳 detail=${/\/pages\/plan\/detail/.test(t)}`
+    ok: count(t, /@(click|tap)=/g) > 0 && /\/pkg-biz\/plan\/detail/.test(t),
+    detail: `@click=${count(t, /@(click|tap)=/g)} 处；跳 detail=${/\/pkg-biz\/plan\/detail/.test(t)}`
   }
 })
 check('H3', '课后分析有写接口（POST/PUT 到 /post-class-reviews）', () => {
@@ -243,8 +247,8 @@ function vueFiles() {
       else if (e.name.endsWith('.vue')) out.push(rel)
     }
   }
-  walk('src/pages')
-  walk('src/components')
+  // W7-2：页面已分散到 src/pages 与 src/pkg-*，只遍历 src/pages 会漏掉 20 个分包页
+  walk('src')
   return out.sort()
 }
 

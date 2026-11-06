@@ -10,9 +10,9 @@
 </template>
 
 <script setup lang="ts">
-  import { graphic, type EChartsOption } from '@/plugins/echarts'
+  import type { EChartsOption } from '@/plugins/echarts'
   import { getCssVar, hexToRgba } from '@/utils/ui'
-  import { useChartOps, useChartComponent } from '@/hooks/core/useChart'
+  import { linearGradient, useChartOps, useChartComponent } from '@/hooks/core/useChart'
   import type { LineChartProps, LineDataItem } from '@/types/component/chart'
 
   defineOptions({ name: 'ArtLineChart' })
@@ -122,7 +122,7 @@
     if (areaConfig.custom) return areaConfig.custom
 
     return {
-      color: new graphic.LinearGradient(0, 0, 0, 1, [
+      color: linearGradient(0, 0, 0, 1, [
         {
           offset: 0,
           color: hexToRgba(color, areaConfig.startOpacity || 0.2).rgba
@@ -141,7 +141,7 @@
 
     const color = getColor(props.colors[0])
     return {
-      color: new graphic.LinearGradient(0, 0, 0, 1, [
+      color: linearGradient(0, 0, 0, 1, [
         {
           offset: 0,
           color: hexToRgba(color, 0.2).rgba

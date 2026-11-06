@@ -10,7 +10,6 @@
 import type { AppRouteRecord } from '@/types/router'
 import { useUserStore } from '@/store/modules/user'
 import { useAppMode } from '@/hooks/core/useAppMode'
-import { fetchGetMenuList } from '@/api/system-manage'
 import { asyncRoutes } from '../routes/asyncRoutes'
 import { RoutesAlias } from '../routesAlias'
 import { formatMenuTitle } from '@/utils'
@@ -55,8 +54,19 @@ export class MenuProcessor {
 
   /**
    * 处理后端控制模式的菜单
+   *
+   * 注意这里的 `import()` 是**刻意**写成动态的：本项目
+   * `VITE_ACCESS_MODE = frontend`（见 .env / .env.production），
+   * `getMenuList()` 永远走 `processFrontendMenu()`，`processBackendMenu()` 是
+   * 为模板保留的后端模式分支、运行时不会执行。
+   *
+   * 改造前它是顶层静态 import，于是 `@/api/system-manage` 连带整套模板残留的
+   * 请求层 `src/utils/http/index.ts`（自带另一套 accessToken 头、超时、401 防抖
+   * 与重试）被打进入口 chunk —— 入口 99.8KB 里含一份永不执行的实现。
+   * 改成动态 import 后这段代码独立成 chunk，首屏不再下载。
    */
   private async processBackendMenu(): Promise<AppRouteRecord[]> {
+    const { fetchGetMenuList } = await import('@/api/system-manage')
     const list = await fetchGetMenuList()
     return this.filterEmptyMenus(list)
   }

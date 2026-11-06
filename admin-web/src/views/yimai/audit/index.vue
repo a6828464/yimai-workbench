@@ -173,6 +173,7 @@
     type RetentionSettings
   } from '@/api/system-records'
   import type { YimaiAuditLog } from '@/store/modules/yimai'
+  import { showApiError } from '@/api/backend'
   import { useDevice } from '@/hooks/core/useDevice'
   import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type { MobileCardTag } from '@/components/business/mobile-card/types'
@@ -228,10 +229,10 @@
       page.current = data.current
       page.size = data.size
       Object.assign(metadata, data.metadata)
-    } catch {
+    } catch (e) {
       list.value = []
       total.value = 0
-      ElMessage.error('人员操作日志加载失败')
+      showApiError(e, '人员操作日志加载')
     } finally {
       loading.value = false
     }
@@ -263,8 +264,8 @@
       Object.assign(retention, await updateRetentionSettings({ ...retention }))
       retentionVisible.value = false
       ElMessage.success('人员操作日志保留策略已保存')
-    } catch {
-      ElMessage.error('保留策略保存失败')
+    } catch (e) {
+      showApiError(e, '保留策略保存')
     } finally {
       savingRetention.value = false
     }

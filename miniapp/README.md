@@ -29,14 +29,14 @@ find . -type f -exec stat -f '%z %N' {} + | sort -rn | head -10   # 最大 10 �
 ## 已落地（2026-11-04 四板块重构）
 
 - **四板块 tabBar**：工作台（hero + 2×2 指标卡 + 30 天走势 `ym-chart` + 转化漏斗 + 待办摘要 + 快捷宫格）/ 客户经营（按角色摆入口 + 双角标）/ AI 助手（营销工具 + 谈单工具 + 最近生成）/ 我的（`ym-hero` + 账号卡五行 + 退出二次确认）。
-- **15 个子页**：今日待办、会员列表/详情、新客培养、客户经营池（SUPER）、留资列表/表单、任务中心、价格审批、课后分析、训练计划、营销工具、谈单工具、个人信息、模板通知；另有 3 页历史公开页（`home` 品牌首屏 / `book` 约课 web-view / `login`）。合计 **22 页**。
-- **权限单一事实来源** `src/utils/permission.ts`：`FEATURES` 注册表（14 项）× 5 角色，口径逐条对齐 `admin-web/src/router/modules/yimai.ts` 的 `meta.roles`。页面只调 `visibleFeatures()/canUse()`，不写 `roles.includes()`。
-- **导航守卫**：`requireLogin`（`utils/guard.ts`）+ `requireFeature` / `requireSuper` / `goFeature` / `goPath`（`utils/nav.ts`，自动区分 `switchTab` 与 `navigateTo`）。22 页中 19 页有守卫，无守卫的 3 页是 `home`（分流器）/`book`（公开 web-view）/`login`。
+- **18 个子页**：今日待办、会员列表/详情、新客培养、客户经营池（SUPER）、留资列表/表单、任务中心、价格审批、课后分析、训练计划、营销工具、谈单工具、个人信息、模板通知（W7 分包后物理目录在 `src/pkg-*`；**文档一律写路由**，如 `pkg-crm/leads/leads`）；另有 4 页公开页（`home` 品牌首屏 / `book` 约课 web-view / `guide` 到店指引 / `login`）。合计 **26 页**（4 tab + 18 子页 + 4 公开页）。
+- **权限单一事实来源** `src/utils/permission.ts`：`FEATURES` 注册表（15 项）× 5 角色，口径逐条对齐 `admin-web/src/router/modules/yimai.ts` 的 `meta.roles`。页面只调 `visibleFeatures()/canUse()`，不写 `roles.includes()`。
+- **导航守卫**：`requireLogin`（`utils/guard.ts`）+ `requireFeature` / `requireSuper` / `goFeature` / `goPath`（`utils/nav.ts`，自动区分 `switchTab` 与 `navigateTo`）。26 页中 22 页有守卫，无守卫的 4 页是 `home`（分流器）/`book`（公开 web-view）/`guide`（公开到店指引）/`login`。
 - **设计系统**：`src/styles/tokens.scss`（`--ym-*` 自有令牌 + 14 个 `--wot-color-*` 主题变量，定义在 `page{}` 上）+ 8 个 `ym-*` 自研组件，easycom 自动注册（`^wd-(.*)` / `^ym-(.*)`），**编译期展开**：产物 `usingComponents` 合计 `wd-*` 69 处 / `ym-*` 58 处。
 - **后端订阅消息（模板通知）**：`GET/POST /wx/subscriptions`、`POST /wx/subscriptions/test`；后端 10 个测试通过（64 断言）。
 - **HTTP core** `src/utils/http.ts`（R4 闸门）：statusCode 强制 2xx 判定（401 清会话 reLaunch、3s 防抖；403 归一化 toast）；三形态 unwrap（`{code,message}` / `{ok:false}` / `{errno,emsg}`），与 `admin-web/src/api/backend.ts` 逐行对齐。
 - **存储适配层** `src/utils/storage.ts`：StorageLike shim（web localStorage 语义 → `uni.getStorageSync`）。
-- **构建事实**：`vue-tsc --noEmit` exit 0（0 错误）；`uni build -p mp-weixin` DONE；**真实包体 853.98KB**（22 页 / 268 文件），闸门 1.2MB；`app.json` 22 页与 `src/pages.json` 同序对应，`entryPagePath=pages/home/home`，tabBar 4 项 8 图标全在。
+- **构建事实**：`vue-tsc --noEmit` exit 0（0 错误）；`uni build -p mp-weixin` DONE；**真实包体 853.98KB**（22 页 / 268 文件，2026-11-04 构建口径；2026-11-06 复核 `src/pages.json` 已是 26 页，下次构建应为 26 页并重新计字节），闸门 1.2MB；`app.json` 22 页与 `src/pages.json` 同序对应，`entryPagePath=pages/home/home`，tabBar 4 项 8 图标全在。
 - **操作留痕**：任何一轮改动记录到 `docs/miniapp-migration/09-开发操作记录.md`（时间·动作·依据·证据·结果），本档案只保留最新快照。
 
 ## 待办（按方案门禁）
@@ -70,8 +70,8 @@ node verify/fix-round.test.mjs --strict  # 真机反馈修复轮结构断言（2
 
 - `verify/permission-matrix.test.mjs`：用 esbuild 把 `src/utils/permission.ts` 打成 CJS，对 5 个角色求
   `visibleFeatures()` 全量集合并逐条断言（R_MEDIA 看不到 members/sales/pool、R_TEACHER 看不到 approvals、
-  R_SERVICE 看不到 plans、R_MANAGER 看不到 pool、R_SUPER 全量 14/14），另外校验「注册表里所有 path
-  都在 `pages.json` 注册」「没有入口直指 tabBar 页（会触发 `switchTab:fail`）」。实测 **80/80 PASS**。
+  R_SERVICE 看不到 plans、R_MANAGER 看不到 pool、R_SUPER 全量 15/15），另外校验「注册表里所有 path
+  都在 `pages.json` 注册」「没有入口直指 tabBar 页（会触发 `switchTab:fail`）」。实测 **81/81 PASS**。
 - `verify/http-gate.test.mjs` 用 esbuild 把 `src/utils/http.ts` 打成 CJS，注入假 `uni`，逐条喂
   statusCode + body 断言 resolve/reject。**这是 R4 的运行时证据**：401 清 token 并 reLaunch、
   500 带 `{code:0}` 也不得透传成功、403/422 文案透出。实测 **15/15 PASS**。

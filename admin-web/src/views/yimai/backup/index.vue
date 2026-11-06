@@ -513,21 +513,42 @@
     }
   }
 
+  /**
+   * 后台任务轮询定时器。
+   *
+   * 必须是**模块级**（不是 waitForJob 里的局部变量）：轮询中途离开页面时，
+   * `onBeforeUnmount` 只能拿到模块级引用才清得掉。改造前 timer 是局部 const、
+   * 只在 resolve/reject 分支 clearInterval，于是「备份跑到一半切走」会让 4 秒一次的
+   * 请求持续最长 130 分钟，promise 永不 settle，且请求打在一个已销毁的组件上。
+   * 同项目的 `sync/index.vue:435-444` 早就是这个写法，这里对齐。
+   */
+  let pollTimer: ReturnType<typeof setInterval> | null = null
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  }
+
+  onBeforeUnmount(stopPolling)
+
   /** 等待后台任务收尾：4 秒轮询，130 分钟兜底（与后端僵尸回收一致） */
   function waitForJob(jobId: number, label: string): Promise<string> {
     return new Promise((resolve, reject) => {
       let elapsed = 0
-      const timer = setInterval(async () => {
+      stopPolling()
+      pollTimer = setInterval(async () => {
         elapsed += 4
         if (elapsed > 130 * 60) {
-          clearInterval(timer)
+          stopPolling()
           reject(new Error(`${label}超过 130 分钟未收尾，请稍后在历史批次中确认状态`))
           return
         }
         try {
           const job = await getSyncJob(jobId)
           if (job.status !== '进行中') {
-            clearInterval(timer)
+            stopPolling()
             if (job.status === '失败') {
               reject(new Error((job.errorMessage || '详见错误详情').slice(0, 120)))
             } else {

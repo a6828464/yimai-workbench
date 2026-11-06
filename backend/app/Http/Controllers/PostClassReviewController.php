@@ -389,7 +389,17 @@ final class PostClassReviewController extends Controller
         if (! $skipVenueLock) {
             $venueFilter($myLeadQ);
         }
-        foreach ($myLeadQ->orderByDesc('id')->limit(200)->get() as $l) {
+        // 这批留资先一次取完，再**一次**批量查「哪些已经有课后分析」。
+        //
+        // 历史实现在循环里逐行 `PostClassReview::where('lead_id',$l->id)->exists()`，
+        // 上界 200 行 ⇒ 单次请求最多 200 次往返（下面会员段同理，合计 400 次）。
+        // 现在每段固定 2 次查询（1 次取行 + 1 次 whereIn 批量查 review），与行数无关。
+        $myLeads = $myLeadQ->orderByDesc('id')->limit(200)->get();
+        $reviewedLeadIds = $myLeads->isEmpty()
+            ? []
+            : PostClassReview::whereIn('lead_id', $myLeads->pluck('id')->all())
+                ->pluck('lead_id')->flip()->all();
+        foreach ($myLeads as $l) {
             $p = $normalize($l->phone);
             $leads[] = [
                 'source' => 'lead',
@@ -404,7 +414,7 @@ final class PostClassReviewController extends Controller
                 'demand' => (string) $l->demand,
                 'leadSource' => (string) $l->source,
                 'leadDate' => (string) $l->lead_date,
-                'hasReview' => PostClassReview::where('lead_id', $l->id)->exists(),
+                'hasReview' => isset($reviewedLeadIds[$l->id]),
             ];
         }
 
@@ -415,7 +425,12 @@ final class PostClassReviewController extends Controller
         if (! $skipVenueLock) {
             $venueFilter($myCustomerQ);
         }
-        foreach ($myCustomerQ->orderByDesc('id')->limit(200)->get() as $c) {
+        $myCustomers = $myCustomerQ->orderByDesc('id')->limit(200)->get();
+        $reviewedCustomerIds = $myCustomers->isEmpty()
+            ? []
+            : PostClassReview::whereIn('customer_id', $myCustomers->pluck('id')->all())
+                ->pluck('customer_id')->flip()->all();
+        foreach ($myCustomers as $c) {
             $members[] = [
                 'source' => 'member',
                 'personType' => 'member',
@@ -429,7 +444,7 @@ final class PostClassReviewController extends Controller
                 'venue' => (string) $c->venue,
                 'mainCard' => (string) $c->main_card,
                 'remainTimes' => $c->remain_times,
-                'hasReview' => PostClassReview::where('customer_id', $c->id)->exists(),
+                'hasReview' => isset($reviewedCustomerIds[$c->id]),
             ];
         }
 

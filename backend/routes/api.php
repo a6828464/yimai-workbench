@@ -13,6 +13,7 @@ use App\Http\Controllers\KyController;
 use App\Http\Controllers\LeadController;
 use App\Http\Controllers\MarketingController;
 use App\Http\Controllers\MarketingFavoriteController;
+use App\Http\Controllers\MiniappConfigController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PayrollController;
 use App\Http\Controllers\PostClassReviewController;
@@ -64,8 +65,23 @@ Route::post('/auth/login', [AuthController::class, 'login'])->middleware('thrott
 Route::post('/auth/wx-login', [AuthController::class, 'wxLogin'])->middleware('throttle:wx-login');
 Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
 
+/*
+|--------------------------------------------------------------------------
+| 公开接口（免登录）：小程序「到店指引」配置
+|--------------------------------------------------------------------------
+| 为什么公开：这份配置是给**顾客**看的（顾问会把 `pkg-public/guide/guide` 的链接直接发
+| 给新客），未登录 / 未授权微信时必须能读，否则顾客点开只有空白。
+|
+| 为什么安全：只读、无 PII（门店地址 / 电话 / 坐标 / 图文引导），写操作在下面的登录组里
+| 且控制器首行 requireSuper。仍挂 throttle：公开接口不设限流就是一张免费压测门票。
+| 响应：`{ code:0, data:{ venues:[两家店], updatedAt } }`；列的值为 NULL 时回落内置默认值。
+*/
+Route::get('/miniapp/config', [MiniappConfigController::class, 'show'])->middleware('throttle:60,1');
+
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
+    // 小程序「到店指引」保存（控制器首行 requireSuper；门店键固定两家，拒绝增删门店）
+    Route::put('/miniapp/config', [MiniappConfigController::class, 'update']);
     // 微信自助绑定：本人读自己的 openid / 把当前微信绑到自己账号（必须已登录，否则等于开放注册）
     Route::get('/auth/wx-identity', [AuthController::class, 'wxIdentity']);
     Route::put('/auth/wx-self-bind', [AuthController::class, 'wxSelfBind'])->middleware('throttle:wx-bind');
@@ -94,9 +110,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/marketing/favorites', [MarketingFavoriteController::class, 'store']);
     Route::delete('/marketing/favorites/{id}', [MarketingFavoriteController::class, 'destroy']);
 
-    // ---------- 会员/客户（options/list-counts 必须先于 /customers/{id} 注册） ----------
+    // ---------- 会员/客户（options/list-counts/list-ids 必须先于 /customers/{id} 注册） ----------
     Route::get('/customers/options', [CustomerController::class, 'options']);
     Route::get('/customers/list-counts', [CustomerController::class, 'listCounts']);
+    // 七个清单的会员 id 集合一次返回（取代前端「按清单 × 分页 size=5000」扫全表只为拿 id）。
+    // 数据源是 memberListIds()（自带 120 秒缓存），与 /customers?list=<清单名> 同源同范围。
+    Route::get('/customers/list-ids', [CustomerController::class, 'listIds']);
     Route::get('/customers', [CustomerController::class, 'index']);
     Route::patch('/customers/{id}', [CustomerController::class, 'update']);
     Route::get('/customers/{id}', [CustomerController::class, 'show']);

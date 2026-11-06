@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Services\VisitMetrics;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 final class TodayController extends Controller
@@ -77,28 +78,102 @@ final class TodayController extends Controller
             return $snap;
         });
 
+        // 快照是 /today/summary 的输入（todayBookings / trialBookings / todayKinds /
+        // snapshotTime / snapshotAvailable 全部来自它），而 summary 现在有 60 秒缓存。
+        // setting()->update() 不会经过任何业务写入路径，不在这里显式失效的话，
+        // 超管保存完立刻回工作台会看到**旧快照的数字**，是最容易被当成「保存失败」的形态。
+        invalidateBusinessCaches('analytics');
+
         return ok($s);
     }
 
-    /** GET /today/summary */
+    /**
+     * GET /today/summary
+     *
+     * 两条硬口径，改之前先读：
+     *
+     * 1. **所有指标必须是 SQL 聚合，不得 `->get()` 把 scope 集合拉进内存。**
+     *    历史实现在这里拉了整张 customers（`Customer` 没有 `$hidden`，`cards_list` /
+     *    `card_stats` 两个 JSON 列会一起 hydrate）与整张 leads，然后在 Collection 上
+     *    filter/where 数 4 个标量 —— 双店 1560 会员规模下每次请求要 hydrate ~1600 个
+     *    Eloquent 模型、传输数 MB，而**一行行数据都没有被用到**。现在 5 次 COUNT 解决，
+     *    逐项等值依据写在 computeSummary() 里。
+     *
+     * 2. **结果按角色 + 门店收窄，所以缓存键必须包含整个可见范围。**
+     *    只按账号 id 做键不够：后台把某人的 roles/venue 改过之后，键不变就会继续读到
+     *    旧范围算出来的数字。键里另外带两个业务缓存版本号（member_lists / analytics）——
+     *    会员、客资、任务、审批、同步、待办标记这些写入路径都会 bump 其中之一，
+     *    因此写入后立刻换键，不依赖 60 秒 TTL 兜底。
+     *
+     * 缓存 60 秒：与 /analytics/* 同口径（那边也是 60 秒）。本接口是小程序每个 tab
+     * onShow 都会打的接口之一，且它与 /today/todo、/analytics/summary 并发命中同一批表。
+     */
     public function summary(Request $r)
     {
         $u = $r->user();
 
-        $custQ = scopeCustomersForUser(Customer::query(), $u);
-        $scopedCustomers = $custQ->get();
+        $key = 'today_summary:v'.businessCacheVersion('member_lists')
+            .'-'.businessCacheVersion('analytics')
+            .':u'.$u->id
+            .':'.md5(implode('|', [
+                (string) $u->venue,
+                implode(',', userRoles($u)),
+                implode(',', (array) $u->venues),
+            ]));
 
+        return ok(Cache::remember($key, 60, fn () => $this->computeSummary($u)));
+    }
+
+    /**
+     * /today/summary 的实际计算（只读）；结果被 summary() 缓存 60 秒。
+     *
+     * @return array<string, mixed>
+     */
+    private function computeSummary(User $u): array
+    {
+        // ── 会员侧：4 个标量全部下推为 COUNT ─────────────────────────────────
+        //
+        // 每次统计都用 clone 出来的独立 Builder。Eloquent\Builder 实现了 __clone()
+        // （vendor …/Eloquent/Builder.php:2327，内部再 clone 底层 Query\Builder），
+        // 所以 clone 之后叠的 where 不会污染其它几次统计。**不要**改回共用同一个实例：
+        // count() 不会重置 query，下一次统计会连上一次的 where 一起算，表现为数字越数越小。
+        $custQ = scopeCustomersForUser(Customer::query(), $u);
+
+        // ① 「前端客资」：谓词唯一来源 scopeLeadOnlyCustomers()，与内存版
+        //    isLeadOnlyCustomer() 逐条同义（helpers.php:963-980：layer='P5' 且 external_id
+        //    不是 'ky:' 开头；external_id 为 NULL 时两边都算「是客资」）。
+        //    ⚠ 两者唯一的理论差异是大小写：PHP 的 str_starts_with 区分大小写，SQL 的 LIKE
+        //    在本库默认 utf8mb4_*_ci 排序规则下不区分。external_id 的唯一写入点是
+        //    KyMemberSyncService，恒写小写 'ky:'，因此该差异在数据层面不可达。
+        $customerLeadOnly = scopeLeadOnlyCustomers(clone $custQ)->count();
+
+        // ② 待跟进：next_action_time 是 string()->default('') NOT NULL
+        //    （建表 2026_08_26_000001_create_yimai_tables.php），**不存在 NULL 行**，
+        //    所以 SQL 的 `!= ''` 不会像常规情况那样把 NULL 行静默漏掉。
+        //    比较两侧都是 'Y-m-d H:i:s' 定长串，PHP 的字符串比较与 SQL 的串比较同序
+        //    （逐字节、位数对齐），故 `<= $tomorrow.' 23:59:59'` 与内存判断等值。
+        $tomorrow = now()->addDay()->toDateString();
+        $pendingFollowup = (clone $custQ)
+            ->where('next_action_time', '!=', '')
+            ->where('next_action_time', '<=', $tomorrow.' 23:59:59')
+            ->count();
+
+        // ③ 临期会员：与 filteredIds('待续课') 求交集。清单为空时 whereIn 生成 `0 = 1`，
+        //    与 Collection::whereIn([], …) 返回 0 一致。
+        $renewalIds = filteredIds('待续课');
+        $expiringMembers = (clone $custQ)->whereIn('id', $renewalIds)->count();
+
+        // ④ 未分配负责人（owner 列 default '未分配' NOT NULL）。
+        $unassignedOwners = (clone $custQ)->where('owner', '未分配')->count();
+
+        // ── 客资侧：newLeads 与 riskCount 用的是**同一个**计数，只查一次 ──
         $leadQ = scopeLeadsForUser(Lead::query(), $u);
-        $leads = $leadQ->get();
+        $newStatusLeads = (clone $leadQ)->where('status', '新留资')->count();
 
         // 可见范围收敛到 scopeTasksForUser（helpers.php，唯一收口点，含角色不明兜底）。
         // 本处此前自写四个角色分支且**没有兜底**，角色不明账号会把他人任务计进 riskCount。
         $overdueTasks = scopeTasksForUser(Task::query(), $u, 'summary')
             ->where('status', '已逾期')->count();
-
-        $renewalIds = filteredIds('待续课');
-        $expiringMembers = $scopedCustomers->whereIn('id', $renewalIds)->count();
-        $tomorrow = now()->addDay()->toDateString();
 
         $setting = AppSetting::oldest('id')->first();
         $snap = $setting?->snapshot;
@@ -141,14 +216,14 @@ final class TodayController extends Controller
             $snapshotAvailable = $snap !== null && is_array($snap['todayBookings'] ?? null);
         }
 
-        return ok([
+        return [
             // 新客资口径 = 「前端客资」谓词（P5 且非 ky: 来源）+ 未跟进的留资记录。
             // 不能直接数 layer='P5'：卡项全部过期的**正式会员**也会落 P5，
             // 那会把会员误报成新客资，让店长去「跟进」一个已经在册的会员。
-            'newLeads' => $scopedCustomers->filter(fn ($c) => isLeadOnlyCustomer($c))->count() + $leads->where('status', '新留资')->count(),
-            'pendingFollowup' => $scopedCustomers->where('next_action_time', '!=', '')->where('next_action_time', '<=', $tomorrow.' 23:59:59')->count(),
+            'newLeads' => $customerLeadOnly + $newStatusLeads,
+            'pendingFollowup' => $pendingFollowup,
             'expiringMembers' => $expiringMembers,
-            'riskCount' => $overdueTasks + $scopedCustomers->where('owner', '未分配')->count() + $leads->where('status', '新留资')->count(),
+            'riskCount' => $overdueTasks + $unassignedOwners + $newStatusLeads,
             'pendingApprovals' => userHasRole($u, 'R_MEDIA') ? 0 : Approval::where('status', 'like', '待%')->when(userHasRole($u, 'R_MANAGER'), fn ($q) => $q->where('venue', $u->venue))->count(),
             'todayBookings' => $todayBookings,
             'trialBookings' => $trialBookings,
@@ -159,7 +234,7 @@ final class TodayController extends Controller
                 : '',
             // 区分「今天真没预约」与「该店从未同步/快照缺失」，前端据此给出可读提示而非误显示 0
             'snapshotAvailable' => $snapshotAvailable,
-        ]);
+        ];
     }
 
     /**
@@ -534,6 +609,48 @@ final class TodayController extends Controller
 
             return null;
         };
+
+        /*
+         * 严格匹配器：**只认 memberId 与 phone 两条精确路径，name 兜底返回 null**。
+         *
+         * 为什么另开一个而不是复用上面的 $matchCustomer：调用方的后果不对称。
+         *  - 落列表（null）：员工多点一次，代价 2 秒；
+         *  - 跳错人（name 误命中）：员工会看到**另一个同名客户**的卡项余额、出勤、续费评估，
+         *    并据此下判断 —— 不报错、不提示、当场发现不了。馆主 2026-11 拍板：宁可 null。
+         *
+         * 谁用它：`reviews`（课后分析）与 `trials`（今日体验课）两组的 `customerId`。
+         * 这两组此前只给 bookingId / 手机号，前端只能落到列表页，员工得自己找人；
+         * 补 customerId 后可直接跳会员详情。其余六组的 `id` 本身就是会员/留资 id，不受影响。
+         *
+         * 手机号必须先归一（只留数字）：ky_bookings.phone 可能是 '+8613800000002' 或带分隔符的
+         * 原始串，而 customers.phone 与同步写入都是纯数字。归一口径沿用本方法既有写法
+         * `preg_replace('/\D+/', '', …)`（bookings 组就是这么做的），不另造函数。
+         */
+        $matchCustomerStrict = function (string $phone, string $memberId) use ($customerByPhone, $customerByExternal) {
+            $digits = preg_replace('/\D+/', '', $phone) ?? '';
+
+            // 只去掉分隔符还不够：本仓库**真实存在**带前缀的号码形态
+            // （helpers.php 的 privateStudentKeys 注释里记着 `+8613800000002`、`01380000001`
+            //  这两种值会原样留在 ky_bookings.phone 里）。所以再补两档等价形态：
+            //   13 位且以 86 开头 → 去掉国家码；12 位且以 0 开头 → 去掉长途前缀。
+            // 只影响匹配、不改写入，也不动既有 $matchCustomer（bookings 组保持原行为）。
+            $candidates = [$digits];
+            if (strlen($digits) === 13 && str_starts_with($digits, '86')) {
+                $candidates[] = substr($digits, 2);
+            } elseif (strlen($digits) === 12 && str_starts_with($digits, '0')) {
+                $candidates[] = substr($digits, 1);
+            }
+            foreach ($candidates as $candidate) {
+                if ($candidate !== '' && isset($customerByPhone[$candidate])) {
+                    return $customerByPhone[$candidate];
+                }
+            }
+            if ($memberId !== '' && isset($customerByExternal[$memberId])) {
+                return $customerByExternal[$memberId];
+            }
+
+            return null;
+        };
         $daysBetween = fn ($date) => $date ? (int) now()->startOfDay()->diffInDays($date, false) : null;
         $serviceFlags = function (array $c) use ($listMap, $daysBetween): array {
             $flags = $listMap[$c['id']] ?? [];
@@ -744,6 +861,9 @@ final class TodayController extends Controller
                     // KY 预约无直接留资，处理时后端按手机号唯一命中反查（见 todoAction 业务流转 3）
                     'leadId' => null,
                     'session' => null,
+                    // 已建档会员才能直达详情页：严格匹配（memberId / 归一手机号），
+                    // 认不出就给 null —— 前端据此落到会员列表，绝不按姓名猜（见 $matchCustomerStrict）
+                    'customerId' => ($m = $matchCustomerStrict($digits, (string) $b->member_id)) ? (int) $m['id'] : null,
                 ] + $doneInfo('trial:ky-'.$b->id);
             }
         }
@@ -777,6 +897,9 @@ final class TodayController extends Controller
                         // 携带留资定位，处理时回写留资状态机与体验课卡片（见 todoAction 业务流转 3）
                         'leadId' => (int) $l->id,
                         'session' => $session,
+                        // 与 KY 分支保持同一组键（否则前端得按 source 判字段存在性）；
+                        // 留资行没有 member_id，只能按手机号严格命中已建档会员，认不出给 null。
+                        'customerId' => ($m = $matchCustomerStrict((string) $l->phone, '')) ? (int) $m['id'] : null,
                     ] + $doneInfo($trialKey);
                 }
             }
@@ -828,6 +951,9 @@ final class TodayController extends Controller
                 $reviews[] = [
                     'key' => 'review:ky-'.$b->id,
                     'bookingId' => $b->id,
+                    // 只给 bookingId 时前端只能落到「课后分析列表」让员工自己找；
+                    // 补 customerId 后可直达会员详情。严格匹配（memberId / 归一手机号），认不出给 null。
+                    'customerId' => ($m = $matchCustomerStrict($digits, (string) $b->member_id)) ? (int) $m['id'] : null,
                     'time' => $b->start_at?->format('H:i'),
                     'name' => (string) $b->member_name,
                     'phone' => $digits,

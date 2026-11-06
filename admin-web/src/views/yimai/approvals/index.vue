@@ -120,6 +120,7 @@
   import type { YimaiApproval } from '@/api/yimai'
   import { ElMessage, ElTag } from 'element-plus'
   import { useUserStore } from '@/store/modules/user'
+  import { showApiError } from '@/api/backend'
   import { useDevice } from '@/hooks/core/useDevice'
   import type {
     MobileCardAction,
@@ -268,8 +269,7 @@
         refreshData()
         ElMessage.warning('已驳回，决定已写入留痕日志')
       } catch (e) {
-        console.error('[approvals.act]', e)
-        ElMessage.error('操作失败，请稍后重试')
+        showApiError(e, '驳回审批')
       }
       return
     }
@@ -283,8 +283,7 @@
       refreshData()
       ElMessage.success(`${stage}通过，决定已写入留痕日志`)
     } catch (e) {
-      console.error('[approvals.act]', e)
-      ElMessage.error('操作失败，请稍后重试')
+      showApiError(e, '审批提交')
     }
   }
 
@@ -295,7 +294,7 @@
       ElMessage.success(`${row.customerName} 已标记「已关联成交」`)
     } catch (e) {
       console.error('[approvals.linkDeal]', e)
-      ElMessage.error('操作失败，请稍后重试')
+      showApiError(e, '关联成交')
     }
   }
 

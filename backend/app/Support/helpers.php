@@ -341,8 +341,22 @@ function roleLabel(?string $role): string
     };
 }
 
-/** 按权限从大到小排序，用于选「主角色」与多角色展示 */
-const ROLE_PRECEDENCE = ['R_SUPER', 'R_MANAGER', 'R_TEACHER', 'R_SERVICE', 'R_MEDIA'];
+/**
+ * 角色顺序：**由「权限大」到「权限小」**，用于选「主角色」与多角色展示。
+ *
+ * ⚠️ 顺序是产品口径，不是随手排的。当前口径（馆主 2026-11 拍板）：
+ * **同时具备服务老师与会籍/授课老师身份时，以「服务老师」为主角色** ——
+ * 「员工同时是服务老师+授课老师时，优先级都是以服务老师优先」。
+ * 所以 R_SERVICE 在 R_TEACHER 之前，与小程序 `utils/permission.ts` 的排列一致。
+ *
+ * 三个使用点对顺序的依赖（改顺序前先看）：
+ *  1. `primaryRole()`（本文件 :500）—— **依赖顺序**，取第一个命中者；
+ *  2. `isKnownRoleUser()`（:494）—— 只当「角色全集」用（`userHasAnyRole` 做交集判定），
+ *     顺序**无影响**；
+ *  3. `TodayController::teacherOverview()` 的 `roleLabel` —— 只是把命中角色按此顺序拼成
+ *     「店长 + 服务老师」这样的展示串，顺序影响**文案次序**（与 1 同向，属预期）。
+ */
+const ROLE_PRECEDENCE = ['R_SUPER', 'R_MANAGER', 'R_SERVICE', 'R_TEACHER', 'R_MEDIA'];
 
 /**
  * 留资来源渠道（`leads.source`）的**唯一权威清单**。

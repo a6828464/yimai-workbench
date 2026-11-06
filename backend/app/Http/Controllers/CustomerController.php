@@ -124,6 +124,60 @@ class CustomerController extends Controller
         return ok(['counts' => $toCounts($lists)]);
     }
 
+    /**
+     * GET /customers/list-ids：七个清单各自的会员 id 集合（一次返回），
+     * 供前端渲染「这个会员属于哪几个清单」的标签。
+     *
+     * ## 为什么必须有这个接口
+     *
+     * 前端此前只能这样拿 id：`GET /customers?list=待续课&size=5000&current=N`，
+     * 五个清单并行、每个清单最多翻 20 页（admin-web `members/index.vue` 的
+     * `fetchMemberListIds()`）—— 双店 1560 会员规模下最坏是 100 次分页请求，
+     * **而且每次都把整行（含 cards_list / card_stats 两个 JSON 列）拉回来只为读一个 id**。
+     * 这里直接回 id 数组：清单本身来自 `memberListIds()`（自带 120 秒缓存），
+     * 超管路径 0 次额外查询、其它角色 1 次（求可见范围交集）。
+     *
+     * ## 契约
+     *
+     * ```
+     * GET /api/customers/list-ids
+     * → { "code": 0, "data": { "lists": { "待续课": [12,34], "出勤降低": [...], ... } } }
+     * ```
+     *
+     * - 键集合与 `GET /customers/list-counts` 的 `counts` 键**完全一致**
+     *   （待续课 / 出勤降低 / VIP / 预流失 / 待复活 / 炸弹会员 / 过期有余额）；
+     * - 值是该清单命中的会员 id 数组（int），已按可见范围收窄，与
+     *   `GET /customers?list=<清单名>` 的行集合一致 —— 前端拿到的 id 一定能查到行，
+     *   查不到行就说明两处口径漂移了（这会是一条可自检的不变量）；
+     * - 未登录 401；任何已登录账号都可调用，范围由 `scopeCustomersForUser()` 决定。
+     *
+     * ⚠ 不要在这里叠加 `type` 过滤：`/customers?list=X` 前端调用时**不带 type**，
+     * 这里必须与它同源（`scopedCustomerQuery($u, null)`），否则「标签说有、列表里没有」。
+     */
+    public function listIds(Request $r)
+    {
+        $u = $r->user();
+        $lists = memberListIds();
+        $normalize = fn (array $ids): array => array_values(array_map('intval', $ids));
+
+        // 超管：与 /customers?list=X 完全一致（该路径不额外收窄），直接给全量
+        if (userHasRole($u, 'R_SUPER')) {
+            return ok(['lists' => array_map($normalize, $lists)]);
+        }
+
+        // 其它角色：与 list-counts 同一份交集算法，只是保留 id 而不是数个数
+        $scopedSet = array_flip($this->scopedCustomerQuery($u, null)->pluck('id')->all());
+        $out = [];
+        foreach ($lists as $key => $ids) {
+            $out[$key] = array_values(array_filter(
+                $normalize((array) $ids),
+                fn (int $id): bool => isset($scopedSet[$id])
+            ));
+        }
+
+        return ok(['lists' => $out]);
+    }
+
     /** GET /customers */
     public function index(Request $r)
     {
@@ -284,8 +338,17 @@ class CustomerController extends Controller
         // 归属变更：先判「真的换人」，再要权限、补 user_id、攒通知名单
         $assignments = $this->collectAssignmentChanges($r, $c, $patch);
         $c->update($patch);
+
+        // 失效放在 if 之外（原先只在 in_revive 分支里）：
+        // /today/summary 现在有 60 秒缓存，而本次写入的白名单字段里至少有两个是它的输入 ——
+        // `owner`（riskCount 数的是 owner='未分配'）与 `member_state`/`in_revive`（改派生列 layer，
+        // 进而影响五清单与 newLeads）。不失效的话「刚把会员分配出去」在首页仍显示未分配，
+        // 是最容易被当成「保存没生效」的形态。
+        // 代价可忽略：五清单缓存本来就带 `MAX(updated_at)` 指纹，任何会员写入都会换键，
+        // 这里只是把版本号一并 bump，不会多出一次全表扫描。
+        invalidateBusinessCaches('member_lists');
+
         if (array_key_exists('in_revive', $patch)) {
-            invalidateBusinessCaches('member_lists');
             // in_revive 是续费判定的输入之一（$revive → 分层 P1），所以写入后必须重算派生列 layer，
             // 否则「标记待复活」之后 layer 与 customerLayerFor() 当场分叉：
             // 经营池分层页读 layer 列、详情页算 customerLayerFor()，同一会员两个答案。
@@ -593,6 +656,12 @@ class CustomerController extends Controller
 
             return ['evaluation' => camel($evaluation), 'task' => camel($task), 'context' => $context];
         });
+
+        // 本次写入同时改了 customers（eval_*/next_action/next_action_time）与 tasks（新建或更新续费任务），
+        // 两者都是 /today/summary 的输入（pendingFollowup / riskCount / expiringMembers），
+        // 而 summary 有 60 秒缓存。不失效的话，老师刚交完评估、切回工作台仍会看到旧的「待跟进」条数。
+        // 不带命名空间 = 两个命名空间一起 bump（会员侧与任务侧都变了）。
+        invalidateBusinessCaches();
 
         return ok($result);
     }

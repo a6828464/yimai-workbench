@@ -19,7 +19,9 @@
       <!-- 规则设置 -->
       <div class="mb-3 flex flex-wrap items-center gap-3 text-xs text-gray-400">
         <span>{{ scopeHint }}</span>
-        <ElButton v-if="isSuper" link type="primary" size="small" @click="rulesDlg = true"
+        <!-- 阈值是**全局配置**：后端 PUT /member-rules 首行就是 requireSuper()。
+             所以入口就按角色收掉，非超管看不到按钮，而不是点进去吃 403 -->
+        <ElButton v-roles="'R_SUPER'" link type="primary" size="small" @click="rulesDlg = true"
           >调整标签阈值</ElButton
         >
       </div>
@@ -1319,6 +1321,7 @@
     isBirthdayToday,
     queryCustomerOptions,
     queryMemberListCounts,
+    queryMemberListIds,
     DEFAULT_TASTE_TITLE_PATTERN,
     EVAL_DIMENSIONS,
     EVAL_RISKS,
@@ -1363,7 +1366,7 @@
     whyCodeLabel
   } from '@/views/yimai/shared/card-display'
   import type { CardLike, CustomerCardSummary } from '@/views/yimai/shared/card-display'
-  import { USE_BACKEND, apiGet } from '@/api/backend'
+  import { showApiError } from '@/api/backend'
   import { useUserStore } from '@/store/modules/user'
   import { useDevice } from '@/hooks/core/useDevice'
   import { useTableHeight } from '@/hooks/core/useTableHeight'
@@ -1385,7 +1388,6 @@
 
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
-  const isSuper = computed(() => roles.value.includes('R_SUPER'))
   const isManager = computed(() => roles.value.includes('R_MANAGER'))
   /** 数据范围说明：随当前门店/清单/顾问筛选动态显示 */
   const scopeHint = computed(() => {
@@ -1681,8 +1683,8 @@
       }
       ElMessage.success(`会员状态已改为「${value}」`)
       await load()
-    } catch {
-      ElMessage.error('状态更新失败，请稍后重试')
+    } catch (e) {
+      showApiError(e, '会员状态更新')
     }
   }
 
@@ -1888,8 +1890,7 @@
         loadMemberListIds()
       }
     } catch (e) {
-      console.error('[members.load]', e)
-      ElMessage.error('会员列表加载失败，请稍后重试')
+      showApiError(e, '会员列表加载')
     } finally {
       loading.value = false
     }
@@ -1907,59 +1908,46 @@
   }
 
   /**
-   * 某清单的会员 id 集合（**直接取后端权威口径**，不在前端重算）。
+   * 拉取七清单的会员 id 归属（后端权威口径），供表格标签与卡片 tags 使用。
    *
-   * 为什么不在 `api/yimai.ts` 里加这个函数：那是「数据层」，而这里只服务于本页
-   * 的标签渲染，是页面自己的取数逻辑；放页面里也让「本页标签口径 = 后端清单口径」
-   * 这件事在一处看得见。`api/yimai.ts` 的 `computeMemberLists()` 是 mock 分支用的
-   * 前端镜像（仍含 m3>0 门槛、无逐卡尾段、无 90 天过期窗），**本页不再调用它**。
+   * ## 改造前后（t24）
    *
-   * 只取 id（后端 size 上限 5000，超一页继续拉），不带卡片明细。
-   */
-  async function fetchMemberListIds(list: MemberListFilter): Promise<number[]> {
-    if (!USE_BACKEND) return []
-    const PAGE = 5000
-    const ids: number[] = []
-    for (let current = 1; current <= 20; current += 1) {
-      const d = await apiGet<{ records: { id: number }[] }>('/customers', {
-        list,
-        current,
-        size: PAGE
-      })
-      const page = d.records ?? []
-      ids.push(...page.map((r) => r.id))
-      if (page.length < PAGE) break
-    }
-
-    return ids
-  }
-
-  /**
-   * 拉取五清单的会员 id 归属（后端口径），供表格标签与卡片 tags 使用。
+   * 改造前是 `fetchMemberListIds()` 那套：7 个清单并行 × 每个清单串行翻页
+   * `size=5000` × 上限 20 页 —— **最坏 140 次分页请求**（t3 按 5 个估成 100，
+   * t24 实测 FILTER_KEYS 为 6 个页签 + 过期有余额 = 7 个），且每条记录都把
+   * `cards_list` / `card_stats` 两个 JSON 列拖回来，只为读一个 `id`（t3-W02）。
    *
-   * 五个清单并行请求，任一失败只影响那一个清单的标签，不阻塞列表。
+   * 现在一次 `GET /customers/list-ids` 拿全 7 个清单的 id 集合。后端该接口与
+   * `GET /customers?list=X` 同源（都走 `memberListIds()` / `filteredIds()`），
+   * 所以「标签说有、列表里没有」不会发生。
+   *
+   * ## 降级
+   *
+   * list-ids 只是**辅助信息**：它挂了不该让整页不可用。失败时归属退化为空
+   * （标签不显示），页签徽标仍由 `list-counts` 提供、列表照常翻页、筛选照常工作，
+   * 只在 console 留一条 warn 便于排查。
    */
   async function loadMemberListIds() {
     try {
-      const results = await Promise.all(
-        FILTER_KEYS.map(async (key) => {
-          try {
-            return [key, await fetchMemberListIds(key)] as const
-          } catch {
-            return [key, [] as number[]] as const
-          }
-        })
-      )
+      const lists = await queryMemberListIds()
       const map: Record<number, MemberListFilter[]> = {}
-      for (const [key, ids] of results) {
-        for (const id of ids) {
+      // 按 FILTER_KEYS 顺序落桶，保证同一会员的标签顺序每次渲染都一致（与改造前相同）。
+      // 后端给的是 int，但契约跨 JSON 边界后可能是字符串 —— 这里再 Number() 一次，
+      // 与 api 层同样做双保险：类型不齐会让 map[row.id] 静默取不到，标签整列消失。
+      for (const key of FILTER_KEYS) {
+        const seen: Record<number, true> = {}
+        for (const raw of lists[key] ?? []) {
+          const id = Number(raw)
+          if (!Number.isFinite(id) || seen[id]) continue
+          seen[id] = true
           if (!map[id]) map[id] = []
           map[id].push(key)
         }
       }
       memberListIds.value = map
-    } catch {
-      /* 归属失败不阻塞列表：标签退化为空，不会显示错的口径 */
+    } catch (e) {
+      console.warn('[members.listIds] 清单归属加载失败，标签将不显示（列表不受影响）:', e)
+      memberListIds.value = {}
     }
   }
 
@@ -2549,7 +2537,7 @@
       ElMessage.success('已保存，进入首周「先确认不销售」流程')
     } catch (e) {
       console.error('[members.saveRenewal]', e)
-      ElMessage.error('保存失败，请稍后重试')
+      showApiError(e, '续费计划保存')
     }
   }
 
@@ -2577,7 +2565,7 @@
       ElMessage.success('已保存')
     } catch (e) {
       console.error('[members.saveDecline]', e)
-      ElMessage.error('保存失败，请稍后重试')
+      showApiError(e, '下降处置保存')
     }
   }
 
@@ -2607,7 +2595,7 @@
       ElMessage.success('已保存，工作台「今日待办 → 生日关怀」将自动提醒')
     } catch (e) {
       console.error('[members.saveBirthday]', e)
-      ElMessage.error('保存失败，请稍后重试')
+      showApiError(e, '生日保存')
     }
   }
 
@@ -2641,7 +2629,7 @@
       ElMessage.success('已记录，14天后需再次有效触达')
     } catch (e) {
       console.error('[members.saveTouch]', e)
-      ElMessage.error('保存失败，请稍后重试')
+      showApiError(e, '沟通记录保存')
     }
   }
 
@@ -2657,7 +2645,7 @@
       load(false)
     } catch (e) {
       console.error('[members.toRevive]', e)
-      ElMessage.error('操作失败，请稍后重试')
+      showApiError(e, '转入待复活')
     }
   }
 
@@ -2729,7 +2717,7 @@
       await load(false)
     } catch (e) {
       console.error('[members.saveEval]', e)
-      ElMessage.error('评估保存失败，请稍后重试')
+      showApiError(e, '续费评估保存')
     } finally {
       evalDlg.saving = false
     }
