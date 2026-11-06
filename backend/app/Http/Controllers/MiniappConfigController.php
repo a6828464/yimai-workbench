@@ -298,13 +298,32 @@ final class MiniappConfigController extends Controller
             '图片不能超过 5MB（当前 '.round($size / 1048576, 1).'MB）'
         );
 
-        // 真实 MIME（finfo 读文件头）—— 这是唯一可信的类型来源
-        $mime = (string) (new \finfo(FILEINFO_MIME_TYPE))->file((string) $file->getPathname());
+        /*
+         * 真实 MIME 判定：优先 finfo，没有 fileinfo 扩展时退到「getimagesize + 内容扫描」。
+         *
+         * 为什么要有退化分支：生产服务器没装 fileinfo，`new \finfo` 会直接抛 Class not found
+         * → 接口 500 → 网页端只有一句「上传失败」（和图片体积无关，几百 KB 同样失败）。
+         *
+         * 为什么不能只用 getimagesize：它只读文件头，「jpg 头 + 尾部 php 代码」这种 polyglot
+         * 会被认成合法图片。所以退化分支必须再扫一遍脚本标签，把这个缺口补上。
+         */
+        $path = (string) $file->getPathname();
+        $mime = '';
+        if (class_exists(\finfo::class)) {
+            $mime = (string) (new \finfo(FILEINFO_MIME_TYPE))->file($path);
+        } else {
+            $info = @getimagesize($path);
+            abort_if($info === false || empty($info['mime']), 422, '这个文件不是有效的图片');
+            $raw = (string) @file_get_contents($path);
+            abort_if(
+                str_contains($raw, '<?php') || str_contains($raw, '<?=') || str_contains(strtolower($raw), '<script'),
+                422,
+                '这个文件不是有效的图片'
+            );
+            $mime = (string) $info['mime'];
+        }
         $ext = self::UPLOAD_MIME_EXT[$mime] ?? null;
-        abort_if($ext === null, 422, '只支持 JPG / PNG / WebP / GIF 图片（当前类型：'.($mime !== '' ? $mime : '未知').'）');
-
-        // 二次确认：能被解码成图像（挡掉「图片头 + 脚本体」这类 polyglot）
-        abort_if(@getimagesize((string) $file->getPathname()) === false, 422, '这个文件不是有效的图片');
+        abort_if($ext === null, 422, '只支持 JPG / PNG / WebP / GIF 图片（当前类型：'.$mime.'）');
 
         $dir = storage_path(self::UPLOAD_RELATIVE_DIR);
         if (! is_dir($dir)) {

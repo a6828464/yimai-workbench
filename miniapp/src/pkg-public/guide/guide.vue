@@ -902,7 +902,6 @@ onShareAppMessage(() => {
                     <view class="vrow__play"><view class="vrow__tri" /></view>
                     <view class="vrow__txt">
                       <text class="vrow__name">一麦瑜伽 · 视频号</text>
-                      <text class="vrow__sub">场馆日常 · 课程片段</text>
                     </view>
                     <view class="vrow__arrow">
                       <view class="vrow__arrow-line" />
@@ -1063,7 +1062,7 @@ onShareAppMessage(() => {
         <view class="vcard__head">
           <text class="vcard__title">视频号</text>
           <text class="vcard__desc">
-            {{ videoReady ? '课程花絮都在视频号里' : '待配置视频号' }}
+            {{ videoReady ? '' : '待配置视频号' }}
           </text>
           <!-- 视频号视频：后台填了「视频号视频 ID」就直接内嵌播放，不用跳转 -->
           <channel-video

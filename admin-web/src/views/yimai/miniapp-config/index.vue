@@ -257,7 +257,7 @@
                           <ElInput
                             v-model="v.routes[rk].videoUrl"
                             maxlength="200"
-                            :placeholder="`${ROUTE_LABELS[rk]}的视频直链（mp4）`"
+                            :placeholder="`${ROUTE_LABELS[rk]}：mp4 直链，或视频号视频 ID`"
                           />
                           <div v-if="videoRefError(v.routes[rk].videoUrl)" class="c-red text-xs">
                             ✕ {{ videoRefError(v.routes[rk].videoUrl) }}

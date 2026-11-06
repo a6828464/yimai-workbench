@@ -28,6 +28,24 @@
    已在 `oa.nbyimai.com.conf` 加 `client_max_body_size 20m;` 并 reload。
 3. **删掉视频号区块下的「场馆日常与课程片段」**（馆主要求，只留视频号入口本身）。
 
+### 上传失败的真因（比 nginx 更底层）
+
+生产服务器**没装 fileinfo 扩展**，而上传接口用 `new \finfo(FILEINFO_MIME_TYPE)` 判真实类型
+→ 直接抛 Class not found → 500 → 网页端只有一句「上传失败」。**和图片体积无关**，
+几百 KB 也一样失败（所以放开 nginx 限制并没有解决问题）。
+
+改法：finfo 存在就用 finfo；不存在则退到 `getimagesize()` + **内容扫描**
+（拒 `<?php` / `<?=` / `<script`）—— 不能只用 getimagesize，它只读文件头，
+「jpg 头 + 尾部 php」这类 polyglot 会被认成合法图片。
+
+顺带把站点 nginx 的 `client_max_body_size` 从默认 1MB 放到 20m（大图仍需）。
+
+### 文案修正
+
+- 编辑主题的视频号说明（`课程花絮都在视频号里`）上一版漏改，已清空
+- 视频号卡片副标题「场馆日常 · 课程片段」已删
+- 后台路线视频输入框占位改为「开车出行：mp4 直链，或视频号视频 ID」
+
 ### 技术前提（必须知道）
 
 1. `<channel-video>` 要求小程序与视频号**同一主体或已关联**，否则会渲染成空白。
