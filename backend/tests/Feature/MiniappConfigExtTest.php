@@ -272,7 +272,9 @@ class MiniappConfigExtTest extends TestCase
     {
         Sanctum::actingAs($this->super());
 
-        $allowed = ['', '/static/venue.mp4', 'https://cdn.example.com/venue.mp4'];
+        $allowed = ['', '/static/venue.mp4', 'https://cdn.example.com/venue.mp4',
+            // 视频号「复制视频 ID」拿到的两种常见形态，要能直接填进视频链接
+            'export/UzFfAgtgekIEAQAAAAAA', 'UzFfAgtgekIEAQAAAAAA'];
         foreach ($allowed as $url) {
             $this->putJson('/api/miniapp/config', ['venues' => [
                 ['key' => '绿地店', 'videoUrl' => $url, 'routes' => ['walk' => ['videoUrl' => $url]]],
@@ -289,7 +291,7 @@ class MiniappConfigExtTest extends TestCase
             $this->putJson('/api/miniapp/config', ['venues' => [
                 ['key' => '绿地店', 'videoUrl' => $url],
                 ['key' => '东部店'],
-            ]])->assertStatus(422)->assertJsonPath('message', '必须是站内路径（以 / 开头，且不能以 // 开头）或 https 直链');
+            ]])->assertStatus(422)->assertJsonPath('message', '必须是站内路径（/ 开头）、https 直链，或视频号视频 ID');
 
             // 路线的视频同样受管
             $this->putJson('/api/miniapp/config', ['venues' => [

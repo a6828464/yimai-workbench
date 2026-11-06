@@ -275,7 +275,9 @@ const videoReady = computed(() => Boolean(current.value.channelsUser))
 function looksLikeFeedId(v: string): boolean {
   const s = (v || '').trim()
   if (!s || s.startsWith('/') || /^https?:\/\//i.test(s)) return false
-  return /^[A-Za-z0-9_\-/]{10,}$/.test(s)
+  // 与后端 isAllowedVideoRef 同一套规则：`export/<id>` 或纯字母数字串。
+  // 不要放宽成「任意含斜杠的串」，那会把相对路径也当成视频号 ID。
+  return /^(export\/)?[A-Za-z0-9_-]{10,}$/.test(s)
 }
 
 /**
@@ -887,7 +889,7 @@ onShareAppMessage(() => {
                   <view class="vcard__rule" />
                 </view>
                 <text class="vcard__desc">
-                  {{ videoReady ? '场馆日常与课程片段' : '待配置视频号' }}
+                  {{ videoReady ? '' : '待配置视频号' }}
                 </text>
                 <!-- 视频号视频：后台填了「视频号视频 ID」就直接内嵌播放，不用跳转 -->
                 <channel-video

@@ -155,8 +155,8 @@
                   maxlength="200"
                   placeholder="/static/venue.mp4 或 https://.../venue.mp4"
                 />
-                <div v-if="urlError(v.videoUrl)" class="c-red text-xs">
-                  ✕ {{ urlError(v.videoUrl) }}
+                <div v-if="videoRefError(v.videoUrl)" class="c-red text-xs">
+                  ✕ {{ videoRefError(v.videoUrl) }}
                 </div>
                 <div class="field-tip">
                   这里填的是<b>可直接播放的视频文件直链（mp4）</b>，不是视频号链接 —— 填 mp4
@@ -259,8 +259,8 @@
                             maxlength="200"
                             :placeholder="`${ROUTE_LABELS[rk]}的视频直链（mp4）`"
                           />
-                          <div v-if="urlError(v.routes[rk].videoUrl)" class="c-red text-xs">
-                            ✕ {{ urlError(v.routes[rk].videoUrl) }}
+                          <div v-if="videoRefError(v.routes[rk].videoUrl)" class="c-red text-xs">
+                            ✕ {{ videoRefError(v.routes[rk].videoUrl) }}
                           </div>
                         </div>
                       </ElFormItem>
@@ -940,6 +940,24 @@
     const isHttps = /^https:\/\/[^\s]+$/i.test(v)
     if (!isStationPath && !isHttps) return '只允许站内路径（/ 开头）或 https:// 外链'
     return null
+  }
+
+  /**
+   * 视频引用校验：URL 之外，还允许直接填**视频号视频 ID**。
+   *
+   * 馆主在视频号里点「复制视频 ID」拿到的是 `export/UzFfAgtgekIEAQAAAAAA...` 这种串，
+   * 既不是站内路径也不是 https 直链，用 urlError 会直接被拦下（这就是之前
+   * 「填了 ID 保存不了、小程序也没反应」的原因）。
+   *
+   * 只认两种形态：`export/<id>` 或纯字母数字串 —— 和后端 isAllowedVideoRef 同一套，
+   * 不要放宽成「任意含斜杠」，否则相对路径 `relative/path.mp4` 也会混进来。
+   */
+  function videoRefError(ref: string | null | undefined): string | null {
+    const v = (ref ?? '').trim()
+    if (!v) return null
+    if (!urlError(v)) return null
+    if (/^(export\/)?[A-Za-z0-9_-]{10,}$/.test(v)) return null
+    return '请填站内路径（/ 开头）、https 直链，或视频号视频 ID'
   }
 
   async function load() {

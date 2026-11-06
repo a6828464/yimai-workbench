@@ -233,7 +233,7 @@ final class MiniappConfigController extends Controller
             : $current['theme'];
         // 首页背景图：同样的合并守卫 —— 只改门店配置不该把首页大图冲掉
         $homeHero = array_key_exists('homeHero', $data)
-            ? $this->normalizeUrl($data['homeHero'])
+            ? $this->normalizeUrl($data['homeHero'])  // 首页图仍是纯媒体地址，不放宽
             : $current['homeHero'];
 
         $cfg = [
@@ -365,12 +365,53 @@ final class MiniappConfigController extends Controller
         return (bool) preg_match('#^https://[^\s]+$#i', $value);
     }
 
+    /**
+     * 视频号视频 ID 是否合法。
+     *
+     * 馆主在视频号里点「复制视频 ID」拿到的那串（形如 `export/UzFfAgtgekIEAQAAAAAA...`），
+     * 要能直接填进 videoUrl 由 `<channel-video feed-id>` 内嵌播放。
+     * 它既不是站内路径也不是 https 直链，所以不能走 isAllowedMediaUrl。
+     *
+     * 形态约束（宁可拒，不要放进奇怪的东西）：
+     *  - 首字符必须是字母/数字/下划线/短横（**不能是 `/`** —— 那是站内路径，另有规则）；
+     *  - 其后允许字母数字、下划线、短横、斜杠（exportId 里带 `/`）；
+     *  - 总长 ≥ 10，且不含空格。
+     */
+    private static function isAllowedVideoRef(string $ref): bool
+    {
+        $value = trim($ref);
+        if ($value === '') {
+            return true;
+        }
+        if (self::isAllowedMediaUrl($value)) {
+            return true;
+        }
+
+        // 只认两种形态：`export/<id>`（视频号「复制视频 ID」的原样）或纯字母数字串。
+        // 不放开任意含斜杠的相对路径（`relative/path.mp4` 这类要拒），否则白名单形同虚设。
+        return (bool) preg_match('#^(export/)?[A-Za-z0-9_\-]{10,}$#', $value);
+    }
+
+    /** 视频引用归一：URL 或视频号 ID 都保留，其余落空串 */
+    private function normalizeVideoRef(mixed $raw): string
+    {
+        $ref = trim((string) ($raw ?? ''));
+
+        return self::isAllowedVideoRef($ref) ? $ref : '';
+    }
+
     /** 校验规则（PUT）。字段顺序与契约一致，便于对照。 */
     private function rules(): array
     {
         $media = function (string $attribute, mixed $value, \Closure $fail): void {
             if (! self::isAllowedMediaUrl((string) $value)) {
                 $fail('必须是站内路径（以 / 开头，且不能以 // 开头）或 https 直链');
+            }
+        };
+
+        $videoRef = function (string $attribute, mixed $value, \Closure $fail): void {
+            if (! self::isAllowedVideoRef((string) $value)) {
+                $fail('必须是站内路径（/ 开头）、https 直链，或视频号视频 ID');
             }
         };
 
@@ -410,12 +451,12 @@ final class MiniappConfigController extends Controller
             'venues.*.images.*.src' => ['required', 'string', 'max:200', $media],
             'venues.*.images.*.caption' => ['nullable', 'string', 'max:120'],
             // 门店视频：与图片 src 同一段白名单（$media），不写第二套
-            'venues.*.videoUrl' => ['nullable', 'string', 'max:300', $media],
+            'venues.*.videoUrl' => ['nullable', 'string', 'max:300', $videoRef],
             // 只认这三种出行方式：传 bike 之类的键会被 array: 规则拒掉（而不是静默丢弃）
             'venues.*.routes' => ['nullable', 'array:'.implode(',', self::ROUTE_KEYS)],
             // 路线文字说明：纯文本 ≤200 字（HTML 在 normalizeNote() 里剥掉，落库前就没了）
             'venues.*.routes.*.note' => ['nullable', 'string', 'max:200'],
-            'venues.*.routes.*.videoUrl' => ['nullable', 'string', 'max:300', $media],
+            'venues.*.routes.*.videoUrl' => ['nullable', 'string', 'max:300', $videoRef],
             'venues.*.routes.*.images' => ['nullable', 'array', 'max:'.self::MEDIA_LIMIT],
             'venues.*.routes.*.images.*.src' => ['required', 'string', 'max:200', $media],
             'venues.*.routes.*.images.*.caption' => ['nullable', 'string', 'max:120'],
@@ -564,7 +605,7 @@ final class MiniappConfigController extends Controller
             'channelsUser' => (string) ($pick('channelsUser') ?? ''),
             'channelsLive' => (string) ($pick('channelsLive') ?? ''),
             'images' => $this->normalizeImages($pick('images')),
-            'videoUrl' => $this->normalizeUrl($pick('videoUrl')),
+            'videoUrl' => $this->normalizeVideoRef($pick('videoUrl')),
             'routes' => $this->normalizeRoutes(
                 (array) ($base['routes'] ?? self::EMPTY_ROUTES),
                 (array) ($pick('routes') ?? [])
@@ -591,7 +632,7 @@ final class MiniappConfigController extends Controller
             $out[$kind] = [
                 // note 与 videoUrl/images **同级**参与同一层合并：只提交 note 时不会把视频/图片冲掉
                 'note' => $this->normalizeNote($this->pick($sub, $base, 'note')),
-                'videoUrl' => $this->normalizeUrl($this->pick($sub, $base, 'videoUrl')),
+                'videoUrl' => $this->normalizeVideoRef($this->pick($sub, $base, 'videoUrl')),
                 'images' => $this->normalizeImages($this->pick($sub, $base, 'images')),
             ];
         }
