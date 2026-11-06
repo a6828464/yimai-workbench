@@ -100,6 +100,12 @@ export interface MiniappCustomer {
   birthday?: string | null
   /** 经营分层 P0–P5（后端 customerLayerFor 派生的权威列） */
   layer: 'P0' | 'P1' | 'P2' | 'P3' | 'P4' | 'P5'
+  /**
+   * 会员备注（详情页头部展示）。
+   * 后端 `show()` 是把整行 `camel($c)` 透传的，所以 customers 表一旦有 remark 列就会自动出现；
+   * 当前库里还没有这一列 → 线上这行不会渲染（空值不占位），属于预期。
+   */
+  remark?: string | null
   status: string
   owner: string
   nextAction: string
@@ -191,10 +197,17 @@ export interface CustomerCard {
   /** 是否为当前主卡 */
   isMain?: boolean
   remaining?: number | null
+  /** 剩余天数（期限卡）：后端 CardLifecycle 直接算好的余额，比 remaining 更能说明「还剩几天」 */
+  residueDays?: number | null
   bound?: number | null
   validDays?: number | null
   deadline?: string | null
   daysUntil?: number | null
+  /**
+   * 卡项备注：后端从原始行 pick（`remark / card_remark / note / memo`），取不到是 null。
+   * 所以这一行**源数据有才出现**，真实数据下不显示属于预期，不是没生效。
+   */
+  remark?: string | null
   [key: string]: unknown
 }
 
@@ -225,7 +238,10 @@ export interface MiniappLead {
   venue: string
   serviceTeacher: string
   status: LeadStatus
-  grade: '' | 'A' | 'B' | 'C'
+  // grade 是「体验课类型」，与 admin-web 的 TRIAL_TYPES 同源（定制私教/私教小班/精品团课/其他）。
+  // 早先是「客户分级 A/B/C」，网页端改语义后小程序没跟上，两端曾各说各话（v3.14.0 修复）。
+  // 用 string 而非联合类型：库里可能残留 'A'/'B'/'C' 历史值，窄类型会让「历史值」分支编译不过。
+  grade: string
   dealCard: string
   dealAmount: number | null
   dealAt?: string | null

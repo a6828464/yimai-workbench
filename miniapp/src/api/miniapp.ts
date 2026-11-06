@@ -51,6 +51,17 @@ export interface MiniappConfig {
   venues: MiniappVenueConfig[]
   /** 后台最后更新时间（展示用，可缺） */
   updatedAt?: string
+  /**
+   * 首页弹窗配置（v3.14 加）。
+   *
+   * 类型用 unknown 而不是精细结构：这份配置是**渐进增强**的——老后端根本没有这个键，
+   * 新后端也可能继续加字段。调用方（home.vue）自己 `normalizePopup()` 归一，
+   * 这里只负责「原样交出去」，不在这里做业务校验。
+   *
+   * 历史教训：这个键一度在 unwrapConfig 里被过滤掉，导致调用方拿不到，
+   * 只能在页面里再写一份相同口径的请求——两处维护请求逻辑，早晚会漂。
+   */
+  popup?: unknown
 }
 
 /** 默认 5s：这一页是顾客首屏，宁可早点回退到本地默认值，也不要让顾客盯着空白等 20s */
@@ -75,7 +86,9 @@ function unwrapConfig(body: unknown): MiniappConfig {
   const venues = Array.isArray(data.venues) ? (data.venues as MiniappVenueConfig[]) : []
   return {
     venues,
-    updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : undefined
+    updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : undefined,
+    // 不要在这里过滤字段：调用方需要什么就交什么，过滤会把「以后新增的配置项」挡在门外
+    popup: data.popup
   }
 }
 

@@ -64,7 +64,9 @@ class MiniappConfigTest extends TestCase
         // 每家店的键集合固定（前端零判空）
         foreach ($data['venues'] as $venue) {
             $this->assertSame(
-                ['key', 'sub', 'address', 'phone', 'latitude', 'longitude', 'channelsUser', 'channelsLive', 'images'],
+                // v2（t32）在 images 之后追加 videoUrl / routes：前端按此顺序取字段
+                ['key', 'sub', 'address', 'phone', 'latitude', 'longitude', 'channelsUser', 'channelsLive',
+                    'images', 'videoUrl', 'routes'],
                 array_keys($venue),
                 '门店对象的键（含顺序）必须与契约一致'
             );
@@ -238,11 +240,12 @@ class MiniappConfigTest extends TestCase
     {
         Sanctum::actingAs($this->user('mc-super5', '馆长5', 'R_SUPER', null));
 
-        $four = $this->putJson('/api/miniapp/config', ['venues' => [
-            ['key' => '绿地店', 'images' => array_fill(0, 4, ['src' => '/static/a.jpg', 'caption' => 'x'])],
+        // t32：上限从 3 提到 9 → 超限用例改成 10 张（4 张现在合法）
+        $ten = $this->putJson('/api/miniapp/config', ['venues' => [
+            ['key' => '绿地店', 'images' => array_fill(0, 10, ['src' => '/static/a.jpg', 'caption' => 'x'])],
             ['key' => '东部店'],
         ]])->assertStatus(422);
-        $this->assertStringContainsString('最多 3 张', (string) $four->json('message'));
+        $this->assertStringContainsString('最多 9 张', (string) $ten->json('message'));
 
         foreach (['javascript:alert(1)', '//evil.example.com/a.png', 'http://cdn.example.com/a.png'] as $bad) {
             $resp = $this->putJson('/api/miniapp/config', ['venues' => [

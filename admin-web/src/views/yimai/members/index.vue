@@ -947,6 +947,57 @@
             <div v-else class="mdt-group__empty">本组暂无卡项</div>
           </div>
         </div>
+
+        <!--
+          会员备注：小程序详情页顶部展示的那条自由文本。
+          数据来自 `GET /customers/{id}`（**列表接口不返回 remark**），所以只有详情真的拉到了
+          才允许编辑 —— 详情失败时输入框置灰，避免「把没读到的备注当成空串存回去」把线上备注清掉。
+        -->
+        <div class="mdt-remark">
+          <div class="mdt-remark__head">
+            <span class="mdt-remark__title">备注</span>
+            <span class="mdt-remark__hint">
+              小程序会员详情页顶部会显示这条备注；仅内部可见，顾客看不到
+            </span>
+          </div>
+          <ElInput
+            v-model="memberDlg.remark"
+            type="textarea"
+            :rows="3"
+            autosize
+            maxlength="500"
+            show-word-limit
+            :disabled="!memberDlg.remarkLoaded || memberDlg.remarkSaving"
+            :placeholder="
+              memberDlg.remarkLoaded
+                ? '例如：腰伤恢复期，避免深后弯；下次到店先做体测'
+                : '详情未加载成功，暂时不能改备注（避免误清空）'
+            "
+          />
+          <div class="mdt-remark__foot">
+            <span class="mdt-remark__count">已输入 {{ memberDlg.remark.length }}/500</span>
+            <span v-if="!memberDlg.remarkLoaded" class="mdt-remark__warn">
+              详情接口没返回会员数据，备注暂不可编辑
+            </span>
+            <div class="mdt-remark__actions">
+              <ElButton
+                v-if="!memberDlg.remarkLoaded"
+                size="small"
+                :loading="memberDlg.loading"
+                @click="memberDlg.row && loadMemberDetail(memberDlg.row)"
+                >重试读取</ElButton
+              >
+              <ElButton
+                type="primary"
+                size="small"
+                :loading="memberDlg.remarkSaving"
+                :disabled="!memberDlg.remarkLoaded"
+                @click="saveRemark"
+                >保存备注</ElButton
+              >
+            </div>
+          </div>
+        </div>
       </template>
       <template #footer>
         <div class="mdt-footer">
@@ -1550,6 +1601,12 @@
     { key: 'usedUp', label: '已用完', hint: '次卡/储值卡余量为 0', tagType: 'danger' }
   ]
 
+  /**
+   * BE3 之后 `/customers/{id}` 才返回 `remark`；列表接口**不带**这个字段。
+   * 公共类型（api/yimai.ts）不在本次改动范围内，所以在本页用交叉类型局部扩展。
+   */
+  type CustomerWithRemark = YimaiCustomer & { remark?: string | null }
+
   const memberDlg = reactive({
     visible: false,
     loading: false,
@@ -1558,7 +1615,15 @@
     degraded: '',
     total: 0,
     mainCard: '',
-    groups: DETAIL_GROUPS.map((g) => ({ ...g, rows: [] as DetailCardRow[] }))
+    groups: DETAIL_GROUPS.map((g) => ({ ...g, rows: [] as DetailCardRow[] })),
+    /** 备注文本（来自详情接口，不是列表行） */
+    remark: '',
+    /**
+     * 详情是否真的读到了会员本体。
+     * 为 false 时禁用备注输入 —— 否则「详情失败 → remark 为空 → 用户点保存」会把线上备注清空。
+     */
+    remarkLoaded: false,
+    remarkSaving: false
   })
 
   /**
@@ -1692,6 +1757,9 @@
     memberDlg.row = row
     memberDlg.visible = true
     memberDlg.degraded = ''
+    // 备注来自详情接口：先把上一位的残留清掉，避免串号；加载成功后才允许编辑
+    memberDlg.remark = ''
+    memberDlg.remarkLoaded = false
     void loadMemberDetail(row)
   }
 
@@ -1709,8 +1777,15 @@
         d && typeof d === 'object' && 'customer' in (d as Record<string, unknown>)
           ? (d as { customer?: YimaiCustomer }).customer
           : (d as YimaiCustomer | null)
-      if (inner && typeof inner === 'object') customer = { ...row, ...inner }
-      else memberDlg.degraded = '详情接口未返回会员数据，以下按列表快照展示'
+      if (inner && typeof inner === 'object') {
+        customer = { ...row, ...inner }
+        // remark 只在详情里；读到本体才允许编辑备注
+        memberDlg.remark = String((customer as CustomerWithRemark).remark ?? '')
+        memberDlg.remarkLoaded = true
+      } else {
+        memberDlg.degraded = '详情接口未返回会员数据，以下按列表快照展示'
+        memberDlg.remarkLoaded = false
+      }
     } catch {
       // 接口未就绪 / 超时 / 权限不足：一律降级为列表快照，不弹错、不白屏
       memberDlg.degraded = '详情接口暂不可用，以下按列表快照展示（可能不含历史卡）'
@@ -1748,6 +1823,45 @@
       memberDlg.total = 0
     } finally {
       memberDlg.loading = false
+    }
+  }
+
+  /**
+   * 保存会员备注。
+   *
+   * ## 两个必须踩准的点
+   *
+   * 1. **空串也要提交**：后端 `PATCH /customers/{id}` 是「传了才改」的合并语义，
+   *    只有 `remark: ''` 才真能把旧备注清掉。写成「空值就不传」会变成
+   *    「界面上清空了、库里还是旧的」，下一个人看到小程序还在显示旧备注会以为没保存。
+   * 2. **只在详情读到后才允许保存**（`remarkLoaded`）：列表接口不返回 remark，
+   *    若详情接口抖一下、`remark` 退化成空串，用户这时点保存就会把线上备注覆盖成空。
+   *    所以详情失败时输入框是置灰的，只能「重试读取」。
+   *
+   * 超长（>500）前端先拦并给准确字数；后端若仍 422，`showApiError` 会把它的文案透出来。
+   */
+  async function saveRemark() {
+    const row = memberDlg.row
+    if (!row || !memberDlg.remarkLoaded) return
+    const text = String(memberDlg.remark ?? '')
+    if (text.length > 500) {
+      ElMessage.error(`备注最多 500 字，当前 ${text.length} 字，请先删减`)
+      return
+    }
+    memberDlg.remarkSaving = true
+    try {
+      await updateMemberFields(
+        row.id,
+        { remark: text } as unknown as Partial<YimaiCustomer>,
+        '会员备注'
+      )
+      // 本地行也同步一份，关掉弹窗再打开（详情失败降级）时不会显示旧值
+      ;(row as CustomerWithRemark).remark = text
+      ElMessage.success(text ? '备注已保存' : '备注已清空')
+    } catch (e) {
+      showApiError(e, '保存会员备注')
+    } finally {
+      memberDlg.remarkSaving = false
     }
   }
 
@@ -3089,6 +3203,56 @@
       font-size: 12px;
       color: var(--art-gray-400, #c0c4cc);
       border-left: 2px dashed var(--el-border-color-lighter);
+    }
+  }
+
+  /* 会员备注：详情弹窗最下方，自由文本，不属于卡项分组 */
+  .mdt-remark {
+    padding-top: 12px;
+    margin-top: 12px;
+    border-top: 1px dashed var(--el-border-color-lighter);
+
+    &__head {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 8px;
+      align-items: baseline;
+      margin-bottom: 6px;
+    }
+
+    &__title {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--el-text-color-primary);
+    }
+
+    &__hint {
+      font-size: 12px;
+      color: var(--art-gray-400, #c0c4cc);
+    }
+
+    &__foot {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      align-items: center;
+      margin-top: 6px;
+    }
+
+    &__count {
+      font-size: 12px;
+      color: var(--art-gray-400, #c0c4cc);
+    }
+
+    &__warn {
+      font-size: 12px;
+      color: var(--el-color-warning);
+    }
+
+    &__actions {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
     }
   }
 

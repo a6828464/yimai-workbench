@@ -174,6 +174,22 @@ function metaLine(row: MiniappLead): string {
   return parts.filter(Boolean).join(' · ')
 }
 
+/**
+ * 次要信息行：服务老师 / 会籍顾问 + 体验课类型（`grade`）。
+ *
+ * 为什么不写「XX 级」：`leads.grade` 在网页端早已是**体验课类型**（定制私教/私教小班/精品团课/其他），
+ * 小程序旧代码把它当客户等级拼了个「级」字，网页写「私教小班」这里就显示成「私教小班级」。
+ * 两个字段都是「有才显示」：都没有就返回空串，模板用 v-if 整行不渲染，不留空占位。
+ */
+function teacherTypeLine(row: MiniappLead): string {
+  const teacher = String(row.serviceTeacher ?? '').trim()
+  const trialType = String(row.grade ?? '').trim()
+  if (teacher && trialType) return `服务 ${teacher} · ${trialType}`
+  if (teacher) return `服务 ${teacher}`
+  if (trialType) return `体验课 ${trialType}`
+  return ''
+}
+
 /** 逐节体验课卡片的元素类型（后端 trial_cards 的结构） */
 type TrialCard = NonNullable<MiniappLead['trialCards']>[number]
 
@@ -346,9 +362,12 @@ onReachBottom(() => {
           <view class="lcard__name-row">
             <text class="lcard__name ym-ellipsis">{{ row.name }}</text>
             <ym-badge :text="row.status" :tone="statusTone(row.status)" />
-            <ym-badge v-if="row.grade" :text="`${row.grade} 级`" tone="gold" plain />
           </view>
           <text class="lcard__meta ym-ellipsis">{{ metaLine(row) }}</text>
+          <!-- 服务老师 / 会籍顾问 + 体验课类型：原值显示，不拼「级」（grade 是体验课类型，不是客户等级） -->
+          <text v-if="teacherTypeLine(row)" class="lcard__meta lcard__meta--sub ym-ellipsis">
+            {{ teacherTypeLine(row) }}
+          </text>
         </view>
         <text class="lcard__phone ym-num">{{ row.phone || `尾号${row.phoneTail || ''}` }}</text>
         <view class="lcard__chevron"><wd-icon name="chevron-right" size="14px" /></view>
@@ -410,7 +429,8 @@ onReachBottom(() => {
         </view>
         <view v-if="row.remark" class="lcard__line">
           <text class="lcard__label">备注</text>
-          <text class="lcard__text">{{ row.remark }}</text>
+          <!-- 最多两行省略：备注常是整段沟通记录，不截断会把卡片撑得很长；点卡片进编辑页可看全文 -->
+          <text class="lcard__text lcard__text--clamp">{{ row.remark }}</text>
         </view>
       </view>
     </view>
@@ -570,6 +590,12 @@ onReachBottom(() => {
   color: $ink-400;
 }
 
+/* 次要信息行（服务老师 · 体验课类型）：比日期/渠道那行再弱一点，避免抢名字的注意力 */
+.lcard__meta--sub {
+  margin-top: 4rpx;
+  color: $ink-500;
+}
+
 .lcard__phone {
   flex-shrink: 0;
   font-size: 24rpx;
@@ -613,6 +639,14 @@ onReachBottom(() => {
   line-height: 1.5;
   color: $ink-700;
   word-break: break-all;
+}
+
+/* 备注最多两行（-webkit-line-clamp 在微信 WebView / Skyline 都生效）；全文进编辑页看 */
+.lcard__text--clamp {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .lcard__text--deal {

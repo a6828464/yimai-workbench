@@ -494,6 +494,10 @@ final class TodayController extends Controller
 
         return ok($q->orderBy('id')->limit(6)->get()->map(function ($c) {
             $arr = camel($c);
+            // 与 GET /customers 同一条口径：**列表不带会员备注**。列表页不渲染它，带上只是无谓负载；
+            // 而且备注可能含健康/隐私信息（「腰有旧伤…」这类），能少发一处就少发一处。
+            // 备注只在详情 GET /customers/{id} 返回。
+            unset($arr['remark']);
             $days = $c->last_visit ? (int) ((time() - strtotime($c->last_visit)) / 86400) : 9999;
             $arr['lastVisitDays'] = $days;
 

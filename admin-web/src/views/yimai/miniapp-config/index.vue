@@ -13,8 +13,8 @@
 
       <ElAlert type="info" :closable="false" show-icon class="mb-3" title="这里改的是顾客端">
         <div class="text-xs leading-5">
-          小程序「到店指引」页显示的门店副标题、地址、电话、坐标与引导图，全部来自这份配置。
-          改完保存即可生效，不需要发版。
+          小程序「到店指引」页显示的门店副标题、地址、电话、坐标、门店视频、三种出行路线与引导图，
+          以及首页弹窗，全部来自这份配置。改完保存即可生效，不需要发版。
           <b>门店名称与门店数量由系统固定</b>（两家店），此处不能新增或删除门店 ——
           后端同样会拒绝，避免两端对不上。
         </div>
@@ -118,10 +118,8 @@
               </div>
               <div class="field-tip">
                 两个都填才有「导航」按钮。<b class="c-orange">留空则小程序降级为「复制地址」</b>，
-                不会把顾客导到错误位置；经纬度可在地图 App 里长按门店位置复制。 合理范围：纬度
-                {{ LAT_RANGE[0] }}–{{ LAT_RANGE[1] }}、经度 {{ LNG_RANGE[0] }}–{{
-                  LNG_RANGE[1]
-                }}（与后端同一套校验，超范围会被拒）。
+                不会把顾客导到错误位置。合理范围：纬度 {{ LAT_RANGE[0] }}–{{ LAT_RANGE[1] }}、经度
+                {{ LNG_RANGE[0] }}–{{ LNG_RANGE[1] }}（与后端同一套校验）。
               </div>
             </ElFormItem>
 
@@ -131,9 +129,9 @@
                 maxlength="120"
                 placeholder="可留空，如：一麦瑜伽"
               />
-              <div class="field-tip"
-                >门店自己的视频号 ID，顾客端用于「看门店视频」入口；没有就留空。</div
-              >
+              <div class="field-tip">
+                门店视频号 ID，顾客端用于「看门店视频 / 直播」入口；没有就留空。
+              </div>
             </ElFormItem>
 
             <ElFormItem label="直播 ID">
@@ -145,7 +143,26 @@
               <div class="field-tip">视频号直播间 ID，留空则顾客端不显示直播入口。</div>
             </ElFormItem>
 
-            <ElFormItem label="引导图">
+            <!-- ===== 门店视频（直链，不是视频号） ===== -->
+            <ElFormItem label="门店视频">
+              <div class="w-full">
+                <ElInput
+                  v-model="v.videoUrl"
+                  maxlength="200"
+                  placeholder="/static/venue.mp4 或 https://.../venue.mp4"
+                />
+                <div v-if="urlError(v.videoUrl)" class="c-red text-xs">
+                  ✕ {{ urlError(v.videoUrl) }}
+                </div>
+                <div class="field-tip">
+                  这里填的是<b>可直接播放的视频文件直链（mp4）</b>，不是视频号链接 ——
+                  小程序用原生播放器播这个地址；视频号请填上面的「视频号 / 直播 ID」。
+                </div>
+              </div>
+            </ElFormItem>
+
+            <!-- ===== 门店引导图 ===== -->
+            <ElFormItem label="门店引导图">
               <div class="w-full">
                 <div v-for="(img, idx) in v.images" :key="idx" class="img-block">
                   <div class="img-row">
@@ -155,12 +172,8 @@
                       placeholder="/static/hero.jpg 或 https://..."
                       @input="img.broken = false"
                     />
-                    <ElInput
-                      v-model="img.caption"
-                      maxlength="120"
-                      placeholder="说明，如：出电梯右手边即前台"
-                    />
-                    <ElButton link type="danger" @click="removeImage(v, idx)">删除</ElButton>
+                    <ElInput v-model="img.caption" maxlength="120" placeholder="说明" />
+                    <ElButton link type="danger" @click="removeImage(v.images, idx)">删除</ElButton>
                   </div>
                   <div class="img-check">
                     <div class="thumb">
@@ -173,29 +186,123 @@
                       />
                       <span v-else class="thumb-ph">{{ img.src ? '地址不可用' : '未填地址' }}</span>
                     </div>
-                    <span v-if="srcError(img.src)" class="c-red text-xs"
-                      >✕ {{ srcError(img.src) }}</span
+                    <span v-if="urlError(img.src)" class="c-red text-xs"
+                      >✕ {{ urlError(img.src) }}</span
                     >
-                    <span v-else-if="img.broken" class="c-red text-xs">
-                      ✕ 这张图加载不出来（地址不可访问）—— 仍可保存，但顾客端也会是空白
-                    </span>
-                    <span v-else-if="img.src" class="text-xs text-gray-400"
-                      >✓ 可预览，保存后顾客端按此顺序展示</span
+                    <span v-else-if="img.broken" class="c-red text-xs"
+                      >✕ 这张图加载不出来（仍可保存）</span
                     >
+                    <span v-else-if="img.src" class="text-xs text-gray-400">✓ 可预览</span>
                   </div>
                 </div>
                 <div class="flex items-center gap-2">
-                  <ElButton :disabled="v.images.length >= MAX_IMAGES" @click="addImage(v)">
+                  <ElButton :disabled="v.images.length >= IMAGE_LIMIT" @click="addImage(v.images)">
                     新增引导图
                   </ElButton>
                   <span class="text-xs text-gray-400">
-                    最多 {{ MAX_IMAGES }} 张，当前 {{ v.images.length }} 张
+                    已加 {{ v.images.length }}/{{ IMAGE_LIMIT }}
+                    <template v-if="v.images.length >= IMAGE_LIMIT">
+                      （已达上限，删一张才能再加）
+                    </template>
                   </span>
                 </div>
-                <div class="field-tip">
-                  顾客按顺序看到这些图与说明；地址只接受<b>站内路径（/static/xxx.jpg）</b>或
-                  <b>https:// 外链</b>，http 与 javascript: 会被后端拒绝，这里提前拦住。
-                </div>
+              </div>
+            </ElFormItem>
+
+            <!-- ===== 到店路线：三组互相独立 ===== -->
+            <ElFormItem label="到店路线">
+              <div class="w-full">
+                <ElCollapse v-model="openRoutes[v.key]" class="route-collapse">
+                  <ElCollapseItem
+                    v-for="rk in ROUTE_KEYS"
+                    :key="rk"
+                    :name="rk"
+                    :title="ROUTE_LABELS[rk]"
+                  >
+                    <ElForm label-width="88px" class="pt-1">
+                      <ElFormItem label="视频链接">
+                        <div class="w-full">
+                          <ElInput
+                            v-model="v.routes[rk].videoUrl"
+                            maxlength="200"
+                            :placeholder="`${ROUTE_LABELS[rk]}的视频直链（mp4）`"
+                          />
+                          <div v-if="urlError(v.routes[rk].videoUrl)" class="c-red text-xs">
+                            ✕ {{ urlError(v.routes[rk].videoUrl) }}
+                          </div>
+                        </div>
+                      </ElFormItem>
+                      <ElFormItem label="路线图">
+                        <div class="w-full">
+                          <div
+                            v-for="(img, idx) in v.routes[rk].images"
+                            :key="idx"
+                            class="img-block"
+                          >
+                            <div class="img-row">
+                              <ElInput
+                                v-model="img.src"
+                                maxlength="200"
+                                placeholder="/static/drive-1.jpg 或 https://..."
+                                @input="img.broken = false"
+                              />
+                              <ElInput v-model="img.caption" maxlength="120" placeholder="说明" />
+                              <ElButton
+                                link
+                                type="danger"
+                                @click="removeImage(v.routes[rk].images, idx)"
+                              >
+                                删除
+                              </ElButton>
+                            </div>
+                            <div class="img-check">
+                              <div class="thumb">
+                                <img
+                                  v-if="img.src && !img.broken"
+                                  :src="img.src"
+                                  alt="路线图预览"
+                                  @error="img.broken = true"
+                                  @load="img.broken = false"
+                                />
+                                <span v-else class="thumb-ph">{{
+                                  img.src ? '地址不可用' : '未填地址'
+                                }}</span>
+                              </div>
+                              <span v-if="urlError(img.src)" class="c-red text-xs"
+                                >✕ {{ urlError(img.src) }}</span
+                              >
+                              <span v-else-if="img.broken" class="c-red text-xs"
+                                >✕ 这张图加载不出来（仍可保存）</span
+                              >
+                              <span v-else-if="img.src" class="text-xs text-gray-400"
+                                >✓ 可预览</span
+                              >
+                            </div>
+                          </div>
+                          <div class="flex items-center gap-2">
+                            <ElButton
+                              :disabled="v.routes[rk].images.length >= IMAGE_LIMIT"
+                              @click="addImage(v.routes[rk].images)"
+                            >
+                              新增路线图
+                            </ElButton>
+                            <span class="text-xs text-gray-400">
+                              已加 {{ v.routes[rk].images.length }}/{{ IMAGE_LIMIT }}
+                              <template v-if="v.routes[rk].images.length >= IMAGE_LIMIT">
+                                （已达上限，删一张才能再加）
+                              </template>
+                            </span>
+                          </div>
+                          <div class="field-tip">
+                            这三组<b>互相独立</b>：只改「{{
+                              ROUTE_LABELS[rk]
+                            }}」不会动另外两种出行方式。
+                          </div>
+                        </div>
+                      </ElFormItem>
+                    </ElForm>
+                  </ElCollapseItem>
+                </ElCollapse>
               </div>
             </ElFormItem>
           </ElForm>
@@ -206,51 +313,144 @@
         v-else-if="!loading"
         description="没有读到门店配置（后端 /miniapp/config 未就绪或返回空）"
       />
-
-      <div class="mt-3 flex items-center gap-2">
-        <ElButton type="primary" :loading="saving" :disabled="!venues.length" @click="save">
-          保存
-        </ElButton>
-        <ElButton :disabled="loading" @click="load">放弃修改并重读</ElButton>
-        <span class="text-xs text-gray-400">保存后立即对微信小程序生效，无需发版</span>
-      </div>
     </ElCard>
+
+    <!-- ===== 首页弹窗（全局） ===== -->
+    <ElCard shadow="never" class="mb-3">
+      <template #header>
+        <div class="flex-cb">
+          <span class="font-500">首页弹窗</span>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-gray-400">{{ popup.enabled ? '已开启' : '已关闭' }}</span>
+            <ElSwitch v-model="popup.enabled" />
+          </div>
+        </div>
+      </template>
+
+      <ElAlert
+        type="info"
+        :closable="false"
+        show-icon
+        class="mb-3"
+        title="关闭时下面所有字段置灰但仍可见"
+      >
+        <div class="text-xs leading-5">
+          通常做法：先把标题、内容、图片填好，再打开开关上线。开关关闭时小程序不弹窗，已填内容不会丢。
+        </div>
+      </ElAlert>
+
+      <!-- disabled 只禁用交互，不隐藏：馆主要先填好再开开关 -->
+      <ElForm label-width="104px" :disabled="!popup.enabled">
+        <ElFormItem label="标题">
+          <ElInput
+            v-model="popup.title"
+            maxlength="40"
+            show-word-limit
+            placeholder="如：双十一体验课 9.9 元"
+          />
+          <div class="field-tip">弹窗顶部大字，建议 12 字以内；留空则只显示内容。</div>
+        </ElFormItem>
+
+        <ElFormItem label="内容">
+          <ElInput
+            v-model="popup.content"
+            type="textarea"
+            :rows="4"
+            maxlength="500"
+            show-word-limit
+            placeholder="说明活动内容、时间、怎么报名"
+          />
+        </ElFormItem>
+
+        <ElFormItem label="图片">
+          <div class="w-full">
+            <ElInput
+              v-model="popup.imageUrl"
+              maxlength="200"
+              placeholder="/static/popup.jpg 或 https://..."
+            />
+            <div class="img-check">
+              <div class="thumb">
+                <img
+                  v-if="popup.imageUrl && !popupImageBroken"
+                  :src="popup.imageUrl"
+                  alt="弹窗图预览"
+                  @error="popupImageBroken = true"
+                  @load="popupImageBroken = false"
+                />
+                <span v-else class="thumb-ph">{{
+                  popup.imageUrl ? '地址不可用' : '未填地址'
+                }}</span>
+              </div>
+              <span v-if="urlError(popup.imageUrl)" class="c-red text-xs"
+                >✕ {{ urlError(popup.imageUrl) }}</span
+              >
+              <span v-else-if="popupImageBroken" class="c-red text-xs"
+                >✕ 这张图加载不出来（仍可保存）</span
+              >
+              <span v-else-if="popup.imageUrl" class="text-xs text-gray-400">✓ 可预览</span>
+            </div>
+          </div>
+        </ElFormItem>
+
+        <ElFormItem label="弹出频率">
+          <ElRadioGroup v-model="popup.frequency">
+            <ElRadio value="once">只显示一次（顾客看过就不再弹）</ElRadio>
+            <ElRadio value="always">每次打开都显示</ElRadio>
+          </ElRadioGroup>
+          <div class="field-tip">「只显示一次」按顾客端本地记录判断，清缓存后会再弹一次。</div>
+        </ElFormItem>
+      </ElForm>
+    </ElCard>
+
+    <div class="flex items-center gap-2">
+      <ElButton type="primary" :loading="saving" :disabled="!venues.length" @click="save">
+        保存
+      </ElButton>
+      <ElButton :disabled="loading" @click="load">放弃修改并重读</ElButton>
+      <span class="text-xs text-gray-400">保存后立即对微信小程序生效，无需发版</span>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
   import { apiGet, apiPut, showApiError, toHttpError, USE_BACKEND } from '@/api/backend'
+  import type {
+    MiniappConfig,
+    MiniappPopupConfig,
+    MiniappRouteConfig,
+    MiniappRouteKey,
+    MiniappVenueConfig,
+    MiniappVenueImage
+  } from '@/api/yimai'
   import { ElMessage } from 'element-plus'
 
   defineOptions({ name: 'YimaiMiniappConfig' })
 
-  /** 与小程序端共享的配置结构（后端 GET/PUT /miniapp/config 的 data） */
-  interface VenueImage {
-    src: string
-    caption: string
-    /** 仅前端用：预览加载失败标记，不参与提交 */
-    broken?: boolean
-  }
-  interface VenueConfig {
-    key: string
-    sub: string
-    address: string
-    phone: string
-    latitude: number | null
-    longitude: number | null
-    channelsUser: string
-    channelsLive: string
-    images: VenueImage[]
-  }
-  interface MiniappConfig {
-    venues: VenueConfig[]
-    updatedAt: string
-  }
-
-  const MAX_IMAGES = 3
   /**
-   * 坐标合理范围：与后端 `MiniappConfigController::update` 的校验逐字对齐
-   * （纬度 between:12,55、经度 between:70,140）。前端先拦一遍，避免用户填完才吃 422。
+   * 契约类型定义在 `@/api/yimai`（两端共享的唯一一份）；
+   * 这里只派生「带预览失败标记」的 UI 类型，避免把接口结构在本页抄第二遍。
+   */
+  type VenueImage = MiniappVenueImage & { broken?: boolean }
+  type RouteKey = MiniappRouteKey
+  type RouteConfig = Omit<MiniappRouteConfig, 'images'> & { images: VenueImage[] }
+  type VenueConfig = Omit<MiniappVenueConfig, 'images' | 'routes'> & {
+    images: VenueImage[]
+    routes: Record<RouteKey, RouteConfig>
+  }
+  type PopupConfig = MiniappPopupConfig
+
+  /** 图片组上限：门店引导图与三种出行方式的路线图都是这个数 */
+  const IMAGE_LIMIT = 9
+  const ROUTE_KEYS: RouteKey[] = ['drive', 'transit', 'walk']
+  const ROUTE_LABELS: Record<RouteKey, string> = {
+    drive: '开车出行',
+    transit: '公共交通',
+    walk: '步行前往'
+  }
+  /**
+   * 坐标合理范围：与后端 `MiniappConfigController` 的校验对齐
+   * （纬度 between:12,55、经度 between:70,140）。前端先拦一遍，避免填完才吃 422。
    */
   const LAT_RANGE = [12, 55] as const
   const LNG_RANGE = [70, 140] as const
@@ -267,8 +467,16 @@
   const serverErrors = ref<string[]>([])
   /** 错误框标题：422 是「N 项校验」，403 等不是校验错，不能套同一句话 */
   const errorTitle = ref('保存被后端拒绝')
+  const popup = reactive<PopupConfig>(emptyPopup())
+  const popupImageBroken = ref(false)
+  /** 每店默认展开哪一组路线（默认开车；其余折叠，避免 27 个输入框一屏） */
+  const openRoutes = ref<Record<string, RouteKey[]>>({})
 
-  /** 字段名 → 中文，用于把后端的 `errors` 键翻译成人话（键形如 venues.0.latitude） */
+  function emptyPopup(): PopupConfig {
+    return { enabled: false, title: '', content: '', imageUrl: '', frequency: 'once' }
+  }
+
+  /** 字段名 → 中文，用于把后端的 `errors` 键翻译成人话 */
   const FIELD_LABELS: Record<string, string> = {
     venues: '门店',
     key: '门店键',
@@ -279,34 +487,90 @@
     longitude: '经度',
     channelsUser: '视频号',
     channelsLive: '直播 ID',
-    images: '引导图',
+    images: '图片',
     src: '图片地址',
-    caption: '图片说明'
+    caption: '图片说明',
+    videoUrl: '视频地址',
+    routes: '到店路线',
+    popup: '首页弹窗',
+    enabled: '开关',
+    title: '标题',
+    content: '内容',
+    imageUrl: '弹窗图片',
+    frequency: '弹出频率'
   }
 
+  /**
+   * 把后端 `errors` 的键翻译成「门店名 · 出行方式 · 第 N 张 · 字段」。
+   *
+   * 形如 `venues.0.routes.drive.videoUrl` → 「绿地店 · 开车出行 · 视频地址」；
+   * `venues.1.images.3.src` → 「东部店 · 第 4 张 · 图片地址」；`popup.title` → 「首页弹窗 · 标题」。
+   */
   function fieldLabel(key: string): string {
     const parts = key.split('.')
-    const numIdx = parts.findIndex((p) => /^\d+$/.test(p))
-    const venueName = numIdx >= 0 ? (venues.value[Number(parts[numIdx])]?.key ?? '') : ''
+    const segs: string[] = []
+
+    if (parts[0] === 'popup') segs.push('首页弹窗')
+    if (parts[0] === 'venues' && /^\d+$/.test(parts[1] ?? '')) {
+      segs.push(venues.value[Number(parts[1])]?.key ?? '门店')
+    }
+
+    for (let i = 0; i < parts.length; i += 1) {
+      const p = parts[i]
+      const next = parts[i + 1]
+      if (p === 'routes' && next && (ROUTE_KEYS as string[]).includes(next)) {
+        segs.push(ROUTE_LABELS[next as RouteKey])
+        i += 1
+        continue
+      }
+      if (p === 'images' && next && /^\d+$/.test(next)) {
+        segs.push(`第 ${Number(next) + 1} 张`)
+        i += 1
+      }
+    }
+
     const last = parts[parts.length - 1]
     const name = FIELD_LABELS[last] ?? last
-    return [venueName, name].filter(Boolean).join(' · ')
+    if (!segs.includes(name)) segs.push(name)
+    return segs.filter(Boolean).join(' · ')
   }
 
   function normalize(raw: Partial<VenueConfig> & { key?: string }): VenueConfig {
+    const rawRoutes = (raw.routes ?? {}) as Partial<Record<RouteKey, Partial<RouteConfig>>>
+    const routes = {} as Record<RouteKey, RouteConfig>
+    for (const rk of ROUTE_KEYS) {
+      const r = rawRoutes[rk]
+      routes[rk] = {
+        videoUrl: String(r?.videoUrl ?? ''),
+        images: Array.isArray(r?.images)
+          ? r!.images.map((i) => ({ src: String(i?.src ?? ''), caption: String(i?.caption ?? '') }))
+          : []
+      }
+    }
     return {
       key: String(raw.key ?? ''),
       sub: String(raw.sub ?? ''),
       address: String(raw.address ?? ''),
       phone: String(raw.phone ?? ''),
-      // 后端可能给字符串数字；也允许是 null（未填坐标）
       latitude: toNumberOrNull(raw.latitude),
       longitude: toNumberOrNull(raw.longitude),
       channelsUser: String(raw.channelsUser ?? ''),
       channelsLive: String(raw.channelsLive ?? ''),
       images: Array.isArray(raw.images)
         ? raw.images.map((i) => ({ src: String(i?.src ?? ''), caption: String(i?.caption ?? '') }))
-        : []
+        : [],
+      videoUrl: String(raw.videoUrl ?? ''),
+      routes
+    }
+  }
+
+  function normalizePopup(raw?: Partial<PopupConfig> | null): PopupConfig {
+    return {
+      enabled: Boolean(raw?.enabled),
+      title: String(raw?.title ?? ''),
+      content: String(raw?.content ?? ''),
+      imageUrl: String(raw?.imageUrl ?? ''),
+      frequency: raw?.frequency === 'always' ? 'always' : 'once'
     }
   }
 
@@ -317,19 +581,16 @@
   }
 
   /**
-   * 引导图地址白名单校验 —— 与后端 `venues.*.images.*.src` 的自定义校验同一条规则：
+   * URL 白名单校验 —— 视频直链与所有图片共用，与后端自定义校验同一条规则：
    * 只放行「站内路径（`/` 开头且非 `//`）」与 `https://`；`javascript:` / `data:` /
-   * `http:` / 协议相对 `//host` 一律拒绝。前端先拦是为了「填错立刻看到」，
-   * 而不是等提交后 422 再回头找是哪一张写错了。
+   * `http:` / 协议相对 `//host` 一律拒绝。前端先拦是为了「填错立刻看到」。
    */
-  function srcError(src: string): string | null {
-    const v = src.trim()
-    if (!v) return null // 空行在保存时会被丢弃，不算错
+  function urlError(url: string): string | null {
+    const v = (url ?? '').trim()
+    if (!v) return null // 空 = 不配置，不算错
     const isStationPath = v.startsWith('/') && !v.startsWith('//')
     const isHttps = /^https:\/\/[^\s]+$/i.test(v)
-    if (!isStationPath && !isHttps) {
-      return '只允许站内路径（/ 开头）或 https:// 外链'
-    }
+    if (!isStationPath && !isHttps) return '只允许站内路径（/ 开头）或 https:// 外链'
     return null
   }
 
@@ -338,18 +599,23 @@
     serverErrors.value = []
     try {
       if (!USE_BACKEND) {
-        // 演示模式：没有后端就没有真实门店配置，只铺结构供预览，保存不会生效
         venues.value = DEMO_VENUES.map((key) => normalize({ key }))
+        Object.assign(popup, emptyPopup())
         demoNotice.value =
-          '演示模式：当前没有连接 Laravel 后端，下面的门店配置是空白占位，保存不会生效。'
+          '演示模式：当前没有连接 Laravel 后端，下面的配置是空白占位，保存不会生效。'
         updatedAt.value = ''
       } else {
         const data = await apiGet<MiniappConfig>('/miniapp/config')
         venues.value = (data?.venues ?? []).map((v) => normalize(v))
+        Object.assign(popup, normalizePopup(data?.popup))
         updatedAt.value = data?.updatedAt ?? ''
         demoNotice.value = ''
       }
       activeKey.value = venues.value[0]?.key ?? ''
+      openRoutes.value = Object.fromEntries(
+        venues.value.map((v) => [v.key, ['drive'] as RouteKey[]])
+      )
+      popupImageBroken.value = false
     } catch (e) {
       venues.value = []
       showApiError(e, '读取小程序设置')
@@ -358,22 +624,22 @@
     }
   }
 
-  function addImage(v: VenueConfig) {
-    if (v.images.length >= MAX_IMAGES) return
-    v.images.push({ src: '', caption: '' })
+  function addImage(list: VenueImage[]) {
+    if (list.length >= IMAGE_LIMIT) return
+    list.push({ src: '', caption: '' })
   }
 
-  function removeImage(v: VenueConfig, idx: number) {
-    v.images.splice(idx, 1)
+  function removeImage(list: VenueImage[], idx: number) {
+    list.splice(idx, 1)
   }
 
   /**
    * 把后端 422 的字段级错误摊平成可读文案。
    *
-   * Laravel 的 `ValidationException` 返回 `{ message, errors: { 'venues.0.latitude': ['...'] } }`，
+   * Laravel 返回 `{ message, errors: { 'venues.0.routes.drive.videoUrl': ['...'] } }`，
    * 而 `unwrap()` 只把 `message` 抛出来（通常是第一条，未必对应用户刚改的字段）。
-   * 对馆主来说「纬度超出范围」才是有效信息，所以这里直接读 axios 错误的 `response.data.errors`，
-   * 逐字段翻译后展示，**不合并成一句通用的「保存失败」**。
+   * 所以这里直接读 axios 错误的 `response.data.errors`，逐字段翻译后展示，
+   * **不合并成一句通用的「保存失败」**。
    */
   function collectValidationErrors(e: unknown): string[] {
     const data = (e as { response?: { data?: { errors?: Record<string, string[] | string> } } })
@@ -388,33 +654,54 @@
     return out
   }
 
+  /** 提交前本地校验：门店视频 / 三组路线视频 / 所有图片 / 弹窗图片 */
+  function collectFormatErrors(): string[] {
+    const out: string[] = []
+    for (const v of venues.value) {
+      const vErr = urlError(v.videoUrl)
+      if (vErr) out.push(`${v.key} · 门店视频：${vErr}`)
+      v.images.forEach((img, idx) => {
+        const err = urlError(img.src)
+        if (err) out.push(`${v.key} · 门店引导图第 ${idx + 1} 张：${err}`)
+      })
+      for (const rk of ROUTE_KEYS) {
+        const rErr = urlError(v.routes[rk].videoUrl)
+        if (rErr) out.push(`${v.key} · ${ROUTE_LABELS[rk]}视频：${rErr}`)
+        v.routes[rk].images.forEach((img, idx) => {
+          const err = urlError(img.src)
+          if (err) out.push(`${v.key} · ${ROUTE_LABELS[rk]}第 ${idx + 1} 张图：${err}`)
+        })
+      }
+    }
+    const pErr = urlError(popup.imageUrl)
+    if (pErr) out.push(`首页弹窗 · 图片：${pErr}`)
+    return out
+  }
+
   async function save() {
     if (!USE_BACKEND) {
       ElMessage.warning('演示模式下没有后端，保存不会生效')
       return
     }
-    // 提交前先跑一遍本地校验：图片地址格式是唯一一个「后端会拒、但用户很难自己发现」的错
-    const formatErrors: string[] = []
-    for (const v of venues.value) {
-      v.images.forEach((img, idx) => {
-        const err = srcError(img.src)
-        if (err) formatErrors.push(`${v.key} · 第 ${idx + 1} 张引导图：${err}`)
-      })
-    }
+    const formatErrors = collectFormatErrors()
     if (formatErrors.length) {
-      errorTitle.value = `有 ${formatErrors.length} 处图片地址不合法，未提交`
+      errorTitle.value = `有 ${formatErrors.length} 处地址不合法，未提交`
       serverErrors.value = formatErrors
-      ElMessage.error('图片地址格式不对，详见上方红框（未提交）')
+      ElMessage.error('地址格式不对，详见上方红框（未提交）')
       return
     }
 
     saving.value = true
     serverErrors.value = []
     try {
-      // 注意：**所有字段都要显式发出去，包括空串**。
-      // 后端是「合并语义」——用 `array_key_exists` 判存在：传了 `''` 才会清空，
-      // 不传则保留旧值。少发一个空串，用户会看到「保存成功但清不掉」。
-      // 经纬度用 null 表示「未配置」（后端 $coord() 把 null/''/非数字都落成 null）。
+      // 提交策略：**每次都提交完整结构**（两家店 + 三种路线 + 弹窗）。
+      //
+      // 后端 PUT 是合并语义（`array_key_exists` 判存在：传 `''` 才清空，不传则保留旧值）。
+      // `routes` 是嵌套结构 —— 这里不依赖 BE2 的合并粒度：
+      //   · 若它做递归合并：传全量三组 = 原样写回，安全；
+      //   · 若它整体替换 routes：传全量三组，三组都不会丢，同样安全。
+      // 所以「每次传全量」在两种实现下都正确。popup 与 venues 一起提交，
+      // 改弹窗不会清门店、改门店不会清弹窗。
       const payload = {
         venues: venues.value.map((v) => ({
           key: v.key,
@@ -425,30 +712,48 @@
           longitude: v.longitude,
           channelsUser: v.channelsUser,
           channelsLive: v.channelsLive,
+          videoUrl: v.videoUrl,
           images: v.images
             .filter((i) => i.src.trim())
-            .map((i) => ({ src: i.src.trim(), caption: i.caption }))
-        }))
+            .map((i) => ({ src: i.src.trim(), caption: i.caption })),
+          routes: Object.fromEntries(
+            ROUTE_KEYS.map((rk) => [
+              rk,
+              {
+                videoUrl: v.routes[rk].videoUrl,
+                images: v.routes[rk].images
+                  .filter((i) => i.src.trim())
+                  .map((i) => ({ src: i.src.trim(), caption: i.caption }))
+              }
+            ])
+          )
+        })),
+        popup: {
+          enabled: popup.enabled,
+          title: popup.title,
+          content: popup.content,
+          imageUrl: popup.imageUrl,
+          frequency: popup.frequency
+        }
       }
       const res = await apiPut<MiniappConfig>('/miniapp/config', payload)
       if (res?.updatedAt) {
         updatedAt.value = res.updatedAt
       } else {
-        // 后端若没回 updatedAt，重新读一次，保证页面显示的是服务端真值
         const latest = await apiGet<MiniappConfig>('/miniapp/config')
         updatedAt.value = latest?.updatedAt ?? ''
       }
+      // 用服务端返回的真值回填（后端可能做了归一：key 顺序、图片裁剪）
       if (Array.isArray(res?.venues)) venues.value = res.venues.map((v) => normalize(v))
+      if (res?.popup) Object.assign(popup, normalizePopup(res.popup))
       ElMessage.success(`已保存，小程序即刻生效（${updatedAt.value || '已更新'}）`)
     } catch (e) {
       const fieldErrors = collectValidationErrors(e)
       if (fieldErrors.length) {
-        // 422：把后端逐字段文案摊在页面上（ElAlert 列表），同时给一条 toast 指路
         serverErrors.value = fieldErrors
         errorTitle.value = `保存被后端拒绝（${fieldErrors.length} 项校验未通过）`
         ElMessage.error(`保存失败：${fieldErrors.length} 项校验未通过，详见上方红框`)
       } else {
-        // 403 / 401 / 网络失败：交给统一提示（403 说无权限、401 静默、其余说失败原因）
         showApiError(e, '保存小程序设置')
         const { status } = toHttpError(e)
         if (status === 403) {
@@ -501,6 +806,7 @@
 
   .thumb {
     display: flex;
+    flex: 0 0 72px;
     align-items: center;
     justify-content: center;
     width: 72px;
@@ -517,5 +823,9 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+
+  .route-collapse :deep(.el-collapse-item__content) {
+    padding-bottom: 4px;
   }
 </style>

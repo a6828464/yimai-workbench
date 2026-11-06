@@ -37,7 +37,18 @@ export const LEAD_STATUSES = [
   '已流失'
 ] as const
 
-export const LEAD_GRADES = ['', 'A', 'B', 'C'] as const
+/**
+ * 体验课类型（就是 `leads.grade` 这一列）—— 与 admin-web `leads/index.vue` 的 `TRIAL_TYPES` **逐字同源**。
+ *
+ * 历史（真实数据语义分裂）：这一列原本是「客户分级 A/B/C」，网页端后来把它改成
+ * 「体验课类型」（注释写着「替代原客户分级」），小程序没跟上：
+ *   · 首页把网页写入的「私教小班」拼成「私教小班级」；
+ *   · 编辑页 picker 只有 A/B/C，`indexOf('私教小班')` 得 -1 → 显示「未分级」，用户改不动也看不明白。
+ * 现在两端统一到这一组字面量。**改这里必须同时改 admin-web**，否则立刻又是一次语义分裂；
+ * 更好的收敛是后端下发 enums（与 LEAD_SOURCES 一样），但那是后端契约改动，不在本轮范围。
+ */
+export const LEAD_TRIAL_TYPES = ['定制私教', '私教小班', '精品团课', '其他'] as const
+export type LeadTrialType = (typeof LEAD_TRIAL_TYPES)[number]
 
 /** 首屏兜底枚举：与后端 LEAD_SOURCES / ORDER_PLATFORMS 同值，列表返回后被整体替换 */
 export const FALLBACK_LEAD_ENUMS: LeadEnums = {

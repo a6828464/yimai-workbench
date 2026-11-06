@@ -350,6 +350,14 @@ export async function getCustomerDetail(id: number): Promise<CustomerDetail> {
 export interface YimaiCustomer extends StoreCustomer {
   externalId?: string
   /**
+   * 会员备注（自由文本，≤500）。小程序会员详情页顶部与网页端「会员详情」抽屉同源展示。
+   *
+   * 只有 `GET /customers/{id}` 返回它——**列表接口显式 unset 掉了**（避免给已经很重的
+   * 列表再加负载）。所以列表行里它是 undefined，读到 undefined 时不能当成「没有备注」
+   * 就去写空串，那会把线上内容清掉；要区分「没拉到」和「拉到了是空」。
+   */
+  remark?: string | null
+  /**
    * 人工维护的会员经营状态（正常 / 待续费 / 待复活 / 已暂停 / 已流失）。
    *
    * 与 layer（算出来的分层）、status（档案完善度）、inRevive（待复活开关）分工不同：
@@ -989,6 +997,69 @@ export async function queryMemberListIds(): Promise<Record<string, number[]>> {
   // 这里返回空集合而不是抛错 —— 与改造前 `if (!USE_BACKEND) return []` 的行为逐字一致，
   // 演示态下标签本来就是空的，没必要每次进页面都抛一次。
   return {}
+}
+
+/* ------------------------------------------------------------------ *
+ * 小程序「到店指引 / 首页弹窗」配置（GET/PUT /miniapp/config）
+ *
+ * 这份类型放在 api 层而不是页面里，理由有两条：
+ * 1. 它是**两端契约**（小程序端 `pkg-public/guide/guide.vue` 消费同一结构），
+ *    以后若做「小程序预览」之类的页面，不该再把接口抄一遍；
+ * 2. 页面里只用它派生「带预览态」的 UI 类型（`& { broken?: boolean }`），
+ *    契约本体保持唯一一份。
+ * ------------------------------------------------------------------ */
+
+/** 引导图 / 路线图：一张图 + 一句说明 */
+export interface MiniappVenueImage {
+  src: string
+  caption: string
+}
+
+/** 三种出行方式 */
+export type MiniappRouteKey = 'drive' | 'transit' | 'walk'
+
+/** 单种出行方式的配置（视频直链 + 路线图组） */
+export interface MiniappRouteConfig {
+  videoUrl: string
+  images: MiniappVenueImage[]
+}
+
+/** 单店配置 —— 门店 key 固定为「绿地店 / 东部店」，不可新增或改名 */
+export interface MiniappVenueConfig {
+  key: string
+  sub: string
+  address: string
+  phone: string
+  latitude: number | null
+  longitude: number | null
+  channelsUser: string
+  channelsLive: string
+  /** 门店引导图 */
+  images: MiniappVenueImage[]
+  /** 门店视频直链（mp4），不是视频号链接 */
+  videoUrl: string
+  /** 三种出行方式，key 固定为 drive / transit / walk */
+  routes: Record<MiniappRouteKey, MiniappRouteConfig>
+}
+
+/** 首页弹窗频率：once = 只显示一次；always = 每次打开都显示 */
+export type MiniappPopupFrequency = 'once' | 'always'
+
+/** 首页弹窗（全局，不属于任何门店） */
+export interface MiniappPopupConfig {
+  enabled: boolean
+  title: string
+  content: string
+  imageUrl: string
+  frequency: MiniappPopupFrequency
+}
+
+/** `/miniapp/config` 的 data */
+export interface MiniappConfig {
+  venues: MiniappVenueConfig[]
+  popup: MiniappPopupConfig
+  /** 空串 = 从未保存过（后端回落到内置默认值） */
+  updatedAt: string
 }
 
 /**

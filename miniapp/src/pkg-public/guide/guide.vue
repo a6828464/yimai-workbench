@@ -22,11 +22,25 @@
  *  - **坐标**：空 / null / 命中占位值（29.8746/121.5496，容差 1e-4）→ 不调 `uni.openLocation`，
  *    改复制地址 + 提示「门店坐标待补充，地址已复制」——占位值是「真值」，只判空的守卫对它
  *    永不触发，所以必须显式比一次白名单（`PLACEHOLDER_COORDS`）；
- *  - 引导图：配置里最多取 3 张，一张都没有就回退 `/static/hero.jpg`；
- *  - 视频号 / 直播未配置 → 显示占位卡片，配置后自动变成可点入口。
+ *  - 引导图：配置里最多取 9 张（与后端上限一致，前端不再二次截断到 3）；一张都没有就回退 `/static/hero.jpg`；
+ *  - 视频号未配置 → 显示占位卡片，配置后自动变成可点入口。
+ *
+ * ## 2026-11 升级（馆主需求）
+ *  1. **门店视频**：`venue.videoUrl`，放在视频号入口下方；只有配置了才渲染，不留空壳。
+ *  2. **到店路线分三种**（开车 / 公共交通 / 步行），每种各自有 `videoUrl` 与 `images`，
+ *     互不混排；都没有时显示「该路线指引待补充」。
+ *  3. 图片上限 3 → 9。
+ *  4. UI 上不再出现馆主点名要去掉的那两个字（`channelsLive` 字段保留，只是不再有入口）。
+ *  5. **支持转发**：`onShareAppMessage` 带门店名 + 分包深链，客户点开就落到同一家店。
+ *
+ * ### `<video>` 的硬限制（别以为坏了）
+ * 小程序 `<video>` 只能播**直链视频文件**（mp4 / m3u8 等 http(s) 地址）。
+ * 视频号链接（`weixin://`、`channels.weixin.qq.com`、`finder.video.qq.com` 这类）**无法内嵌** ——
+ * 塞进 `<video>` 只会黑屏转圈。所以 `directVideo()` 先用域名/协议判一次：
+ * 判为「非直链」时退化成「点开看视频」按钮（复制链接让用户在微信里打开），而不是硬塞播放器。
  */
 import { computed, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onShareAppMessage } from '@dcloudio/uni-app'
 import { copyText } from '@/utils/nav'
 import { fetchMiniappConfig } from '@/api/miniapp'
 
@@ -34,6 +48,19 @@ interface GuideImage {
   /** 小程序包内静态图（/static/…）或 https 地址都行；后端/CDN 换图不必重新发版 */
   src: string
   caption: string
+}
+
+/** 三种出行方式（BE2 契约里 routes 的键） */
+type RouteKey = 'drive' | 'transit' | 'walk'
+
+/**
+ * 一种出行方式的指引：有视频播视频，没视频放这一段的图片，都没有就显示待补充。
+ * 注意**不做 FALLBACK_IMAGE 兜底**：拿品牌海报冒充「步行路线」等于骗顾客，
+ * 空就老老实实说待补充（与门店级 images 的处理不同）。
+ */
+interface GuideRoute {
+  videoUrl: string
+  images: GuideImage[]
 }
 
 interface GuideVenue {
@@ -47,10 +74,18 @@ interface GuideVenue {
   longitude: number
   /** 微信视频号 username（wx.openChannelsUserProfile 用）；空 = 未配置 */
   channelsUser: string
-  /** 视频号直播 id（wx.openChannelsLive 用，通常是直播回放的 feedId）；空 = 未配置 */
+  /**
+   * 视频号 live id：**字段保留但不参与渲染**。
+   * 馆主明确要求 UI 上不要出现那两个字，而这个字段唯一用途就是开播 / 回放，
+   * 去词之后没有合适的按钮名，故整体下线该入口；后端仍会下发，将来做回放时再启用。
+   */
   channelsLive: string
-  /** 图文引导 1-3 张 */
+  /** 门店级引导图（前台/电梯/门头），上限 9 张 */
   images: GuideImage[]
+  /** 门店级视频（放在视频号入口下方）；空 = 不渲染播放器 */
+  videoUrl: string
+  /** 到店路线：三种出行方式各自独立 */
+  routes: Record<RouteKey, GuideRoute>
 }
 
 /**
@@ -91,6 +126,15 @@ const ADDRESS_TBD_HINT = '地址待补，可复制门店名到手机地图搜索
  * （29.8746/121.5496）。后台配置填了真实坐标后，这两行就没用了，可整段删掉；
  * 只要后台也填占位值，页面照样会命中 `PLACEHOLDER_COORDS` 降级成「复制地址」，不会导错。
  */
+/** 空路线集合：本地默认值里三种出行方式都没有配置（后台填了才会显示内容） */
+function emptyRoutes(): Record<RouteKey, GuideRoute> {
+  return {
+    drive: { videoUrl: '', images: [] },
+    transit: { videoUrl: '', images: [] },
+    walk: { videoUrl: '', images: [] }
+  }
+}
+
 const DEFAULT_VENUES: GuideVenue[] = [
   {
     key: '绿地店',
@@ -103,10 +147,13 @@ const DEFAULT_VENUES: GuideVenue[] = [
     longitude: 121.5496,
     // TODO(视频号): 填门店视频号 username，例如 'sphXXXXXXXXXXXXXX'
     channelsUser: '',
-    // TODO(直播): 填直播 feedId；没有直播就留空
+    // channelsLive 仍保留字段（后端会下发），但 UI 已不展示该入口 —— 见类型定义处的说明
     channelsLive: '',
+    // 门店级视频：填 mp4/m3u8 直链才能内嵌；视频号链接会退化成「点开看视频」按钮
+    videoUrl: '',
+    routes: emptyRoutes(),
     images: [
-      // TODO(到店指引): 换成真实引导图（前台/电梯/门头），1-3 张；也可换成 https 外链
+      // TODO(到店指引): 换成真实引导图（前台/电梯/门头），最多 9 张；也可换成 https 外链
       { src: '/static/hero.jpg', caption: '到店后沿门厅指示牌进电梯，4 楼出电梯右手边即前台' }
     ]
   },
@@ -125,6 +172,8 @@ const DEFAULT_VENUES: GuideVenue[] = [
     longitude: 121.5496,
     channelsUser: '',
     channelsLive: '',
+    videoUrl: '',
+    routes: emptyRoutes(),
     images: [{ src: '/static/hero.jpg', caption: '到店后前台出示本条指引，顾问带你熟悉场地' }]
   }
 ]
@@ -145,7 +194,78 @@ const current = computed<GuideVenue>(
 /** 是否停在「选门店」这一步 */
 const choosing = computed(() => pickedKey.value === '')
 
-const videoReady = computed(() => Boolean(current.value.channelsUser || current.value.channelsLive))
+/**
+ * 有没有视频号入口：**只看 channelsUser**。
+ * channelsLive 不再参与判定 —— UI 已下线该入口（馆主要求去掉那两个字），
+ * 若仍把它算进来，会出现「按钮组渲染出来了、点下去却是占位弹窗」的假交互。
+ */
+const videoReady = computed(() => Boolean(current.value.channelsUser))
+
+/* ---------- 视频：直链 vs 视频号链接 ---------- */
+
+/**
+ * 明显无法内嵌的协议/域名（视频号与微信图文）。
+ * 命中就不进 `<video>`，退化成「点开看视频」的按钮，避免播放器黑屏转圈。
+ */
+const NON_EMBEDDABLE_RE =
+  /^(weixin:\/\/|wxa:\/\/)|channels\.weixin\.qq\.com|finder\.video\.qq\.com|mp\.weixin\.qq\.com/i
+
+/**
+ * 能否直接喂给 `<video>` 组件（mp4 / m3u8 这类直链文件）。
+ *
+ * 判定顺序（宁可多给一次「点开看」，也不要塞进播放器里失败）：
+ *  1. 不是 http(s)（`weixin://` 这类私有协议）→ 不能内嵌；
+ *  2. 命中视频号 / 微信域名 → 不能内嵌（`<video>` 播不了，只会黑屏）；
+ *  3. 其余 http(s) → 认为可以（含没写扩展名的 CDN 直链，如 `?vid=123`）。
+ *     万一填的其实是网页，`<video>` 会触发 `@error`，页面会提示改成复制链接。
+ */
+function directVideo(url: string): boolean {
+  const u = url.trim()
+  if (!/^https?:\/\//i.test(u)) return false
+  return !NON_EMBEDDABLE_RE.test(u)
+}
+
+/** `<video>` 加载失败：给一句能操作的话，别留一个黑框让人以为页面坏了 */
+function onVideoError(): void {
+  toast('视频打不开，可复制链接到微信里打开')
+}
+
+/**
+ * 非直链（视频号链接）的降级动作。
+ * 小程序沙箱里既拉不起 `weixin://`，也开不了外部浏览器，最可靠的是把链接复制给用户，
+ * 让他粘到微信聊天里点开 —— 比塞进 `<video>` 转圈强。
+ */
+function openExternalVideo(url: string): void {
+  if (!url) return
+  copyText(url, '视频链接已复制，粘贴到微信里即可打开')
+}
+
+/* ---------- 到店路线（三种出行方式） ---------- */
+
+/** 分段定义：顺序即产品定义（馆主：第一个开车、第二个公共交通、第三个步行） */
+const ROUTE_TABS: { key: RouteKey; label: string }[] = [
+  { key: 'drive', label: '开车出行' },
+  { key: 'transit', label: '公共交通' },
+  { key: 'walk', label: '步行前往' }
+]
+
+/** 当前选中的出行方式；换门店时回到「开车出行」（不同店配置不同，默认第一段最稳） */
+const routeTab = ref<RouteKey>('drive')
+
+/** 当前门店 + 当前出行方式对应的那段指引（门店一定有 routes，emptyRoutes 兜底过） */
+const activeRoute = computed<GuideRoute>(
+  () => current.value.routes[routeTab.value] ?? { videoUrl: '', images: [] }
+)
+
+/** 分段标题：空态文案里要说清是哪一段没有内容，不能只写「待补充」 */
+function routeLabel(key: RouteKey): string {
+  return ROUTE_TABS.find((t) => t.key === key)?.label ?? '该路线'
+}
+
+/** 切换出行方式（模板里不直接给 ref 赋值，收口成一个函数便于以后加埋点/懒加载） */
+function selectRoute(key: RouteKey): void {
+  routeTab.value = key
+}
 
 /** 当前门店坐标是否可用（占位值也算不可用）：按钮提示文案与 openMap 守卫共用同一条判据 */
 const coordsReady = computed(() => hasRealCoords(current.value))
@@ -161,8 +281,11 @@ const mapHint = computed(() => {
 
 /* ---------- 后端配置 → 页面结构 ---------- */
 
-/** 引导图上限：配置里写多了也只取前 3 张（再多顾客也滑不完，包体/流量也不划算） */
-const MAX_IMAGES = 3
+/**
+ * 引导图上限：与后端一致取 9 张（原来前端还截到 3，会把后台配的 4-9 张悄悄吃掉）。
+ * 三处共用同一常量：门店级 images 与三种路线各自的 images。
+ */
+const MAX_IMAGES = 9
 /**
  * 一张图都没有时的兜底（包内品牌海报）。
  * caption 必须**门店中立**：这张图两家店共用，写「4 楼前台」之类具体到某家店的话，
@@ -198,6 +321,29 @@ function toImage(raw: unknown): GuideImage | null {
 }
 
 /**
+ * 单段路线容错解析。
+ * **不套 FALLBACK_IMAGE**：路线图空着就是没配，用品牌海报冒充「步行路线」是误导顾客；
+ * 空态由模板显示「该路线指引待补充」。
+ */
+function toRoute(raw: unknown): GuideRoute {
+  const o = (raw ?? {}) as Record<string, unknown>
+  const images = Array.isArray(o.images)
+    ? o.images.map(toImage).filter((img): img is GuideImage => img !== null).slice(0, MAX_IMAGES)
+    : []
+  return { videoUrl: str(o.videoUrl), images }
+}
+
+/** routes 三个键各自解析；后台没配的键给空对象，模板按「待补充」渲染 */
+function toRoutes(raw: unknown): Record<RouteKey, GuideRoute> {
+  const o = (raw ?? {}) as Record<string, unknown>
+  return {
+    drive: toRoute(o.drive),
+    transit: toRoute(o.transit),
+    walk: toRoute(o.walk)
+  }
+}
+
+/**
  * 接口单条 → 页面门店结构。
  * 缺 `key` 的条目丢弃（没法选、也没法深链）；其余字段缺了就让降级逻辑接手：
  * 地址空 → 复制门店名；号码空 → 不渲染拨号；坐标 0/占位 → 复制地址。
@@ -218,6 +364,9 @@ function toGuideVenue(raw: unknown): GuideVenue | null {
     longitude: coord(o.longitude),
     channelsUser: str(o.channelsUser),
     channelsLive: str(o.channelsLive),
+    // BE2 新增字段：门店级视频 + 三种路线。老后端不下发时这里就是空，模板不渲染即可
+    videoUrl: str(o.videoUrl),
+    routes: toRoutes(o.routes),
     images: images.length ? images : [{ ...FALLBACK_IMAGE }]
   }
 }
@@ -356,40 +505,27 @@ function openChannels(): void {
   })
 }
 
-/** 视频号直播 / 回放 */
-function openLive(): void {
-  const v = current.value
-  if (!v.channelsLive) {
-    videoPlaceholder()
-    return
-  }
-  const api = channelsApi()
-  if (!api?.openChannelsLive) {
-    toast('当前微信版本不支持打开直播')
-    return
-  }
-  api.openChannelsLive({
-    finderUserName: v.channelsUser,
-    nonceId: v.channelsLive,
-    fail: () => toast('直播打不开，可稍后再试')
-  })
-}
-
-/** 占位卡片：讲清楚「为什么这里点不动」以及配置在哪，免得被当成坏页面 */
+/** 占位卡片：讲清楚「为什么这里点不动」，免得被当成坏页面（文案里不出现那两个字） */
 function videoPlaceholder(): void {
   uni.showModal({
     title: '视频号待配置',
     // 这是给顾客看的文案：不提内部文件路径，配置说明写在文件头的 TODO 里
-    content: '门店视频号与直播还在开通中，先按下面的图文指引到店即可；课程花絮与开播预告会陆续放进来。',
+    content: '门店视频号还在开通中，先按下面的图文指引到店即可；课程花絮会陆续放进来。',
     showCancel: false,
     confirmText: '知道了',
     confirmColor: '#2E7D5B'
   })
 }
 
-/** 图片放大预览（包内静态图也能预览） */
-function previewImage(index: number): void {
-  const urls = current.value.images.map((img) => img.src)
+/**
+ * 图片放大预览（包内静态图也能预览）。
+ *
+ * 参数改成「传哪一组图」而不是只读门店级 images：现在页面上有两处图片组
+ * （门店实景 + 当前出行路线的图），只读 current.images 会让路线图点开放大时
+ * 弹出门店实景 —— 用户点的是路线图，看到的却是别的一组。
+ */
+function previewImage(images: GuideImage[], index: number): void {
+  const urls = images.map((img) => img.src)
   if (!urls.length) return
   uni.previewImage({
     urls,
@@ -397,6 +533,31 @@ function previewImage(index: number): void {
     fail: () => toast('图片预览失败')
   })
 }
+
+/**
+ * 转发给客户（馆主原话：想把「绿地店到店指引」直接发给客户，现在没办法分享）。
+ *
+ * 三个要点：
+ *  1. `path` 必须是**分包路径** `/pkg-public/guide/guide` —— W7 分包后 `pages` 目录里已经没有这个页面，
+ *     写成旧的 pages 路径分享出去，对方点开只会白屏；
+ *  2. 还在「选门店」这一步时也要能分享 —— 此时没有选定门店，标题退化成品牌名、path 不带 venue，
+ *     不能拿 `current`（默认第一家）冒充成用户选的那家；
+ *  3. 带上 `?venue=` 后，接收端 onLoad 会展开同一家店（深链逻辑见 onLoad）。
+ */
+onShareAppMessage(() => {
+  const v = choosing.value ? null : current.value
+  const key = v?.key ?? ''
+  const cover = v?.images?.[0]?.src ?? ''
+  return {
+    title: `${key || '一麦瑜伽'} · 到店指引`,
+    path:
+      `/pkg-public/guide/guide` +
+      (key ? `?venue=${encodeURIComponent(key)}` : ''),
+    // 有门店引导图就用它当封面；没有就不传（微信会用页面截图兜底）
+    imageUrl: cover
+  }
+})
+
 </script>
 
 <template>
@@ -457,44 +618,126 @@ function previewImage(index: number): void {
         </view>
       </view>
 
-      <!-- 视频号 / 直播 -->
+      <!-- 视频号（UI 上不出现那两个字；channelsLive 字段仍在，只是没有入口） -->
       <view class="vcard">
         <view class="vcard__head">
-          <text class="vcard__title">视频号 · 直播</text>
+          <text class="vcard__title">视频号</text>
           <text class="vcard__desc">
-            {{ videoReady ? '课程花絮与开播预告都在视频号里' : '待配置视频号' }}
+            {{ videoReady ? '课程花絮都在视频号里' : '待配置视频号' }}
           </text>
         </view>
         <view v-if="videoReady" class="vcard__acts">
-          <view v-if="current.channelsUser" class="vbtn ym-tap" @click="openChannels">
+          <view class="vbtn ym-tap" @click="openChannels">
             <wd-icon name="play-circle" size="16px" color="#FFFFFF" />
             <text class="vbtn__text">看视频号</text>
-          </view>
-          <view v-if="current.channelsLive" class="vbtn vbtn--ghost ym-tap" @click="openLive">
-            <text class="vbtn__text vbtn__text--brand">进直播间</text>
           </view>
         </view>
         <view v-else class="vcard__ph ym-tap" @click="videoPlaceholder">
           <text class="vcard__ph-text">
-            这里会给到门店视频号与直播入口；目前还没配置，先按下面的图文指引到店即可。
+            这里会给到门店视频号入口；目前还没配置，先按下面的图文指引到店即可。
           </text>
         </view>
       </view>
 
-      <!-- 图文引导 -->
+      <!-- 门店视频：放在视频号入口下方。只有配了 videoUrl 才渲染，没配置不留空壳 -->
+      <view v-if="current.videoUrl" class="videoblk">
+        <text class="videoblk__label">门店视频</text>
+        <!-- 直链（mp4/m3u8）才内嵌；视频号链接小程序播不了，退化成「点开看视频」按钮 -->
+        <video
+          v-if="directVideo(current.videoUrl)"
+          class="videoblk__player"
+          :src="current.videoUrl"
+          :controls="true"
+          :show-center-play-btn="true"
+          object-fit="contain"
+          @error="onVideoError"
+        />
+        <view
+          v-else
+          class="vbtn vbtn--wide ym-tap"
+          @click="openExternalVideo(current.videoUrl)"
+        >
+          <wd-icon name="play-circle" size="16px" color="#FFFFFF" />
+          <text class="vbtn__text">点开看门店视频</text>
+        </view>
+      </view>
+
+      <!-- 门店实景：原来这块叫「到店路线」，现在「路线」专指下面三种出行方式，改名避免撞车 -->
       <view class="imgs">
-        <text class="imgs__label">到店路线</text>
+        <text class="imgs__label">门店实景</text>
         <view
           v-for="(img, i) in current.images"
           :key="img.src + i"
           class="imgcard ym-tap"
-          @click="previewImage(i)"
+          @click="previewImage(current.images, i)"
         >
           <image class="imgcard__pic" :src="img.src" mode="aspectFill" />
           <view class="imgcard__cap">
             <text class="imgcard__text">{{ img.caption }}</text>
             <text class="imgcard__zoom">点击放大</text>
           </view>
+        </view>
+      </view>
+
+      <!-- 到店路线：三种出行方式各自独立渲染，绝不把三段的图混在一起 -->
+      <view class="routes">
+        <text class="imgs__label">到店路线</text>
+
+        <view class="rtabs">
+          <view
+            v-for="t in ROUTE_TABS"
+            :key="t.key"
+            class="rtab ym-tap"
+            :class="{ 'is-on': routeTab === t.key }"
+            @click="selectRoute(t.key)"
+          >
+            <text class="rtab__text">{{ t.label }}</text>
+          </view>
+        </view>
+
+        <!-- ① 这一段有视频：直链内嵌，非直链（视频号链接）退化成跳转按钮 -->
+        <template v-if="activeRoute.videoUrl">
+          <video
+            v-if="directVideo(activeRoute.videoUrl)"
+            class="videoblk__player"
+            :src="activeRoute.videoUrl"
+            :controls="true"
+            :show-center-play-btn="true"
+            object-fit="contain"
+            @error="onVideoError"
+          />
+          <view
+            v-else
+            class="vbtn vbtn--wide ym-tap"
+            @click="openExternalVideo(activeRoute.videoUrl)"
+          >
+            <wd-icon name="play-circle" size="16px" color="#FFFFFF" />
+            <text class="vbtn__text">点开看这段路线视频</text>
+          </view>
+        </template>
+
+        <!-- ② 没视频但有图：只渲染这一段的图 -->
+        <template v-else-if="activeRoute.images.length">
+          <view
+            v-for="(img, i) in activeRoute.images"
+            :key="img.src + i"
+            class="imgcard ym-tap"
+            @click="previewImage(activeRoute.images, i)"
+          >
+            <image class="imgcard__pic" :src="img.src" mode="aspectFill" />
+            <view class="imgcard__cap">
+              <text class="imgcard__text">{{ img.caption }}</text>
+              <text class="imgcard__zoom">点击放大</text>
+            </view>
+          </view>
+        </template>
+
+        <!-- ③ 视频和图片都没有：说清是这一段没配，而不是页面坏了 -->
+        <view v-else class="rtempty">
+          <text class="rtempty__text">该路线指引待补充</text>
+          <text class="rtempty__desc">
+            {{ routeLabel(routeTab) }}暂时没有视频或图片，可先按上方地址导航到店，找不到就联系门店
+          </text>
         </view>
       </view>
 
@@ -775,6 +1018,95 @@ function previewImage(index: number): void {
   flex-shrink: 0;
   font-size: 21rpx;
   color: $brand-600;
+}
+
+/* ---------- 门店视频 / 路线视频 ---------- */
+.videoblk {
+  margin: 24rpx 24rpx 0;
+}
+
+.videoblk__label {
+  display: block;
+  padding: 0 4rpx 14rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  color: $ink-700;
+}
+
+/* 固定 16:9 高度 + object-fit: contain：竖屏视频会留黑边，但绝不裁掉画面
+   （裁掉的往往是门头/指示牌，正是顾客要看的那部分） */
+.videoblk__player {
+  width: 100%;
+  height: 400rpx;
+  background: #000;
+  border-radius: $r-lg;
+}
+
+/* 满宽按钮：视频号链接的降级入口，与路线段里的跳转按钮共用同一个类 */
+.vbtn--wide {
+  flex: none;
+  width: 100%;
+}
+
+/* ---------- 到店路线分段 ---------- */
+.routes {
+  margin: 24rpx 24rpx 0;
+}
+
+.rtabs {
+  display: flex;
+  gap: 12rpx;
+  padding: 6rpx;
+  margin-bottom: 20rpx;
+  background: $ink-50;
+  border-radius: 999rpx;
+}
+
+.rtab {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  height: 76rpx;
+  border-radius: 999rpx;
+
+  /* 选中态用白底 + 轻阴影，与项目其它分段控件一致（不靠颜色堆对比度） */
+  &.is-on {
+    background: $white;
+    box-shadow: $shadow-card;
+  }
+}
+
+.rtab__text {
+  font-size: 25rpx;
+  color: $ink-500;
+}
+
+.rtab.is-on .rtab__text {
+  font-weight: 600;
+  color: $brand-700;
+}
+
+/* ---------- 路线指引待补充 ---------- */
+.rtempty {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  padding: 40rpx 28rpx;
+  background: $ink-50;
+  border-radius: $r-lg;
+}
+
+.rtempty__text {
+  font-size: 27rpx;
+  font-weight: 500;
+  color: $ink-600;
+}
+
+.rtempty__desc {
+  font-size: 23rpx;
+  line-height: 1.6;
+  color: $ink-400;
 }
 
 /* ---------- 换店 ---------- */

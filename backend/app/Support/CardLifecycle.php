@@ -378,6 +378,11 @@ final class CardLifecycle
             'isTaste' => $isTaste,
             'tasteReason' => $tasteReason,
             'canOp' => self::pick($row, ['canOp', 'can_op']),
+            // 卡项备注（馆主 2026-11 要求小程序「全部卡项」里显示）。
+            // 源数据里是否存在这个字段取决于随心瑜侧；这里只是把常见的几种键名捞出来透传，
+            // 取不到就留空串——前端按「有才显示」处理，空串不会多占一行。
+            // 不要为此在数据层新增列：它是只读透传，新增列会把同步契约搞复杂。
+            'remark' => self::pick($row, ['remark', 'card_remark', 'note', 'memo']),
             'identity' => $identity,
             'degraded' => array_values(array_unique($degraded)),
         ];

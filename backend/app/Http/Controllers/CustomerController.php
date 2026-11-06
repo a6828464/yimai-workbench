@@ -242,7 +242,16 @@ class CustomerController extends Controller
         $current = max(1, (int) $r->query('current', 1));
         $size = min(5000, max(1, (int) $r->query('size', 20)));
         $total = (clone $q)->count();
-        $rows = $q->orderByDesc('id')->forPage($current, $size)->get()->map(fn ($x) => camel($x));
+        // 列表**特意不带** remark：列表页不渲染它，带上纯属无谓负载
+        // （cards_list / card_stats 两个 JSON 已经让每行很重，B1 那轮刚做过瘦身）。
+        // 备注只在详情接口 GET /customers/{id} 返回。
+        $rows = $q->orderByDesc('id')->forPage($current, $size)->get()
+            ->map(function ($x) {
+                $row = camel($x);
+                unset($row['remark']);
+
+                return $row;
+            });
 
         // 出勤三列的口径标签：M1/M2/M3 是三个连续且等长的 30 天滚动窗口
         // （再前30天 / 前30天 / 近30天，近30天含今天）。
@@ -313,6 +322,9 @@ class CustomerController extends Controller
             'inRevive' => 'nullable|boolean',
             // 人工经营状态：待复活与 in_revive 联动，见下方写入逻辑
             'memberState' => ['nullable', 'string', \Illuminate\Validation\Rule::in(Customer::MEMBER_STATES)],
+            // 会员备注（员工给这个人记的注意事项：过敏史 / 伤病 / 沟通忌讳…）。
+            // 列是 text，这里限 500 字：笔记型字段不需要更长，也避免一次 PATCH 塞进几十 KB。
+            'remark' => 'nullable|string|max:500',
         ]);
         $patch = collect(camelToSnake($r->all()))->only([
             'renewal_plan', 'decline', 'stop_reason', 'expected_return',
@@ -320,6 +332,9 @@ class CustomerController extends Controller
             // 归属（会籍顾问 consultant / 负责人 owner）：小程序「客户经营」要能把会员
             // 落到具体老师名下，否则新会员永远停在「未分配」。准入与通知见 collectAssignmentChanges()。
             'consultant', 'owner',
+            // 会员备注：小程序会员详情顶部的展示来源（写入后详情立刻可见）。
+            // 白名单只加这一项 —— 其它字段一律不放开。
+            'remark',
         ])->all();
         // 清空的字段按列定义落地：可空列（最近沟通/生日）写 null，非空文本列（停练原因/预期复活）写 ''。
         // 这里不能再写 `($patch[$f] ?? '') === ''` 那种兜底 —— 键缺失和值为空是两件事，
@@ -337,6 +352,10 @@ class CustomerController extends Controller
         }
         // 归属变更：先判「真的换人」，再要权限、补 user_id、攒通知名单
         $assignments = $this->collectAssignmentChanges($r, $c, $patch);
+        // 变更前的快照：必须在 update() 之前取 —— save() 会 syncOriginal()，之后旧值就没了。
+        // 审计要用它判断「这次到底改了哪几个字段」（前端是把整个对象 spread 回来提交的，
+        // 提交了不等于改了）。
+        $before = $c->only(array_keys($patch));
         $c->update($patch);
 
         // 失效放在 if 之外（原先只在 in_revive 分支里）：
@@ -357,7 +376,15 @@ class CustomerController extends Controller
                 $c->refresh();
             }
         }
-        audit($r, $r->input('_action', '修改'), '会员管理', $id, "{$c->name}（{$c->venue}）", $c->venue, '工作流字段更新');
+        audit(
+            $r,
+            $r->input('_action', '修改'),
+            '会员管理',
+            $id,
+            "{$c->name}（{$c->venue}）",
+            $c->venue,
+            $this->describeChanges($before, $c, array_keys($patch))
+        );
 
         // 归属变更 → 通知新归属人（微信订阅消息）。放 defer + try/catch：微信侧任何问题
         // 都只写日志，绝不让会员保存失败（方案 §6.4）。
@@ -420,6 +447,79 @@ class CustomerController extends Controller
         }
 
         return $changes;
+    }
+
+    /** 会员可写字段的中文名（审计说明用）。**只登记白名单里的字段**，其它一律不认。 */
+    private const FIELD_LABELS = [
+        'renewal_plan' => '续课预报',
+        'decline' => '出勤下降原因',
+        'stop_reason' => '停练原因',
+        'expected_return' => '预计回归',
+        'last_touch' => '最近沟通',
+        'needs_help' => '需协助',
+        'in_revive' => '待复活',
+        'birthday' => '生日',
+        'member_state' => '会员状态',
+        'consultant' => '会籍顾问',
+        'owner' => '负责人',
+        'remark' => '备注',
+    ];
+
+    /**
+     * 会员编辑的审计说明：**列出本次真正变更的字段名**；备注额外带上新值。
+     *
+     * ## 为什么备注要记内容（馆主 2026-11 拍板：选 C）
+     *
+     * 原先固定写「工作流字段更新」，查不到「谁把备注改成了什么」。馆主权衡了隐私与可追溯性后
+     * 选择**记录备注内容** —— 备注是给员工看的注意事项（「腰有旧伤，避免深度前屈」），
+     * 出问题时最需要能回溯的就是这句话。所以：
+     *  - 备注：`备注→「新值」`，清空时写 `备注→（已清空）`（**清空也是一次变更**，
+     *    否则「谁把客户备注删了」永远查不出来）；
+     *  - 其它字段：**只记字段名，不记值** —— 生日/归属之类记下来没有排障价值，
+     *    而手机号、身份证、银行账号这类敏感值一旦进 audit_logs，能看到日志的人就比
+     *    能看到会员档案的人多了。这条克制比备注那条更重要。
+     *
+     * ## 长度
+     *
+     * `audit()` 本身**不截断**（`audit_logs.detail` 是 TEXT），截断阈值是本方法自己定的
+     * **600 字**：备注上限 500 + 前缀约 20，正常永远放得下；万一超了就在末尾标
+     * `…（已截断）` —— 不静默丢内容，否则以后有人查日志看到半句会以为数据丢了。
+     *
+     * @param  array<string, mixed>  $before  update 之前的字段快照（`$c->only(...)`）
+     * @param  array<int, string>  $keys  本次提交进白名单的字段名
+     */
+    private function describeChanges(array $before, Customer $after, array $keys): string
+    {
+        $changed = [];
+        foreach ($keys as $field) {
+            if (! array_key_exists($field, self::FIELD_LABELS)) {
+                continue;
+            }
+            // 松散比较是有意的：`0 != false` 为假（布尔列从库里读出来是 0/1、提交的是 true/false），
+            // 数组字段（续课预报/出勤下降）按元素比较。用 `!==` 会把「没改」误报成「改了」。
+            if (($before[$field] ?? null) != $after->getAttribute($field)) {
+                $changed[] = $field;
+            }
+        }
+
+        if ($changed === []) {
+            // 前端习惯把整个对象 spread 回来提交：提交了但值没变，不该在审计里制造噪音
+            return '未检测到字段变化';
+        }
+
+        $detail = '修改：'.implode('、', array_map(fn (string $f) => self::FIELD_LABELS[$f], $changed));
+
+        if (in_array('remark', $changed, true)) {
+            $remark = trim((string) ($after->getAttribute('remark') ?? ''));
+            $detail .= '；备注→'.($remark === '' ? '（已清空）' : '「'.$remark.'」');
+        }
+
+        $limit = 600;
+        if (mb_strlen($detail) > $limit) {
+            $detail = mb_substr($detail, 0, $limit - 6).'…（已截断）';
+        }
+
+        return $detail;
     }
 
     /**

@@ -30,8 +30,8 @@ import { getJSON, setJSON, storage } from '@/utils/storage'
 import { useUserStore } from '@/store/user'
 import {
   FALLBACK_LEAD_ENUMS,
-  LEAD_GRADES,
   LEAD_STATUSES,
+  LEAD_TRIAL_TYPES,
   checkLead,
   createLead,
   fetchLeads,
@@ -45,7 +45,13 @@ import type { MiniappLead } from '@/types'
 
 const user = useUserStore()
 const VENUES = ['绿地店', '东部店']
-const GRADE_LABELS = ['未分级', 'A', 'B', 'C']
+/**
+ * 体验课类型下拉的选项：首项「未设置」= 提交空串（历史默认值），其余与网页端逐字一致。
+ * 为什么不叫「等级」：`leads.grade` 这一列网页端早就改成体验课类型了，小程序按「客户分级」
+ * 渲染会凭空多出「级」字、picker 也对不上旧值（详见 api/leads.ts 的 LEAD_TRIAL_TYPES 注释）。
+ */
+const TRIAL_TYPE_UNSET = '未设置'
+const TRIAL_TYPE_OPTIONS: string[] = [TRIAL_TYPE_UNSET, ...LEAD_TRIAL_TYPES]
 /** wd-picker 的 columns 需要可变数组 */
 const STATUS_OPTIONS: string[] = [...LEAD_STATUSES]
 
@@ -113,9 +119,27 @@ const form = ref({
 /** 表单快照类型：草稿读写与恢复共用同一份结构，避免两处各写一遍字段表 */
 type LeadFormState = typeof form.value
 
-const gradeIndex = computed(() => Math.max(0, LEAD_GRADES.indexOf(form.value.grade as never)))
-/** 等级在 UI 上是「未分级 / A / B / C」，提交值仍是 '' / A / B / C */
-const gradeLabel = computed(() => GRADE_LABELS[gradeIndex.value])
+/**
+ * 历史脏值：A/B/C 时代写进 `grade` 的那些行。
+ * 不静默丢掉 —— 下拉里追加一项「A（历史值）」，用户能看到它、也能改成新选项；
+ * 不主动改就保持原值提交，避免一次编辑把老数据洗成空。
+ */
+const legacyTrialType = computed(() => {
+  const v = form.value.grade
+  return v && !(LEAD_TRIAL_TYPES as readonly string[]).includes(v) ? v : ''
+})
+
+/** picker 的候选：常规选项 + （必要时）历史值那一项 */
+const trialTypeOptions = computed(() =>
+  legacyTrialType.value ? [...TRIAL_TYPE_OPTIONS, `${legacyTrialType.value}（历史值）`] : TRIAL_TYPE_OPTIONS
+)
+
+/** picker 的显示值：'' → 未设置；新取值原样显示；历史值 → 「A（历史值）」 */
+const trialTypeLabel = computed(() => {
+  const v = form.value.grade
+  if (!v) return TRIAL_TYPE_UNSET
+  return (LEAD_TRIAL_TYPES as readonly string[]).includes(v) ? v : `${v}（历史值）`
+})
 
 /* ---------- 老师/顾问：选人（/staff/options）+ 手输兜底 ---------- */
 const staffSheet = ref(false)
@@ -368,9 +392,19 @@ function onPickStatus(e: PickerPayload) {
   form.value.status = String(e.value)
 }
 
-function onPickGrade(e: PickerPayload) {
+/**
+ * 选中体验课类型。
+ * 「XX（历史值）」只是回显用的占位，**不能写回库里**（否则会存出「A（历史值）」这种新脏值），
+ * 命中它就还原成原来的裸值。
+ */
+function onPickTrialType(e: PickerPayload) {
   const v = String(e.value)
-  form.value.grade = v === '未分级' ? '' : v
+  if (v === TRIAL_TYPE_UNSET) {
+    form.value.grade = ''
+    return
+  }
+  const legacy = `${legacyTrialType.value}（历史值）`
+  form.value.grade = legacyTrialType.value && v === legacy ? legacyTrialType.value : v
 }
 
 /** 手机号查重：命中会员或已有留资时给出**事实**，不阻断录入 */
@@ -825,12 +859,14 @@ onShow(() => {
         label-width="200rpx"
         @confirm="onPickStatus"
       />
+      <!-- 体验课类型（不是客户等级）：与网页端同一组字面量，旧 A/B/C 会显示成「A（历史值）」 -->
       <wd-picker
-        label="等级"
-        :columns="GRADE_LABELS"
-        :model-value="gradeLabel"
+        label="体验课类型"
+        :columns="trialTypeOptions"
+        :model-value="trialTypeLabel"
+        placeholder="未设置"
         label-width="200rpx"
-        @confirm="onPickGrade"
+        @confirm="onPickTrialType"
       />
     </ym-section>
 

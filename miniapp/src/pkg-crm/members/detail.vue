@@ -81,21 +81,60 @@ const cardSections = computed(() => {
     }))
 })
 
-/** 卡项剩余：单位取自后端（节/天/元），未知就写「剩余未知」而不是 0 */
+/** 数值兜底：null / undefined / '' / 非数字都当「没有值」，别把 NaN 渲染到页面上 */
+function numOrNull(v: unknown): number | null {
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/** 负余额 = 已经透支（历史卡常见）：统一按「已过期」呈现，绝不出现「剩 -3 天」 */
+function isNegative(v: unknown): boolean {
+  const n = numOrNull(v)
+  return n !== null && n < 0
+}
+
 /**
- * 卡项剩余。
+ * 卡类型：后端 `type` 是 **1=次卡(节) / 2=期限卡(天) / 3=储值卡(元)**。
+ * 老数据可能没有 type，就退回按单位猜（天 / 节·次 / 元）—— 两条口径都认，
+ * 否则储值卡会落进「按到期日计」那种错口径里。
+ */
+function cardKind(card: CustomerCard): 'times' | 'days' | 'money' | 'other' {
+  const t = String(card.type ?? '').trim()
+  if (t === '2') return 'days'
+  if (t === '1') return 'times'
+  if (t === '3') return 'money'
+  const unit = String(card.unit ?? '').trim()
+  if (unit === '天') return 'days'
+  if (unit === '节' || unit === '次') return 'times'
+  if (unit === '元') return 'money'
+  return 'other'
+}
+
+/**
+ * 卡项剩余（2026-11 修，馆主点名）。
  *
- * 后端没返回剩余量时不再写「剩余未知」——那四个字既占地方又让人以为是系统算错了。
- * 按卡的性质给可读口径：
- *  - 期限卡（天）：本来就没有"次数"，写「按到期日计」；
- *  - 其余（次卡/储值卡）：写「—」，由下方「卡号」和状态说明承担信息量。
+ * 病根：期限卡的 `remaining` 恒为 null，旧实现只看 remaining → 永远落到「按到期日计」，
+ * 后端算好的 `residueDays`（剩余天数）根本没用上，所以「余额一直不显示」。
+ * 现在按卡的性质分流：
+ *  - 期限卡：优先 residueDays → 老数据回退 daysUntil → 都没有才说「按到期日计」；
+ *  - 次卡：`剩 N 节`；储值卡：`剩 N 元`（不再掉进到期日口径）；
+ *  - 已过期（state=history 或任一余额为负）：一律「已过期」。
  */
 function cardRemain(card: CustomerCard): string {
-  if (card.remaining === null || card.remaining === undefined) {
-    return card.unit === '天' ? '按到期日计' : '—'
+  if (String(card.state ?? '') === 'history') return '已过期'
+  if (isNegative(card.residueDays) || isNegative(card.remaining) || isNegative(card.daysUntil)) {
+    return '已过期'
   }
-  const unit = card.unit || '节'
-  return `剩 ${card.remaining} ${unit}`
+  if (cardKind(card) === 'days') {
+    const days = numOrNull(card.residueDays) ?? numOrNull(card.daysUntil)
+    return days === null ? '按到期日计' : `剩 ${days} 天`
+  }
+  const amount = numOrNull(card.remaining)
+  if (amount === null) return '—'
+  if (cardKind(card) === 'money') return `剩 ${amount} 元`
+  // 次卡与未知类型：单位以后端为准（缺省「节」，与旧口径一致）
+  return `剩 ${amount} ${card.unit || '节'}`
 }
 
 /** 卡项到期日（只到天） */
@@ -409,14 +448,27 @@ onPullDownRefresh(async () => {
             <text class="dhead__sub ym-ellipsis">
               {{ c.venue }}<text v-if="c.consultant"> · 会籍顾问 {{ c.consultant }}</text>
             </text>
+            <!-- 会员备注：有才占位（空/null 不渲染），最多两行省略，别让一段备注把首屏撑开 -->
+            <text v-if="c.remark" class="dhead__remark">{{ c.remark }}</text>
           </view>
         </view>
 
         <view class="dhead__phone-row">
-          <text class="dhead__phone ym-num">{{ c.phone || `尾号 ${c.phoneTail}` }}</text>
+          <!-- 号码本身可点：一下复制整号（内部系统按**全量号码**显示，不做中间打码 —— 见 MiniappCustomer.phone 注释） -->
+          <view class="dhead__phone-wrap ym-tap" @click="copyPhone">
+            <text class="dhead__phone ym-num ym-ellipsis">{{ c.phone || `尾号 ${c.phoneTail}` }}</text>
+          </view>
+          <!-- 复制 / 拨打改成纯图标：馆主反馈两个 size="medium" 的文字按钮把卡片撑爆（「拨打」超出卡片框）。
+               图标名只能用 copy / phone —— 它们都在 wot-icons.scss 的 44 个保留字形里（copy 第 23 行 / phone 第 25 行）；
+               换成 phone-fill / mobile 之类会缺字形，真机显示豆腐块。
+               外层 88rpx×88rpx（≈44px）点击区、图标本体 17px：视觉小、点击大，低于 44px 手指容易点空。 -->
           <view class="dhead__acts">
-            <wd-button size="medium" plain @click="copyPhone">复制</wd-button>
-            <wd-button size="medium" plain @click="call">拨打</wd-button>
+            <view class="phone__act ym-tap" @click="copyPhone">
+              <wd-icon name="copy" size="17px" color="#8A948F" />
+            </view>
+            <view class="phone__act ym-tap" @click="call">
+              <wd-icon name="phone" size="17px" color="#8A948F" />
+            </view>
           </view>
         </view>
 
@@ -481,6 +533,10 @@ onPullDownRefresh(async () => {
               <text class="cards__item-meta ym-num">
                 {{ cardRemain(card) }}<text v-if="cardDeadline(card)"> · {{ cardDeadline(card) }}</text>
               </text>
+              <!-- 卡项备注：**源数据有 remark 才会出现**（后端从原始行 pick，取不到是 null）；
+                   真实数据下大概率不显示 —— 这是预期行为，别当成没生效。
+                   放在余额/到期日下面、卡号上面：先读结论，再看标识。 -->
+              <text v-if="card.remark" class="cards__item-remark">{{ card.remark }}</text>
               <text v-if="card.cardNo" class="cards__item-no ym-ellipsis">卡号 {{ card.cardNo }}</text>
             </view>
           </view>
@@ -930,6 +986,19 @@ onPullDownRefresh(async () => {
   color: $ink-600;
 }
 
+/* 卡项备注：弱于标题（$ink-800）、强于纯灰（$ink-400）；最多两行，超出省略 */
+.cards__item-remark {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  line-height: 1.45;
+  color: $ink-500;
+  word-break: break-all;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .cards__item-no {
   display: block;
   margin-top: 4rpx;
@@ -984,6 +1053,18 @@ onPullDownRefresh(async () => {
   color: $ink-800;
 }
 
+.dhead__remark {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  line-height: 1.45;
+  color: $ink-500;
+  word-break: break-all;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .dhead__sub {
   display: block;
   font-size: 24rpx;
@@ -1000,7 +1081,13 @@ onPullDownRefresh(async () => {
   border-top: 2rpx solid $brand-100;
 }
 
+.dhead__phone-wrap {
+  flex: 1;
+  min-width: 0;
+}
 .dhead__phone {
+  /* display:block 不能省：<text> 默认 inline，`ym-ellipsis` 的 overflow/text-overflow 对 inline 不生效 */
+  display: block;
   font-size: 30rpx;
   font-weight: 500;
   color: $ink-800;
@@ -1009,7 +1096,19 @@ onPullDownRefresh(async () => {
 .dhead__acts {
   display: flex;
   flex-shrink: 0;
-  gap: 12rpx;
+  /* 两个图标按钮间距 ≥16rpx：88rpx 的点击区挨太近会误触 */
+  gap: 16rpx;
+}
+/* 纯图标按钮：视觉只有 17px 图标，点击区撑到 88rpx（≈44px，手指最小可靠触控尺寸）。
+   不做 64rpx（32px）——比 iOS / 微信建议的 44pt 小一圈，店员手指容易点空。 */
+.phone__act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 88rpx;
+  height: 88rpx;
+  background: rgba(28, 96, 71, 0.06);
+  border-radius: 50%;
 }
 
 .dhead__tags {
