@@ -704,7 +704,7 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
 
       <view id="btn-staff" class="home__slogan home__slogan--oriental ym-tap" @click="goStaff">
         <text class="home__slogan-main home__slogan-main--oriental">看见 · 包容 · 超越</text>
-        <text class="home__slogan-sub home__slogan-sub--oriental">员工入口</text>
+        <text class="home__slogan-sub home__slogan-sub--oriental">在一麦遇见更好的自己</text>
       </view>
     </view>
 
@@ -1058,7 +1058,11 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
     padding-left: 62rpx;
     padding-right: 62rpx;
     /* 内容从图的下缘附近「长出」：与原实现同一口径（62% 的宽度 - 176rpx） */
-    padding-top: calc(62% - 176rpx);
+    /* 62% 必须按视口高度算：CSS 里百分比 padding 相对的是「宽度」，
+       而背景图 height:62% 相对的是「高度」。原实现写 calc(62% - 176rpx)
+       在真机上把内容推到了图片上部（实测确认），所以改成 vh。
+       88px ≈ 176rpx（按 375 宽基准），用于让首行略微压进图片下缘。 */
+    padding-top: calc(62vh - 88px);
     padding-bottom: calc(40rpx + constant(safe-area-inset-bottom));
     padding-bottom: calc(40rpx + env(safe-area-inset-bottom));
   }

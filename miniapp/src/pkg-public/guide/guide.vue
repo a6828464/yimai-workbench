@@ -895,7 +895,13 @@ onShareAppMessage(() => {
                   <image class="fig__pic" :src="img.src" mode="aspectFill" />
                   <view class="fig__cap">
                     <view class="fig__dash" />
-                    <text class="fig__text">{{ img.caption }}</text>
+                    <!--
+                      只把「短的」当图注显示。后台在门店实景里常填整段路线说明
+                      （如「到店后沿门厅指示牌进电梯，4 楼出电梯右手边即前台」），
+                      但那和下面「到店路线」区块是同一件事，同时出现就是重复。
+                      超过 20 字一律不渲染：短标签（前台 / 门厅 / 更衣区）照常显示。
+                    -->
+                    <text v-if="(img.caption || '').length <= 20" class="fig__text">{{ img.caption }}</text>
                     <text class="fig__zoom">点击放大</text>
                   </view>
                 </view>
