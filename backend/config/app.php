@@ -78,7 +78,11 @@ return [
     |
     */
 
-    'locale' => env('APP_LOCALE', 'en'),
+    // 默认 zh_CN 而不是 en：本项目是单语言中文应用，校验报错会直接显示在员工手机上。
+    // 用 env(..., 'en') 时，任何「没有 .env」的环境（CI 全新检出、容器首次启动、误删 .env）
+    // 都会静默退回英文，把「请填写 姓名。」变成「The name field is required.」。
+    // CI 的 Backend tests 就是这样失败的（2026-11-06，run 42177229994）。
+    'locale' => env('APP_LOCALE', 'zh_CN'),
 
     'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
 
