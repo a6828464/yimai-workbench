@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { ref } from 'vue'
 import { useUserStore } from '@/store/user'
 
@@ -64,6 +66,9 @@ async function doWxLogin() {
     wxBusy.value = false
   }
 }
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

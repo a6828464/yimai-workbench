@@ -17,7 +17,8 @@
  * 权限：requireSuper()（后端 /customers 无角色门，靠前端 + 超管语义收口）。
  */
 import { computed, ref } from 'vue'
-import { onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
+import { onPullDownRefresh, onReachBottom, onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { goPath, requireSuper } from '@/utils/nav'
 import { canSwitchVenue } from '@/utils/venue'
 import { useUserStore } from '@/store/user'
@@ -287,6 +288,9 @@ onReachBottom(() => {
     load()
   }
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

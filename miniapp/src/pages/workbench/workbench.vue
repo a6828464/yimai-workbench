@@ -14,7 +14,8 @@
  * 设计约束：颜色只用 $brand / $ink 令牌与既有组件；数字统一 tabular-nums（ym-num）。
  */
 import { computed, ref } from 'vue'
-import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
+import { onPullDownRefresh, onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { useUserStore } from '@/store/user'
 import { requireLogin } from '@/utils/guard'
 import { goFeature, goPath, isTabPage } from '@/utils/nav'
@@ -716,6 +717,9 @@ onPullDownRefresh(async () => {
 function goBrandHome(): void {
   uni.reLaunch({ url: '/pages/home/home' })
 }
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

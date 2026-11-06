@@ -172,6 +172,16 @@
                       placeholder="/static/hero.jpg 或 https://..."
                       @input="img.broken = false"
                     />
+                    <label class="upload-label" :class="{ 'is-busy': img.uploading }">
+                      <input
+                        type="file"
+                        :accept="UPLOAD_ACCEPT"
+                        hidden
+                        :disabled="!!img.uploading"
+                        @change="onPickImage($event, img)"
+                      />
+                      {{ img.uploading ? '上传中…' : '上传' }}
+                    </label>
                     <ElInput v-model="img.caption" maxlength="120" placeholder="说明" />
                     <ElButton link type="danger" @click="removeImage(v.images, idx)">删除</ElButton>
                   </div>
@@ -220,6 +230,24 @@
                     :title="ROUTE_LABELS[rk]"
                   >
                     <ElForm label-width="88px" class="pt-1">
+                      <!-- 文字说明放该组最上：它就是这条路线的小标题/导语 -->
+                      <ElFormItem label="文字说明">
+                        <div class="w-full">
+                          <ElInput
+                            v-model="v.routes[rk].note"
+                            type="textarea"
+                            :rows="3"
+                            maxlength="200"
+                            show-word-limit
+                            :placeholder="`例：${ROUTE_LABELS[rk]}请从东门进，地库 B1 有 2 小时免费停车`"
+                          />
+                          <span class="text-xs text-gray-400">
+                            已输入 {{ v.routes[rk].note.length }}/200 · 顾客点开「{{
+                              ROUTE_LABELS[rk]
+                            }}」会先看到这段话
+                          </span>
+                        </div>
+                      </ElFormItem>
                       <ElFormItem label="视频链接">
                         <div class="w-full">
                           <ElInput
@@ -246,6 +274,16 @@
                                 placeholder="/static/drive-1.jpg 或 https://..."
                                 @input="img.broken = false"
                               />
+                              <label class="upload-label" :class="{ 'is-busy': img.uploading }">
+                                <input
+                                  type="file"
+                                  :accept="UPLOAD_ACCEPT"
+                                  hidden
+                                  :disabled="!!img.uploading"
+                                  @change="onPickImage($event, img)"
+                                />
+                                {{ img.uploading ? '上传中…' : '上传' }}
+                              </label>
                               <ElInput v-model="img.caption" maxlength="120" placeholder="说明" />
                               <ElButton
                                 link
@@ -364,11 +402,23 @@
 
         <ElFormItem label="图片">
           <div class="w-full">
-            <ElInput
-              v-model="popup.imageUrl"
-              maxlength="200"
-              placeholder="/static/popup.jpg 或 https://..."
-            />
+            <div class="img-row">
+              <ElInput
+                v-model="popup.imageUrl"
+                maxlength="200"
+                placeholder="/static/popup.jpg 或 https://..."
+              />
+              <label class="upload-label" :class="{ 'is-busy': popupUploading }">
+                <input
+                  type="file"
+                  :accept="UPLOAD_ACCEPT"
+                  hidden
+                  :disabled="popupUploading"
+                  @change="onPickPopupImage"
+                />
+                {{ popupUploading ? '上传中…' : '上传' }}
+              </label>
+            </div>
             <div class="img-check">
               <div class="thumb">
                 <img
@@ -404,9 +454,15 @@
     </ElCard>
 
     <div class="flex items-center gap-2">
-      <ElButton type="primary" :loading="saving" :disabled="!venues.length" @click="save">
+      <ElButton
+        type="primary"
+        :loading="saving"
+        :disabled="!venues.length || anyUploading"
+        @click="save"
+      >
         保存
       </ElButton>
+      <span v-if="anyUploading" class="text-xs c-orange">有图片正在上传，等传完再保存</span>
       <ElButton :disabled="loading" @click="load">放弃修改并重读</ElButton>
       <span class="text-xs text-gray-400">保存后立即对微信小程序生效，无需发版</span>
     </div>
@@ -415,13 +471,14 @@
 
 <script setup lang="ts">
   import { apiGet, apiPut, showApiError, toHttpError, USE_BACKEND } from '@/api/backend'
-  import type {
-    MiniappConfig,
-    MiniappPopupConfig,
-    MiniappRouteConfig,
-    MiniappRouteKey,
-    MiniappVenueConfig,
-    MiniappVenueImage
+  import {
+    uploadMiniappImage,
+    type MiniappConfig,
+    type MiniappPopupConfig,
+    type MiniappRouteConfig,
+    type MiniappRouteKey,
+    type MiniappVenueConfig,
+    type MiniappVenueImage
   } from '@/api/yimai'
   import { ElMessage } from 'element-plus'
 
@@ -431,7 +488,8 @@
    * 契约类型定义在 `@/api/yimai`（两端共享的唯一一份）；
    * 这里只派生「带预览失败标记」的 UI 类型，避免把接口结构在本页抄第二遍。
    */
-  type VenueImage = MiniappVenueImage & { broken?: boolean }
+  /** 契约类型 + 两个纯前端态：预览失败、正在上传（都不参与提交） */
+  type VenueImage = MiniappVenueImage & { broken?: boolean; uploading?: boolean }
   type RouteKey = MiniappRouteKey
   type RouteConfig = Omit<MiniappRouteConfig, 'images'> & { images: VenueImage[] }
   type VenueConfig = Omit<MiniappVenueConfig, 'images' | 'routes'> & {
@@ -542,6 +600,7 @@
       const r = rawRoutes[rk]
       routes[rk] = {
         videoUrl: String(r?.videoUrl ?? ''),
+        note: String(r?.note ?? ''),
         images: Array.isArray(r?.images)
           ? r!.images.map((i) => ({ src: String(i?.src ?? ''), caption: String(i?.caption ?? '') }))
           : []
@@ -633,6 +692,93 @@
     list.splice(idx, 1)
   }
 
+  /* ------------------------------------------------------------------ *
+   * 图片上传（与「手填路径」并存，互不替代）
+   *
+   * 两条通道的定位：
+   * - 上传：馆主手上就有图，选完立刻得到站内地址，不用去别处找链接；
+   * - 手填：上传接口挂了 / 图已经在图床 / 想引用小程序包内静态资源（/static/...）时用。
+   * 所以失败时**只 toast**，输入框始终可编辑 —— 上传坏了不能导致完全没法配图。
+   * ------------------------------------------------------------------ */
+
+  /** 与 BE4 同一条预校验：按真实 MIME 判型 + 5MB 上限（先拦一道，别等 422） */
+  const UPLOAD_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+  const UPLOAD_ACCEPT = UPLOAD_MIMES.join(',')
+  const UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+  /** 弹窗图单独一个上传态（它是全区的，不属于任何一张 images[]） */
+  const popupUploading = ref(false)
+
+  /** 有任何一张图正在上传：此时禁用「保存」，避免把旧 src 存成最终值 */
+  const anyUploading = computed(
+    () =>
+      popupUploading.value ||
+      venues.value.some(
+        (v) =>
+          v.images.some((i) => i.uploading) ||
+          ROUTE_KEYS.some((rk) => v.routes[rk].images.some((i) => i.uploading))
+      )
+  )
+
+  function checkImageFile(file: File): string | null {
+    if (!UPLOAD_MIMES.includes(file.type)) {
+      return `只支持 JPG / PNG / WebP / GIF，当前是 ${file.type || '未知类型'}`
+    }
+    if (file.size > UPLOAD_MAX_BYTES) {
+      return `图片不能超过 5MB，当前 ${(file.size / 1024 / 1024).toFixed(1)}MB`
+    }
+    return null
+  }
+
+  async function uploadInto(target: VenueImage, file: File) {
+    const err = checkImageFile(file)
+    if (err) {
+      ElMessage.error(err)
+      return
+    }
+    target.uploading = true
+    try {
+      const url = await uploadMiniappImage(file)
+      target.src = url
+      target.broken = false
+      ElMessage.success('图片已上传，保存配置后生效')
+    } catch (e) {
+      // 后端 422（超大/类型不支持）会由 showApiError 透出中文文案；网络失败说通用原因
+      showApiError(e, '上传图片')
+    } finally {
+      target.uploading = false
+    }
+  }
+
+  function onPickImage(ev: Event, target: VenueImage) {
+    const input = ev.target as HTMLInputElement
+    const file = input.files?.[0]
+    // 清空 value，否则连续选同一个文件不会触发 change
+    input.value = ''
+    if (file) void uploadInto(target, file)
+  }
+
+  async function onPickPopupImage(ev: Event) {
+    const input = ev.target as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file) return
+    const err = checkImageFile(file)
+    if (err) {
+      ElMessage.error(err)
+      return
+    }
+    popupUploading.value = true
+    try {
+      popup.imageUrl = await uploadMiniappImage(file)
+      popupImageBroken.value = false
+      ElMessage.success('图片已上传，保存配置后生效')
+    } catch (e) {
+      showApiError(e, '上传图片')
+    } finally {
+      popupUploading.value = false
+    }
+  }
+
   /**
    * 把后端 422 的字段级错误摊平成可读文案。
    *
@@ -721,6 +867,7 @@
               rk,
               {
                 videoUrl: v.routes[rk].videoUrl,
+                note: v.routes[rk].note,
                 images: v.routes[rk].images
                   .filter((i) => i.src.trim())
                   .map((i) => ({ src: i.src.trim(), caption: i.caption }))
@@ -823,6 +970,36 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+
+  /* 上传按钮：用 label 包隐藏的 file input，点它即开文件选择框 */
+  .upload-label {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    height: 32px;
+    padding: 0 12px;
+    font-size: 12px;
+    color: var(--el-color-primary);
+    cursor: pointer;
+    user-select: none;
+    background: var(--el-fill-color-blank);
+    border: 1px solid var(--el-color-primary-light-5);
+    border-radius: var(--el-border-radius-base);
+    transition:
+      color 0.15s,
+      border-color 0.15s;
+  }
+
+  .upload-label:hover {
+    border-color: var(--el-color-primary);
+  }
+
+  .upload-label.is-busy {
+    color: var(--el-text-color-placeholder);
+    cursor: not-allowed;
+    border-color: var(--el-border-color);
   }
 
   .route-collapse :deep(.el-collapse-item__content) {

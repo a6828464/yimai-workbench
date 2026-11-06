@@ -77,11 +77,17 @@ Route::post('/auth/register', [AuthController::class, 'register'])->middleware('
 | 响应：`{ code:0, data:{ venues:[两家店], updatedAt } }`；列的值为 NULL 时回落内置默认值。
 */
 Route::get('/miniapp/config', [MiniappConfigController::class, 'show'])->middleware('throttle:60,1');
+// 上传图片的回源（顾客的到店指引页要直接加载）。文件名是服务端生成的 32 位 hex + 白名单扩展名，
+// 路由层再约束字符集，控制器里还有一道严格正则 —— 任何 `..`/`.php` 都到不了 response()->file()。
+Route::get('/miniapp/uploads/{file}', [MiniappConfigController::class, 'uploadedFile'])
+    ->where('file', '[A-Za-z0-9._-]+');
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     // 小程序「到店指引」保存（控制器首行 requireSuper；门店键固定两家，拒绝增删门店）
     Route::put('/miniapp/config', [MiniappConfigController::class, 'update']);
+    // 图片上传（控制器首行 requireSuper；真实 MIME 白名单、5MB、随机文件名、落在 storage 下）
+    Route::post('/miniapp/config/upload', [MiniappConfigController::class, 'upload']);
     // 微信自助绑定：本人读自己的 openid / 把当前微信绑到自己账号（必须已登录，否则等于开放注册）
     Route::get('/auth/wx-identity', [AuthController::class, 'wxIdentity']);
     Route::put('/auth/wx-self-bind', [AuthController::class, 'wxSelfBind'])->middleware('throttle:wx-bind');

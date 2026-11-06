@@ -16,7 +16,8 @@
  *  - 底部 padding 吃 safe-area-inset-bottom，Home 指示条不压字。
  */
 import { computed, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareSelf } from '@/utils/share'
 import { useUserStore } from '@/store/user'
 // 弹窗配置：storage 走统一适配层（utils/storage 的 getJSON/setJSON，不直接碰 uni.*Sync）；
 // 请求只要基础地址与 token —— 注意**不能**用 http.ts 的 http.get，它的 401 会 reLaunch 登录页
@@ -34,13 +35,12 @@ const user = useUserStore()
  */
 const BOOK_APPID = (import.meta.env.VITE_BOOK_APPID ?? '') as string
 /**
- * 跳转失败回执。
+ * 跳转失败的排查信息**不展示给会员**。
  *
- * navigateToMiniProgram 的失败有多种原因（未关联 / 未授权 / 用户取消 / AppID 错），
- * 全都塞进一个 toast 会被截断，所以失败时用 modal 显示**原文 errMsg**：
- * 真机上的一点截图就能定位是哪一类，不需要连开发者工具看 console。
+ * 微信回的是英文 errMsg（`navigateToMiniProgram:fail ...`），会员看到只会一头雾水。
+ * 所以失败时：console.warn 留痕给开发/真机排查，弹窗只给能看懂的中文下一步。
+ * （原来这里用 `jumpErr` 把原文拼进弹窗，2026-11 按馆主要求改成纯中文。）
  */
-const jumpErr = ref('')
 
 const BRAND_ID = 'M01_V1o4QXEzd0wyRmM9'
 
@@ -138,10 +138,11 @@ function jumpToBook(v: Venue) {
     path: v.bookPath,
     fail: (e: unknown) => {
       const err = e as { errMsg?: string; errCode?: number }
-      jumpErr.value = `${err?.errCode ?? ''} ${err?.errMsg ?? ''}`.trim() || '未知错误'
+      // 失败细节只留给开发：会员不需要、也看不懂微信的英文 errMsg
+      console.warn('[home] 打开约课小程序失败:', err?.errCode ?? '', err?.errMsg ?? '')
       uni.showModal({
         title: '没能打开约课小程序',
-        content: `${jumpErr.value}\n\n已改用小程序码，长按识别即可约课`,
+        content: '已为你显示门店小程序码，长按识别即可约课',
         showCancel: false,
         success: () => openSheet(v)
       })
@@ -537,6 +538,15 @@ function onPopupImageError(): void {
   const p = popupData.value
   if (p && !p.title && !p.content) closePopup()
 }
+
+/**
+ * 转发首页（对外页，指向自身）。
+ *
+ * 首页是**不需要登录**的品牌页：分享自己这一条路径，对方点开就能看到品牌、
+ * 约课入口和「第一次来？到店指引」，不会撞登录墙。
+ * 标题用品牌名而不是「首页」—— 分享卡片上要像一张门面。
+ */
+onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home'))
 </script>
 
 <template>
@@ -590,7 +600,6 @@ function onPopupImageError(): void {
           <text class="sheet__go-text">直接进入约课</text>
         </view>
         <text class="sheet__tip">长按图片 → 识别小程序</text>
-        <text class="sheet__tip sheet__tip--weak">小程序码不需要配置，网页约课若白屏就用这个</text>
         <view class="sheet__copy" @click="copyLink">
           <text class="sheet__copy-text">复制约课链接</text>
         </view>
@@ -823,11 +832,13 @@ function onPopupImageError(): void {
   inset: 0;
   /* 高于约课弹层 .sheet 的 99：两者万一同时存在，弹窗压在最上面 */
   z-index: 199;
-  background: rgba(6, 14, 11, 0.78);
+  /* 遮罩：0.78 → 0.62。全黑遮罩会把注意力压在「弹窗很重」上，
+     稍微透出下面的品牌页反而更轻，也让弹窗像浮在页面上而不是压住它 */
+  background: rgba(6, 14, 11, 0.62);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 48rpx 56rpx;
+  padding: 56rpx 64rpx;
   box-sizing: border-box;
 
   &__card {
@@ -835,35 +846,45 @@ function onPopupImageError(): void {
     width: 100%;
     /* 卡片自身也有上限：极端情况下（图 + 长文 + 按钮）整屏放不下时先在这里收口 */
     max-height: 84vh;
-    background: #f7f6f2;
-    border-radius: 28rpx;
+    /* 近白但带一点暖调，比纯白 #fff 少一分「后台表单」感 */
+    background: #fcfbf8;
+    border-radius: 22rpx;
     /* 圆角裁掉图片直角，同时兜住任何溢出 */
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 20rpx 60rpx rgba(0, 0, 0, 0.35);
+    /* 原来是一层 0.35 的大扩散阴影，像把卡片「按」在页面上。
+       改成「极淡阴影 + 1rpx 描边」：边界靠线交代，不靠影子，观感立刻轻 */
+    border: 1rpx solid rgba(23, 64, 47, 0.07);
+    box-shadow: 0 4rpx 24rpx rgba(15, 27, 22, 0.08);
   }
 
-  /* 关闭按钮贴卡片右上角；半透明黑底保证压在任何底图上都看得见 */
+  /* 关闭：去掉黑色圆底（那是最显「廉价」的一块），只留一个细 ×。
+     加极淡投影，保证压在照片上也看得见——用投影换底色，是为了不出现色块 */
   &__close {
     position: absolute;
-    top: 16rpx;
-    right: 16rpx;
+    top: 12rpx;
+    right: 12rpx;
     z-index: 2;
-    width: 56rpx;
-    height: 56rpx;
+    /* 视觉小、点的区域大：56 → 72rpx */
+    width: 72rpx;
+    height: 72rpx;
     border-radius: 50%;
-    background: rgba(0, 0, 0, 0.45);
+    background: transparent;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-end;
   }
 
   &__close-x {
-    color: #fff;
-    font-size: 40rpx;
+    color: rgba(255, 255, 255, 0.96);
+    font-size: 38rpx;
+    font-weight: 200;
     line-height: 1;
-    margin-top: -4rpx;
+    /* 无底色时靠这层投影保证在浅色卡片上也可辨 */
+    text-shadow: 0 1rpx 6rpx rgba(0, 0, 0, 0.45);
+    padding-right: 20rpx;
+    padding-top: 16rpx;
   }
 
   /* 图片容器：widthFix 把高度写成内联样式，上限只能卡在这层（见模板注释） */
@@ -878,16 +899,19 @@ function onPopupImageError(): void {
     width: 100%;
   }
 
+  /* 内边距 32/36 → 40/44：留白是「高级」最便宜的来源，比加装饰有效 */
   &__body {
-    padding: 32rpx 36rpx 8rpx;
+    padding: 40rpx 44rpx 12rpx;
     display: flex;
     flex-direction: column;
   }
 
   &__title {
-    font-size: 34rpx;
-    font-weight: 700;
-    line-height: 1.4;
+    font-size: 36rpx;
+    /* 700 → 500：粗体是「后台表单」的典型特征，标题靠字号和字距立住，不靠字重 */
+    font-weight: 500;
+    letter-spacing: 2rpx;
+    line-height: 1.45;
     color: #17402f;
   }
 
@@ -904,27 +928,32 @@ function onPopupImageError(): void {
   }
 
   &__content-text {
-    font-size: 27rpx;
-    line-height: 1.7;
-    color: #4a5550;
+    font-size: 26rpx;
+    /* 行距 1.7 → 1.85，颜色压淡一档：正文退后，标题和图片才是主角 */
+    line-height: 1.85;
+    color: #6b746e;
     /* 后台文本里的换行要真的换行（text 默认会折叠空白） */
     white-space: pre-wrap;
   }
 
+  /* 主按钮：从「实心深绿胶囊」改成「细线框矩形」。
+     原来那块 88rpx 高的深绿是整张卡片最重的元素，一眼就是模板感；
+     改成描边后重量转移给文字，按下时由 ym-tap 给反馈，不必靠色块证明可点 */
   &__ok {
-    margin: 24rpx 36rpx 32rpx;
-    height: 88rpx;
-    border-radius: 999rpx;
-    background: #17402f;
+    margin: 28rpx 44rpx 36rpx;
+    height: 84rpx;
+    border-radius: 16rpx;
+    background: transparent;
+    border: 1.5rpx solid #17402f;
     display: flex;
     align-items: center;
     justify-content: center;
   }
 
   &__ok-text {
-    font-size: 28rpx;
-    letter-spacing: 4rpx;
-    color: #fff;
+    font-size: 27rpx;
+    letter-spacing: 2rpx;
+    color: #17402f;
   }
 }
 </style>

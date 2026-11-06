@@ -13,7 +13,8 @@
  *  只数「今日待办页真正渲染的 7 组」，`tasks` 归任务中心，不重复计数。
  */
 import { computed, ref } from 'vue'
-import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
+import { onPullDownRefresh, onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { useUserStore } from '@/store/user'
 import { requireLogin } from '@/utils/guard'
 import { goFeature } from '@/utils/nav'
@@ -202,6 +203,9 @@ onPullDownRefresh(async () => {
   await loadCounts()
   uni.stopPullDownRefresh()
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

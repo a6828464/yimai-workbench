@@ -17,7 +17,8 @@
  * 这部分收在 `api/profile.ts#buildPersonaPatch` 里。
  */
 import { computed, reactive, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
 import { useUserStore, type MyProfile } from '@/store/user'
 import {
@@ -170,6 +171,9 @@ onShow(() => {
   // 只认 loaded：首帧 loading 已是 true，用 `&& !loading` 会把首次加载挡掉（个人信息页白屏就栽在这）
   if (!loaded.value) load()
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

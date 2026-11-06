@@ -17,7 +17,8 @@
  *  3. 一次最多请求 3 个模板（老版本 iOS/Android 仅支持 1 个），这里按 3 个分片顺序请求再合并结果。
  */
 import { computed, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
 import {
   WX_BIND_INTENT_KEY,
@@ -259,6 +260,9 @@ onShow(() => {
   if (!requireLogin()) return
   load()
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

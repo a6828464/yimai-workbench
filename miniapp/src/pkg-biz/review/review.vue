@@ -13,7 +13,8 @@
  *      服务老师只读 —— 新建按钮按同一口径隐藏。
  */
 import { computed, ref } from 'vue'
-import { onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
+import { onPullDownRefresh, onReachBottom, onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { useUserStore } from '@/store/user'
 import { requireFeature } from '@/utils/nav'
 import { hasAnyRole } from '@/utils/permission'
@@ -162,6 +163,9 @@ function sceneLabel(row: ReviewRow): string {
 function subtitle(row: ReviewRow): string {
   return [row.studentType, row.courseName].filter((x) => !!x && x !== '—').join(' · ')
 }
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

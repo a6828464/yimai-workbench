@@ -13,7 +13,8 @@
  * 悬浮「记一条」。请求参数与分页口径零改动。
  */
 import { computed, ref } from 'vue'
-import { onLoad, onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
+import { onLoad, onPullDownRefresh, onReachBottom, onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
 import { canUse } from '@/utils/permission'
@@ -281,6 +282,9 @@ onReachBottom(() => {
     load()
   }
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

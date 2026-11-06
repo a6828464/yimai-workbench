@@ -29,7 +29,8 @@ use Illuminate\Http\Request;
  *
  * ```
  * { venues: [ { key, sub, address, phone, latitude, longitude, channelsUser, channelsLive,
- *               images[], videoUrl, routes{drive,transit,walk} ← 各自 {videoUrl, images[]} } ],
+ *               images[], videoUrl,
+ *               routes{drive,transit,walk} ← 各自 {note, videoUrl, images[]} } ],
  *   popup: { enabled, title, content, imageUrl, frequency },
  *   updatedAt }
  * ```
@@ -55,7 +56,7 @@ final class MiniappConfigController extends Controller
     private const POPUP_FREQUENCIES = ['once', 'always'];
 
     /** 单个出行方式的空壳（默认值，也是 routes 合并的基底） */
-    private const EMPTY_ROUTE = ['videoUrl' => '', 'images' => []];
+    private const EMPTY_ROUTE = ['note' => '', 'videoUrl' => '', 'images' => []];
 
     /** 三个出行方式的空壳集合（默认值，也是 routes 合并的基底） */
     public const EMPTY_ROUTES = [
@@ -123,6 +124,36 @@ final class MiniappConfigController extends Controller
 
     /** 门店键白名单（顺序即输出顺序）：服务端拒绝新增或删除门店，只允许改内容 */
     private const VENUE_KEYS = ['绿地店', '东部店'];
+
+    // ---------------------------------------------------------------- 图片上传
+
+    /**
+     * 上传目录：**在 storage 下，不在 public 下**（相对 base_path）。
+     *
+     * 为什么不放 `public/uploads`：本项目是 PHP + nginx，只要上传目录能被 `\.php$` 的 location
+     * 命中，一个落地的 .php 就是 RCE。虽然本端点已经用「真实 MIME 推扩展名 + 随机文件名」
+     * 从源头堵死可执行文件，但**纵深防御**更省心：文件放在 docroot 之外，
+     * 无论 nginx/php-fpm 怎么配都解析不到；对外只经下面 uploadedFile() 回源。
+     */
+    private const UPLOAD_RELATIVE_DIR = 'app/miniapp-uploads';
+
+    /** 单张图片上限：5MB（超过返回 422，中文提示） */
+    private const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+
+    /**
+     * 允许的真实 MIME → 落盘扩展名（**扩展名由 MIME 推导，绝不用客户端文件名**）。
+     *
+     * 不收 SVG（可内嵌脚本）、不收 HEIC（浏览器普遍不支持，先不支持更省事）。
+     */
+    private const UPLOAD_MIME_EXT = [
+        'image/jpeg' => 'jpg',
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        'image/gif' => 'gif',
+    ];
+
+    /** 回源前缀：与 isAllowedMediaUrl() 的「站内路径」规则一致（`/` 开头、非 `//`） */
+    private const UPLOAD_URL_PREFIX = '/api/miniapp/uploads/';
 
     /**
      * GET /api/miniapp/config —— 免登录。
@@ -198,6 +229,83 @@ final class MiniappConfigController extends Controller
         return ok($this->payload($cfg));
     }
 
+    /**
+     * POST /api/miniapp/config/upload —— 仅超管，单文件，返回可填进 `images[].src` 的站内路径。
+     *
+     * ## 为什么需要它
+     * 馆主原话：「上传图片这些没有按钮，只能填写路径」。手填路径要求馆主知道服务器上的文件在哪，
+     * 实际用法就是放弃配置图文引导。现在可以「上传」或「直接填路径」二选一。
+     *
+     * ## 安全边界（每一条都对应一种真实攻击）
+     * 1. **按真实 MIME 判类型**：用 finfo 读文件头，不信 `Content-Type`、更不信文件名。
+     *    把 `shell.php` 改名成 `shell.php.jpg` 传上来，finfo 会说是 `text/x-php` → 422。
+     * 2. **扩展名由 MIME 推导 + 文件名随机**：落盘名是 `bin2hex(random_bytes(16)).jpg`，
+     *    客户端提供的文件名完全不参与拼路径，双扩展、路径穿越、覆盖已有文件都不可能。
+     * 3. **再叠一次 getimagesize**：finfo 偶尔会把「带图片头的 polyglot」认成图片，
+     *    getimagesize 能进一步确认「真的能被解码成图像」。
+     * 4. **落在 docroot 之外**（`storage/app/miniapp-uploads`），就算前三条哪天被绕过，
+     *    nginx 也不可能把这个目录里的文件当 PHP 执行。
+     * 5. 失败一律 422 + 中文，不抛 500（`abort()` 走 Laravel 的 JSON 渲染）。
+     */
+    public function upload(Request $r)
+    {
+        requireSuper($r);
+
+        $file = $r->file('file');
+        abort_if($file === null, 422, '请选择要上传的图片文件');
+        // PHP 自身把上传判失败（超过 php.ini 的 upload_max_filesize / 传入不完整）时，error 码非 0
+        abort_unless($file->isValid(), 422, '上传失败，请重试（可能是文件过大或网络中断）');
+
+        $size = (int) $file->getSize();
+        abort_if(
+            $size > self::UPLOAD_MAX_BYTES,
+            422,
+            '图片不能超过 5MB（当前 '.round($size / 1048576, 1).'MB）'
+        );
+
+        // 真实 MIME（finfo 读文件头）—— 这是唯一可信的类型来源
+        $mime = (string) (new \finfo(FILEINFO_MIME_TYPE))->file((string) $file->getPathname());
+        $ext = self::UPLOAD_MIME_EXT[$mime] ?? null;
+        abort_if($ext === null, 422, '只支持 JPG / PNG / WebP / GIF 图片（当前类型：'.($mime !== '' ? $mime : '未知').'）');
+
+        // 二次确认：能被解码成图像（挡掉「图片头 + 脚本体」这类 polyglot）
+        abort_if(@getimagesize((string) $file->getPathname()) === false, 422, '这个文件不是有效的图片');
+
+        $dir = storage_path(self::UPLOAD_RELATIVE_DIR);
+        if (! is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        abort_unless(is_dir($dir) && is_writable($dir), 422, '上传目录不可写，请联系管理员检查 storage 权限');
+
+        // 文件名完全由服务端生成：随机 + MIME 推导的扩展名
+        $name = bin2hex(random_bytes(16)).'.'.$ext;
+        $file->move($dir, $name);
+        abort_unless(is_file($dir.'/'.$name), 422, '图片保存失败，请重试');
+
+        // 不单独写审计：真正「用了哪张图」由随后的 PUT /miniapp/config 记录（那里有留痕）
+        return ok(['url' => self::UPLOAD_URL_PREFIX.$name]);
+    }
+
+    /**
+     * GET /api/miniapp/uploads/{file} —— 免登录回源（顾客的到店指引页要加载这些图）。
+     *
+     * 文件名是服务端生成的 32 位十六进制 + 白名单扩展名，所以这里用**严格的**正则先挡一道：
+     * 任何带 `/`、`..`、`.php` 的请求都到不了 `response()->file()`，路径穿越无从谈起。
+     * 一年 immutable 缓存：文件名随机且内容不变，重复访问不该再进 PHP。
+     */
+    public function uploadedFile(string $file)
+    {
+        abort_unless(preg_match('/^[a-f0-9]{32}\.(jpg|png|webp|gif)$/', $file) === 1, 404);
+
+        $path = storage_path(self::UPLOAD_RELATIVE_DIR.'/'.$file);
+        abort_unless(is_file($path), 404);
+
+        return response()->file($path, [
+            'Cache-Control' => 'public, max-age=31536000, immutable',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
+
     // ------------------------------------------------------------------ 校验
 
     /**
@@ -252,6 +360,8 @@ final class MiniappConfigController extends Controller
             'venues.*.videoUrl' => ['nullable', 'string', 'max:300', $media],
             // 只认这三种出行方式：传 bike 之类的键会被 array: 规则拒掉（而不是静默丢弃）
             'venues.*.routes' => ['nullable', 'array:'.implode(',', self::ROUTE_KEYS)],
+            // 路线文字说明：纯文本 ≤200 字（HTML 在 normalizeNote() 里剥掉，落库前就没了）
+            'venues.*.routes.*.note' => ['nullable', 'string', 'max:200'],
             'venues.*.routes.*.videoUrl' => ['nullable', 'string', 'max:300', $media],
             'venues.*.routes.*.images' => ['nullable', 'array', 'max:'.self::MEDIA_LIMIT],
             'venues.*.routes.*.images.*.src' => ['required', 'string', 'max:200', $media],
@@ -283,6 +393,7 @@ final class MiniappConfigController extends Controller
             'venues.*.images.max' => '每家店最多 '.self::MEDIA_LIMIT.' 张图片',
             'venues.*.images.*.src.required' => '引导图缺少图片地址',
             'venues.*.routes.array' => '出行方式只能是 drive（自驾）/ transit（公交）/ walk（步行）三种',
+            'venues.*.routes.*.note.max' => '路线文字说明最多 200 个字',
             'venues.*.routes.*.images.array' => '该出行方式的图片格式不正确',
             'venues.*.routes.*.images.max' => '每种出行方式最多 '.self::MEDIA_LIMIT.' 张图片',
             'venues.*.routes.*.images.*.src.required' => '该出行方式的图片缺少图片地址',
@@ -310,6 +421,7 @@ final class MiniappConfigController extends Controller
             'venues.*.images' => '引导图',
             'venues.*.videoUrl' => '门店视频',
             'venues.*.routes' => '出行路线',
+            'venues.*.routes.*.note' => '路线文字说明',
             'venues.*.routes.*.videoUrl' => '出行视频',
             'venues.*.routes.*.images' => '出行图片',
             'popup' => '首页弹窗',
@@ -414,6 +526,8 @@ final class MiniappConfigController extends Controller
             $base = (array) ($baseRoutes[$kind] ?? self::EMPTY_ROUTE);
             $sub = (array) ($submittedRoutes[$kind] ?? []);
             $out[$kind] = [
+                // note 与 videoUrl/images **同级**参与同一层合并：只提交 note 时不会把视频/图片冲掉
+                'note' => $this->normalizeNote($this->pick($sub, $base, 'note')),
                 'videoUrl' => $this->normalizeUrl($this->pick($sub, $base, 'videoUrl')),
                 'images' => $this->normalizeImages($this->pick($sub, $base, 'images')),
             ];
@@ -477,6 +591,23 @@ final class MiniappConfigController extends Controller
         $url = trim((string) ($raw ?? ''));
 
         return self::isAllowedMediaUrl($url) ? $url : '';
+    }
+
+    /**
+     * 路线文字说明归一：**剥掉所有 HTML/脚本标签**，再按 200 字截断。
+     *
+     * 为什么连读时也 strip_tags（不只是写入校验）：这个字段会渲染在**顾客端**的到店指引页，
+     * 一旦（手改库、老版本、别的写入路径）混进 `<script>`，就是把 XSS 送到顾客手机上。
+     * 读写两侧都过一遍，代价是一次 strip_tags —— 比事后排查便宜得多。
+     *
+     * 注意 strip_tags 会保留标签**内部的文字**（`<b>电梯</b>` → `电梯`），这是想要的：
+     * 我们要的是「不带标记的纯文本」，不是「把用户写的话吞掉」。
+     */
+    private function normalizeNote(mixed $raw): string
+    {
+        $text = trim(strip_tags((string) ($raw ?? '')));
+
+        return mb_substr($text, 0, 200);
     }
 
     /** 坐标归一：接受 number 或 null/''；非数字一律落 null（不猜、不用 0 冒充「有坐标」） */

@@ -1018,10 +1018,17 @@ export interface MiniappVenueImage {
 /** 三种出行方式 */
 export type MiniappRouteKey = 'drive' | 'transit' | 'walk'
 
-/** 单种出行方式的配置（视频直链 + 路线图组） */
+/** 单种出行方式的配置（视频直链 + 路线图组 + 文字说明） */
 export interface MiniappRouteConfig {
   videoUrl: string
   images: MiniappVenueImage[]
+  /**
+   * 该出行方式的文字版导语（≤200 字，默认 `''`）。
+   *
+   * 展示位置在小程序「到店指引」里这条路线的最上方，相当于这一组的小标题 ——
+   * 顾客点开「开车前往」先看到这段话，再看图和视频。
+   */
+  note: string
 }
 
 /** 单店配置 —— 门店 key 固定为「绿地店 / 东部店」，不可新增或改名 */
@@ -1060,6 +1067,31 @@ export interface MiniappConfig {
   popup: MiniappPopupConfig
   /** 空串 = 从未保存过（后端回落到内置默认值） */
   updatedAt: string
+}
+
+/**
+ * 上传一张门店图片 / 路线图 / 弹窗图，返回可直接填进 `src` 的地址。
+ *
+ * 走后端 `POST /miniapp/config/upload`（multipart，单文件，超管）：
+ * 服务端按**真实 MIME** 判型（jpeg/png/webp/gif）、限 5MB，越界返 422 中文文案。
+ * 这里只做「发请求 + 取 url」，前端预校验（类型/大小）在页面里先拦一道，
+ * 免得把 5MB 图先传上去再被拒。
+ *
+ * 返回值既可能是站内路径（`/uploads/xxx.jpg`），也可能是绝对 https（若后端接了对象存储），
+ * 两种都能过后端 `isAllowedMediaUrl`，调用方直接赋给 `src` 即可。
+ */
+export async function uploadMiniappImage(file: File): Promise<string> {
+  const form = new FormData()
+  form.append('file', file)
+  const r = await apiPost<{ url?: string } | string>(
+    '/miniapp/config/upload',
+    form as unknown as Record<string, unknown>,
+    // 5MB 在弱网下可能要几十秒，给足超时；不与「保存配置」共用超时
+    120000
+  )
+  const url = typeof r === 'string' ? r : String(r?.url ?? '')
+  if (!url) throw new Error('上传成功但接口没有返回图片地址')
+  return url
 }
 
 /**

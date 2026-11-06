@@ -9,7 +9,8 @@
  * 价格对比强调申请价，动作按钮按状态机与角色显隐。decide 语义零改动。
  */
 import { computed, ref } from 'vue'
-import { onShow, onPullDownRefresh, onReachBottom } from '@dcloudio/uni-app'
+import { onShow, onPullDownRefresh, onReachBottom, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
 import { createApproval, fetchApprovals, decideApproval, type CreateApprovalPayload } from '@/api/approvals'
@@ -320,6 +321,9 @@ function statusTone(s: string): 'brand' | 'gold' | 'warn' | 'danger' | 'muted' {
   if (s === '待老板终审') return 'gold'
   return 'warn'
 }
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

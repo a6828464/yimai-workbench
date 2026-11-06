@@ -19,7 +19,8 @@
  * 权限：requireFeature('newMembers')（ALL 角色，含新媒体）。
  */
 import { computed, ref } from 'vue'
-import { onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
+import { onPullDownRefresh, onReachBottom, onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { useUserStore } from '@/store/user'
 import { goPath, requireFeature } from '@/utils/nav'
 import { isManagerOrAbove, isSuper } from '@/utils/permission'
@@ -353,6 +354,9 @@ onPullDownRefresh(async () => {
 onReachBottom(() => {
   if (hasMore.value) visible.value += PAGE_SIZE
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

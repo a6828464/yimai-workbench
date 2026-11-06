@@ -17,7 +17,8 @@
  * 所以首页把长按识别放在主路径，本页是增强，坏了不影响能约课。
  */
 import { computed, ref } from 'vue'
-import { onLoad as onPageLoad } from '@dcloudio/uni-app'
+import { onLoad as onPageLoad, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareSelf } from '@/utils/share'
 
 /** 门店 → 约课页 URL。venue_id 是硬对应关系，改之前先核对 */
 const BOOK_URLS: Record<string, { name: string; url: string }> = {
@@ -79,6 +80,17 @@ function copy() {
     success: () => uni.showToast({ title: '链接已复制', icon: 'none' })
   })
 }
+
+/**
+ * 转发约课页（对外页，指向自身）。
+ *
+ * 这页也不需要登录，分享自己最有意义：对方点开就是「直接约课」。
+ * path 带上当前门店（`?venue=east|green`，本页 onLoad 认的就是这两个键），
+ * 分享东部店就落到东部店，不会串店。
+ */
+onShareAppMessage(() =>
+  shareSelf(`${info.value.name} · 约课`, `/pkg-public/book/book?venue=${code.value}`)
+)
 </script>
 
 <template>

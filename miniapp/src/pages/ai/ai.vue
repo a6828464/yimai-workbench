@@ -11,7 +11,8 @@
  *  3. 底部说明：AI 内容需人工审核后发布（品牌合规口径，不做成可关闭的浮层）。
  */
 import { computed, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { useUserStore } from '@/store/user'
 import { requireLogin } from '@/utils/guard'
 import { goFeature } from '@/utils/nav'
@@ -83,6 +84,9 @@ function summaryOf(item: RecentGeneration): string {
   if (!text) return '（无内容）'
   return text.length > 40 ? `${text.slice(0, 40)}…` : text
 }
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

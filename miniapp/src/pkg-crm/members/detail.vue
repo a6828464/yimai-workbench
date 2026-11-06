@@ -15,7 +15,8 @@
  * 表单控件换 wd-switch / wd-button，业务字段与提交口径一字未改。
  */
 import { computed, ref } from 'vue'
-import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
+import { onLoad, onPullDownRefresh, onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
 import {
@@ -416,6 +417,9 @@ onPullDownRefresh(async () => {
   await load()
   uni.stopPullDownRefresh()
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

@@ -9,7 +9,8 @@
  * 状态机 nextActions() 与分页口径零改动。
  */
 import { computed, ref } from 'vue'
-import { onShow, onPullDownRefresh, onReachBottom } from '@dcloudio/uni-app'
+import { onShow, onPullDownRefresh, onReachBottom, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
 import { fetchTasks, updateTask } from '@/api/tasks'
@@ -148,6 +149,9 @@ onReachBottom(() => {
   page.value += 1
   void load(false)
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

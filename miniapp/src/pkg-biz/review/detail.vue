@@ -20,7 +20,8 @@
  *  - 写权限只有 SUPER/MANAGER/TEACHER（服务老师只读）
  */
 import { computed, reactive, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { useUserStore } from '@/store/user'
 import { copyText, requireFeature } from '@/utils/nav'
 import { hasAnyRole } from '@/utils/permission'
@@ -582,6 +583,9 @@ function backToList() {
   if (pages.length > 1) uni.navigateBack({ delta: 1 })
   else uni.redirectTo({ url: '/pkg-biz/review/review' })
 }
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

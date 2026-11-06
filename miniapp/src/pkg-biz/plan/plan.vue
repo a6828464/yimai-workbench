@@ -13,7 +13,8 @@
  * 注意：pages.json 里本页没有 enablePullDownRefresh，所以下拉刷新不会触发 —— 改用显式「刷新」。
  */
 import { computed, ref } from 'vue'
-import { onShow } from '@dcloudio/uni-app'
+import { onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireFeature } from '@/utils/nav'
 import { fetchTrainingPlans, savePlanDraft, type TrainingPlan } from '@/api/review'
 
@@ -102,6 +103,9 @@ function sourceText(p: TrainingPlan): string {
   if (p.source === 'fallback') return '规则模板'
   return ''
 }
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

@@ -59,6 +59,8 @@ type RouteKey = 'drive' | 'transit' | 'walk'
  * 空就老老实实说待补充（与门店级 images 的处理不同）。
  */
 interface GuideRoute {
+  /** 后台配的文字说明（≤200 字，可能含换行）；空 = 不渲染这一块 */
+  note: string
   videoUrl: string
   images: GuideImage[]
 }
@@ -129,9 +131,9 @@ const ADDRESS_TBD_HINT = '地址待补，可复制门店名到手机地图搜索
 /** 空路线集合：本地默认值里三种出行方式都没有配置（后台填了才会显示内容） */
 function emptyRoutes(): Record<RouteKey, GuideRoute> {
   return {
-    drive: { videoUrl: '', images: [] },
-    transit: { videoUrl: '', images: [] },
-    walk: { videoUrl: '', images: [] }
+    drive: { note: '', videoUrl: '', images: [] },
+    transit: { note: '', videoUrl: '', images: [] },
+    walk: { note: '', videoUrl: '', images: [] }
   }
 }
 
@@ -254,8 +256,46 @@ const routeTab = ref<RouteKey>('drive')
 
 /** 当前门店 + 当前出行方式对应的那段指引（门店一定有 routes，emptyRoutes 兜底过） */
 const activeRoute = computed<GuideRoute>(
-  () => current.value.routes[routeTab.value] ?? { videoUrl: '', images: [] }
+  () => current.value.routes[routeTab.value] ?? { note: '', videoUrl: '', images: [] }
 )
+
+/* ---------- 路线文字说明（BE4 的 note） ---------- */
+
+/**
+ * 折叠阈值（字数）：约 6 行 × 17 字。
+ *
+ * 为什么按字数而不是实测高度：小程序里量文本高度要 `createSelectorQuery`（异步、
+ * 每次切路线都要重算，还可能拿到 0），成本远高于收益。中文宽度稳定，
+ * 100 字这个近似足够准，且**短 note（1-3 行）完全不会多出「展开」按钮**。
+ */
+const NOTE_FOLD_CHARS = 100
+
+/** 当前路线的 note 是否展开（切路线时重置，见 selectRoute） */
+const noteExpanded = ref(false)
+
+/**
+ * note 按换行切段。
+ *
+ * 为什么切段而不是整段塞一个 `<text>` 配 `white-space: pre-wrap`：
+ * 后台是多行输入，切段后每个自然段是一个独立块，段落间距可控、换行 100% 保留，
+ * 不依赖不同渲染层对 white-space 的支持差异。连续空行用 `\n+` 合并，避免出现空段落。
+ */
+const noteParagraphs = computed<string[]>(() =>
+  activeRoute.value.note
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+)
+
+/** 这段 note 是否需要折叠（超长才出现「展开全文」） */
+const noteNeedsFold = computed(() => activeRoute.value.note.length > NOTE_FOLD_CHARS)
+
+/** 当前是否处于折叠态 */
+const noteFolded = computed(() => noteNeedsFold.value && !noteExpanded.value)
+
+function toggleNote(): void {
+  noteExpanded.value = !noteExpanded.value
+}
 
 /** 分段标题：空态文案里要说清是哪一段没有内容，不能只写「待补充」 */
 function routeLabel(key: RouteKey): string {
@@ -265,6 +305,8 @@ function routeLabel(key: RouteKey): string {
 /** 切换出行方式（模板里不直接给 ref 赋值，收口成一个函数便于以后加埋点/懒加载） */
 function selectRoute(key: RouteKey): void {
   routeTab.value = key
+  // 换一段就把「展开」状态复位：否则在开车段点了展开，切到步行段会莫名其妙是展开态
+  noteExpanded.value = false
 }
 
 /** 当前门店坐标是否可用（占位值也算不可用）：按钮提示文案与 openMap 守卫共用同一条判据 */
@@ -330,7 +372,9 @@ function toRoute(raw: unknown): GuideRoute {
   const images = Array.isArray(o.images)
     ? o.images.map(toImage).filter((img): img is GuideImage => img !== null).slice(0, MAX_IMAGES)
     : []
-  return { videoUrl: str(o.videoUrl), images }
+  // note 是纯文本：`str()` 已经把 null/undefined/数字统一成字符串并 trim，
+  // 空串/全空白 → ''（模板按「没有 note」处理，整块不渲染）
+  return { note: str(o.note), videoUrl: str(o.videoUrl), images }
 }
 
 /** routes 三个键各自解析；后台没配的键给空对象，模板按「待补充」渲染 */
@@ -695,6 +739,20 @@ onShareAppMessage(() => {
           </view>
         </view>
 
+        <!--
+          路线导语（后台 note）：切换条下方、视频/图片上方。
+          有值才渲染 —— 空 note 时整块不存在，不会留下 margin 造成的空行。
+          用正文字号 + 宽松行高，视觉上是「导语」而不是标题（标题已经是上面的分段名）。
+        -->
+        <view v-if="noteParagraphs.length" class="rnote">
+          <view class="rnote__body" :class="{ 'is-folded': noteFolded }">
+            <text v-for="(p, i) in noteParagraphs" :key="i" class="rnote__p">{{ p }}</text>
+          </view>
+          <text v-if="noteNeedsFold" class="rnote__toggle ym-tap" @click="toggleNote">
+            {{ noteExpanded ? '收起' : '展开全文' }}
+          </text>
+        </view>
+
         <!-- ① 这一段有视频：直链内嵌，非直链（视频号链接）退化成跳转按钮 -->
         <template v-if="activeRoute.videoUrl">
           <video
@@ -782,8 +840,8 @@ onShareAppMessage(() => {
   min-height: 168rpx;
   padding: 28rpx 30rpx;
   margin-top: 24rpx;
-  background: $card-bg;
-  border-radius: $r-lg;
+  background: #fcfbf8;
+  border-radius: 18rpx;
   box-shadow: $shadow-card;
 }
 
@@ -818,11 +876,14 @@ onShareAppMessage(() => {
   display: flex;
   flex-direction: column;
   gap: 8rpx;
-  padding: 32rpx 30rpx 28rpx;
+  padding: 36rpx 32rpx 32rpx;
   margin: 0 24rpx;
   color: $white;
-  background: linear-gradient(135deg, $brand-700, $brand-500);
-  border-radius: $r-lg;
+  /* 渐变 → 纯深墨绿。135° 的双色渐变是最容易显「模板化」的用法：
+     同色系两档在手机上几乎没有层次，只剩一层廉价的塑料感。
+     纯色反而更稳、更像品牌物料；圆角同步从 28 收到 20，靠留白立秩序而不是靠圆润 */
+  background: #0f1b16;
+  border-radius: 20rpx;
 }
 
 .ghead__name {
@@ -862,19 +923,23 @@ onShareAppMessage(() => {
   gap: 6rpx;
   align-items: center;
   justify-content: center;
-  min-height: 196rpx;
-  padding: 22rpx 16rpx;
+  /* 196 → 132rpx：原来这两个块占了小半屏，主操作不需要那么大，
+     顾客来这一页是「找路」，不是「按按钮」 */
+  min-height: 132rpx;
+  padding: 20rpx 16rpx;
   color: $white;
-  background: linear-gradient(135deg, $brand-500, $brand-700);
-  border-radius: $r-lg;
-  box-shadow: 0 10rpx 24rpx rgba(28, 96, 71, 0.22);
+  /* 渐变 → 纯色，并去掉那层绿色投影。
+     给彩色按钮加同色投影会让它显得「浮起来又糊」，是廉价感的来源；
+     保留纯品牌绿已经足够承重，层次交给留白 */
+  background: $brand-700;
+  border-radius: 16rpx;
 }
 
 .acts__item--plain {
   color: $brand-700;
-  background: $white;
-  border: 2rpx solid $hairline;
-  box-shadow: $shadow-card;
+  background: #fcfbf8;
+  border: 1rpx solid $hairline;
+  box-shadow: none;
 }
 
 .acts__text {
@@ -901,8 +966,8 @@ onShareAppMessage(() => {
 .vcard {
   padding: 26rpx 28rpx;
   margin: 24rpx 24rpx 0;
-  background: $card-bg;
-  border-radius: $r-lg;
+  background: #fcfbf8;
+  border-radius: 18rpx;
   box-shadow: $shadow-card;
 }
 
@@ -983,8 +1048,8 @@ onShareAppMessage(() => {
 
 .imgcard {
   overflow: hidden;
-  background: $card-bg;
-  border-radius: $r-lg;
+  background: #fcfbf8;
+  border-radius: 18rpx;
   box-shadow: $shadow-card;
 
   & + & {
@@ -1039,7 +1104,7 @@ onShareAppMessage(() => {
   width: 100%;
   height: 400rpx;
   background: #000;
-  border-radius: $r-lg;
+  border-radius: 18rpx;
 }
 
 /* 满宽按钮：视频号链接的降级入口，与路线段里的跳转按钮共用同一个类 */
@@ -1051,6 +1116,41 @@ onShareAppMessage(() => {
 /* ---------- 到店路线分段 ---------- */
 .routes {
   margin: 24rpx 24rpx 0;
+}
+
+/* ---------- 路线导语（后台 note） ----------
+   浅灰底 + 正文字号：和下面的视频/图片拉开层次，但不抢「分段标题」的位置 */
+.rnote {
+  padding: 20rpx 22rpx;
+  margin-bottom: 20rpx;
+  background: $ink-50;
+  border-radius: $r-sm;
+}
+
+/* 折叠态限高 6 行（25rpx × 1.75 ≈ 44rpx/行）：首屏仍能看到视频/图片的入口，
+   想看全文点「展开全文」—— 既不压缩信息，也不让 200 字把首屏占满 */
+.rnote__body.is-folded {
+  max-height: 264rpx;
+  overflow: hidden;
+}
+
+.rnote__p {
+  display: block;
+  font-size: 25rpx;
+  line-height: 1.75;
+  color: $ink-600;
+  word-break: break-word;
+
+  & + & {
+    margin-top: 8rpx;
+  }
+}
+
+.rnote__toggle {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 23rpx;
+  color: $brand-600;
 }
 
 .rtabs {
@@ -1094,7 +1194,7 @@ onShareAppMessage(() => {
   gap: 8rpx;
   padding: 40rpx 28rpx;
   background: $ink-50;
-  border-radius: $r-lg;
+  border-radius: 18rpx;
 }
 
 .rtempty__text {

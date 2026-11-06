@@ -12,7 +12,8 @@
  * weight,bodyFat,focus) / goal(coreGoal,freq,stageWeeks,stageGoal,risks) / content / status …
  */
 import { computed, reactive, ref } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { useUserStore } from '@/store/user'
 import { requireFeature } from '@/utils/nav'
 import { isManagerOrAbove } from '@/utils/permission'
@@ -472,6 +473,9 @@ onLoad((query?: Record<string, string | undefined>) => {
   }
   void loadPlan()
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

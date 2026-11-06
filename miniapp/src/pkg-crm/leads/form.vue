@@ -22,7 +22,8 @@
  * 底部固定提交条；字段白名单、diff 提交、查重软提示全部原样保留。
  */
 import { computed, ref, watch } from 'vue'
-import { onLoad, onShow, onUnload } from '@dcloudio/uni-app'
+import { onLoad, onShow, onUnload, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
 // 长表单草稿：只用现成的 getJSON / setJSON / storage（storage.ts 已导出，不新增工具函数）
@@ -764,6 +765,9 @@ onShow(() => {
     void loadStaff()
   }
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

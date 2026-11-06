@@ -12,7 +12,8 @@
  * 三态（骨架 / 空 / 失败）。分组、动作分支、touch 语义全部原样保留。
  */
 import { computed, ref } from 'vue'
-import { onLoad, onShow, onPullDownRefresh } from '@dcloudio/uni-app'
+import { onLoad, onShow, onPullDownRefresh, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
 // goPath：跳转统一收口（自动判 switchTab / navigateTo），页面里不直接调 uni.navigateTo
 import { goPath, requireFeature } from '@/utils/nav'
@@ -357,6 +358,9 @@ onPullDownRefresh(async () => {
   await load()
   uni.stopPullDownRefresh()
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>

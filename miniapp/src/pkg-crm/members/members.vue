@@ -14,7 +14,8 @@
  * 白卡列表、三态（骨架/空/失败）、分页尾。请求参数与后端语义零改动。
  */
 import { computed, ref } from 'vue'
-import { onLoad, onPullDownRefresh, onReachBottom, onShow } from '@dcloudio/uni-app'
+import { onLoad, onPullDownRefresh, onReachBottom, onShow, onShareAppMessage } from '@dcloudio/uni-app'
+import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
 import { useVenueFilter } from '@/utils/venue'
@@ -288,6 +289,9 @@ onReachBottom(() => {
     load()
   }
 })
+
+// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
+onShareAppMessage(() => shareToHome())
 </script>
 
 <template>
