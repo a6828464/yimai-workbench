@@ -1034,6 +1034,12 @@ export interface MiniappRouteConfig {
 /** 单店配置 —— 门店 key 固定为「绿地店 / 东部店」，不可新增或改名 */
 export interface MiniappVenueConfig {
   key: string
+  /**
+   * 门店顶图（到店指引头部那张大图）。空串 = 客户端回落到 images[0]。
+   * **回落只在前端做**：后端若替客户端回落，「没单独配」与「配成第一张实景」
+   * 在响应里就分不出来，馆主以后想表达后者也表达不了。
+   */
+  heroImage: string
   sub: string
   address: string
   phone: string
@@ -1063,6 +1069,12 @@ export interface MiniappPopupConfig {
 
 /** `/miniapp/config` 的 data */
 export interface MiniappConfig {
+  /**
+   * 首页背景图。空串 = 用小程序包内默认图
+   * （editorial 用 /static/hero.jpg，oriental 用 /static/studio-oriental.jpg）。
+   * 与「门店实景」用途不同：这张是氛围大图，可随季节/活动单独换。
+   */
+  homeHero: string
   venues: MiniappVenueConfig[]
   popup: MiniappPopupConfig
   /** 空串 = 从未保存过（后端回落到内置默认值） */

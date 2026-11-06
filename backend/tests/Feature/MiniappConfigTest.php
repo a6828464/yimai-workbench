@@ -64,9 +64,9 @@ class MiniappConfigTest extends TestCase
         // 每家店的键集合固定（前端零判空）
         foreach ($data['venues'] as $venue) {
             $this->assertSame(
-                // v2（t32）在 images 之后追加 videoUrl / routes：前端按此顺序取字段
-                ['key', 'sub', 'address', 'phone', 'latitude', 'longitude', 'channelsUser', 'channelsLive',
-                    'images', 'videoUrl', 'routes'],
+                // v2（t32）在 images 之后追加 videoUrl / routes；t50 又在 key 之后插入 heroImage（门店顶图）
+                ['key', 'heroImage', 'sub', 'address', 'phone', 'latitude', 'longitude', 'channelsUser',
+                    'channelsLive', 'images', 'videoUrl', 'routes'],
                 array_keys($venue),
                 '门店对象的键（含顺序）必须与契约一致'
             );

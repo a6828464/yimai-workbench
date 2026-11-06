@@ -28,7 +28,8 @@ use Illuminate\Http\Request;
  * ## 结构（v2：门店视频 + 三种出行方式 + 首页弹窗）
  *
  * ```
- * { theme, venues: [ { key, sub, address, phone, latitude, longitude, channelsUser, channelsLive,
+ * { theme, homeHero, venues: [ { key, heroImage, sub, address, phone, latitude, longitude,
+ *               channelsUser, channelsLive,
  *               images[], videoUrl,
  *               routes{drive,transit,walk} ← 各自 {note, videoUrl, images[]} } ],
  *   popup: { enabled, title, content, imageUrl, frequency },
@@ -102,6 +103,9 @@ final class MiniappConfigController extends Controller
     public const DEFAULT_VENUES = [
         [
             'key' => '绿地店',
+            // 门店顶图（到店指引头部）。空串 = 未单独配置，由客户端回落 images[0]；
+            // 后端不做回落，保持「存什么返回什么」。
+            'heroImage' => '',
             'sub' => '绿地缤纷城 · 4 楼',
             'address' => '宁波市江北区绿地缤纷城1号楼4楼',
             'phone' => '0574-87214863',
@@ -117,6 +121,7 @@ final class MiniappConfigController extends Controller
         ],
         [
             'key' => '东部店',
+            'heroImage' => '',
             'sub' => '江东 · 场馆',
             'address' => '',
             'phone' => '',
@@ -226,9 +231,14 @@ final class MiniappConfigController extends Controller
         $theme = array_key_exists('theme', $data)
             ? $this->normalizeTheme($data['theme'])
             : $current['theme'];
+        // 首页背景图：同样的合并守卫 —— 只改门店配置不该把首页大图冲掉
+        $homeHero = array_key_exists('homeHero', $data)
+            ? $this->normalizeUrl($data['homeHero'])
+            : $current['homeHero'];
 
         $cfg = [
             'theme' => $theme,
+            'homeHero' => $homeHero,
             'venues' => $venues,
             'popup' => $popup,
             // 时间戳写进 JSON 而不是读 app_settings.updated_at：后者会被「保存清单阈值 / AI 配置」
@@ -368,6 +378,8 @@ final class MiniappConfigController extends Controller
             // 主题：顶层单值，只认 editorial / oriental。
             // 用闭包而不是 `in:` 规则，是为了对「已弃用的 classic」单独给一句更明确的话 ——
             // 只回一句「所选的主题无效」，调用方会以为自己拼错了，而实际上是这套主题被删了。
+            // 首页背景图：与 images[].src / videoUrl / popup.imageUrl 同一段白名单（$media）
+            'homeHero' => ['nullable', 'string', 'max:300', $media],
             'theme' => ['nullable', 'string', function (string $attribute, mixed $value, \Closure $fail): void {
                 if (is_string($value) && in_array(trim($value), self::THEMES, true)) {
                     return;
@@ -383,6 +395,8 @@ final class MiniappConfigController extends Controller
             'venues' => ['nullable', 'array', 'size:2'],
             // distinct + in + size:2 ⇒ 只能是「绿地店」「东部店」各一次（顺序随意，服务端会归一）
             'venues.*.key' => ['required', 'string', 'distinct', 'in:'.implode(',', self::VENUE_KEYS)],
+            // 门店顶图：同上，复用 $media，不新写一套
+            'venues.*.heroImage' => ['nullable', 'string', 'max:300', $media],
             'venues.*.sub' => ['nullable', 'string', 'max:40'],
             // 允许空串：东部店地址/电话本来就没配，页面按空值降级
             'venues.*.address' => ['nullable', 'string', 'max:120'],
@@ -450,8 +464,10 @@ final class MiniappConfigController extends Controller
     {
         return [
             'theme' => '主题',
+            'homeHero' => '首页背景图',
             'venues' => '门店配置',
             'venues.*.key' => '门店键',
+            'venues.*.heroImage' => '门店顶图',
             'venues.*.sub' => '门店副标题',
             'venues.*.address' => '门店地址',
             'venues.*.phone' => '门店电话',
@@ -512,6 +528,8 @@ final class MiniappConfigController extends Controller
         return [
             // 主题在顶层且排第一（契约顺序）：旧配置没有这个键、或存了已弃用的 classic → 回落 editorial
             'theme' => $this->normalizeTheme($cfg['theme'] ?? null),
+            // 首页背景图：空串 = 未配置（由客户端决定兜底），后端不猜
+            'homeHero' => $this->normalizeUrl($cfg['homeHero'] ?? ''),
             'venues' => $venues,
             // 旧配置没有 popup 键 → 回落 DEFAULT_POPUP（enabled=false）
             'popup' => $this->normalizePopup(self::DEFAULT_POPUP, (array) ($cfg['popup'] ?? [])),
@@ -536,6 +554,8 @@ final class MiniappConfigController extends Controller
         return [
             // key 永远取默认表里的值：门店键是固定集合，不接受改名/新增
             'key' => (string) $base['key'],
+            // 门店顶图：走同一条媒体白名单；空串原样返回（客户端回落 images[0]）
+            'heroImage' => $this->normalizeUrl($pick('heroImage')),
             'sub' => (string) ($pick('sub') ?? ''),
             'address' => (string) ($pick('address') ?? ''),
             'phone' => (string) ($pick('phone') ?? ''),
@@ -714,6 +734,7 @@ final class MiniappConfigController extends Controller
             'channelsUser' => '视频号',
             'channelsLive' => '直播',
             'images' => '图片',
+            'heroImage' => '门店顶图',
             'videoUrl' => '门店视频',
         ];
         $routeLabels = ['drive' => '自驾路线', 'transit' => '公交路线', 'walk' => '步行路线'];
@@ -751,9 +772,12 @@ final class MiniappConfigController extends Controller
             }
         }
 
-        // 主题是顶层字段，单独比一次（放在弹窗之前，读起来是「主题、门店、弹窗」的顺序）
+        // 顶层字段单独比（放在弹窗之前，读起来是「主题、首页背景、门店、弹窗」的顺序）
         if (json_encode($before['theme'] ?? null) !== json_encode($after['theme'] ?? null)) {
             $parts[] = '主题';
+        }
+        if (json_encode($before['homeHero'] ?? null) !== json_encode($after['homeHero'] ?? null)) {
+            $parts[] = '首页背景图';
         }
 
         $popupChanged = [];

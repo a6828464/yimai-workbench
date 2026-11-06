@@ -82,6 +82,11 @@ interface GuideVenue {
    * 去词之后没有合适的按钮名，故整体下线该入口；后端仍会下发，将来做回放时再启用。
    */
   channelsLive: string
+  /**
+   * 门店顶图（到店指引头部那张大图）。后台可单独配置；
+   * 空串时由取图逻辑回落到 images[0]，已配过门店实景的店不用重填。
+   */
+  heroImage: string
   /** 门店级引导图（前台/电梯/门头），上限 9 张 */
   images: GuideImage[]
   /** 门店级视频（放在视频号入口下方）；空 = 不渲染播放器 */
@@ -143,6 +148,7 @@ const DEFAULT_VENUES: GuideVenue[] = [
     sub: '绿地缤纷城 · 4 楼',
     address: '宁波市江北区绿地缤纷城1号楼4楼',
     phone: '0574-87214863',
+    heroImage: '',
     // TODO(馆主提供)：绿地店真实坐标 —— 现在是占位值（29.8746/121.5496），
     // 需要馆主提供真实坐标后填这里，并把 PLACEHOLDER_COORDS 里的对应条目删掉
     latitude: 29.8746,
@@ -172,6 +178,7 @@ const DEFAULT_VENUES: GuideVenue[] = [
     // 需要馆主提供真实坐标后填这里，并把 PLACEHOLDER_COORDS 里的对应条目删掉
     latitude: 29.8746,
     longitude: 121.5496,
+    heroImage: '',
     channelsUser: '',
     channelsLive: '',
     videoUrl: '',
@@ -221,13 +228,14 @@ const isOriental = computed(() => guideTheme.value === 'oriental')
 /**
  * 沉浸头部的背景：用门店第一张实景图铺满，压一层纵向渐变让白色大字可读。
  *
- * 为什么用 images[0] 而不是新开一个「头图」字段：
- * 门店实景本来就是给顾客看的门头/环境照，语义完全重合；
- * 多一个字段只会让馆主多填一处、多一处忘填。
- * 没配图时返回空串 → 样式回落成纯深色，仍然成立（不是破图）。
+ * 取图顺序：`heroImage`（后台单独配的门店顶图）→ `images[0]`（门店实景第一张）→ 空。
+ * 早先用的是「就用 images[0]，不新开字段」，理由是少填一处；但馆主反馈顶图想单独换
+ * （实景图是横向展示用的，顶图是竖幅大图，构图要求不同），所以补了 heroImage，
+ * 并保留 images[0] 作为回落——已配过实景的店不用重填也能正常显示。
+ * 都没配时返回空串 → 样式回落成纯深色，仍然成立（不是破图）。
  */
 const heroStyle = computed(() => {
-  const src = current.value?.images?.[0]?.src
+  const src = current.value?.heroImage || current.value?.images?.[0]?.src
   if (!src) return ''
   /* 八段渐变：深色层在 74% 收口，再经「灰 → 浅灰 → 底色」三档过渡。
        少于三档时，深色会直接跳到 #fcfbf8，在内容区交界处留一条可见硬边（实测过）。 */
@@ -240,7 +248,7 @@ const heroStyle = computed(() => {
  * 数值直接取自 miniapp-ui-a 的定稿实现（那是馆主拍板的 A 方案），不重新调。
  */
 const heroStyleOriental = computed(() => {
-  const src = current.value?.images?.[0]?.src
+  const src = current.value?.heroImage || current.value?.images?.[0]?.src
   if (!src) return ''
   return `background-image: linear-gradient(180deg, rgba(10,17,13,0.30) 0%, rgba(10,17,13,0.14) 26%, rgba(10,17,13,0.46) 54%, rgba(10,17,13,0.66) 74%, rgba(58,66,60,0.52) 84%, rgba(186,190,184,0.62) 92%, rgba(242,244,242,0.96) 97%, #f2f4f2 100%), url(${src})`
 })
@@ -455,6 +463,7 @@ function toGuideVenue(raw: unknown): GuideVenue | null {
     phone: str(o.phone),
     latitude: coord(o.latitude),
     longitude: coord(o.longitude),
+    heroImage: str(o.heroImage),
     channelsUser: str(o.channelsUser),
     channelsLive: str(o.channelsLive),
     // BE2 新增字段：门店级视频 + 三种路线。老后端不下发时这里就是空，模板不渲染即可
@@ -880,32 +889,6 @@ onShareAppMessage(() => {
                 </view>
               </view>
 
-              <!-- 门店实景：图 + 图注（「路线」专指下面三种出行方式，避免撞车） -->
-              <view class="imgs">
-                <view class="imgs__labelrow">
-                  <text class="imgs__label">门店实景</text>
-                  <view class="imgs__rule" />
-                </view>
-                <view
-                  v-for="(img, i) in current.images"
-                  :key="img.src + i"
-                  class="fig ym-tap"
-                  @click="previewImage(current.images, i)"
-                >
-                  <image class="fig__pic" :src="img.src" mode="aspectFill" />
-                  <view class="fig__cap">
-                    <view class="fig__dash" />
-                    <!--
-                      只把「短的」当图注显示。后台在门店实景里常填整段路线说明
-                      （如「到店后沿门厅指示牌进电梯，4 楼出电梯右手边即前台」），
-                      但那和下面「到店路线」区块是同一件事，同时出现就是重复。
-                      超过 20 字一律不渲染：短标签（前台 / 门厅 / 更衣区）照常显示。
-                    -->
-                    <text v-if="(img.caption || '').length <= 20" class="fig__text">{{ img.caption }}</text>
-                    <text class="fig__zoom">点击放大</text>
-                  </view>
-                </view>
-              </view>
 
               <!-- 到店路线：三种出行方式各自独立渲染，绝不把三段的图混在一起 -->
               <view class="routes">
@@ -1030,22 +1013,6 @@ onShareAppMessage(() => {
         </view>
       </view>
 
-      <!-- 门店实景：原来这块叫「到店路线」，现在「路线」专指下面三种出行方式，改名避免撞车 -->
-      <view class="imgs">
-        <text class="imgs__label">门店实景</text>
-        <view
-          v-for="(img, i) in current.images"
-          :key="img.src + i"
-          class="imgcard ym-tap"
-          @click="previewImage(current.images, i)"
-        >
-          <image class="imgcard__pic" :src="img.src" mode="aspectFill" />
-          <view class="imgcard__cap">
-            <text class="imgcard__text">{{ img.caption }}</text>
-            <text class="imgcard__zoom">点击放大</text>
-          </view>
-        </view>
-      </view>
 
       <!-- 到店路线：三种出行方式各自独立渲染，绝不把三段的图混在一起 -->
       <view class="routes">
@@ -1689,7 +1656,12 @@ $serif: 'Songti SC', 'STSong', 'SimSun', serif;
   display: flex;
   align-items: center;
   gap: 24rpx;
-  margin-top: 124rpx;
+  /*
+    124 → 236rpx：右缘「静候光临」是绝对定位（top 236rpx，线 176rpx + 字约 200rpx，
+    一直延伸到约 640rpx）。原来的 124rpx 让「选择门店」和门店条正好落进它的高度范围，
+    真机上两者叠在一起。加到 236rpx 之后门店区整体下移，与竖排字错开。
+  */
+  margin-top: 236rpx;
   margin-bottom: 28rpx;
 }
 

@@ -29,8 +29,8 @@ class MiniappThemeTest extends TestCase
         $data = $this->getJson('/api/miniapp/config')->assertOk()->json('data');
 
         $this->assertSame('editorial', $data['theme'], '默认主题必须是 editorial（classic 已弃用）');
-        // 顶层键顺序即契约：theme 在最前
-        $this->assertSame(['theme', 'venues', 'popup', 'updatedAt'], array_keys($data));
+        // 顶层键顺序即契约：theme 在最前，其后 homeHero（t50）
+        $this->assertSame(['theme', 'homeHero', 'venues', 'popup', 'updatedAt'], array_keys($data));
     }
 
     /** ② 更旧的配置（连 theme 键都没有）：补 editorial，且其它字段一个不丢。 */

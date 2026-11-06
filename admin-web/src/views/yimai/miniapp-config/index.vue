@@ -445,6 +445,141 @@
       </div>
     </ElCard>
 
+    <!-- ===== 页面头图（首页背景 + 每家店顶图；都是「一张大图」，和门店实景组不是一回事） ===== -->
+    <ElCard shadow="never" class="mb-3">
+      <template #header>
+        <div class="flex-cb">
+          <span class="font-500">页面头图</span>
+          <span class="text-xs text-gray-400">
+            首页背景 1 张 + 每家门店顶图各 1 张；留空会自动回落，不开天窗
+          </span>
+        </div>
+      </template>
+
+      <ElAlert
+        type="info"
+        :closable="false"
+        show-icon
+        class="mb-3"
+        title="「门店顶图」和「门店实景 / 引导图」是两回事"
+      >
+        <div class="text-xs leading-5">
+          <b>门店实景（本页「门店」区里的引导图）</b
+          >：到店指引页里的一组图，可多张、每张带说明。<br />
+          <b>门店顶图（这里）</b>：门店页最上方那张大图，只有 1 张、没有说明文字。
+          <b>留空时自动取「门店实景」的第一张</b>，所以不填也有图；想让门店页开头更抓眼再单独指定。
+        </div>
+      </ElAlert>
+
+      <!-- 首页背景图 -->
+      <div class="hero-slot">
+        <div class="hero-slot__head">
+          <span class="hero-slot__title">首页背景图</span>
+          <ElTag size="small" :type="homeHero ? 'success' : 'info'" effect="plain">
+            {{ homeHero ? '已自定义' : '使用默认图' }}
+          </ElTag>
+        </div>
+        <div class="img-row">
+          <ElInput
+            v-model="homeHero"
+            maxlength="200"
+            placeholder="/static/hero.jpg 或 https://..."
+            @input="heroUiOf(HOME_HERO_KEY).broken = false"
+          />
+          <label class="upload-label" :class="{ 'is-busy': heroUiOf(HOME_HERO_KEY).uploading }">
+            <input
+              type="file"
+              :accept="UPLOAD_ACCEPT"
+              hidden
+              :disabled="!!heroUiOf(HOME_HERO_KEY).uploading"
+              @change="onPickHomeHero"
+            />
+            {{ heroUiOf(HOME_HERO_KEY).uploading ? '上传中…' : '上传' }}
+          </label>
+        </div>
+        <div class="img-check">
+          <div class="thumb thumb--wide">
+            <img
+              v-if="homeHero && !heroUiOf(HOME_HERO_KEY).broken"
+              :src="homeHero"
+              alt="首页背景预览"
+              @error="heroUiOf(HOME_HERO_KEY).broken = true"
+              @load="heroUiOf(HOME_HERO_KEY).broken = false"
+            />
+            <span v-else class="thumb-ph">{{
+              homeHero ? '地址不可用' : '默认图 /static/hero.jpg'
+            }}</span>
+          </div>
+          <div class="hero-slot__meta">
+            <span v-if="urlError(homeHero)" class="c-red text-xs">✕ {{ urlError(homeHero) }}</span>
+            <span v-else-if="heroUiOf(HOME_HERO_KEY).broken" class="c-red text-xs">
+              ✕ 这张图加载不出来（仍可保存）
+            </span>
+            <div class="field-tip">
+              留空则使用小程序包内默认图 <code>/static/hero.jpg</code>。首页是<b>全屏铺满</b>，
+              建议竖版大图或 16:9 以上的横图，别用带文字的方图。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 门店顶图（每家店一张） -->
+      <div v-for="v in venues" :key="v.key" class="hero-slot">
+        <div class="hero-slot__head">
+          <span class="hero-slot__title">{{ v.key }} · 门店顶图</span>
+          <ElTag size="small" :type="v.heroImage ? 'success' : 'info'" effect="plain">
+            {{ v.heroImage ? '已自定义' : '回落门店实景第 1 张' }}
+          </ElTag>
+        </div>
+        <div class="img-row">
+          <ElInput
+            v-model="v.heroImage"
+            maxlength="200"
+            placeholder="留空 = 自动用该店「门店实景」第一张"
+            @input="heroUiOf(v.key).broken = false"
+          />
+          <label class="upload-label" :class="{ 'is-busy': heroUiOf(v.key).uploading }">
+            <input
+              type="file"
+              :accept="UPLOAD_ACCEPT"
+              hidden
+              :disabled="!!heroUiOf(v.key).uploading"
+              @change="onPickVenueHero($event, v)"
+            />
+            {{ heroUiOf(v.key).uploading ? '上传中…' : '上传' }}
+          </label>
+        </div>
+        <div class="img-check">
+          <div class="thumb thumb--wide">
+            <img
+              v-if="v.heroImage && !heroUiOf(v.key).broken"
+              :src="v.heroImage"
+              alt="门店顶图预览"
+              @error="heroUiOf(v.key).broken = true"
+              @load="heroUiOf(v.key).broken = false"
+            />
+            <span v-else class="thumb-ph">{{
+              v.heroImage ? '地址不可用' : fallbackHeroOf(v) ? '回落实景图' : '暂无实景图'
+            }}</span>
+          </div>
+          <div class="hero-slot__meta">
+            <span v-if="urlError(v.heroImage)" class="c-red text-xs">
+              ✕ {{ urlError(v.heroImage) }}
+            </span>
+            <span v-else-if="heroUiOf(v.key).broken" class="c-red text-xs">
+              ✕ 这张图加载不出来（仍可保存）
+            </span>
+            <div class="field-tip">
+              留空则自动使用该店「门店实景」的<b>第一张图</b>。 当前会回落到：<code>{{
+                fallbackHeroOf(v) || '暂无实景图（小程序会用包内默认图）'
+              }}</code>
+              <template v-if="!fallbackHeroOf(v)">，建议先在上面「门店」区加一张实景图。</template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </ElCard>
+
     <!-- ===== 首页弹窗（全局） ===== -->
     <ElCard shadow="never" class="mb-3">
       <template #header>
@@ -590,6 +725,11 @@
   type VenueConfig = Omit<MiniappVenueConfig, 'images' | 'routes'> & {
     images: VenueImage[]
     routes: Record<RouteKey, RouteConfig>
+    /**
+     * BE8 新增：门店顶图（空串 = 回落 `images[0]`）。
+     * 公共类型 MiniappVenueConfig 还没跟上（本任务 inScope 只到本文件），先在这里局部扩展。
+     */
+    heroImage: string
   }
   type PopupConfig = MiniappPopupConfig
 
@@ -744,6 +884,7 @@
         ? raw.images.map((i) => ({ src: String(i?.src ?? ''), caption: String(i?.caption ?? '') }))
         : [],
       videoUrl: String(raw.videoUrl ?? ''),
+      heroImage: String(raw.heroImage ?? ''),
       routes
     }
   }
@@ -803,6 +944,7 @@
     try {
       if (!USE_BACKEND) {
         venues.value = DEMO_VENUES.map((key) => normalize({ key }))
+        homeHero.value = ''
         Object.assign(popup, emptyPopup())
         theme.value = 'editorial'
         savedTheme.value = 'editorial'
@@ -812,8 +954,9 @@
           '演示模式：当前没有连接 Laravel 后端，下面的配置是空白占位，保存不会生效。'
         updatedAt.value = ''
       } else {
-        const data = await apiGet<MiniappConfig>('/miniapp/config')
+        const data = await apiGet<MiniappConfig & { homeHero?: unknown }>('/miniapp/config')
         venues.value = (data?.venues ?? []).map((v) => normalize(v))
+        homeHero.value = String(data?.homeHero ?? '')
         Object.assign(popup, normalizePopup(data?.popup))
         // theme 由 BE5 新增；缺失时按经典只读展示，不当作错误
         const rawTheme = (data as (MiniappConfig & { theme?: unknown }) | null)?.theme
@@ -870,10 +1013,29 @@
   /** 弹窗图单独一个上传态（它是全区的，不属于任何一张 images[]） */
   const popupUploading = ref(false)
 
+  /* -------------------- 页面头图（BE8） -------------------- */
+  /** 首页背景图（空串 = 用包内默认 /static/hero.jpg） */
+  const homeHero = ref('')
+  const HOME_HERO_KEY = '__home_hero__'
+  /**
+   * 头图位的 UI 态（上传中 / 预览失败），按 key 索引：HOME_HERO_KEY 与 门店 key 共用一张表。
+   * 与数据分开存，避免把纯前端状态混进提交 payload。
+   */
+  const heroUi = reactive<Record<string, { uploading?: boolean; broken?: boolean }>>({})
+  function heroUiOf(key: string) {
+    if (!heroUi[key]) heroUi[key] = {}
+    return heroUi[key]
+  }
+  /** 门店顶图留空时的回落目标 = 该店「门店实景」第一张有 src 的图 */
+  function fallbackHeroOf(v: VenueConfig): string {
+    return v.images.find((i) => i.src.trim())?.src?.trim() ?? ''
+  }
+
   /** 有任何一张图正在上传：此时禁用「保存」，避免把旧 src 存成最终值 */
   const anyUploading = computed(
     () =>
       popupUploading.value ||
+      Object.values(heroUi).some((u) => u.uploading) ||
       venues.value.some(
         (v) =>
           v.images.some((i) => i.uploading) ||
@@ -909,6 +1071,44 @@
     } finally {
       target.uploading = false
     }
+  }
+
+  /**
+   * 头图上传：与图片行共用同一套「预校验 + 上传 + 回填」逻辑，
+   * 只是把结果写进对应的字符串字段（homeHero / venue.heroImage）。
+   */
+  async function uploadHeroInto(key: string, file: File, apply: (url: string) => void) {
+    const err = checkImageFile(file)
+    if (err) {
+      ElMessage.error(err)
+      return
+    }
+    const ui = heroUiOf(key)
+    ui.uploading = true
+    try {
+      const url = await uploadMiniappImage(file)
+      apply(url)
+      ui.broken = false
+      ElMessage.success('图片已上传，保存配置后生效')
+    } catch (e) {
+      showApiError(e, '上传图片')
+    } finally {
+      ui.uploading = false
+    }
+  }
+
+  function onPickHomeHero(ev: Event) {
+    const input = ev.target as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (file) void uploadHeroInto(HOME_HERO_KEY, file, (url) => (homeHero.value = url))
+  }
+
+  function onPickVenueHero(ev: Event, v: VenueConfig) {
+    const input = ev.target as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (file) void uploadHeroInto(v.key, file, (url) => (v.heroImage = url))
   }
 
   function onPickImage(ev: Event, target: VenueImage) {
@@ -1014,6 +1214,8 @@
         // theme 与 venues/popup 一起提交：后端是合并语义，全量提交才能保证
         // 「只改主题不会清门店」「只改门店不会把主题改回默认」
         theme: theme.value,
+        // 空串也要发：后端是合并语义，传了才改（清空头图就是把字段写成 ''）
+        homeHero: homeHero.value,
         venues: venues.value.map((v) => ({
           key: v.key,
           sub: v.sub,
@@ -1024,6 +1226,7 @@
           channelsUser: v.channelsUser,
           channelsLive: v.channelsLive,
           videoUrl: v.videoUrl,
+          heroImage: v.heroImage,
           images: v.images
             .filter((i) => i.src.trim())
             .map((i) => ({ src: i.src.trim(), caption: i.caption })),
@@ -1057,6 +1260,8 @@
       }
       // 用服务端返回的真值回填（后端可能做了归一：key 顺序、图片裁剪）
       if (Array.isArray(res?.venues)) venues.value = res.venues.map((v) => normalize(v))
+      const resHome = (res as (MiniappConfig & { homeHero?: unknown }) | null)?.homeHero
+      if (typeof resHome === 'string') homeHero.value = resHome
       if (res?.popup) Object.assign(popup, normalizePopup(res.popup))
       // 后端回什么就以什么为准（它可能驳回非法值）；没回就认为本次提交生效
       const resTheme = (res as (MiniappConfig & { theme?: unknown }) | null)?.theme
@@ -1141,6 +1346,50 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+
+  /* ---------------- 页面头图 ---------------- */
+  .hero-slot {
+    padding: 10px 0;
+    border-top: 1px dashed var(--el-border-color-lighter);
+  }
+
+  .hero-slot:first-of-type {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .hero-slot__head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+
+  .hero-slot__title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--el-text-color-primary);
+  }
+
+  .hero-slot__meta {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .hero-slot__meta code {
+    padding: 0 3px;
+    font-size: 11px;
+    background: var(--el-fill-color-light);
+    border-radius: 3px;
+  }
+
+  /* 头图预览按 16:9 展示（首页是铺满，横图更接近真实效果） */
+  .thumb--wide {
+    flex: 0 0 112px;
+    width: 112px;
+    height: 63px;
   }
 
   /* 上传按钮：用 label 包隐藏的 file input，点它即开文件选择框 */

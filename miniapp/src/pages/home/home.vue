@@ -77,7 +77,7 @@ function enterPath(venueId: string, booking: boolean): string {
 const VENUES: Venue[] = [
   {
     key: '东部店',
-    sub: '江东 · 场馆',
+    sub: '鄞州区',
     qr: '/static/book-east.jpg',
     link: '#小程序://Xyoga预约/LD9iekS0cCHuc5h',
     bookPath: enterPath('4250', true),
@@ -85,7 +85,7 @@ const VENUES: Venue[] = [
   },
   {
     key: '绿地店',
-    sub: '绿地 · 场馆',
+    sub: '江北区',
     qr: '/static/book-green.jpg',
     link: '#小程序://Xyoga预约/SWccsoBp9d9RSPq',
     bookPath: enterPath('1', true),
@@ -133,6 +133,13 @@ function cacheTheme(t: string): void {
 }
 
 const themeRaw = ref(readCachedTheme())
+/**
+ * 首页背景图（后台可配）。空串 = 用包内默认图：
+ * editorial 用 /static/hero.jpg，oriental 用 /static/studio-oriental.jpg。
+ * 单独开一个字段而不是复用门店图：首页这张是氛围图（横向大景），
+ * 与「门店实景」（给顾客认路的门头/环境照）用途不同，换季换活动要能单独换。
+ */
+const homeHero = ref('')
 
 /** 主题归一：只有 oriental 走东方主题，其余（缺失 / 未知 / 老值 classic）一律 editorial */
 const theme = computed<'editorial' | 'oriental'>(() =>
@@ -538,6 +545,7 @@ async function loadPopup(): Promise<void> {
     // 主题与弹窗共用这一份配置：先用网络值校正（首屏可能已经用缓存渲染过），再决定弹不弹
     themeRaw.value = typeof cfg.theme === 'string' ? cfg.theme : ''
     cacheTheme(themeRaw.value)
+    homeHero.value = typeof cfg.homeHero === 'string' ? cfg.homeHero : ''
     const p = normalizePopup(cfg.popup)
     if (!p) return
     cachedPopup = p
@@ -598,7 +606,7 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
       oriental  = 静奢东方馆实景只占上 62%，底部 400rpx 渐入米灰，内容从雾里长出来。
     -->
     <template v-if="isOriental">
-      <image class="home__bg" src="/static/studio-oriental.jpg" mode="aspectFill" />
+      <image class="home__bg" :src="homeHero || '/static/studio-oriental.jpg'" mode="aspectFill" />
       <view class="home__shade" />
       <view class="home__fade" />
       <view class="home__logo" :style="{ top: logoTop }">
@@ -611,7 +619,7 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
       </view>
     </template>
     <template v-else>
-      <image class="home__bg" src="/static/hero.jpg" mode="aspectFill" />
+      <image class="home__bg" :src="homeHero || '/static/hero.jpg'" mode="aspectFill" />
       <view class="home__veil" />
     </template>
 
@@ -667,7 +675,7 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
       <view class="home__brand home__brand--oriental">
         <text class="home__name home__name--oriental">一麦瑜伽·普拉提</text>
         <view class="home__label">
-          <view class="home__label-line" />
+          <!-- 金色短横线已移除：馆主要求英文名前不要那道杠，只留字距本身做分隔 -->
           <text class="home__label-text">YIMAI YOGA · PILATES</text>
         </view>
       </view>
@@ -675,7 +683,7 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
       <!-- 宋式区块标题：小字 · 金色短线 · 发丝横线（不是色块标题） -->
       <view class="home__sec">
         <view class="home__sec-line" />
-        <text class="home__sec-text">两馆约课</text>
+        <text class="home__sec-text">预约课程</text>
         <view class="home__sec-rule" />
       </view>
 
