@@ -44,7 +44,11 @@ export interface MiniappVenueConfig {
   longitude?: number | string | null
   channelsUser?: string
   channelsLive?: string
+  /** 门店顶图（到店指引头部那张大图）。空串 = 客户端回落到 images[0] */
+  heroImage?: string
   images?: MiniappVenueImage[]
+  /** routes 结构后端可能增减字段，页面用 Record 容错读取（videoUrl/finderVideo/note/images） */
+  routes?: Record<string, Record<string, unknown>>
 }
 
 export interface MiniappConfig {

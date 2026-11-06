@@ -184,8 +184,8 @@ class MiniappUploadTest extends TestCase
         $this->assertSame('/static/drive.mp4', $routes['drive']['videoUrl']);
         $this->assertSame('地铁 2 号线 A 口', $routes['transit']['note']);
         $this->assertSame('从西门进来右手边', $routes['walk']['note']);
-        // 键顺序：note → videoUrl → images（契约）
-        $this->assertSame(['note', 'videoUrl', 'images'], array_keys($routes['walk']));
+        // 键顺序：note → videoUrl → finderVideo → images（契约；finderVideo 2026-11-07 拆栏新增）
+        $this->assertSame(['note', 'videoUrl', 'finderVideo', 'images'], array_keys($routes['walk']));
     }
 
     /** note ≤200 字；201 字 422。 */
@@ -256,7 +256,7 @@ class MiniappUploadTest extends TestCase
     {
         $routes = $this->getJson('/api/miniapp/config')->assertOk()->json('data.venues.0.routes');
         foreach (['drive', 'transit', 'walk'] as $kind) {
-            $this->assertSame(['note' => '', 'videoUrl' => '', 'images' => []], $routes[$kind]);
+            $this->assertSame(['note' => '', 'videoUrl' => '', 'finderVideo' => '', 'images' => []], $routes[$kind]);
         }
     }
 

@@ -94,8 +94,8 @@ class MiniappConfigExtTest extends TestCase
             $this->assertArrayHasKey('videoUrl', $venue);
             $this->assertArrayHasKey('routes', $venue);
             $this->assertSame(['drive', 'transit', 'walk'], array_keys($venue['routes']));
-            // t39：route 对象多了 note（纯文本说明），键序为 note → videoUrl → images
-            $this->assertSame(['note' => '', 'videoUrl' => '', 'images' => []], $venue['routes']['walk']);
+            // t39：route 对象多了 note（纯文本说明），键序为 note → videoUrl → finderVideo → images
+            $this->assertSame(['note' => '', 'videoUrl' => '', 'finderVideo' => '', 'images' => []], $venue['routes']['walk']);
         }
     }
 

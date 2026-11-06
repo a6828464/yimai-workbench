@@ -252,15 +252,34 @@
                           </span>
                         </div>
                       </ElFormItem>
-                      <ElFormItem label="视频链接">
+                      <ElFormItem label="视频直链">
                         <div class="w-full">
                           <ElInput
                             v-model="v.routes[rk].videoUrl"
                             maxlength="200"
-                            :placeholder="`${ROUTE_LABELS[rk]}：mp4 直链，或视频号视频 ID`"
+                            :placeholder="`${ROUTE_LABELS[rk]}：https://.../route.mp4（可留空）`"
                           />
                           <div v-if="videoRefError(v.routes[rk].videoUrl)" class="c-red text-xs">
                             ✕ {{ videoRefError(v.routes[rk].videoUrl) }}
+                          </div>
+                          <div class="field-tip">
+                            填<b>可直接播放的 mp4 / m3u8 文件直链</b>或站内路径；没有就留空。
+                          </div>
+                        </div>
+                      </ElFormItem>
+                      <ElFormItem label="视频号 ID">
+                        <div class="w-full">
+                          <ElInput
+                            v-model="v.routes[rk].finderVideo"
+                            maxlength="200"
+                            placeholder="在视频号里点「复制视频 ID」粘进来（可留空）"
+                          />
+                          <div v-if="videoRefError(v.routes[rk].finderVideo)" class="c-red text-xs">
+                            ✕ {{ videoRefError(v.routes[rk].finderVideo) }}
+                          </div>
+                          <div class="field-tip">
+                            填视频号<b>视频 ID</b>（export/UzFf… 那串），顾客端直接内嵌播放；
+                            与上面的直链各填各的，<b>两个都填时优先播视频号视频</b>。
                           </div>
                         </div>
                       </ElFormItem>
@@ -818,6 +837,7 @@
     src: '图片地址',
     caption: '图片说明',
     videoUrl: '视频地址',
+    finderVideo: '视频号视频 ID',
     routes: '到店路线',
     popup: '首页弹窗',
     enabled: '开关',
@@ -869,6 +889,7 @@
       const r = rawRoutes[rk]
       routes[rk] = {
         videoUrl: String(r?.videoUrl ?? ''),
+        finderVideo: String(r?.finderVideo ?? ''),
         note: String(r?.note ?? ''),
         images: Array.isArray(r?.images)
           ? r!.images.map((i) => ({ src: String(i?.src ?? ''), caption: String(i?.caption ?? '') }))
@@ -1184,19 +1205,23 @@
     return out
   }
 
-  /** 提交前本地校验：门店视频 / 三组路线视频 / 所有图片 / 弹窗图片 */
+  /** 提交前本地校验：门店视频 / 三组路线视频（直链 + 视频号 ID）/ 所有图片 / 弹窗图片 */
   function collectFormatErrors(): string[] {
     const out: string[] = []
     for (const v of venues.value) {
-      const vErr = urlError(v.videoUrl)
+      // 门店视频 / 路线视频都是「视频引用」：除了站内路径与 https，还可能是视频号视频 ID，
+      // 必须用 videoRefError（urlError 不认视频号 ID —— 2026-11-07「输入框不报错、保存才报错」即此因）
+      const vErr = videoRefError(v.videoUrl)
       if (vErr) out.push(`${v.key} · 门店视频：${vErr}`)
       v.images.forEach((img, idx) => {
         const err = urlError(img.src)
         if (err) out.push(`${v.key} · 门店引导图第 ${idx + 1} 张：${err}`)
       })
       for (const rk of ROUTE_KEYS) {
-        const rErr = urlError(v.routes[rk].videoUrl)
-        if (rErr) out.push(`${v.key} · ${ROUTE_LABELS[rk]}视频：${rErr}`)
+        const rErr = videoRefError(v.routes[rk].videoUrl)
+        if (rErr) out.push(`${v.key} · ${ROUTE_LABELS[rk]}视频直链：${rErr}`)
+        const fErr = videoRefError(v.routes[rk].finderVideo)
+        if (fErr) out.push(`${v.key} · ${ROUTE_LABELS[rk]}视频号 ID：${fErr}`)
         v.routes[rk].images.forEach((img, idx) => {
           const err = urlError(img.src)
           if (err) out.push(`${v.key} · ${ROUTE_LABELS[rk]}第 ${idx + 1} 张图：${err}`)
@@ -1257,6 +1282,7 @@
               rk,
               {
                 videoUrl: v.routes[rk].videoUrl,
+                finderVideo: v.routes[rk].finderVideo,
                 note: v.routes[rk].note,
                 images: v.routes[rk].images
                   .filter((i) => i.src.trim())

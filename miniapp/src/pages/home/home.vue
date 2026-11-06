@@ -380,6 +380,19 @@ function popupText(v: unknown): string {
 }
 
 /**
+ * 图片地址归一：后台「上传」得来的图存的是相对路径（/api/miniapp/uploads/xxx.jpg），
+ * 小程序会把 `/` 开头的路径当包内文件解析 → 404。这里统一补全成绝对 URL。
+ * homeHero（首页背景）与 popup.imageUrl（弹窗图）都过这一道。
+ */
+function absolutizeImg(src: string): string {
+  if (src.startsWith('/api/')) {
+    const base = API_BASE.replace(/\/api\/?$/, '')
+    return base + src
+  }
+  return src
+}
+
+/**
  * 把后端 popup 归一成可渲染结构；任何一条不满足就返回 null（= 不弹）。
  *
  * 四类空值组合逐条处理（任务书要求）：
@@ -398,7 +411,8 @@ function normalizePopup(raw: unknown): HomePopup | null {
   if (o.enabled !== true) return null
   const title = popupText(o.title)
   const content = popupText(o.content)
-  const imageUrl = popupText(o.imageUrl)
+  // 弹窗图也走 absolutizeImg：后台上传得来的是 /api/... 相对路径，不补全就 404
+  const imageUrl = absolutizeImg(popupText(o.imageUrl))
   if (!title && !content && !imageUrl) return null
   // 未知 / 缺失频率一律按 once：风险偏好上「少打扰」优于「多打扰」
   const frequency: HomePopup['frequency'] = o.frequency === 'always' ? 'always' : 'once'
@@ -545,7 +559,7 @@ async function loadPopup(): Promise<void> {
     // 主题与弹窗共用这一份配置：先用网络值校正（首屏可能已经用缓存渲染过），再决定弹不弹
     themeRaw.value = typeof cfg.theme === 'string' ? cfg.theme : ''
     cacheTheme(themeRaw.value)
-    homeHero.value = typeof cfg.homeHero === 'string' ? cfg.homeHero : ''
+    homeHero.value = typeof cfg.homeHero === 'string' ? absolutizeImg(cfg.homeHero) : ''
     const p = normalizePopup(cfg.popup)
     if (!p) return
     cachedPopup = p

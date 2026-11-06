@@ -1018,9 +1018,16 @@ export interface MiniappVenueImage {
 /** 三种出行方式 */
 export type MiniappRouteKey = 'drive' | 'transit' | 'walk'
 
-/** 单种出行方式的配置（视频直链 + 路线图组 + 文字说明） */
+/** 单种出行方式的配置（视频直链 + 视频号视频 ID + 路线图组 + 文字说明） */
 export interface MiniappRouteConfig {
+  /** mp4/m3u8 等可直接播放的文件直链；空 = 没配直链 */
   videoUrl: string
+  /**
+   * 视频号视频 ID（在视频号里点「复制视频 ID」得到，形如 export/UzFf...）。
+   * 与 videoUrl 各填各的：小程序端**优先播视频号视频**，没有再回落直链。
+   * 空串 = 没配视频号视频。
+   */
+  finderVideo: string
   images: MiniappVenueImage[]
   /**
    * 该出行方式的文字版导语（≤200 字，默认 `''`）。

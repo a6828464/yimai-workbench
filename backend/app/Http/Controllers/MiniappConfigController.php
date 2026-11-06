@@ -31,7 +31,7 @@ use Illuminate\Http\Request;
  * { theme, homeHero, venues: [ { key, heroImage, sub, address, phone, latitude, longitude,
  *               channelsUser, channelsLive,
  *               images[], videoUrl,
- *               routes{drive,transit,walk} ← 各自 {note, videoUrl, images[]} } ],
+ *               routes{drive,transit,walk} ← 各自 {note, videoUrl, finderVideo, images[]} } ],
  *   popup: { enabled, title, content, imageUrl, frequency },
  *   updatedAt }
  * ```
@@ -76,7 +76,7 @@ final class MiniappConfigController extends Controller
     private const POPUP_FREQUENCIES = ['once', 'always'];
 
     /** 单个出行方式的空壳（默认值，也是 routes 合并的基底） */
-    private const EMPTY_ROUTE = ['note' => '', 'videoUrl' => '', 'images' => []];
+    private const EMPTY_ROUTE = ['note' => '', 'videoUrl' => '', 'finderVideo' => '', 'images' => []];
 
     /** 三个出行方式的空壳集合（默认值，也是 routes 合并的基底） */
     public const EMPTY_ROUTES = [
@@ -490,6 +490,10 @@ final class MiniappConfigController extends Controller
             // 路线文字说明：纯文本 ≤200 字（HTML 在 normalizeNote() 里剥掉，落库前就没了）
             'venues.*.routes.*.note' => ['nullable', 'string', 'max:200'],
             'venues.*.routes.*.videoUrl' => ['nullable', 'string', 'max:300', $videoRef],
+            // 视频号视频 ID 单独一个字段（馆主 2026-11-07 要求与直链分开两个输入框）；
+            // 校验与 videoUrl 同一套白名单（站内路径 / https / 视频号 ID 都收）——
+            // 填错栏位（把 ID 填到直链栏）也能存，小程序端有同一套判定兜底
+            'venues.*.routes.*.finderVideo' => ['nullable', 'string', 'max:300', $videoRef],
             'venues.*.routes.*.images' => ['nullable', 'array', 'max:'.self::MEDIA_LIMIT],
             'venues.*.routes.*.images.*.src' => ['required', 'string', 'max:200', $media],
             'venues.*.routes.*.images.*.caption' => ['nullable', 'string', 'max:120'],
@@ -554,6 +558,7 @@ final class MiniappConfigController extends Controller
             'venues.*.routes' => '出行路线',
             'venues.*.routes.*.note' => '路线文字说明',
             'venues.*.routes.*.videoUrl' => '出行视频',
+            'venues.*.routes.*.finderVideo' => '出行视频号视频',
             'venues.*.routes.*.images' => '出行图片',
             'popup' => '首页弹窗',
             'popup.enabled' => '弹窗开关',
@@ -666,6 +671,8 @@ final class MiniappConfigController extends Controller
                 // note 与 videoUrl/images **同级**参与同一层合并：只提交 note 时不会把视频/图片冲掉
                 'note' => $this->normalizeNote($this->pick($sub, $base, 'note')),
                 'videoUrl' => $this->normalizeVideoRef($this->pick($sub, $base, 'videoUrl')),
+                // 视频号视频 ID：与直链分开两个输入框（馆主 2026-11-07 要求）；同样走视频引用归一
+                'finderVideo' => $this->normalizeVideoRef($this->pick($sub, $base, 'finderVideo')),
                 'images' => $this->normalizeImages($this->pick($sub, $base, 'images')),
             ];
         }

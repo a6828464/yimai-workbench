@@ -43,6 +43,8 @@ import { computed, ref } from 'vue'
 import { onLoad, onShareAppMessage } from '@dcloudio/uni-app'
 import { copyText } from '@/utils/nav'
 import { fetchMiniappConfig } from '@/api/miniapp'
+// absolutizeImg 需要：把后台下发的 /api/... 相对路径图补全成绝对 URL
+import { API_BASE } from '@/utils/http'
 
 interface GuideImage {
   /** 小程序包内静态图（/static/…）或 https 地址都行；后端/CDN 换图不必重新发版 */
@@ -61,7 +63,10 @@ type RouteKey = 'drive' | 'transit' | 'walk'
 interface GuideRoute {
   /** 后台配的文字说明（≤200 字，可能含换行）；空 = 不渲染这一块 */
   note: string
+  /** mp4/m3u8 等直链；空 = 没配 */
   videoUrl: string
+  /** 视频号视频 ID（export/UzFf…）；与 videoUrl 各填各的，这里优先播 */
+  finderVideo: string
   images: GuideImage[]
 }
 
@@ -136,9 +141,9 @@ const ADDRESS_TBD_HINT = '地址待补，可复制门店名到手机地图搜索
 /** 空路线集合：本地默认值里三种出行方式都没有配置（后台填了才会显示内容） */
 function emptyRoutes(): Record<RouteKey, GuideRoute> {
   return {
-    drive: { note: '', videoUrl: '', images: [] },
-    transit: { note: '', videoUrl: '', images: [] },
-    walk: { note: '', videoUrl: '', images: [] }
+    drive: { note: '', videoUrl: '', finderVideo: '', images: [] },
+    transit: { note: '', videoUrl: '', finderVideo: '', images: [] },
+    walk: { note: '', videoUrl: '', finderVideo: '', images: [] }
   }
 }
 
@@ -347,7 +352,9 @@ const hasAnyRouteContent = computed(() => {
   if (!r) return false
   return (['drive', 'transit', 'walk'] as const).some((k) => {
     const seg = r[k]
-    return Boolean(seg && (seg.note?.trim() || seg.videoUrl || (seg.images?.length ?? 0) > 0))
+    return Boolean(
+      seg && (seg.note?.trim() || seg.videoUrl || seg.finderVideo || (seg.images?.length ?? 0) > 0)
+    )
   })
 })
 
@@ -438,6 +445,28 @@ function str(v: unknown): string {
 }
 
 /**
+ * 图片地址归一（canonical owner：所有「拿来显示」的图都过这里）。
+ *
+ * 后台「上传」得来的图存的是**相对路径**（`/api/miniapp/uploads/xxx.jpg`）。
+ * 在小程序里，`/` 开头的相对路径会被当成**包内文件**解析
+ * （`<image src="/api/...">`、CSS `url(/api/...)`、`previewImage` 全都 404），
+ * 页面上就只剩渐变压在墨绿底色上 —— 2026-11-07「顶图上传成功但小程序不显示」即此因。
+ *
+ * 规则：
+ *  - `/api/...` 开头 → 拼 API_BASE 补全成绝对 URL（API_BASE 已含 /api，先剥掉防双拼）；
+ *  - 其它 `/` 开头 → 包内静态图（/static/...），原样保留；
+ *  - https 直链 → 原样保留。
+ * 只管图片地址；视频引用（可能是视频号 ID，不是 URL）不走这里。
+ */
+function absolutizeImg(src: string): string {
+  if (src.startsWith('/api/')) {
+    const base = API_BASE.replace(/\/api\/?$/, '')
+    return base + src
+  }
+  return src
+}
+
+/**
  * 容错取坐标：null / '' / 非数字都归一成 0。
  * 0 在 `hasRealCoords()` 里就是「没有坐标」→ openMap 走复制地址，不导错。
  */
@@ -451,7 +480,7 @@ function toImage(raw: unknown): GuideImage | null {
   const o = (raw ?? {}) as Record<string, unknown>
   const src = str(o.src)
   // 没有 src 的图直接丢：渲染空 `<image>` 只会留一块灰
-  return src ? { src, caption: str(o.caption) } : null
+  return src ? { src: absolutizeImg(src), caption: str(o.caption) } : null
 }
 
 /**
@@ -466,7 +495,8 @@ function toRoute(raw: unknown): GuideRoute {
     : []
   // note 是纯文本：`str()` 已经把 null/undefined/数字统一成字符串并 trim，
   // 空串/全空白 → ''（模板按「没有 note」处理，整块不渲染）
-  return { note: str(o.note), videoUrl: str(o.videoUrl), images }
+  // finderVideo：后台拆栏后的「视频号视频 ID」；老后端不下发时按空处理（回落直链）
+  return { note: str(o.note), videoUrl: str(o.videoUrl), finderVideo: str(o.finderVideo), images }
 }
 
 /** routes 三个键各自解析；后台没配的键给空对象，模板按「待补充」渲染 */
@@ -498,7 +528,9 @@ function toGuideVenue(raw: unknown): GuideVenue | null {
     phone: str(o.phone),
     latitude: coord(o.latitude),
     longitude: coord(o.longitude),
-    heroImage: str(o.heroImage),
+    // 顶图也要 absolutizeImg：它以 CSS background-image 的形式渲染，
+    // 相对路径 /api/... 在 wxss 里一样解析不到（就是顶图只剩渐变底的原因）
+    heroImage: absolutizeImg(str(o.heroImage)),
     channelsUser: str(o.channelsUser),
     channelsLive: str(o.channelsLive),
     // BE2 新增字段：门店级视频 + 三种路线。老后端不下发时这里就是空，模板不渲染即可
@@ -994,10 +1026,15 @@ onShareAppMessage(() => {
                   </text>
                 </view>
 
-                <!-- ① 这一段有视频：直链内嵌，非直链退化成跳转按钮 -->
-                <block v-if="activeRoute.videoUrl">
+                <!-- ① 这一段有视频：优先视频号视频内嵌；直链内嵌；其余退化成跳转按钮 -->
+                <block v-if="activeRoute.finderVideo || activeRoute.videoUrl">
                   <channel-video
-                    v-if="looksLikeFeedId(activeRoute.videoUrl)"
+                    v-if="activeRoute.finderVideo"
+                    :feed-id="activeRoute.finderVideo"
+                    class="videoblk__player"
+                  />
+                  <channel-video
+                    v-else-if="looksLikeFeedId(activeRoute.videoUrl)"
                     :feed-id="activeRoute.videoUrl"
                     class="videoblk__player"
                   />
@@ -1160,10 +1197,15 @@ onShareAppMessage(() => {
           </text>
         </view>
 
-        <!-- ① 这一段有视频：直链内嵌，非直链（视频号链接）退化成跳转按钮 -->
-        <block v-if="activeRoute.videoUrl">
+        <!-- ① 这一段有视频：优先视频号视频内嵌；直链内嵌；其余退化成跳转按钮 -->
+        <block v-if="activeRoute.finderVideo || activeRoute.videoUrl">
           <channel-video
-            v-if="looksLikeFeedId(activeRoute.videoUrl)"
+            v-if="activeRoute.finderVideo"
+            :feed-id="activeRoute.finderVideo"
+            class="videoblk__player"
+          />
+          <channel-video
+            v-else-if="looksLikeFeedId(activeRoute.videoUrl)"
             :feed-id="activeRoute.videoUrl"
             class="videoblk__player"
           />

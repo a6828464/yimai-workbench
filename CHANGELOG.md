@@ -1,5 +1,41 @@
 # 更新日志
 
+## 2026-11-07 ｜ fix: v3.17.8 路线视频拆双栏 + 顶图相对路径修复 + 删除 miniapp-ui-a
+
+馆主 04:11/04:13 三连反馈，全部定位到根因并修复：
+
+### 根因与修复
+
+1. **路线视频号 ID「输入框不报错、保存才报错」**
+   真凶：后台有**两套校验器不同步**——输入框旁的实时校验（`videoRefError`）认视频号 ID，
+   但保存前的本地校验 `collectFormatErrors()` 用的还是旧 `urlError`（只认站内路径/https）。
+   按馆主要求把路线视频**拆成两个输入框**（与门店级两栏一致）：
+   - **视频直链**：mp4/m3u8 文件直链或站内路径；
+   - **视频号 ID**：`export/UzFf…` 那串，顾客端直接内嵌播放；两者都填时优先播视频号视频。
+   保存校验同步改用 `videoRefError`，前后端校验器从此一套口径。
+2. **顶图小程序端仍不显示（渐变墨绿底）**
+   真凶：后台「上传」的图存的是**相对路径** `/api/miniapp/uploads/xxx.jpg`；小程序把
+   `/` 开头的路径当**包内文件**解析 → `<image>`/CSS `url()`/`previewImage` 全部 404，
+   页面上就只剩渐变压在墨绿底色上（URL 本身 200，后端无辜）。
+   修复：小程序端新增 `absolutizeImg()`，`/api/` 开头的图片地址统一补全成绝对 URL；
+   覆盖到店指引顶图、门店实景、路线图、图片预览、首页背景 `homeHero`、首页弹窗图
+   ——同一个坑的六处 manifestation 一次全修。
+3. **`miniapp-ui-a/` 删除**：A 方案（静奢东方）视觉早已移植进主工程 `oriental` 主题，
+   独立目录失去价值；git 删 96 个文件、本地回收 277MB，GitHub/Gitee 同步删除。
+
+### 契约变更
+
+- `routes.*` 新增 `finderVideo`（视频号视频 ID）字段，键序 `note → videoUrl → finderVideo → images`；
+  旧后端不下发该键时小程序按空处理（回落直链），**向后兼容**。
+
+### 验证
+
+- 后端 phpunit（Config/ConfigExt/Upload/Theme）**40 passed / 321 assertions**
+- 生产部署后实查：`GET /miniapp/config` 路线键含 `finderVideo`；admin 页面 chunk
+  `index-BImLKPX9.js` 含「视频号 ID」×2 与「优先播视频号视频」提示；顶图 URL 200/3MB
+- 小程序构建产物：`channel-video`×8、`finderVideo` 在、`absolutizeImg` 编译确认
+  （`heroImage:S(N(a.heroImage))`、`toImage src:S(l)`）；`vue-tsc` 0 错误
+
 ## 2026-11-07 ｜ fix: v3.17.7 顶图回源 500（fileinfo 同病第二面）+ A 方案对齐 + 记录补账
 
 馆主 03:27 复核：②路线视频号 ID、③「场馆日常」文案在小程序上仍未解决；⑤顶图上传成功但页面不显示；④GitHub 看不到 3.17.5/3.17.6 记录。全部用运行时证据重查后的结论与修复：
