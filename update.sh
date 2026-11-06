@@ -339,7 +339,8 @@ fi
 echo "── 生成升级前代码快照（回滚用）"
 mkdir -p "$ROLLBACK_DIR"
 tar czf "$ROLLBACK_DIR/backend-code.tar.gz" -C "$APP_ROOT" \
-  --exclude='./vendor' --exclude='./storage' --exclude='./.env' --exclude='./node_modules' . \
+  --exclude='./vendor' --exclude='./storage' --exclude='./.env' --exclude='./node_modules' \
+  --exclude='./.update-backup' --exclude='./.update-work' . \
   || { echo "致命错误：代码快照生成失败，已中止更新。"; exit 1; }
 
 # ── 迁移必须随包到达（rsync 之前的硬门禁） ──────────────────────────
