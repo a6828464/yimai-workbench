@@ -810,9 +810,14 @@ onShareAppMessage(() => {
           </view>
         </view>
       </template>
-
-      <!-- oriental：静奢东方（A 方案，移植自 miniapp-ui-a 定稿实现） -->
       <template v-else>
+        <!--
+          oriental：静奢东方（A 方案，移植自 miniapp-ui-a 定稿实现）
+          ⚠️ 这段注释必须留在 template **内部**：v-else 与上面的 </template> 之间
+          不能夹任何节点（包括注释）——uni-app 的小程序编译器不会跳过注释，
+          一旦隔断，v-else 就认不到前面的 v-if，整个分支被当成普通块渲染，
+          两个主题的内容会同时出现在真机上（v3.17.1 就是这么翻车的）。
+        -->
               <!-- 沉浸头图：门店第一张实景 + 八段渐变沉入米灰；店名衬线大字压底部 -->
               <view class="ghead" :style="heroStyleOriental">
                 <view class="ghead__mark" />
@@ -906,6 +911,29 @@ onShareAppMessage(() => {
                 </view>
               </view>
 
+
+              <!-- 门店实景：门店级引导图（门头 / 前台 / 电梯），与下面的「到店路线」分工不同 -->
+              <view v-if="current.images.length" class="imgs">
+                <view class="imgs__labelrow">
+                  <text class="imgs__label">门店实景</text>
+                  <view class="imgs__rule" />
+                </view>
+                <view
+                  v-for="(img, i) in current.images"
+                  :key="img.src + i"
+                  class="fig ym-tap"
+                  @click="previewImage(current.images, i)"
+                >
+                  <image class="fig__pic" :src="img.src" mode="aspectFill" />
+                  <view class="fig__cap">
+                    <view class="fig__dash" />
+                    <!-- 只把「短的」当图注：后台常把整段路线说明填在实景图注里，
+                         那类文字和下面「到店路线」重复，超过 20 字不渲染 -->
+                    <text v-if="(img.caption || '').length <= 20" class="fig__text">{{ img.caption }}</text>
+                    <text class="fig__zoom">点击放大</text>
+                  </view>
+                </view>
+              </view>
 
               <!-- 到店路线：三种出行方式各自独立渲染，绝不把三段的图混在一起；
                    三种都没配内容时整块不渲染（见 hasAnyRouteContent 的注释） -->
@@ -1031,6 +1059,23 @@ onShareAppMessage(() => {
         </view>
       </view>
 
+
+      <!-- 门店实景：与「到店路线」分工不同——这里放门头/前台/电梯，路线区放怎么走 -->
+      <view v-if="current.images.length" class="imgs">
+        <text class="imgs__label">门店实景</text>
+        <view
+          v-for="(img, i) in current.images"
+          :key="img.src + i"
+          class="imgcard ym-tap"
+          @click="previewImage(current.images, i)"
+        >
+          <image class="imgcard__pic" :src="img.src" mode="aspectFill" />
+          <view class="imgcard__cap">
+            <text v-if="(img.caption || '').length <= 20" class="imgcard__text">{{ img.caption }}</text>
+            <text class="imgcard__zoom">点击放大</text>
+          </view>
+        </view>
+      </view>
 
       <!-- 到店路线：三种出行方式各自独立渲染；三种都没配内容时整块不渲染（同 oriental 分支） -->
       <view v-if="hasAnyRouteContent" class="routes">
