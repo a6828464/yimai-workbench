@@ -316,6 +316,23 @@ const activeRoute = computed<GuideRoute>(
   () => current.value.routes[routeTab.value] ?? { note: '', videoUrl: '', images: [] }
 )
 
+/**
+ * 三种出行方式**全都没配内容**时，整个「到店路线」区块不渲染。
+ *
+ * 为什么：空态时区块里只剩一句「该路线指引待补充」，而它上下还各有分隔线与切换条，
+ * 真机上看起来就像页面里多挂了一个空壳（馆主就把它误认为「重复的到店路线」了）。
+ * 没内容就不占版面，比留一个「待补充」更干净——顾客到店主要靠上面的导航按钮，
+ * 路线只是补充信息。
+ */
+const hasAnyRouteContent = computed(() => {
+  const r = current.value?.routes
+  if (!r) return false
+  return (['drive', 'transit', 'walk'] as const).some((k) => {
+    const seg = r[k]
+    return Boolean(seg && (seg.note?.trim() || seg.videoUrl || (seg.images?.length ?? 0) > 0))
+  })
+})
+
 /* ---------- 路线文字说明（BE4 的 note） ---------- */
 
 /**
@@ -890,8 +907,9 @@ onShareAppMessage(() => {
               </view>
 
 
-              <!-- 到店路线：三种出行方式各自独立渲染，绝不把三段的图混在一起 -->
-              <view class="routes">
+              <!-- 到店路线：三种出行方式各自独立渲染，绝不把三段的图混在一起；
+                   三种都没配内容时整块不渲染（见 hasAnyRouteContent 的注释） -->
+              <view v-if="hasAnyRouteContent" class="routes">
                 <view class="imgs__labelrow">
                   <text class="imgs__label">到店路线</text>
                   <view class="imgs__rule" />
@@ -1014,8 +1032,8 @@ onShareAppMessage(() => {
       </view>
 
 
-      <!-- 到店路线：三种出行方式各自独立渲染，绝不把三段的图混在一起 -->
-      <view class="routes">
+      <!-- 到店路线：三种出行方式各自独立渲染；三种都没配内容时整块不渲染（同 oriental 分支） -->
+      <view v-if="hasAnyRouteContent" class="routes">
         <text class="imgs__label">到店路线</text>
 
         <view class="rtabs">
