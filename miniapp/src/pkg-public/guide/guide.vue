@@ -717,7 +717,7 @@ onShareAppMessage(() => {
                 <text class="pick__tip">不确定先去哪家？两家都能约课，选离你近的一家就行。</text>
         </view>
       </template>
-      <template v-else>
+      <template v-if="isOriental">
         <view class="pick">
                 <view class="pick__gold">
                   <view class="pick__gold-line" />
@@ -763,8 +763,8 @@ onShareAppMessage(() => {
       </template>
     </template>
 
-    <!-- 第二步：门店引导 -->
-    <template v-else>
+    <!-- 第二步：门店引导（用独立 v-if 而不是 v-else：条件互斥，结果确定） -->
+    <template v-if="!choosing">
       <!--
         头部与动作两套主题结构不同，各写一份（editorial：沉浸头 + B 方案按钮；oriental：静奢东方）。
         editorial 的 ghead 才接 heroStyle；oriental 用 heroStyleOriental（渐变末段沉入米灰）。
@@ -810,7 +810,7 @@ onShareAppMessage(() => {
           </view>
         </view>
       </template>
-      <template v-else>
+      <template v-if="isOriental">
         <!--
           oriental：静奢东方（A 方案，移植自 miniapp-ui-a 定稿实现）
           ⚠️ 这段注释必须留在 template **内部**：v-else 与上面的 </template> 之间
