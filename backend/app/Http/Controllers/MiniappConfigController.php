@@ -346,6 +346,11 @@ final class MiniappConfigController extends Controller
      * 文件名是服务端生成的 32 位十六进制 + 白名单扩展名，所以这里用**严格的**正则先挡一道：
      * 任何带 `/`、`..`、`.php` 的请求都到不了 `response()->file()`，路径穿越无从谈起。
      * 一年 immutable 缓存：文件名随机且内容不变，重复访问不该再进 PHP。
+     *
+     * Content-Type 必须显式给：`response()->file()` 默认走 Symfony MimeTypes 猜 MIME，
+     * 而那依赖 php_fileinfo 扩展 —— 河源生产机没装（2026-11-07 顶图「上传成功但回源 500」
+     * 即此因：上传链路有 finfo→getimagesize 降级，这条下载链路漏了）。
+     * 扩展名本来就是白名单枚举，类型是确定的，不需要猜。
      */
     public function uploadedFile(string $file)
     {
@@ -354,7 +359,16 @@ final class MiniappConfigController extends Controller
         $path = storage_path(self::UPLOAD_RELATIVE_DIR.'/'.$file);
         abort_unless(is_file($path), 404);
 
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        $mime = [
+            'jpg' => 'image/jpeg',
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            'gif' => 'image/gif',
+        ][$ext] ?? 'application/octet-stream';
+
         return response()->file($path, [
+            'Content-Type' => $mime,
             'Cache-Control' => 'public, max-age=31536000, immutable',
             'X-Content-Type-Options' => 'nosniff',
         ]);

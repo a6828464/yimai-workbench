@@ -1,5 +1,50 @@
 # 更新日志
 
+## 2026-11-07 ｜ fix: v3.17.7 顶图回源 500（fileinfo 同病第二面）+ A 方案对齐 + 记录补账
+
+馆主 03:27 复核：②路线视频号 ID、③「场馆日常」文案在小程序上仍未解决；⑤顶图上传成功但页面不显示；④GitHub 看不到 3.17.5/3.17.6 记录。全部用运行时证据重查后的结论与修复：
+
+### 取证真相（为什么「说了已解决」却没解决）
+
+1. **小程序端 ②③⑤「没修好」的真因：修复在提交了，但体验版包是修复之前构建上传的。**
+   上传用的 `/tmp/mp-build` 构建于 01:54；三个 v3.17.6 修复提交在 02:50–03:17 才落库。
+   包内实查：`channel-video` 0 处、`heroImage` 0 处、「场馆日常 · 课程片段」还在。
+   交付口径从本轮起固定为：**改完必须重建 → 重传 → grep 产物**，源码状态不等于线上状态。
+2. **⑤后端：上传链路与下载链路「一站两面」都踩 fileinfo。**
+   顶图文件其实已成功落地服务器（`storage/app/miniapp-uploads/1103ec….jpg`，3MB），
+   但回源接口 `GET /api/miniapp/uploads/{file}` 内部 `response()->file()` 走
+   Symfony `MimeTypes::guessMimeType()`，同样依赖 php_fileinfo → 500。
+   上一轮只修了上传（finfo→getimagesize+内容扫描降级），下载链路漏了同一依赖。
+   **修复**：`uploadedFile()` 显式给 `Content-Type`（扩展名本来就是 32 位 hex + 白名单枚举，
+   类型是确定的，不需要猜）。生产已热修验证：`500 → 200 image/jpeg 3019930`。
+3. **④记录缺失的真因：16 个提交没推送。** v3.13.0 之后的提交全部躺在本地
+   （`git log origin/main..main` = 16），GitHub 上自然什么都看不到；CHANGELOG 一直在写，
+   只是没推。本轮统一补记并推送 GitHub + Gitee。
+4. 网页端无回滚（纠偏）：admin 是代码分割构建，入口 JS 只是壳；页面 chunk
+   `index-BjZvqSwK.js` 实查含「视频号视频 ID」×5、占位新文案×1、旧文案 0 —— 线上网页端已是新版。
+
+### 本版改动
+
+- `backend/app/Http/Controllers/MiniappConfigController.php`：`uploadedFile()` 显式
+  `Content-Type` 映射（jpg/png/webp/gif），不再走 Symfony MIME 猜测
+- `miniapp-ui-a/`（A 方案主题）与主工程逐字段对齐，防止主题切换后同病复发：
+  - `guide.vue`：删「场馆日常与课程片段」「场馆日常 · 课程片段」两处 + 孤儿样式；
+    视频号卡片加 `<channel-video :feed-id="channelsLive">`；门店视频/路线视频加
+    `looksLikeFeedId` 分支；`heroImage` 字段 + `heroStyle` 取图 `heroImage → images[0]`
+  - `api/miniapp.ts`：`MiniappVenueConfig` 补 `heroImage`
+  - `home.vue`：`homeHero` 生效（后台配了首页背景就换掉默认实景图）
+- `docs/miniapp-migration/09-开发操作记录.md`：补录 11-05→11-07 空窗期两条台账
+  （本轮复盘 + v3.17.0→3.17.6 六连更）
+
+### 验证
+
+- 后端：`phpunit MiniappUploadTest` 11 passed / `MiniappConfigExtTest` 10 passed；
+  生产热修后回源 URL 200 image/jpeg 3019930（修复前 500，laravel.log 实锤 MIME 猜测异常）
+- 小程序主工程重建：`channel-video`×6、`场馆日常`=0、`heroImage`/`homeHero` 在产物；`vue-tsc` 0
+- A 方案重建：`channel-video`×3、`场馆日常`=0；`vue-tsc` 0
+- `verify/`：permission-matrix 81/81、fix-round 28/28、http-gate 15/15
+  （runtime-check 因 devtools 工具链内部故障未能跑完，非本版改动；路由未动）
+
 ## 2026-11-07 ｜ feat: v3.17.6 视频号视频内嵌播放
 
 馆主反馈：从视频号复制的「视频 ID」填进后台「视频号直播」输入框，小程序端毫无反应。

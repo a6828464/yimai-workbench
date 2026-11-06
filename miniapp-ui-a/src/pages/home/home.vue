@@ -7,7 +7,7 @@
       金色细字到店指引 → 底部员工入口 slogan。
       root 仍是 fixed 铺满 + 三处背景色，黑条修法沿用原版（见文件头说明）。
     -->
-    <image class="home__bg" src="/static/studio-oriental.png" mode="aspectFill" />
+    <image class="home__bg" :src="homeHero || '/static/studio-oriental.png'" mode="aspectFill" />
     <view class="home__shade" />
     <view class="home__fade" />
 
@@ -584,10 +584,16 @@ function ensurePopupDecision(): Promise<void> {
   return popupDecisionPromise
 }
 
+/** 首页背景大图：默认 studio-oriental.png；后台 homeHero 配了就换（loadPopup 里赋值） */
+const homeHero = ref('')
+
 /** 拉配置 → 归一 → 交给 revealPopup；任何异常都吞掉（首页不能因为弹窗配置挂掉） */
 async function loadPopup(): Promise<void> {
   try {
     const cfg = await fetchMiniappConfigRaw()
+    // 首页背景（homeHero）：后台配了 https 直链 / 站内路径就换掉默认实景图
+    const hero = typeof cfg.homeHero === 'string' ? cfg.homeHero : ''
+    if (hero) homeHero.value = hero
     const p = normalizePopup(cfg.popup)
     if (!p) return
     cachedPopup = p

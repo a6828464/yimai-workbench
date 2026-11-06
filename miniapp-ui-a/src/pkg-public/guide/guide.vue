@@ -71,8 +71,10 @@ interface GuideVenue {
   longitude: number
   /** 微信视频号 username（wx.openChannelsUserProfile 用）；空 = 未配置 */
   channelsUser: string
-  /** 视频号 live id：字段保留（后端会下发），UI 不展示（馆主要求去掉那两个字） */
+  /** 视频号 live id：语义已改为「视频号视频 ID」，填了就 <channel-video> 内嵌播放 */
   channelsLive: string
+  /** 门店顶图（头部沉浸大图）。空 = 回落 images[0] */
+  heroImage: string
   /** 门店级引导图（前台/电梯/门头），上限 9 张 */
   images: GuideImage[]
   /** 门店级视频（放在视频号入口下方）；空 = 不渲染播放器 */
@@ -130,6 +132,8 @@ const DEFAULT_VENUES: GuideVenue[] = [
     // TODO(视频号): 填门店视频号 username，例如 'sphXXXXXXXXXXXXXX'
     channelsUser: '',
     channelsLive: '',
+    // 门店顶图：后台可单独配置；空 = 回落 images[0]
+    heroImage: '',
     // 门店级视频：填 mp4/m3u8 直链才能内嵌；视频号链接会退化成「点开看视频」按钮
     videoUrl: '',
     routes: emptyRoutes(),
@@ -154,6 +158,7 @@ const DEFAULT_VENUES: GuideVenue[] = [
     longitude: 121.5496,
     channelsUser: '',
     channelsLive: '',
+    heroImage: '',
     videoUrl: '',
     routes: emptyRoutes(),
     images: [
@@ -185,7 +190,7 @@ const choosing = computed(() => pickedKey.value === '')
  * 没配图时返回空串 → 样式回落成纯深色，仍然成立（不是破图）。
  */
 const heroStyle = computed(() => {
-  const src = current.value?.images?.[0]?.src
+  const src = current.value?.heroImage || current.value?.images?.[0]?.src
   if (!src) return ''
   /* 八段渐变：深色层在 74% 收口，再经「灰 → 浅灰 → 底色」三档过渡（实测少于三档会有硬边）。 */
   return `background-image: linear-gradient(180deg, rgba(10,17,13,0.30) 0%, rgba(10,17,13,0.14) 26%, rgba(10,17,13,0.46) 54%, rgba(10,17,13,0.66) 74%, rgba(58,66,60,0.52) 84%, rgba(186,190,184,0.62) 92%, rgba(242,244,242,0.96) 97%, #f2f4f2 100%), url(${src})`
@@ -198,6 +203,19 @@ const heroStyle = computed(() => {
 const videoReady = computed(() => Boolean(current.value.channelsUser))
 
 /* ---------- 视频：直链 vs 视频号链接 ---------- */
+
+/**
+ * 是不是「视频号视频 ID」（而非 URL）。
+ * 馆主在视频号里点「复制视频 ID」拿到的那串（形如 `export/UzFfAgtgekIEAQAAAAAA...`
+ * 或纯字母数字串），喂给 `<channel-video feed-id>` 就能在小程序里内嵌播放。
+ * 判定与 miniapp/ 主工程同一套：http(s) 开头是 URL 不是 ID；其余且长度 ≥ 10、
+ * 无空格 → 当视频号 ID。
+ */
+function looksLikeFeedId(v: string): boolean {
+  const u = v.trim()
+  if (!u || /^https?:\/\//i.test(u)) return false
+  return u.length >= 10 && !/\s/.test(u)
+}
 
 /**
  * 明显无法内嵌的协议/域名（视频号与微信图文）。
@@ -390,6 +408,7 @@ function toGuideVenue(raw: unknown): GuideVenue | null {
     longitude: coord(o.longitude),
     channelsUser: str(o.channelsUser),
     channelsLive: str(o.channelsLive),
+    heroImage: str(o.heroImage),
     videoUrl: str(o.videoUrl),
     routes: toRoutes(o.routes),
     images: images.length ? images : [{ ...FALLBACK_IMAGE }]
@@ -670,15 +689,17 @@ onShareAppMessage(() => {
           <text class="vcard__title">视频号</text>
           <view class="vcard__rule" />
         </view>
-        <text class="vcard__desc">
-          {{ videoReady ? '场馆日常与课程片段' : '待配置视频号' }}
-        </text>
+        <!-- 视频号视频：后台填了「视频号视频 ID」（channelsLive）就直接内嵌播放，不用跳转 -->
+        <channel-video
+          v-if="current.channelsLive"
+          :feed-id="current.channelsLive"
+          class="vcard__feed vcard__inline-video"
+        />
         <view v-if="videoReady" class="vcard__acts">
           <view class="vrow ym-tap" @click="openChannels">
             <view class="vrow__play"><view class="vrow__tri" /></view>
             <view class="vrow__txt">
               <text class="vrow__name">一麦瑜伽 · 视频号</text>
-              <text class="vrow__sub">场馆日常 · 课程片段</text>
             </view>
             <view class="vrow__arrow">
               <view class="vrow__arrow-line" />
@@ -696,9 +717,14 @@ onShareAppMessage(() => {
       <!-- 门店视频：视频号入口下方；只有配了 videoUrl 才渲染，不留空壳 -->
       <view v-if="current.videoUrl" class="videoblk">
         <text class="videoblk__label">门店视频</text>
-        <!-- 直链（mp4/m3u8）才内嵌；视频号链接小程序播不了，退化成「点开看视频」按钮 -->
+        <!-- 视频号 ID → channel-video 内嵌；直链（mp4/m3u8）→ 原生 video；其余退化成按钮 -->
+        <channel-video
+          v-if="looksLikeFeedId(current.videoUrl)"
+          :feed-id="current.videoUrl"
+          class="videoblk__player"
+        />
         <video
-          v-if="directVideo(current.videoUrl)"
+          v-else-if="directVideo(current.videoUrl)"
           class="videoblk__player"
           :src="current.videoUrl"
           :controls="true"
@@ -762,10 +788,15 @@ onShareAppMessage(() => {
           </text>
         </view>
 
-        <!-- ① 这一段有视频：直链内嵌，非直链退化成跳转按钮 -->
+        <!-- ① 这一段有视频：视频号 ID 内嵌；直链内嵌；其余退化成跳转按钮 -->
         <template v-if="activeRoute.videoUrl">
+          <channel-video
+            v-if="looksLikeFeedId(activeRoute.videoUrl)"
+            :feed-id="activeRoute.videoUrl"
+            class="videoblk__player"
+          />
           <video
-            v-if="directVideo(activeRoute.videoUrl)"
+            v-else-if="directVideo(activeRoute.videoUrl)"
             class="videoblk__player"
             :src="activeRoute.videoUrl"
             :controls="true"
@@ -1217,6 +1248,16 @@ $serif: 'Songti SC', 'STSong', 'SimSun', serif;
   color: $ink-400;
 }
 
+/* 视频号视频内嵌（channel-video 原生组件：宽高必须给死，否则渲染成 0 高） */
+.vcard__inline-video {
+  display: block;
+  width: 100%;
+  height: 420rpx;
+  margin-top: 20rpx;
+  border-radius: 12rpx;
+  overflow: hidden;
+}
+
 .vcard__acts {
   margin-top: 8rpx;
 }
@@ -1262,12 +1303,6 @@ $serif: 'Songti SC', 'STSong', 'SimSun', serif;
   font-size: 30rpx;
   letter-spacing: 0.08em;
   color: $ink-800;
-}
-
-.vrow__sub {
-  font-size: 21rpx;
-  letter-spacing: 0.14em;
-  color: $ink-400;
 }
 
 .vrow__arrow {

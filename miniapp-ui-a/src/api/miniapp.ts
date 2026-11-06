@@ -44,6 +44,8 @@ export interface MiniappVenueConfig {
   longitude?: number | string | null
   channelsUser?: string
   channelsLive?: string
+  /** 门店顶图（到店指引头部那张大图）。空串 = 客户端回落到 images[0] */
+  heroImage?: string
   images?: MiniappVenueImage[]
 }
 
