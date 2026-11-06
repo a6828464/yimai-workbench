@@ -119,7 +119,7 @@ onShareAppMessage(() => shareToHome())
       <!-- 香槟金宽字距小标签：东方主题的身份标识（editorial 不渲染） -->
       <text v-if="isOriental" class="login__tag">S T A F F  O N L Y</text>
       <text class="login__name">一麦工作台</text>
-      <text class="login__slogan">员工的移动工作台</text>
+      <text class="login__slogan">授课服务完整衔接，为会员提供更有温度的服务</text>
     </view>
 
     <!-- 两套主题都去掉了白卡：表单直接落在底色上（无边框无阴影） -->
@@ -160,12 +160,7 @@ onShareAppMessage(() => shareToHome())
       </button>
     </view>
 
-    <text class="login__tip">
-      仅限一麦员工使用，账号由管理员在后台开通
-    </text>
-    <text class="login__tip login__tip--weak">
-      首次请用账号密码登录，再到「我的 → 微信绑定」绑定一次；绑定后以后点上面按钮即可
-    </text>
+    <text class="login__tip">仅限一麦员工使用</text>
   </view>
 </template>
 
@@ -179,7 +174,8 @@ onShareAppMessage(() => shareToHome())
  * ========================================================================== */
 .login {
   min-height: 100vh;
-  padding: 120rpx 44rpx 0;
+  /* 顶部留白加大：品牌区原来 120rpx 起步太靠上，表单整体下移一档（馆主 2026-11-07） */
+  padding: 200rpx 44rpx 0;
   box-sizing: border-box;
 
   &--editorial {
@@ -194,7 +190,7 @@ onShareAppMessage(() => shareToHome())
     display: flex;
     flex-direction: column;
     align-items: center;
-    margin-bottom: 64rpx;
+    margin-bottom: 72rpx;
   }
 
   &__logo {
@@ -301,9 +297,6 @@ onShareAppMessage(() => shareToHome())
     color: #9aa39e;
   }
 
-  .login__tip--weak {
-    color: #b3bbb6;
-  }
 }
 
 /* ---------------- oriental（静奢东方） ---------------- */
@@ -389,9 +382,6 @@ onShareAppMessage(() => shareToHome())
     color: #8c9a92;
   }
 
-  .login__tip--weak {
-    color: #a6b1aa;
-  }
 }
 
 /* 禁用态：两套主题共用（透明度足够说明不可点，不改颜色语义） */
