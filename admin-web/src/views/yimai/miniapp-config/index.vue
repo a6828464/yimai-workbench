@@ -130,17 +130,21 @@
                 placeholder="可留空，如：一麦瑜伽"
               />
               <div class="field-tip">
-                门店视频号 ID，顾客端用于「看门店视频 / 直播」入口；没有就留空。
+                视频号用户名，顾客端用于「看视频号主页」入口；没有就留空。
               </div>
             </ElFormItem>
 
-            <ElFormItem label="直播 ID">
+            <ElFormItem label="视频号视频 ID">
               <ElInput
                 v-model="v.channelsLive"
                 maxlength="120"
                 placeholder="可留空，如：live_xxxx"
               />
-              <div class="field-tip">视频号直播间 ID，留空则顾客端不显示直播入口。</div>
+              <div class="field-tip"
+                >在视频号里点「复制视频
+                ID」拿到的那串，填进来顾客端就能<b>内嵌播放</b>这条视频（不是直播间
+                ID）。留空则不显示。</div
+              >
             </ElFormItem>
 
             <!-- ===== 门店视频（直链，不是视频号） ===== -->
@@ -155,8 +159,8 @@
                   ✕ {{ urlError(v.videoUrl) }}
                 </div>
                 <div class="field-tip">
-                  这里填的是<b>可直接播放的视频文件直链（mp4）</b>，不是视频号链接 ——
-                  小程序用原生播放器播这个地址；视频号请填上面的「视频号 / 直播 ID」。
+                  这里填的是<b>可直接播放的视频文件直链（mp4）</b>，不是视频号链接 —— 填 mp4
+                  直链用原生播放器播；<b>也可以直接填视频号视频 ID</b>，会改用它内嵌播放。
                 </div>
               </div>
             </ElFormItem>
@@ -809,7 +813,7 @@
     latitude: '纬度',
     longitude: '经度',
     channelsUser: '视频号',
-    channelsLive: '直播 ID',
+    channelsLive: '视频号视频 ID',
     images: '图片',
     src: '图片地址',
     caption: '图片说明',

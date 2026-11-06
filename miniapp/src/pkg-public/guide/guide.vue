@@ -263,6 +263,22 @@ const videoReady = computed(() => Boolean(current.value.channelsUser))
 /* ---------- 视频：直链 vs 视频号链接 ---------- */
 
 /**
+ * 值看起来像「视频号视频 ID」而不是 URL。
+ *
+ * 馆主在视频号里点「复制视频 ID」拿到的那串（形如 `export/UzFfAgtgekIEAQAAAAAA...`
+ * 或纯字母数字串），喂给 `<channel-video feed-id>` 就能在小程序里内嵌播放。
+ *
+ * 判定故意保守：只要是 http(s):// 或 / 开头就当 URL 走原逻辑，
+ * 其余且长度 ≥ 10、无空格 → 当视频号 ID。宁可判错成 URL（走降级按钮），
+ * 也不要把一段乱七八糟的文字塞进原生组件里（那会空白无提示）。
+ */
+function looksLikeFeedId(v: string): boolean {
+  const s = (v || '').trim()
+  if (!s || s.startsWith('/') || /^https?:\/\//i.test(s)) return false
+  return /^[A-Za-z0-9_\-/]{10,}$/.test(s)
+}
+
+/**
  * 明显无法内嵌的协议/域名（视频号与微信图文）。
  * 命中就不进 `<video>`，退化成「点开看视频」的按钮，避免播放器黑屏转圈。
  */
@@ -873,6 +889,12 @@ onShareAppMessage(() => {
                 <text class="vcard__desc">
                   {{ videoReady ? '场馆日常与课程片段' : '待配置视频号' }}
                 </text>
+                <!-- 视频号视频：后台填了「视频号视频 ID」就直接内嵌播放，不用跳转 -->
+                <channel-video
+                  v-if="current.channelsLive"
+                  :feed-id="current.channelsLive"
+                  class="vcard__inline-video"
+                />
                 <view v-if="videoReady" class="vcard__acts">
                   <view class="vrow ym-tap" @click="openChannels">
                     <view class="vrow__play"><view class="vrow__tri" /></view>
@@ -897,8 +919,13 @@ onShareAppMessage(() => {
               <view v-if="current.videoUrl" class="videoblk">
                 <text class="videoblk__label">门店视频</text>
                 <!-- 直链（mp4/m3u8）才内嵌；视频号链接小程序播不了，退化成「点开看视频」按钮 -->
+                <channel-video
+                  v-if="looksLikeFeedId(current.videoUrl)"
+                  :feed-id="current.videoUrl"
+                  class="videoblk__player"
+                />
                 <video
-                  v-if="directVideo(current.videoUrl)"
+                  v-else-if="directVideo(current.videoUrl)"
                   class="videoblk__player"
                   :src="current.videoUrl"
                   :controls="true"
@@ -968,8 +995,13 @@ onShareAppMessage(() => {
 
                 <!-- ① 这一段有视频：直链内嵌，非直链退化成跳转按钮 -->
                 <block v-if="activeRoute.videoUrl">
+                  <channel-video
+                    v-if="looksLikeFeedId(activeRoute.videoUrl)"
+                    :feed-id="activeRoute.videoUrl"
+                    class="videoblk__player"
+                  />
                   <video
-                    v-if="directVideo(activeRoute.videoUrl)"
+                    v-else-if="directVideo(activeRoute.videoUrl)"
                     class="videoblk__player"
                     :src="activeRoute.videoUrl"
                     :controls="true"
@@ -1031,6 +1063,12 @@ onShareAppMessage(() => {
           <text class="vcard__desc">
             {{ videoReady ? '课程花絮都在视频号里' : '待配置视频号' }}
           </text>
+          <!-- 视频号视频：后台填了「视频号视频 ID」就直接内嵌播放，不用跳转 -->
+          <channel-video
+            v-if="current.channelsLive"
+            :feed-id="current.channelsLive"
+            class="vcard__inline-video"
+          />
         </view>
         <view v-if="videoReady" class="vcard__acts">
           <view class="vbtn ym-tap" @click="openChannels">
@@ -1049,8 +1087,13 @@ onShareAppMessage(() => {
       <view v-if="current.videoUrl" class="videoblk">
         <text class="videoblk__label">门店视频</text>
         <!-- 直链（mp4/m3u8）才内嵌；视频号链接小程序播不了，退化成「点开看视频」按钮 -->
+        <channel-video
+          v-if="looksLikeFeedId(current.videoUrl)"
+          :feed-id="current.videoUrl"
+          class="videoblk__player"
+        />
         <video
-          v-if="directVideo(current.videoUrl)"
+          v-else-if="directVideo(current.videoUrl)"
           class="videoblk__player"
           :src="current.videoUrl"
           :controls="true"
@@ -1118,8 +1161,13 @@ onShareAppMessage(() => {
 
         <!-- ① 这一段有视频：直链内嵌，非直链（视频号链接）退化成跳转按钮 -->
         <block v-if="activeRoute.videoUrl">
+          <channel-video
+            v-if="looksLikeFeedId(activeRoute.videoUrl)"
+            :feed-id="activeRoute.videoUrl"
+            class="videoblk__player"
+          />
           <video
-            v-if="directVideo(activeRoute.videoUrl)"
+            v-else-if="directVideo(activeRoute.videoUrl)"
             class="videoblk__player"
             :src="activeRoute.videoUrl"
             :controls="true"
@@ -1340,6 +1388,19 @@ $gold: #c19a4b;
 .vcard__desc {
   font-size: 23rpx;
   color: $ink-400;
+}
+
+/*
+  channel-video 是原生组件：宽高必须给死，否则可能渲染成 0 高（页面上看就是「什么都没有」）。
+  馆主在后台填的「视频号视频 ID」就是从这里播出来的。
+*/
+.vcard__inline-video {
+  display: block;
+  width: 100%;
+  height: 420rpx;
+  margin-top: 20rpx;
+  border-radius: 12rpx;
+  overflow: hidden;
 }
 
 .vcard__acts {
