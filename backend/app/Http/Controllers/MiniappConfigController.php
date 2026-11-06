@@ -28,7 +28,7 @@ use Illuminate\Http\Request;
  * ## 结构（v2：门店视频 + 三种出行方式 + 首页弹窗）
  *
  * ```
- * { venues: [ { key, sub, address, phone, latitude, longitude, channelsUser, channelsLive,
+ * { theme, venues: [ { key, sub, address, phone, latitude, longitude, channelsUser, channelsLive,
  *               images[], videoUrl,
  *               routes{drive,transit,walk} ← 各自 {note, videoUrl, images[]} } ],
  *   popup: { enabled, title, content, imageUrl, frequency },
@@ -46,6 +46,25 @@ use Illuminate\Http\Request;
  */
 final class MiniappConfigController extends Controller
 {
+    /**
+     * 小程序对外页面的视觉主题（顶层字段，不在 venues / popup 里）。
+     *
+     * ## 现行两套：editorial（编辑）/ oriental（静奢东方）
+     *
+     * **默认 editorial**（馆主 2026-11 拍板）。
+     *
+     * ## classic（经典）已弃用 —— 这是**有意的枚举收窄**，不是可回滚的 bug
+     *
+     * `classic` 已从枚举里删除：客户端的经典渲染代码会被删掉，所以**返回 classic 等于让页面
+     * 渲染成无主题的裸样式**，比任何一套主题都糟。因此：
+     *  - 读侧：库里的 `classic`（t43 那轮可能已写入）与其它任何非法值一样**回落 editorial**；
+     *  - 写侧：再提交 `classic` 直接 422，并明确告诉调用方经典主题已不再支持。
+     * 存量配置不需要迁移 —— 回落发生在读取时，库里的旧值原样保留（回滚代码时还能认出来）。
+     */
+    private const THEMES = ['editorial', 'oriental'];
+
+    private const DEFAULT_THEME = 'editorial';
+
     /** 三种出行方式（顺序即输出顺序）：drive 自驾 / transit 公交 / walk 步行 */
     private const ROUTE_KEYS = ['drive', 'transit', 'walk'];
 
@@ -203,7 +222,13 @@ final class MiniappConfigController extends Controller
             ? $this->normalizePopup($current['popup'], (array) $data['popup'])
             : $current['popup'];
 
+        // theme：只有提交了才改，否则沿用当前生效值（只传 venues 不该把主题冲回默认）
+        $theme = array_key_exists('theme', $data)
+            ? $this->normalizeTheme($data['theme'])
+            : $current['theme'];
+
         $cfg = [
+            'theme' => $theme,
             'venues' => $venues,
             'popup' => $popup,
             // 时间戳写进 JSON 而不是读 app_settings.updated_at：后者会被「保存清单阈值 / AI 配置」
@@ -340,6 +365,20 @@ final class MiniappConfigController extends Controller
         };
 
         return [
+            // 主题：顶层单值，只认 editorial / oriental。
+            // 用闭包而不是 `in:` 规则，是为了对「已弃用的 classic」单独给一句更明确的话 ——
+            // 只回一句「所选的主题无效」，调用方会以为自己拼错了，而实际上是这套主题被删了。
+            'theme' => ['nullable', 'string', function (string $attribute, mixed $value, \Closure $fail): void {
+                if (is_string($value) && in_array(trim($value), self::THEMES, true)) {
+                    return;
+                }
+                if (is_string($value) && trim($value) === 'classic') {
+                    $fail('经典主题（classic）已不再支持，请选择 editorial（编辑）或 oriental（静奢东方）');
+
+                    return;
+                }
+                $fail('主题只能是 editorial（编辑）或 oriental（静奢东方）');
+            }],
             // venues 与 popup 都可选：只传一块时另一块保持原样（合并语义）
             'venues' => ['nullable', 'array', 'size:2'],
             // distinct + in + size:2 ⇒ 只能是「绿地店」「东部店」各一次（顺序随意，服务端会归一）
@@ -380,6 +419,7 @@ final class MiniappConfigController extends Controller
     private function messages(): array
     {
         return [
+            'theme.string' => '主题必须是字符串（editorial 或 oriental）',
             'venues.array' => '门店配置格式不正确',
             'venues.size' => '门店数量必须是 2 家（绿地店、东部店），不支持新增或删除门店',
             'venues.*.key.required' => '每家店都必须带门店键（绿地店 / 东部店）',
@@ -409,6 +449,7 @@ final class MiniappConfigController extends Controller
     private function attributes(): array
     {
         return [
+            'theme' => '主题',
             'venues' => '门店配置',
             'venues.*.key' => '门店键',
             'venues.*.sub' => '门店副标题',
@@ -469,6 +510,8 @@ final class MiniappConfigController extends Controller
         }
 
         return [
+            // 主题在顶层且排第一（契约顺序）：旧配置没有这个键、或存了已弃用的 classic → 回落 editorial
+            'theme' => $this->normalizeTheme($cfg['theme'] ?? null),
             'venues' => $venues,
             // 旧配置没有 popup 键 → 回落 DEFAULT_POPUP（enabled=false）
             'popup' => $this->normalizePopup(self::DEFAULT_POPUP, (array) ($cfg['popup'] ?? [])),
@@ -594,6 +637,20 @@ final class MiniappConfigController extends Controller
     }
 
     /**
+     * 主题归一：只认 editorial / oriental，**其它一律回落 editorial**。
+     *
+     * 为什么不「原样透传 + 前端兜底」：客户端拿到未知主题名（含已弃用的 classic）会走不到
+     * 任何一套样式分支，渲染出来是无主题的裸页面 —— 对顾客来说比任何一套主题都糟。
+     * 所以脏数据在这里就被吃掉。写入侧另有校验，这里是读侧的最后一道。
+     */
+    private function normalizeTheme(mixed $raw): string
+    {
+        $theme = is_string($raw) ? trim($raw) : '';
+
+        return in_array($theme, self::THEMES, true) ? $theme : self::DEFAULT_THEME;
+    }
+
+    /**
      * 路线文字说明归一：**剥掉所有 HTML/脚本标签**，再按 200 字截断。
      *
      * 为什么连读时也 strip_tags（不只是写入校验）：这个字段会渲染在**顾客端**的到店指引页，
@@ -692,6 +749,11 @@ final class MiniappConfigController extends Controller
             if ($changed !== []) {
                 $parts[] = $key.'('.implode('、', $changed).')';
             }
+        }
+
+        // 主题是顶层字段，单独比一次（放在弹窗之前，读起来是「主题、门店、弹窗」的顺序）
+        if (json_encode($before['theme'] ?? null) !== json_encode($after['theme'] ?? null)) {
+            $parts[] = '主题';
         }
 
         $popupChanged = [];

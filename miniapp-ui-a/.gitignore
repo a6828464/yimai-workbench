@@ -1,0 +1,10 @@
+# 验证脚本产物（报告可复现，不入库）
+verify/out/
+verify/wprobe*.mjs
+
+# uni-app / 构建产物
+node_modules/
+dist/
+unpackage/
+.env.local
+.env.*.local

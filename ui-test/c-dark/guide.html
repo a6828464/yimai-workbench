@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一麦瑜伽·普拉提 · 到店指引 — 风格C 暗夜高端会所</title>
+<!-- ==========================================================
+  一麦瑜伽·普拉提 小程序 · UI 风格方向 C 「暗夜高端会所 · 私教奢牌」
+  本方向页面清单（ui-test/c-dark/，共 2 页）：
+    ① home.html  —— 主页 mockup
+    ② guide.html —— 到店指引页 mockup（本页）：选门店 → 门店引导
+                     （地址 / 导航·电话双动作 / 视频号 / 门店实景 / 到店路线三段 / 换店）
+  交互：两步原生 JS 切换 + ?store= 深链；东店电话未配 → 复制门店名降级
+  仅供 UI 方向评审 · 静态高保真 · 纯 HTML+CSS+少量原生 JS · 无构建无依赖
+========================================================== -->
+<style>
+  :root{
+    --ink:#0a120e;
+    --ink2:#0e1713;
+    --paper:#f5efe4;
+    --gold:#c8a24e;
+    --gold-hi:#d8b96a;
+    --gold-cream:#e6d3a0;
+    --serif:'Songti SC','STSong','STSong',Georgia,serif;
+    --sans:'PingFang SC',-apple-system,'Helvetica Neue','Microsoft YaHei',sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  body{background:#17191a;font-family:var(--sans);display:flex;justify-content:center;padding:20px 0;min-height:100vh;}
+
+  .phone{position:relative;flex:none;width:390px;height:844px;box-sizing:content-box;border:8px solid #000;border-radius:44px;background:var(--ink);overflow:hidden;box-shadow:0 34px 90px rgba(0,0,0,.68),0 0 0 1px rgba(255,255,255,.04);margin:auto;}
+  .screen{position:absolute;inset:0;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none;}
+  .screen::-webkit-scrollbar{display:none;}
+
+  .statusbar{position:absolute;top:0;left:0;right:0;height:44px;z-index:60;display:flex;align-items:center;justify-content:space-between;padding:0 20px 0 30px;pointer-events:none;--sbink:#ffffff;}
+  .sb-time{font-size:14.5px;font-weight:600;letter-spacing:.02em;color:var(--sbink);font-family:-apple-system,'PingFang SC',sans-serif;font-variant-numeric:tabular-nums;}
+  .sb-island{position:absolute;left:50%;top:8.5px;transform:translateX(-50%);width:96px;height:27px;border-radius:14px;background:#000;}
+  .sb-icons{display:flex;align-items:center;gap:7px;}
+  .sb-signal{display:flex;align-items:flex-end;gap:2.5px;height:11px;}
+  .sb-signal i{width:3px;border-radius:1px;background:var(--sbink);}
+  .sb-signal i:nth-child(1){height:4.5px}.sb-signal i:nth-child(2){height:6.5px}.sb-signal i:nth-child(3){height:8.5px}.sb-signal i:nth-child(4){height:11px}
+  .sb-wifi{position:relative;width:16px;height:12px;}
+  .sb-wifi i{position:absolute;left:50%;bottom:0;transform:translate(-50%,50%);border:1.6px solid transparent;border-top-color:var(--sbink);border-radius:50%;}
+  .sb-wifi i:nth-child(1){width:16px;height:16px}
+  .sb-wifi i:nth-child(2){width:10.5px;height:10.5px}
+  .sb-wifi i:nth-child(3){width:5.5px;height:5.5px}
+  .sb-wifi b{position:absolute;left:50%;bottom:0;transform:translate(-50%,50%);width:3px;height:3px;border-radius:50%;background:var(--sbink);}
+  .sb-battery{position:relative;width:25px;height:12px;border:1px solid var(--sbink);border-radius:3.5px;padding:1.5px;}
+  .sb-battery i{display:block;width:70%;height:100%;border-radius:2px;background:var(--sbink);}
+  .sb-battery::after{content:'';position:absolute;right:-3.5px;top:50%;transform:translateY(-50%);width:1.8px;height:5px;border-radius:0 1px 1px 0;background:var(--sbink);}
+
+  .capsule{position:absolute;top:49px;right:11px;height:32px;padding:0 9px;border-radius:16px;background:rgba(255,255,255,.14);border:.5px solid rgba(255,255,255,.22);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);display:flex;align-items:center;gap:9px;z-index:60;}
+  .capsule .c-dots{display:flex;gap:3px;}
+  .capsule .c-dots i{width:4px;height:4px;border-radius:50%;background:rgba(255,255,255,.92);}
+  .capsule .c-div{width:1px;height:17px;background:rgba(255,255,255,.32);}
+  .capsule .c-ring{width:15px;height:15px;border:1.3px solid rgba(255,255,255,.92);border-radius:50%;position:relative;}
+  .capsule .c-ring::after{content:'';position:absolute;inset:4px;border-radius:50%;background:rgba(255,255,255,.92);}
+
+  /* 返回箭头（白细边圆钮） */
+  .back-btn{position:absolute;top:49px;left:11px;width:32px;height:32px;border-radius:50%;border:1px solid rgba(255,255,255,.5);background:rgba(10,18,14,.25);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:#fff;font-family:Georgia,'Times New Roman',serif;font-size:24px;line-height:1;display:flex;align-items:center;justify-content:center;padding-left:2px;text-decoration:none;transition:all .3s;z-index:70;cursor:pointer;}
+  .back-btn:hover{border-color:rgba(255,255,255,.95);background:rgba(10,18,14,.45);}
+  .back-btn:active{transform:scale(.9);}
+
+  .toast{position:absolute;left:50%;bottom:110px;transform:translateX(-50%) translateY(16px);background:rgba(14,23,19,.92);border:1px solid rgba(200,162,78,.45);color:var(--gold-cream);font-size:12px;letter-spacing:.08em;padding:11px 20px;border-radius:999px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);box-shadow:0 10px 30px rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:all .35s;z-index:80;white-space:nowrap;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  .hidden{display:none!important;}
+  .step{position:relative;min-height:844px;animation:fadeUp .45s ease both;}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+  /* ===== 第一步：选门店（夜景底 + 毛玻璃长卡） ===== */
+  .sel-bg{position:absolute;inset:0;z-index:0;}
+  .sel-bg img{width:100%;height:100%;object-fit:cover;display:block;}
+  .sel-bg .veil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,18,14,.88),rgba(12,20,16,.82) 45%,rgba(8,13,10,.93));}
+  .sel-inner{position:relative;z-index:1;min-height:844px;width:375px;margin:0 auto;padding:120px 22px 0;display:flex;flex-direction:column;}
+  .sel-head{text-align:center;}
+  .micro{font-family:var(--serif);font-weight:500;font-size:10px;color:var(--gold);letter-spacing:.34em;margin-right:-.34em;}
+  .sel-title{font-family:var(--serif);font-weight:700;font-size:30px;color:var(--paper);letter-spacing:.12em;margin-top:14px;}
+  .sel-sub{margin-top:11px;font-size:12px;color:rgba(245,239,228,.52);letter-spacing:.16em;}
+  .studio-list{margin-top:40px;display:flex;flex-direction:column;gap:18px;}
+  .studio-row{position:relative;overflow:hidden;display:flex;align-items:center;justify-content:space-between;padding:25px 24px;border-radius:18px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);text-decoration:none;cursor:pointer;transition:border-color .35s,box-shadow .35s,transform .35s;}
+  .studio-row::before{content:'';position:absolute;top:0;left:10%;right:10%;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.3),transparent);}
+  .studio-row:hover{border-color:rgba(200,162,78,.62);box-shadow:0 0 28px rgba(200,162,78,.15);transform:translateY(-2px);}
+  .studio-row:active{transform:scale(.98);}
+  .sr-name{font-family:var(--serif);font-weight:500;font-size:21px;color:var(--paper);letter-spacing:.05em;}
+  .sr-sub{margin-top:8px;font-size:12.5px;color:rgba(245,239,228,.62);letter-spacing:.1em;}
+  .sr-addr{margin-top:13px;font-size:10.5px;color:rgba(245,239,228,.4);letter-spacing:.04em;line-height:1.65;max-width:212px;}
+  .sr-addr.pending{color:rgba(216,185,106,.75);}
+  .sr-side{display:flex;flex-direction:column;align-items:flex-end;gap:11px;}
+  .sr-go{font-family:var(--serif);font-weight:500;font-size:9px;color:var(--gold);letter-spacing:.3em;margin-right:-.3em;}
+  .g-arrow{display:flex;align-items:center;}
+  .ga-line{width:30px;height:1px;background:linear-gradient(90deg,rgba(200,162,78,.2),var(--gold));transition:width .35s;}
+  .ga-head{width:7px;height:7px;border-top:1px solid var(--gold);border-right:1px solid var(--gold);transform:rotate(45deg);margin-left:-6px;filter:drop-shadow(0 0 5px rgba(200,162,78,.55));}
+  .studio-row:hover .ga-line{width:40px;}
+  .sel-foot{margin-top:auto;text-align:center;padding-bottom:46px;}
+  .sel-foot img{width:34px;height:34px;object-fit:contain;opacity:.9;display:block;margin:0 auto;}
+  .sel-foot .micro{margin-top:12px;color:rgba(200,162,78,.66);}
+
+  /* ===== 第二步：门店引导 ===== */
+  #stepGuide{background:linear-gradient(180deg,#0e1713 0%,#0b130f 55%,#0a120e 100%);}
+  .g-head{position:relative;height:262px;}
+  .g-head img{width:100%;height:100%;object-fit:cover;display:block;filter:brightness(.68) saturate(.92);}
+  .g-head .veil{position:absolute;inset:0;background:linear-gradient(180deg,rgba(10,18,14,.62) 0%,rgba(14,23,19,.18) 42%,rgba(14,23,19,.9) 88%,#0e1713 100%);}
+  .g-head-title{position:absolute;left:0;right:0;bottom:20px;text-align:center;z-index:1;}
+  .g-title{font-family:var(--serif);font-weight:700;font-size:26px;color:var(--paper);letter-spacing:.07em;margin-top:10px;text-shadow:0 2px 24px rgba(0,0,0,.6);}
+  .g-body{position:relative;width:375px;margin:0 auto;padding:4px 20px 40px;}
+
+  .addr-row{display:flex;align-items:flex-start;gap:10px;padding:16px 2px 0;}
+  .addr-diamond{flex:0 0 auto;width:5px;height:5px;background:var(--gold);transform:rotate(45deg);margin-top:8px;box-shadow:0 0 8px rgba(200,162,78,.7);}
+  .addr-text{color:var(--paper);font-size:13.5px;letter-spacing:.04em;line-height:1.75;font-variant-numeric:tabular-nums;}
+  .addr-text.pending{color:rgba(245,239,228,.72);}
+
+  /* 导航=金色实心微光；电话=毛玻璃描边 */
+  .action-row{display:flex;gap:12px;margin:20px 2px 4px;}
+  .btn-nav{flex:1;height:50px;border-radius:14px;background:linear-gradient(165deg,#dcb96e 0%,#c8a24e 52%,#b18d3e 100%);color:#1a1408;font-size:14px;font-weight:600;letter-spacing:.24em;display:flex;align-items:center;justify-content:center;text-decoration:none;box-shadow:0 8px 26px rgba(200,162,78,.32),inset 0 1px 0 rgba(255,255,255,.45);transition:box-shadow .3s,transform .3s;cursor:pointer;}
+  .btn-nav:hover{box-shadow:0 10px 36px rgba(200,162,78,.5),inset 0 1px 0 rgba(255,255,255,.5);transform:translateY(-1px);}
+  .btn-nav:active{transform:scale(.97);}
+  .btn-ghost{flex:1.15;height:50px;border-radius:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);color:var(--paper);font-size:13px;letter-spacing:.05em;display:flex;align-items:center;justify-content:center;text-decoration:none;font-variant-numeric:tabular-nums;transition:border-color .3s,box-shadow .3s,color .3s;cursor:pointer;}
+  .btn-ghost:hover{border-color:rgba(200,162,78,.55);box-shadow:0 0 20px rgba(200,162,78,.14);color:#fff;}
+  .btn-ghost:active{transform:scale(.97);}
+
+  /* 金细线分隔的区块标题 */
+  .sec-head{display:flex;align-items:center;gap:12px;margin:30px 2px 16px;}
+  .sh-line{flex:1;height:1px;}
+  .sh-line.l{background:linear-gradient(90deg,transparent,rgba(200,162,78,.45));}
+  .sh-line.r{background:linear-gradient(270deg,transparent,rgba(200,162,78,.45));}
+  .sh-t{font-family:var(--serif);font-weight:500;font-size:14px;color:rgba(245,239,228,.9);letter-spacing:.2em;margin-right:-.2em;white-space:nowrap;}
+
+  /* 视频号卡（毛玻璃 + 播放钮） */
+  .video-card{border-radius:16px;overflow:hidden;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);}
+  .video-area{position:relative;height:186px;}
+  .video-area > img{width:100%;height:100%;object-fit:cover;display:block;filter:brightness(.55) saturate(.9);}
+  .play{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:58px;height:58px;border-radius:50%;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.3);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:center;box-shadow:0 4px 30px rgba(0,0,0,.4);transition:all .3s;cursor:pointer;}
+  .video-card:hover .play{border-color:rgba(200,162,78,.7);box-shadow:0 0 26px rgba(200,162,78,.3);}
+  .tri{width:0;height:0;border-left:15px solid var(--gold-hi);border-top:10px solid transparent;border-bottom:10px solid transparent;margin-left:5px;filter:drop-shadow(0 0 8px rgba(200,162,78,.6));}
+  .video-dur{position:absolute;right:12px;bottom:10px;font-size:10px;color:rgba(255,255,255,.85);background:rgba(0,0,0,.45);padding:3px 7px;border-radius:4px;letter-spacing:.05em;font-variant-numeric:tabular-nums;}
+  .video-meta{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;}
+  .vm-title{font-size:13px;color:rgba(245,239,228,.88);letter-spacing:.05em;}
+  .vm-tag{font-family:var(--serif);font-weight:500;font-size:9px;letter-spacing:.26em;color:var(--gold);margin-right:-.26em;}
+
+  /* 门店实景：暗色卡 + 金色图注角标 */
+  .gallery{display:flex;gap:12px;}
+  .ph{flex:1;position:relative;border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,.1);background:#0a120e;}
+  .ph img{width:100%;height:132px;object-fit:cover;display:block;filter:brightness(.68) saturate(.88);transition:filter .35s;}
+  .ph:hover img{filter:brightness(.82) saturate(.95);}
+  .ph-cap{position:absolute;left:0;right:0;bottom:0;padding:26px 10px 9px;background:linear-gradient(180deg,transparent,rgba(6,10,8,.94));color:var(--gold);font-size:10px;letter-spacing:.06em;}
+
+  /* 到店路线：金色下划线式 tab */
+  .tabs{display:flex;margin:4px 2px 0;border-bottom:1px solid rgba(255,255,255,.1);}
+  .tab{flex:1;text-align:center;padding:13px 0 11px;font-size:13.5px;color:rgba(245,239,228,.5);letter-spacing:.1em;cursor:pointer;position:relative;transition:color .3s;}
+  .tab:hover{color:rgba(245,239,228,.85);}
+  .tab.active{color:var(--gold);font-weight:500;}
+  .tab.active::after{content:'';position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);width:26px;height:2px;background:var(--gold);border-radius:2px;box-shadow:0 2px 10px rgba(200,162,78,.6);}
+  .route-intro{margin-top:16px;padding:16px 18px;border-radius:14px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);color:rgba(245,239,228,.85);font-size:13px;line-height:1.9;letter-spacing:.02em;animation:fadeUp .45s ease both;}
+  .route-img-wrap{margin-top:14px;position:relative;border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,.09);}
+  .route-img-wrap img{width:100%;height:148px;object-fit:cover;display:block;filter:brightness(.62) saturate(.9);}
+  .ri-tag{position:absolute;top:10px;left:10px;font-family:var(--serif);font-weight:500;font-size:9px;letter-spacing:.3em;color:var(--gold-hi);background:rgba(6,10,8,.72);border:1px solid rgba(200,162,78,.35);padding:4px 8px 4px 11px;border-radius:4px;}
+
+  /* 换一家门店：暖白细字链 */
+  .switch-link{display:block;text-align:center;margin:34px 0 6px;color:rgba(245,239,228,.55);font-size:12px;letter-spacing:.16em;text-decoration:none;cursor:pointer;transition:color .3s;}
+  .switch-link:hover{color:var(--paper);}
+  .switch-link span{padding-bottom:4px;border-bottom:1px solid transparent;transition:border-color .3s;}
+  .switch-link:hover span{border-bottom-color:rgba(200,162,78,.6);}
+</style>
+</head>
+<body>
+  <div class="phone">
+    <div class="screen" id="screen">
+
+      <!-- ======= 第一步：选门店 ====== -->
+      <section class="step" id="stepSelect">
+        <div class="sel-bg">
+          <img src="../assets/studio-night.png" alt="" onerror="this.style.opacity='0'">
+          <div class="veil"></div>
+        </div>
+        <div class="sel-inner">
+          <div class="sel-head">
+            <div class="micro">SELECT STUDIO</div>
+            <h1 class="sel-title">选择门店</h1>
+            <p class="sel-sub">请选择您本次到访的场馆</p>
+          </div>
+          <div class="studio-list">
+            <a class="studio-row" href="javascript:void(0)" onclick="selectStore('green')">
+              <div class="sr-info">
+                <div class="sr-name">一麦瑜伽 · 绿地店</div>
+                <div class="sr-sub">绿地缤纷城 · 4 楼</div>
+                <div class="sr-addr">宁波市江北区绿地缤纷城1号楼4楼</div>
+              </div>
+              <div class="sr-side">
+                <span class="sr-go">GUIDE</span>
+                <span class="g-arrow"><i class="ga-line"></i><i class="ga-head"></i></span>
+              </div>
+            </a>
+            <a class="studio-row" href="javascript:void(0)" onclick="selectStore('east')">
+              <div class="sr-info">
+                <div class="sr-name">一麦瑜伽 · 东部店</div>
+                <div class="sr-sub">江东 · 场馆</div>
+                <div class="sr-addr pending">地址待补 · 可复制门店名搜索</div>
+              </div>
+              <div class="sr-side">
+                <span class="sr-go">GUIDE</span>
+                <span class="g-arrow"><i class="ga-line"></i><i class="ga-head"></i></span>
+              </div>
+            </a>
+          </div>
+          <div class="sel-foot">
+            <img src="../assets/logo-white.png" alt="一麦瑜伽" onerror="this.style.opacity='0'">
+            <div class="micro">YIMAI YOGA · PILATES</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ======= 第二步：门店引导 ====== -->
+      <section class="step hidden" id="stepGuide">
+        <div class="g-head">
+          <img src="../assets/studio-night.png" alt="门店" onerror="this.style.opacity='0'">
+          <div class="veil"></div>
+          <div class="g-head-title">
+            <div class="micro">STUDIO GUIDE</div>
+            <h2 class="g-title" id="gName">一麦瑜伽 · 绿地店</h2>
+          </div>
+        </div>
+        <div class="g-body">
+          <div class="addr-row">
+            <i class="addr-diamond"></i>
+            <span class="addr-text" id="gAddr">宁波市江北区绿地缤纷城1号楼4楼</span>
+          </div>
+          <div class="action-row">
+            <a class="btn-nav" id="btnNav" href="javascript:void(0)">导航到店</a>
+            <a class="btn-ghost" id="btnContact" href="javascript:void(0)">电话 · 0574-87214863</a>
+          </div>
+
+          <div class="sec-head"><span class="sh-line l"></span><span class="sh-t">视频号 · 场馆导览</span><span class="sh-line r"></span></div>
+          <div class="video-card">
+            <div class="video-area">
+              <img src="../assets/studio-night.png" alt="" onerror="this.style.opacity='0'">
+              <span class="video-dur">02:18</span>
+              <div class="play"><i class="tri"></i></div>
+            </div>
+            <div class="video-meta">
+              <span class="vm-title">门店实拍 · 完整场馆导览</span>
+              <span class="vm-tag">视频号</span>
+            </div>
+          </div>
+
+          <div class="sec-head"><span class="sh-line l"></span><span class="sh-t">门店实景</span><span class="sh-line r"></span></div>
+          <div class="gallery">
+            <figure class="ph">
+              <img src="../assets/studio-night.png" alt="" onerror="this.style.opacity='0'">
+              <figcaption class="ph-cap">4 楼前台 · 到店后出示指引</figcaption>
+            </figure>
+            <figure class="ph">
+              <img src="../assets/hero.jpg" alt="" onerror="this.style.opacity='0'">
+              <figcaption class="ph-cap">教室实景 · 自然光教室</figcaption>
+            </figure>
+          </div>
+
+          <div class="sec-head"><span class="sh-line l"></span><span class="sh-t">到店路线</span><span class="sh-line r"></span></div>
+          <div class="tabs">
+            <div class="tab active" data-route="drive">开车</div>
+            <div class="tab" data-route="transit">公共交通</div>
+            <div class="tab" data-route="walk">步行</div>
+          </div>
+          <div class="route-intro" id="routeIntro">绿地缤纷城地下停车场 B2 层直达电梯，4 楼出电梯右手边即前台。周末车流较大建议提前 10 分钟到店。</div>
+          <div class="route-img-wrap">
+            <img src="../assets/studio-night.png" alt="" onerror="this.style.opacity='0'">
+            <span class="ri-tag">指引图</span>
+          </div>
+
+          <a class="switch-link" href="javascript:void(0)" onclick="backToSelect()"><span>换一家门店</span></a>
+        </div>
+      </section>
+    </div>
+
+    <div class="statusbar">
+      <span class="sb-time">9:41</span>
+      <span class="sb-island"></span>
+      <span class="sb-icons">
+        <span class="sb-signal"><i></i><i></i><i></i><i></i></span>
+        <span class="sb-wifi"><i></i><i></i><i></i><b></b></span>
+        <span class="sb-battery"><i></i></span>
+      </span>
+    </div>
+    <div class="capsule">
+      <span class="c-dots"><i></i><i></i><i></i></span>
+      <span class="c-div"></span>
+      <span class="c-ring"></span>
+    </div>
+    <a class="back-btn" id="backBtn" href="home.html">‹</a>
+    <div class="toast" id="toast">已复制门店名，可粘贴到地图搜索</div>
+  </div>
+
+  <script>
+    /* 门店数据：绿地店档案完整；东部店电话/地址未配 → 降级态 */
+    var STORES={
+      green:{
+        name:'一麦瑜伽 · 绿地店',
+        addr:'宁波市江北区绿地缤纷城1号楼4楼',
+        addrPending:false,
+        contact:'电话 · 0574-87214863',
+        contactType:'tel',
+        tel:'057487214863',
+        copyText:'一麦瑜伽·绿地店（宁波市江北区绿地缤纷城1号楼4楼）',
+        routes:{
+          drive:'绿地缤纷城地下停车场 B2 层直达电梯，4 楼出电梯右手边即前台。周末车流较大建议提前 10 分钟到店。',
+          transit:'乘公交或地铁至绿地缤纷城周边站点，出站后导航「绿地缤纷城」步行前往，由 1 号楼电梯直达 4 楼。',
+          walk:'由商场行人入口进入绿地缤纷城，乘电梯至 4 楼，出电梯右手边即前台。'
+        }
+      },
+      east:{
+        name:'一麦瑜伽 · 东部店',
+        addr:'地址待补，可复制门店名到手机地图搜索',
+        addrPending:true,
+        contact:'复制门店名',
+        contactType:'copy',
+        copyText:'一麦瑜伽·东部店（江东）',
+        routes:{
+          drive:'可复制门店名到手机地图搜索，查看位置并获得驾车导航。',
+          transit:'可复制门店名到手机地图搜索，查看公交与地铁方案。',
+          walk:'可复制门店名到手机地图搜索，获取步行导航路线。'
+        }
+      }
+    };
+    var current='green',routeTab='drive',toastTimer=null;
+
+    function showStep(which){
+      document.getElementById('stepSelect').classList.toggle('hidden',which!=='select');
+      document.getElementById('stepGuide').classList.toggle('hidden',which!=='guide');
+      document.querySelector('.screen').scrollTop=0;
+    }
+    function selectStore(key){
+      var s=STORES[key];
+      if(!s)return;
+      current=key;
+      document.getElementById('gName').textContent=s.name;
+      var addr=document.getElementById('gAddr');
+      addr.textContent=s.addr;
+      addr.classList.toggle('pending',!!s.addrPending);
+      document.getElementById('btnContact').textContent=s.contact;
+      setRoute(routeTab);
+      showStep('guide');
+    }
+    function setRoute(tab){
+      var s=STORES[current];
+      var el=document.getElementById('routeIntro');
+      el.textContent=s.routes[tab]||s.routes.drive;
+      el.style.animation='none';
+      void el.offsetWidth;
+      el.style.animation='';
+    }
+    function backToSelect(){showStep('select');}
+
+    function showToast(msg){
+      var t=document.getElementById('toast');
+      t.textContent=msg;
+      t.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer=setTimeout(function(){t.classList.remove('show');},2400);
+    }
+    function copyText(text){
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(function(){
+          showToast('已复制门店名，可粘贴到地图搜索');
+        }).catch(function(){legacyCopy(text);});
+      }else{legacyCopy(text);}
+    }
+    function legacyCopy(text){
+      var ta=document.createElement('textarea');
+      ta.value=text;
+      ta.style.cssText='position:fixed;opacity:0;top:-999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try{document.execCommand('copy');}catch(e){}
+      document.body.removeChild(ta);
+      showToast('已复制门店名，可粘贴到地图搜索');
+    }
+
+    document.getElementById('btnContact').addEventListener('click',function(e){
+      e.preventDefault();
+      var s=STORES[current];
+      if(s.contactType==='tel'){window.location.href='tel:'+s.tel;}
+      else{copyText(s.copyText);}
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(t){
+      t.addEventListener('click',function(){
+        Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(x){x.classList.remove('active');});
+        t.classList.add('active');
+        routeTab=t.getAttribute('data-route');
+        setRoute(routeTab);
+      });
+    });
+
+    document.getElementById('backBtn').addEventListener('click',function(e){
+      if(!document.getElementById('stepGuide').classList.contains('hidden')){
+        e.preventDefault();
+        showStep('select');
+      }
+    });
+
+    /* 首页门店卡带参直达：guide.html?store=east */
+    (function(){
+      var m=/store=([a-z]+)/i.exec(location.search||'');
+      if(m&&STORES[m[1]])selectStore(m[1]);
+    })();
+  </script>
+</body>
+</html>

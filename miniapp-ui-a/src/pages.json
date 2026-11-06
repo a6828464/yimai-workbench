@@ -1,0 +1,329 @@
+{
+  "easycom": {
+    "autoscan": true,
+    "custom": {
+      "^wd-(.*)": "wot-design-uni/components/wd-$1/wd-$1.vue",
+      "^ym-(.*)": "@/components/ym-$1/ym-$1.vue"
+    }
+  },
+  "entryPagePath": "pages/home/home",
+  "pages": [
+    {
+      "path": "pages/home/home",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#F2F4F2",
+        "backgroundColorTop": "#0E1713",
+        "backgroundColorBottom": "#F2F4F2",
+        "navigationBarTextStyle": "white",
+        "disableScroll": true
+      }
+    },
+    {
+      "path": "pages/login/login",
+      "style": {
+        "navigationBarTitleText": "登录",
+        "navigationStyle": "custom",
+        "backgroundColor": "#0e1a16"
+      }
+    },
+    {
+      "path": "pages/workbench/workbench",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTextStyle": "white",
+        "backgroundColor": "#F2F4F2",
+        "backgroundColorTop": "#0F1B16",
+        "backgroundColorBottom": "#F2F4F2",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/crm/crm",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTextStyle": "white",
+        "backgroundColor": "#F2F4F2",
+        "backgroundColorTop": "#0F1B16",
+        "backgroundColorBottom": "#F2F4F2",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/ai/ai",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTextStyle": "white",
+        "backgroundColor": "#F2F4F2",
+        "backgroundColorTop": "#0F1B16",
+        "backgroundColorBottom": "#F2F4F2"
+      }
+    },
+    {
+      "path": "pages/profile/profile",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTextStyle": "white",
+        "backgroundColor": "#F2F4F2",
+        "backgroundColorTop": "#0F1B16",
+        "backgroundColorBottom": "#F2F4F2"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "一麦工作台",
+    "navigationBarBackgroundColor": "#0F1B16",
+    "backgroundColor": "#F2F4F2",
+    "backgroundColorTop": "#0F1B16",
+    "backgroundColorBottom": "#F2F4F2"
+  },
+  "tabBar": {
+    "color": "#8A8F99",
+    "selectedColor": "#2E7D5B",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/workbench/workbench",
+        "text": "工作台",
+        "iconPath": "static/tabbar/dash.png",
+        "selectedIconPath": "static/tabbar/dash-active.png"
+      },
+      {
+        "pagePath": "pages/crm/crm",
+        "text": "客户经营",
+        "iconPath": "static/tabbar/crm.png",
+        "selectedIconPath": "static/tabbar/crm-active.png"
+      },
+      {
+        "pagePath": "pages/ai/ai",
+        "text": "AI助手",
+        "iconPath": "static/tabbar/ai.png",
+        "selectedIconPath": "static/tabbar/ai-active.png"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的",
+        "iconPath": "static/tabbar/me.png",
+        "selectedIconPath": "static/tabbar/me-active.png"
+      }
+    ]
+  },
+  "subPackages": [
+    {
+      "root": "pkg-crm",
+      "pages": [
+        {
+          "path": "crm/new-members",
+          "style": {
+            "navigationBarTitleText": "新客培养",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "crm/pool",
+          "style": {
+            "navigationBarTitleText": "客户经营池",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "members/members",
+          "style": {
+            "navigationBarTitleText": "会员管理",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "members/detail",
+          "style": {
+            "navigationBarTitleText": "会员详情",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "leads/leads",
+          "style": {
+            "navigationBarTitleText": "留资管理",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "leads/form",
+          "style": {
+            "navigationBarTitleText": "留资录入",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pkg-biz",
+      "pages": [
+        {
+          "path": "todo/todo",
+          "style": {
+            "navigationBarTitleText": "今日待办",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "tasks/tasks",
+          "style": {
+            "navigationBarTitleText": "任务中心",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "approvals/approvals",
+          "style": {
+            "navigationBarTitleText": "价格审批",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "review/review",
+          "style": {
+            "navigationBarTitleText": "课后分析",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2",
+            "enablePullDownRefresh": true
+          }
+        },
+        {
+          "path": "review/detail",
+          "style": {
+            "navigationBarTitleText": "课后分析详情",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "plan/plan",
+          "style": {
+            "navigationBarTitleText": "训练计划",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "plan/detail",
+          "style": {
+            "navigationBarTitleText": "训练计划详情",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pkg-ai",
+      "pages": [
+        {
+          "path": "ai/marketing",
+          "style": {
+            "navigationBarTitleText": "营销工具",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "ai/sales",
+          "style": {
+            "navigationBarTitleText": "谈单工具",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pkg-me",
+      "pages": [
+        {
+          "path": "profile/edit",
+          "style": {
+            "navigationBarTitleText": "个人信息",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "profile/persona",
+          "style": {
+            "navigationBarTitleText": "人设设置",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "profile/notify",
+          "style": {
+            "navigationBarTitleText": "模板通知",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        }
+      ]
+    },
+    {
+      "root": "pkg-public",
+      "pages": [
+        {
+          "path": "guide/guide",
+          "style": {
+            "navigationBarTitleText": "到店指引",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0F1B16",
+            "backgroundColor": "#F2F4F2"
+          }
+        },
+        {
+          "path": "book/book",
+          "style": {
+            "navigationBarTitleText": "约课",
+            "navigationBarTextStyle": "white",
+            "navigationBarBackgroundColor": "#0e1a16",
+            "backgroundColor": "#ffffff"
+          }
+        }
+      ]
+    }
+  ]
+}

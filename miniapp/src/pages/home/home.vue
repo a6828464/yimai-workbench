@@ -106,6 +106,44 @@ try {
 
 const safeTop = computed(() => `${statusBarHeight.value + 24}px`)
 
+/* --------------------------------------------------------------------------
+ * 主题：editorial（默认）/ oriental
+ *
+ * 契约与 guide.vue 同一条：`/miniapp/config` 的 `theme`，后端只认 editorial / oriental，
+ * 非法值与缺失都被后端归一成 editorial。这里再做一次前端归一，只是为了
+ * 「老后端不发 theme」时不至于渲染成半套样式 —— **缺省一律 editorial**。
+ *
+ * 为什么不额外请求：本页已经为弹窗拉过一次整份配置（fetchMiniappConfigRaw），
+ * theme 就在同一个对象里；再打一次接口等于给首屏多一个失败点。
+ *
+ * 为什么要缓存：主题是全局品牌设置，几乎不变。缓存后**第二次打开的第一帧**就是对的；
+ * 不缓存则每次都要等 200~400ms 才从 editorial 翻成 oriental，肉眼可见地闪一下。
+ * 网络回来仍会覆盖缓存，所以后台改主题最多滞后一次冷启动。
+ * ------------------------------------------------------------------------ */
+const THEME_CACHE_KEY = 'yimai-miniapp-theme' // 与 login.vue 共用同一个 key
+
+function readCachedTheme(): string {
+  const v = getJSON<string>(THEME_CACHE_KEY)
+  return typeof v === 'string' ? v : ''
+}
+
+/** 空串也写：后台把主题改回 editorial 时，缓存必须能跟着回落，不能一直停在 oriental */
+function cacheTheme(t: string): void {
+  setJSON(THEME_CACHE_KEY, t)
+}
+
+const themeRaw = ref(readCachedTheme())
+
+/** 主题归一：只有 oriental 走东方主题，其余（缺失 / 未知 / 老值 classic）一律 editorial */
+const theme = computed<'editorial' | 'oriental'>(() =>
+  themeRaw.value === 'oriental' ? 'oriental' : 'editorial'
+)
+const isOriental = computed(() => theme.value === 'oriental')
+
+/** 东方主题两个绝对定位点：logo 与右缘竖排题签（状态栏之下，再让出呼吸位） */
+const logoTop = computed(() => `${statusBarHeight.value + 16}px`)
+const vertTop = computed(() => `${statusBarHeight.value + 56}px`)
+
 onShow(() => {
   // 首页不强制登录：顾客也要能看。只做会话恢复，不发请求。
   if (!user.token) user.restore()
@@ -497,6 +535,9 @@ function ensurePopupDecision(): Promise<void> {
 async function loadPopup(): Promise<void> {
   try {
     const cfg = await fetchMiniappConfigRaw()
+    // 主题与弹窗共用这一份配置：先用网络值校正（首屏可能已经用缓存渲染过），再决定弹不弹
+    themeRaw.value = typeof cfg.theme === 'string' ? cfg.theme : ''
+    cacheTheme(themeRaw.value)
     const p = normalizePopup(cfg.popup)
     if (!p) return
     cachedPopup = p
@@ -550,38 +591,120 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
 </script>
 
 <template>
-  <view class="home">
-    <image class="home__bg" src="/static/hero.jpg" mode="aspectFill" />
-    <view class="home__veil" />
+  <view class="home" :class="isOriental ? 'home--oriental' : 'home--editorial'">
+    <!--
+      背景层：两套主题各一张实景图。
+      editorial = 品牌大图 + 深色纱（上压下更压，中间留亮，让照片自己说话）；
+      oriental  = 静奢东方馆实景只占上 62%，底部 400rpx 渐入米灰，内容从雾里长出来。
+    -->
+    <template v-if="isOriental">
+      <image class="home__bg" src="/static/studio-oriental.jpg" mode="aspectFill" />
+      <view class="home__shade" />
+      <view class="home__fade" />
+      <view class="home__logo" :style="{ top: logoTop }">
+        <image class="home__logo-img" src="/static/logo-white.png" mode="aspectFit" />
+      </view>
+      <!-- 右缘：渐隐细线 + 竖排题签，静奢东方的留白语言 -->
+      <view class="home__vert" :style="{ top: vertTop }">
+        <view class="home__vert-line" />
+        <text class="home__vert-text">日日是好日</text>
+      </view>
+    </template>
+    <template v-else>
+      <image class="home__bg" src="/static/hero.jpg" mode="aspectFill" />
+      <view class="home__veil" />
+    </template>
 
-    <view class="home__inner" :style="{ paddingTop: safeTop }">
+    <!-- ================= editorial：字重 300 + 细线行（默认主题） ================= -->
+    <view
+      v-if="!isOriental"
+      class="home__inner home__inner--editorial"
+      :style="{ paddingTop: safeTop }"
+    >
       <view class="home__brand">
-        <image class="home__logo" src="/static/logo-white.png" mode="aspectFit" />
-        <text class="home__name">一麦瑜伽·普拉提</text>
+        <image class="home__brand-logo" src="/static/logo-white.png" mode="aspectFit" />
+        <text class="home__name">一麦瑜伽 · 普拉提</text>
         <text class="home__en">YIMAI YOGA · PILATES</text>
       </view>
 
+      <!-- 中部大片留白（设计稿的 .spacer）：让背景照片的空间感自己说话 -->
+      <view class="home__spacer" />
+
       <view class="home__actions">
+        <!-- 分区标题：两侧细线夹字，不用色块 -->
         <view class="home__cta">
           <view class="home__cta-line" />
-          <text class="home__cta-text">预约课程</text>
+          <text class="home__cta-text">预 约 课 程</text>
           <view class="home__cta-line" />
         </view>
 
-        <view class="home__venues">
-          <view v-for="v in VENUES" :key="v.key" class="home__venue" @click="jumpToBook(v)">
-            <text class="home__venue-name">{{ v.key }}</text>
+        <!-- 门店：细线分隔的行（不是方块卡）；到店指引并进同一组 -->
+        <view class="home__rows">
+          <view v-for="v in VENUES" :key="v.key" class="home__row ym-tap" @click="jumpToBook(v)">
+            <view class="home__row-l">
+              <text class="home__row-t">{{ v.key }}</text>
+              <text class="home__row-s">{{ v.sub }}</text>
+            </view>
+            <text class="home__row-a">→</text>
           </view>
-        </view>
-
-        <view id="btn-guide" class="home__guide" @click="goGuide">
-          <text class="home__guide-text">第一次来？点这里</text>
+          <view id="btn-guide" class="home__row ym-tap" @click="goGuide">
+            <view class="home__row-l">
+              <text class="home__row-t home__row-t--guide">到店指引</text>
+            </view>
+            <text class="home__row-a">→</text>
+          </view>
         </view>
       </view>
 
-      <view id="btn-staff" class="home__slogan" @click="goStaff">
-        <text class="home__slogan-main">看见·包容·超越</text>
+      <view id="btn-staff" class="home__slogan ym-tap" @click="goStaff">
+        <text class="home__slogan-main">看见 · 包容 · 超越</text>
         <text class="home__slogan-sub">在一麦遇见更好的自己</text>
+      </view>
+    </view>
+
+    <!-- ================= oriental：沉浸实景 + 宋式留白 ================= -->
+    <view v-else class="home__inner home__inner--oriental">
+      <view class="home__brand home__brand--oriental">
+        <text class="home__name home__name--oriental">一麦瑜伽·普拉提</text>
+        <view class="home__label">
+          <view class="home__label-line" />
+          <text class="home__label-text">YIMAI YOGA · PILATES</text>
+        </view>
+      </view>
+
+      <!-- 宋式区块标题：小字 · 金色短线 · 发丝横线（不是色块标题） -->
+      <view class="home__sec">
+        <view class="home__sec-line" />
+        <text class="home__sec-text">两馆约课</text>
+        <view class="home__sec-rule" />
+      </view>
+
+      <!-- 竖向长条门店入口：发丝线分隔 -->
+      <view class="home__venues">
+        <view v-for="v in VENUES" :key="v.key" class="home__venue ym-tap" @click="jumpToBook(v)">
+          <view class="home__venue-main">
+            <text class="home__venue-name">{{ v.key }}</text>
+            <text class="home__venue-sub">{{ v.sub }}</text>
+          </view>
+          <view class="home__venue-arrow">
+            <view class="home__arrow-line" />
+            <view class="home__arrow-head" />
+          </view>
+        </view>
+      </view>
+
+      <!-- 金色细字：第一次来 -->
+      <view id="btn-guide" class="home__guide ym-tap" @click="goGuide">
+        <text class="home__guide-text">第一次来？到店指引</text>
+        <view class="home__guide-arrow">
+          <view class="home__arrow-line home__arrow-line--gold" />
+          <view class="home__arrow-head home__arrow-head--gold" />
+        </view>
+      </view>
+
+      <view id="btn-staff" class="home__slogan home__slogan--oriental ym-tap" @click="goStaff">
+        <text class="home__slogan-main home__slogan-main--oriental">看见 · 包容 · 超越</text>
+        <text class="home__slogan-sub home__slogan-sub--oriental">员工入口</text>
       </view>
     </view>
 
@@ -657,12 +780,24 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
 </template>
 
 <style lang="scss" scoped>
+/* ==========================================================================
+ * 两套主题共用骨架
+ *  - 根节点 fixed 铺满：不用 100vh —— 带安全区的机型上 100vh 会短一截（那条黑边的来源）；
+ *  - 背景图统一 absolute + aspectFill 铺满，主题只换「图 + 纱」。
+ * ========================================================================== */
 .home {
-  /* fixed 铺满视口，不用 100vh：带安全区的机型上 100vh 会短一截，剩下的就是那条黑边 */
   position: fixed;
   inset: 0;
   overflow: hidden;
-  background: #0e1a16;
+
+  /* 主题底色：editorial 深墨绿（照片为主），oriental 米灰（留白为主） */
+  &--editorial {
+    background: #0e1a16;
+  }
+
+  &--oriental {
+    background: #f2f4f2;
+  }
 
   &__bg {
     position: absolute;
@@ -671,158 +806,458 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
     height: 100%;
   }
 
-  /* 上暗下更暗：压住顶部状态栏文字与底部 logo，中间留白让光带透出来 */
-  &__veil {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-      180deg,
-      rgba(8, 20, 16, 0.55) 0%,
-      rgba(8, 20, 16, 0.18) 38%,
-      rgba(8, 20, 16, 0.55) 74%,
-      rgba(8, 20, 16, 0.88) 100%
-    );
-  }
-
   &__inner {
     position: relative;
+    z-index: 1;
     height: 100%;
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
+  }
+}
+
+/* ==========================================================================
+ * editorial（默认主题）
+ * 口径全部按 releases/design/home-editorial.html：1px = 2rpx @375
+ *  - 字重 300、宽字距立住品牌，不靠粗细；
+ *  - 中部大片留白，让背景照片的空间感自己说话；
+ *  - 门店是「细线分隔的行」，不是方块卡（方块卡是上一版最像模板的地方）。
+ * ========================================================================== */
+.home--editorial {
+  .home__veil {
+    position: absolute;
+    inset: 0;
+    /* 上压下更压、中间留亮：压住状态栏文字与底部 slogan，中间让光带透出来 */
+    background: linear-gradient(
+      180deg,
+      rgba(8, 20, 16, 0.62) 0%,
+      rgba(8, 20, 16, 0.22) 34%,
+      rgba(8, 20, 16, 0.52) 70%,
+      rgba(8, 20, 16, 0.9) 100%
+    );
+  }
+
+  .home__inner--editorial {
     padding-left: 56rpx;
     padding-right: 56rpx;
     padding-bottom: calc(48rpx + constant(safe-area-inset-bottom));
     padding-bottom: calc(48rpx + env(safe-area-inset-bottom));
-    box-sizing: border-box;
   }
 
-  &__brand {
-    padding-top: 40rpx;
+  .home__brand {
     display: flex;
     flex-direction: column;
     align-items: center;
+    /* 设计稿品牌区从状态栏下 54px 起：safeTop 已经给到 +24px，这里补足余量 */
+    padding-top: 48rpx;
   }
 
-  &__logo {
-    /* 透明底直接压图：白色图形本身对比够，不再依赖 filter（小程序端支持不稳） */
-    width: 190rpx;
-    height: 190rpx;
+  /* logo ≤ 84px（设计稿上限）：168rpx */
+  .home__brand-logo {
+    width: 168rpx;
+    height: 168rpx;
   }
 
-  &__name {
-    margin-top: 30rpx;
+  /* 30px / 300 / 字距 .16em —— 三件套缺一条就会「像后台」 */
+  .home__name {
+    margin-top: 26rpx;
     font-size: 60rpx;
-    letter-spacing: 12rpx;
+    font-weight: 300;
+    letter-spacing: 0.16em;
     color: #fff;
-    font-weight: 500;
     text-shadow: 0 4rpx 24rpx rgba(0, 0, 0, 0.35);
   }
 
-  &__en {
-    margin-top: 12rpx;
-    font-size: 20rpx;
-    letter-spacing: 6rpx;
-    color: rgba(255, 255, 255, 0.66);
+  .home__en {
+    margin-top: 16rpx;
+    font-size: 19rpx;
+    letter-spacing: 0.42em;
+    /* 字距会在行尾多出一格，左移半格让视觉居中 */
+    margin-left: 0.42em;
+    color: rgba(255, 255, 255, 0.62);
   }
 
-  &__actions {
-    margin-top: auto;
-  }
-
-  /* 「预约课程」是分区标题，不是按钮：用细竖线 + 字距，避免被当成可点元素 */
-  &__cta {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 18rpx;
-    padding: 6rpx 0 22rpx;
-  }
-
-  /* 用小元素而不是 ::before/::after —— 后者在 wxss 编译时会被丢弃（实测产物里没有） */
-  &__cta-line {
-    width: 48rpx;
-    height: 2rpx;
-    background: rgba(255, 255, 255, 0.45);
-  }
-
-  &__cta-text {
-    font-size: 28rpx;
-    letter-spacing: 10rpx;
-    color: rgba(255, 255, 255, 0.92);
-    padding-left: 10rpx;
-  }
-
-  &__venues {
-    display: flex;
-    gap: 24rpx;
-    margin-top: 24rpx;
-  }
-
-  &__venue {
+  /* 中部留白：flex:1 把品牌与可点区域拉开，照片自己说话 */
+  .home__spacer {
     flex: 1;
-    height: 120rpx;
-    border-radius: 22rpx;
-    background: rgba(255, 255, 255, 0.16);
-    border: 2rpx solid rgba(255, 255, 255, 0.3);
+  }
+
+  /* 分区标题：细线夹字，不用色块 */
+  .home__cta {
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 24rpx;
+    padding: 0 0 40rpx;
   }
 
-  &__venue-name {
-    font-size: 32rpx;
-    color: #fff;
-    letter-spacing: 6rpx;
+  /* 用元素而不是 ::before/::after —— 后者在 wxss 编译时会被丢弃（实测产物里没有） */
+  .home__cta-line {
+    width: 52rpx;
+    height: 1rpx;
+    background: rgba(255, 255, 255, 0.38);
   }
 
-  &__guide {
-    margin-top: 26rpx;
-    height: 84rpx;
-    border-radius: 999rpx;
-    border: 2rpx solid rgba(255, 255, 255, 0.38);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  &__guide-text {
-    font-size: 26rpx;
-    color: rgba(255, 255, 255, 0.9);
-    letter-spacing: 3rpx;
-  }
-
-  &__probe {
-    margin-top: 20rpx;
-    padding: 14rpx 18rpx;
-    border-radius: 12rpx;
-    background: rgba(0, 0, 0, 0.55);
-  }
-
-  &__probe-text {
-    font-size: 20rpx;
-    color: #ffd9a0;
-    word-break: break-all;
-  }
-
-  &__slogan {
-    margin-top: 48rpx;
-    padding: 18rpx 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10rpx;
-  }
-
-  &__slogan-main {
-    font-size: 22rpx;
-    letter-spacing: 8rpx;
+  .home__cta-text {
+    font-size: 23rpx;
+    letter-spacing: 0.34em;
+    margin-left: 0.34em;
     color: rgba(255, 255, 255, 0.78);
   }
 
-  &__slogan-sub {
-    font-size: 18rpx;
-    letter-spacing: 3rpx;
+  /* 门店：细线分隔的行（组头组尾各一条发丝线） */
+  .home__rows {
+    border-top: 1rpx solid rgba(255, 255, 255, 0.14);
+  }
+
+  .home__row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 108rpx;
+    border-bottom: 1rpx solid rgba(255, 255, 255, 0.14);
+  }
+
+  .home__row-l {
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+    min-width: 0;
+  }
+
+  .home__row-t {
+    font-size: 32rpx;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    color: #fff;
+  }
+
+  /* 「到店指引」比门店名轻一档：它是次要入口，不抢约课 */
+  .home__row-t--guide {
+    font-size: 30rpx;
+    color: rgba(255, 255, 255, 0.9);
+    letter-spacing: 0.1em;
+  }
+
+  .home__row-s {
+    font-size: 22rpx;
+    letter-spacing: 0.04em;
+    color: rgba(255, 255, 255, 0.55);
+  }
+
+  .home__row-a {
+    font-size: 30rpx;
+    color: rgba(255, 255, 255, 0.72);
+  }
+
+  /* 19px / 300 / 字距 .2em */
+  .home__slogan {
+    margin-top: 68rpx;
+    padding-bottom: 14rpx;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+
+  .home__slogan-main {
+    font-size: 38rpx;
+    font-weight: 300;
+    letter-spacing: 0.2em;
+    margin-left: 0.2em;
+    color: rgba(255, 255, 255, 0.94);
+  }
+
+  .home__slogan-sub {
+    margin-top: 18rpx;
+    font-size: 21rpx;
+    letter-spacing: 0.16em;
+    margin-left: 0.16em;
     color: rgba(255, 255, 255, 0.5);
+  }
+}
+
+/* ==========================================================================
+ * oriental（静奢东方，移植自 miniapp-ui-a/src/pages/home/home.vue）
+ *  - 上 62% 沉浸实景，底部 400rpx 渐入米灰，内容从雾里长出来；
+ *  - 衬线大字 + 香槟金 0.44em 字距标签 + 发丝线分隔的竖向长条门店入口；
+ *  - 右缘竖排「日日是好日」+ 渐隐细线。
+ * 数值与原项目逐条一致（那边已过设计评审），不要随手「优化」字号与字距。
+ * ========================================================================== */
+.home--oriental {
+  .home__bg {
+    /* 图只占上 62%：剩下的交给米灰留白 */
+    height: 62%;
+  }
+
+  /* 顶部压暗：让出状态栏区（白字时间与 logo 可读），只盖图的上缘 */
+  .home__shade {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 220rpx;
+    background: linear-gradient(180deg, rgba(9, 13, 11, 0.45), rgba(9, 13, 11, 0));
+  }
+
+  /* 底部渐变：把实景「沉入」米灰世界（这套主题的核心手法） */
+  .home__fade {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(62% - 400rpx);
+    height: 400rpx;
+    background: linear-gradient(
+      180deg,
+      rgba(242, 244, 242, 0) 0%,
+      rgba(242, 244, 242, 0.52) 36%,
+      rgba(242, 244, 242, 0.86) 66%,
+      #f2f4f2 100%
+    );
+  }
+
+  .home__logo {
+    position: absolute;
+    left: 62rpx;
+    z-index: 2;
+  }
+
+  .home__logo-img {
+    width: 128rpx;
+    height: 128rpx;
+    opacity: 0.96;
+  }
+
+  /* 竖排装饰：渐隐细线 + 竖排五字 */
+  .home__vert {
+    position: absolute;
+    right: 62rpx;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 32rpx;
+  }
+
+  .home__vert-line {
+    width: 1rpx;
+    height: 208rpx;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0));
+  }
+
+  .home__vert-text {
+    writing-mode: vertical-rl;
+    font-family: 'Songti SC', 'STSong', 'SimSun', serif;
+    font-weight: 300;
+    font-size: 22rpx;
+    letter-spacing: 0.5em;
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  .home__inner--oriental {
+    padding-left: 62rpx;
+    padding-right: 62rpx;
+    /* 内容从图的下缘附近「长出」：与原实现同一口径（62% 的宽度 - 176rpx） */
+    padding-top: calc(62% - 176rpx);
+    padding-bottom: calc(40rpx + constant(safe-area-inset-bottom));
+    padding-bottom: calc(40rpx + env(safe-area-inset-bottom));
+  }
+
+  .home__brand--oriental {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 衬线品牌大字：靠字号与字距立住，不靠字重 */
+  .home__name--oriental {
+    font-family: 'Songti SC', 'STSong', 'SimSun', serif;
+    font-weight: 300;
+    font-size: 52rpx;
+    letter-spacing: 0.14em;
+    color: #1e2b25;
+    line-height: 1.3;
+  }
+
+  .home__label {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+    margin-top: 22rpx;
+  }
+
+  .home__label-line {
+    width: 44rpx;
+    height: 1rpx;
+    background: #c19a4b;
+  }
+
+  .home__label-text {
+    font-size: 19rpx;
+    letter-spacing: 0.44em;
+    color: #c19a4b;
+  }
+
+  /* 宋式区块标题：小字 · 金色短线 · 发丝横线 */
+  .home__sec {
+    display: flex;
+    align-items: center;
+    gap: 24rpx;
+    margin-top: 52rpx;
+    margin-bottom: 24rpx;
+  }
+
+  .home__sec-line {
+    width: 24rpx;
+    height: 1rpx;
+    flex: none;
+    background: #c19a4b;
+  }
+
+  .home__sec-text {
+    font-family: 'Songti SC', 'STSong', 'SimSun', serif;
+    font-size: 22rpx;
+    letter-spacing: 0.5em;
+    color: #5b6b62;
+    white-space: nowrap;
+  }
+
+  .home__sec-rule {
+    flex: 1;
+    height: 1rpx;
+    background: #eaeeeb;
+  }
+
+  /* 两馆约课：竖向长条（发丝线分隔，非卡片底） */
+  .home__venues {
+    border-top: 1rpx solid #eaeeeb;
+    border-bottom: 1rpx solid #eaeeeb;
+  }
+
+  .home__venue {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 26rpx 4rpx;
+
+    & + & {
+      border-top: 1rpx solid #eaeeeb;
+    }
+  }
+
+  .home__venue-main {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .home__venue-name {
+    font-family: 'Songti SC', 'STSong', 'SimSun', serif;
+    font-weight: 400;
+    font-size: 40rpx;
+    letter-spacing: 0.1em;
+    color: #22332b;
+  }
+
+  .home__venue-sub {
+    margin-top: 12rpx;
+    font-size: 21rpx;
+    letter-spacing: 0.16em;
+    color: #7c8a82;
+  }
+
+  /* 细箭头：长横线 + 斜角（品牌绿；到店指引用金色变体） */
+  .home__venue-arrow {
+    position: relative;
+    width: 64rpx;
+    height: 24rpx;
+    flex: none;
+  }
+
+  .home__arrow-line {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 48rpx;
+    height: 1rpx;
+    background: #1c6047;
+    opacity: 0.55;
+    transition: width 0.25s ease, opacity 0.25s ease;
+  }
+
+  .home__arrow-head {
+    position: absolute;
+    right: 6rpx;
+    top: 50%;
+    width: 16rpx;
+    height: 16rpx;
+    border-top: 1rpx solid #1c6047;
+    border-right: 1rpx solid #1c6047;
+    transform: translateY(-50%) rotate(45deg);
+    opacity: 0.55;
+    transition: opacity 0.25s ease;
+  }
+
+  .home__venue:active .home__arrow-line,
+  .home__venue:active .home__arrow-head {
+    opacity: 1;
+  }
+
+  /* 金色细字链接：第一次来 */
+  .home__guide {
+    display: flex;
+    align-items: center;
+    gap: 18rpx;
+    margin-top: 48rpx;
+    align-self: flex-start;
+  }
+
+  .home__guide-text {
+    font-size: 24rpx;
+    letter-spacing: 0.18em;
+    color: #c19a4b;
+  }
+
+  .home__guide-arrow {
+    position: relative;
+    width: 48rpx;
+    height: 24rpx;
+  }
+
+  .home__arrow-line--gold {
+    width: 32rpx;
+    opacity: 1;
+    background: #c19a4b;
+  }
+
+  .home__arrow-head--gold {
+    opacity: 1;
+    border-top-color: #c19a4b;
+    border-right-color: #c19a4b;
+  }
+
+  /* 底部内部入口：发丝线 + 宽字距 */
+  .home__slogan--oriental {
+    margin-top: auto;
+    padding-top: 36rpx;
+    border-top: 1rpx solid #eaeeeb;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14rpx;
+  }
+
+  .home__slogan-main--oriental {
+    font-size: 24rpx;
+    letter-spacing: 0.5em;
+    padding-left: 0.5em;
+    color: #5f7167;
+  }
+
+  .home__slogan-sub--oriental {
+    font-size: 18rpx;
+    letter-spacing: 0.34em;
+    padding-left: 0.34em;
+    color: #a6b1aa;
   }
 }
 
@@ -956,6 +1391,12 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
     color: #17402f;
   }
 }
+
+/* 东方主题的弹窗标题换成衬线、字重降一档：与整页同一套字感（卡片结构不动） */
+.home--oriental .pp__title {
+  font-family: 'Songti SC', 'STSong', 'SimSun', serif;
+  font-weight: 400;
+}
 </style>
 
 <style lang="scss">
@@ -1049,5 +1490,61 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
     font-size: 25rpx;
     color: #8a9490;
   }
+}
+
+/* ==========================================================================
+ * 约课弹层：按主题换气质（细线边框、去重阴影；不动任何交互逻辑）
+ *  - editorial：暖白纸感 + 发丝边框 + 直角深色主按钮；
+ *  - oriental ：米灰底 + 衬线标题 + 墨绿描边直角按钮（透明底）。
+ * ========================================================================== */
+.home--editorial .sheet__panel {
+  background: #fcfbf8;
+  border: 1rpx solid rgba(23, 64, 47, 0.1);
+  border-radius: 8rpx;
+}
+
+.home--editorial .sheet__title {
+  font-weight: 300;
+  letter-spacing: 0.16em;
+}
+
+.home--editorial .sheet__go {
+  background: #17241d;
+  border-radius: 4rpx;
+  letter-spacing: 0.18em;
+}
+
+.home--editorial .sheet__copy {
+  border: 1rpx solid rgba(23, 64, 47, 0.5);
+  border-radius: 4rpx;
+}
+
+.home--oriental .sheet__panel {
+  background: #f7f6f2;
+  border: 1rpx solid #e6e9e6;
+  border-radius: 0;
+}
+
+.home--oriental .sheet__title {
+  font-family: 'Songti SC', 'STSong', 'SimSun', serif;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  color: #22332b;
+}
+
+.home--oriental .sheet__go {
+  background: transparent;
+  border: 1.5rpx solid #1c6047;
+  border-radius: 0;
+}
+
+.home--oriental .sheet__go-text {
+  color: #1c6047;
+  letter-spacing: 0.2em;
+}
+
+.home--oriental .sheet__copy {
+  border: 1rpx solid rgba(28, 96, 71, 0.55);
+  border-radius: 0;
 }
 </style>

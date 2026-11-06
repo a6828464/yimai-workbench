@@ -85,7 +85,8 @@ class MiniappConfigExtTest extends TestCase
     {
         $data = $this->getJson('/api/miniapp/config')->assertOk()->json('data');
 
-        $this->assertSame(['venues', 'popup', 'updatedAt'], array_keys($data));
+        // t43：顶层新增 theme（契约顺序：theme → venues → popup → updatedAt）
+        $this->assertSame(['theme', 'venues', 'popup', 'updatedAt'], array_keys($data));
         $this->assertFalse($data['popup']['enabled']);
         $this->assertSame('once', $data['popup']['frequency']);
 

@@ -1,14 +1,55 @@
 <script setup lang="ts">
 import { onShareAppMessage } from '@dcloudio/uni-app'
 import { shareToHome } from '@/utils/share'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useUserStore } from '@/store/user'
+import { fetchMiniappConfig } from '@/api/miniapp'
+import { getJSON, setJSON } from '@/utils/storage'
 
 const user = useUserStore()
 const userName = ref('')
 const password = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
+
+/* --------------------------------------------------------------------------
+ * 主题：editorial（默认）/ oriental —— 口径与首页、到店指引同一条
+ * （`/miniapp/config` 的 theme，后端只认这两个值，缺失/非法一律 editorial）。
+ *
+ * 三点说明：
+ *  1. 走 api/miniapp.ts 的 fetchMiniappConfig（免登录 + 401 不跳登录）：
+ *     登录页本身就是未登录状态，用 http.ts 的请求会在 401 时把「登录过期」流程跑起来；
+ *  2. 先读缓存渲染（login 通常由首页跳进来，首页已经拿过并缓存了主题）→ 不会闪；
+ *  3. 请求失败就沿用缓存/默认值：登录页不能因为主题配置拉不到而白屏或卡住。
+ * ------------------------------------------------------------------------ */
+const THEME_CACHE_KEY = 'yimai-miniapp-theme' // 与 home.vue 共用同一个 key
+
+function readCachedTheme(): string {
+  const v = getJSON<string>(THEME_CACHE_KEY)
+  return typeof v === 'string' ? v : ''
+}
+
+const themeRaw = ref(readCachedTheme())
+
+/** 主题归一：只有 oriental 走东方主题，其余（缺失 / 未知 / 老值 classic）一律 editorial */
+const theme = computed<'editorial' | 'oriental'>(() =>
+  themeRaw.value === 'oriental' ? 'oriental' : 'editorial'
+)
+const isOriental = computed(() => theme.value === 'oriental')
+
+async function loadTheme(): Promise<void> {
+  try {
+    const cfg = await fetchMiniappConfig()
+    // 空串也要写：后台把主题改回 editorial 时缓存必须能回落
+    themeRaw.value = typeof cfg.theme === 'string' ? cfg.theme : ''
+    setJSON(THEME_CACHE_KEY, themeRaw.value)
+  } catch {
+    /* 主题拿不到就沿用缓存/默认 editorial —— 登录功能本身不依赖它 */
+  }
+}
+
+// 不 await：主题是锦上添花，登录表单要立刻可输入
+void loadTheme()
 
 async function doLogin() {
   if (!userName.value.trim() || !password.value) {
@@ -72,14 +113,17 @@ onShareAppMessage(() => shareToHome())
 </script>
 
 <template>
-  <view class="login">
+  <view class="login" :class="isOriental ? 'login--oriental' : 'login--editorial'">
     <view class="login__brand">
       <image class="login__logo" src="/static/logo.png" mode="aspectFit" />
+      <!-- 香槟金宽字距小标签：东方主题的身份标识（editorial 不渲染） -->
+      <text v-if="isOriental" class="login__tag">S T A F F  O N L Y</text>
       <text class="login__name">一麦工作台</text>
       <text class="login__slogan">员工的移动工作台</text>
     </view>
 
-    <view class="ym-card login__form">
+    <!-- 两套主题都去掉了白卡：表单直接落在底色上（无边框无阴影） -->
+    <view class="login__form">
       <input
         v-model="userName"
         class="login__input"
@@ -97,12 +141,18 @@ onShareAppMessage(() => shareToHome())
         @confirm="doLogin"
       />
       <view v-if="errorMsg" class="login__error">{{ errorMsg }}</view>
-      <button class="ym-btn login__submit" :class="{ 'ym-btn--disabled': loading }" :disabled="loading" @click="doLogin">
+      <button
+        class="login__submit"
+        :class="{ 'is-disabled': loading }"
+        :disabled="loading"
+        @click="doLogin"
+      >
         {{ loading ? '登录中…' : '登 录' }}
       </button>
+      <!-- 微信登录保持纯文字链接形态：不抢主按钮的注意力 -->
       <button
-        class="ym-btn ym-btn--plain login__wx"
-        :class="{ 'ym-btn--disabled': loading || wxBusy }"
+        class="login__wx"
+        :class="{ 'is-disabled': loading || wxBusy }"
         :disabled="loading || wxBusy"
         @click="doWxLogin"
       >
@@ -120,45 +170,42 @@ onShareAppMessage(() => shareToHome())
 </template>
 
 <style lang="scss" scoped>
+/* ==========================================================================
+ * 登录页 · 两套主题
+ *   editorial（默认）：暖白纸感、无卡片、下划线输入框、整宽深墨绿实心按钮；
+ *   oriental        ：米灰底、衬线标题 + 香槟金 STAFF ONLY、发丝下划线、
+ *                      1.5rpx 墨绿描边直角透明按钮。
+ * 两套都不再用白卡（.ym-card）：登录是「一页纸」的动作，卡片会让它像后台表单。
+ * ========================================================================== */
 .login {
   min-height: 100vh;
-  padding: 120rpx 32rpx 0;
+  padding: 120rpx 44rpx 0;
   box-sizing: border-box;
-  background: linear-gradient(180deg, #eef4f1 0%, #f6f7f9 40%);
+
+  &--editorial {
+    background: #fcfbf8;
+  }
+
+  &--oriental {
+    background: #f2f4f2;
+  }
 
   &__brand {
     display: flex;
     flex-direction: column;
     align-items: center;
-    margin-bottom: 60rpx;
+    margin-bottom: 64rpx;
   }
 
   &__logo {
-    width: 140rpx;
-    height: 140rpx;
+    width: 132rpx;
+    height: 132rpx;
     margin-bottom: 24rpx;
   }
 
-  &__name {
-    font-size: 44rpx;
-    font-weight: 600;
-    color: #1f2329;
-  }
-
-  &__slogan {
-    margin-top: 12rpx;
-    font-size: 26rpx;
-    color: #8a8f99;
-  }
-
-  &__input {
-    height: 96rpx;
-    background: #f6f7f9;
-    border-radius: 16rpx;
-    padding: 0 28rpx;
-    font-size: 30rpx;
-    margin-bottom: 24rpx;
-    box-sizing: border-box;
+  &__form {
+    display: flex;
+    flex-direction: column;
   }
 
   &__ph {
@@ -171,27 +218,185 @@ onShareAppMessage(() => shareToHome())
     margin-bottom: 20rpx;
   }
 
-  &__submit {
-    margin-top: 12rpx;
-  }
-
-  &__wx {
-    margin-top: 24rpx;
-  }
-
-  &__tip--weak {
-    color: #a8adb5;
-    font-size: 22rpx;
-    margin-top: 12rpx;
-    display: block;
-  }
-
   &__tip {
     display: block;
     text-align: center;
     margin-top: 60rpx;
-    color: #b0b5bd;
     font-size: 24rpx;
   }
+
+  &__tip--weak {
+    font-size: 22rpx;
+    margin-top: 12rpx;
+  }
+}
+
+/* ---------------- editorial（默认） ---------------- */
+.login--editorial {
+  .login__name {
+    font-size: 44rpx;
+    font-weight: 300;
+    letter-spacing: 0.12em;
+    color: #17241d;
+  }
+
+  .login__slogan {
+    margin-top: 14rpx;
+    font-size: 25rpx;
+    letter-spacing: 0.08em;
+    color: #8a8f99;
+  }
+
+  /* 下划线式输入框：无圆角、无填充、0.5px（=1rpx）发丝线 */
+  .login__input {
+    height: 96rpx;
+    padding: 0;
+    margin-bottom: 8rpx;
+    font-size: 30rpx;
+    color: #17241d;
+    background: transparent;
+    border-radius: 0;
+    border-bottom: 1rpx solid rgba(23, 36, 29, 0.18);
+    box-sizing: border-box;
+  }
+
+  /* 整宽 46px（92rpx）实心墨绿 + 4px（8rpx）圆角 + 字距 .18em */
+  .login__submit {
+    margin-top: 48rpx;
+    width: 100%;
+    height: 92rpx;
+    line-height: 92rpx;
+    font-size: 28rpx;
+    letter-spacing: 0.18em;
+    padding: 0;
+    color: #fcfbf8;
+    background: #17241d;
+    border: 0;
+    border-radius: 8rpx;
+
+    &::after {
+      border: 0;
+    }
+  }
+
+  /* 微信一键登录：纯文字链接（无边框、无底色） */
+  .login__wx {
+    margin-top: 28rpx;
+    width: 100%;
+    height: 72rpx;
+    line-height: 72rpx;
+    font-size: 25rpx;
+    letter-spacing: 0.04em;
+    padding: 0;
+    color: #7b8781;
+    background: transparent;
+    border: 0;
+
+    &::after {
+      border: 0;
+    }
+  }
+
+  .login__tip {
+    color: #9aa39e;
+  }
+
+  .login__tip--weak {
+    color: #b3bbb6;
+  }
+}
+
+/* ---------------- oriental（静奢东方） ---------------- */
+.login--oriental {
+  .login__tag {
+    margin-bottom: 16rpx;
+    font-size: 18rpx;
+    letter-spacing: 0.5em;
+    /* 字距会在行尾多出一格，左移半格让视觉居中 */
+    margin-left: 0.5em;
+    color: #c19a4b;
+  }
+
+  .login__name {
+    font-family: 'Songti SC', 'STSong', 'SimSun', serif;
+    font-weight: 300;
+    font-size: 46rpx;
+    letter-spacing: 0.14em;
+    color: #22332b;
+  }
+
+  .login__slogan {
+    margin-top: 14rpx;
+    font-size: 23rpx;
+    letter-spacing: 0.16em;
+    color: #7c8a82;
+  }
+
+  /* 1px（2rpx）发丝线：比 editorial 的 1rpx 略重，配衬线标题不显虚 */
+  .login__input {
+    height: 96rpx;
+    padding: 0;
+    margin-bottom: 8rpx;
+    font-size: 30rpx;
+    color: #22332b;
+    background: transparent;
+    border-radius: 0;
+    border-bottom: 2rpx solid rgba(28, 96, 71, 0.35);
+    box-sizing: border-box;
+  }
+
+  .login__ph {
+    color: #a6b1aa;
+  }
+
+  /* 1.5rpx 墨绿描边 + 直角 + 透明底 */
+  .login__submit {
+    margin-top: 48rpx;
+    width: 100%;
+    height: 92rpx;
+    line-height: 92rpx;
+    font-size: 28rpx;
+    letter-spacing: 0.2em;
+    padding: 0;
+    color: #1c6047;
+    background: transparent;
+    border: 1.5rpx solid #1c6047;
+    border-radius: 0;
+
+    &::after {
+      border: 0;
+    }
+  }
+
+  .login__wx {
+    margin-top: 28rpx;
+    width: 100%;
+    height: 72rpx;
+    line-height: 72rpx;
+    font-size: 24rpx;
+    letter-spacing: 0.08em;
+    padding: 0;
+    color: #7c8a82;
+    background: transparent;
+    border: 0;
+
+    &::after {
+      border: 0;
+    }
+  }
+
+  .login__tip {
+    color: #8c9a92;
+  }
+
+  .login__tip--weak {
+    color: #a6b1aa;
+  }
+}
+
+/* 禁用态：两套主题共用（透明度足够说明不可点，不改颜色语义） */
+.login__submit.is-disabled,
+.login__wx.is-disabled {
+  opacity: 0.45;
 }
 </style>

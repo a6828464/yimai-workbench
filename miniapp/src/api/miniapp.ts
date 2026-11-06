@@ -48,6 +48,14 @@ export interface MiniappVenueConfig {
 }
 
 export interface MiniappConfig {
+  /**
+   * 到店指引主题（BE5）：`classic` | `editorial`，缺省 classic。
+   *
+   * 这里**刻意不写联合类型、也不做枚举校验**：
+   * 后端可能先发一个新主题值、前端还没跟上；若在 api 层就窄化，页面拿到的是一个
+   * 「被悄悄改过的值」，排查时看不出后端到底发了什么。归一交给页面（guide.vue）。
+   */
+  theme?: string
   venues: MiniappVenueConfig[]
   /** 后台最后更新时间（展示用，可缺） */
   updatedAt?: string
@@ -85,6 +93,8 @@ function unwrapConfig(body: unknown): MiniappConfig {
   const data = (b.data ?? b) as Record<string, unknown>
   const venues = Array.isArray(data.venues) ? (data.venues as MiniappVenueConfig[]) : []
   return {
+    // 原样透传，不校验：非法值 / 缺失都由页面统一归一成 classic
+    theme: typeof data.theme === 'string' ? data.theme : undefined,
     venues,
     updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : undefined,
     // 不要在这里过滤字段：调用方需要什么就交什么，过滤会把「以后新增的配置项」挡在门外

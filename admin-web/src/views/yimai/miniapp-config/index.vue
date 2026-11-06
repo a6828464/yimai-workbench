@@ -353,6 +353,98 @@
       />
     </ElCard>
 
+    <!-- ===== 小程序主题（全局外观；切换只改本地状态，点保存才生效） ===== -->
+    <ElCard shadow="never" class="mb-3">
+      <template #header>
+        <div class="flex-cb">
+          <span class="font-500">小程序主题</span>
+          <div class="flex items-center gap-2">
+            <ElTag
+              v-if="themeDirty && !themeUnsupported"
+              type="warning"
+              size="small"
+              effect="plain"
+            >
+              未保存
+            </ElTag>
+            <span class="text-xs text-gray-400">切换只是选中，点页面底部「保存」才生效</span>
+          </div>
+        </div>
+      </template>
+
+      <ElAlert
+        v-if="themeUnsupported"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="mb-3"
+        title="后端还没支持主题（配置里没有 theme 字段），这里按「编辑」只读展示"
+      >
+        <div class="text-xs leading-5">
+          BE7 部署后点右上角「重新读取」即可切换；在此之前切换不会被保存，所以这里先禁用。
+        </div>
+      </ElAlert>
+
+      <!-- 存量 classic（BE7 之前的老配置）：静默升级为 editorial，只给一句轻提示 -->
+      <ElAlert
+        v-if="legacyThemeNotice"
+        type="info"
+        :closable="false"
+        show-icon
+        class="mb-3"
+        title="经典主题已停用，已切换到编辑主题"
+      >
+        <div class="text-xs leading-5">
+          你这套配置里存的还是旧的 classic。页面先按「编辑」展示，点保存后会写成
+          editorial；不保存也不会报错。
+        </div>
+      </ElAlert>
+
+      <div class="theme-grid">
+        <button
+          v-for="t in THEME_OPTIONS"
+          :key="t.value"
+          type="button"
+          class="theme-card"
+          :class="{ 'is-active': theme === t.value, 'is-disabled': themeUnsupported }"
+          :disabled="themeUnsupported"
+          :aria-pressed="theme === t.value"
+          @click="selectTheme(t.value)"
+        >
+          <span v-if="theme === t.value" class="theme-card__check">✓</span>
+          <span class="theme-card__label">{{ t.label }}</span>
+          <span class="theme-card__desc">{{ t.desc }}</span>
+
+          <!--
+            示意缩略图用 CSS 画，不引用任何图片资源 ——
+            真截图会随小程序改版过期，CSS 示意图不会。
+            两张图靠「暖白圆角无衬线 / 米灰直角衬线」区分，一眼可辨。
+          -->
+          <span class="theme-phone" :class="`is-${t.value}`" aria-hidden="true">
+            <template v-if="t.value === 'editorial'">
+              <!-- 编辑：暖白底 + 沉浸大图 + 一条细线分区 + 整宽深色按钮 -->
+              <span class="ph-hero ph-hero--warm"></span>
+              <span class="ph-hair"></span>
+              <span class="ph-line"></span>
+              <span class="ph-line is-short"></span>
+              <span class="ph-btn is-wide"></span>
+            </template>
+            <template v-else>
+              <!-- 静奢东方：米灰底 + 顶部大图沉入米灰 + 衬线标题 + 发丝线 + 直角描边按钮 + 香槟金小标签 -->
+              <span class="ph-hero ph-hero--mist">
+                <span class="ph-gold">臻选</span>
+              </span>
+              <span class="ph-serif">到店指引</span>
+              <span class="ph-hairline"></span>
+              <span class="ph-line is-flat"></span>
+              <span class="ph-line is-flat is-short"></span>
+              <span class="ph-btn is-outline">预约</span>
+            </template>
+          </span>
+        </button>
+      </div>
+    </ElCard>
+
     <!-- ===== 首页弹窗（全局） ===== -->
     <ElCard shadow="never" class="mb-3">
       <template #header>
@@ -463,6 +555,9 @@
         保存
       </ElButton>
       <span v-if="anyUploading" class="text-xs c-orange">有图片正在上传，等传完再保存</span>
+      <span v-else-if="themeDirty && !themeUnsupported" class="text-xs c-orange">
+        主题切换未保存（点「保存」后小程序才会换肤）
+      </span>
       <ElButton :disabled="loading" @click="load">放弃修改并重读</ElButton>
       <span class="text-xs text-gray-400">保存后立即对微信小程序生效，无需发版</span>
     </div>
@@ -498,6 +593,24 @@
   }
   type PopupConfig = MiniappPopupConfig
 
+  /**
+   * 小程序主题：只允许 editorial / oriental（BE7 起 classic 已停用）。
+   * 主题是**全站视觉**，所以切换只写本地表单，必须点「保存」才 PUT —— 误触不能直接换脸。
+   */
+  type MiniappTheme = 'editorial' | 'oriental'
+  const THEME_OPTIONS: { value: MiniappTheme; label: string; desc: string }[] = [
+    {
+      value: 'editorial',
+      label: '编辑',
+      desc: '暖白底（#fcfbf8），无卡片，靠细线与留白分区；主操作是整宽深色按钮。像一本干净的店刊。'
+    },
+    {
+      value: 'oriental',
+      label: '静奢东方',
+      desc: '米灰底（#f2f4f2），衬线标题与发丝线分区，直角描边按钮 + 香槟金小字标签。更克制、更像画廊。'
+    }
+  ]
+
   /** 图片组上限：门店引导图与三种出行方式的路线图都是这个数 */
   const IMAGE_LIMIT = 9
   const ROUTE_KEYS: RouteKey[] = ['drive', 'transit', 'walk']
@@ -526,6 +639,18 @@
   /** 错误框标题：422 是「N 项校验」，403 等不是校验错，不能套同一句话 */
   const errorTitle = ref('保存被后端拒绝')
   const popup = reactive<PopupConfig>(emptyPopup())
+  /** 当前选中的主题（表单态）；BE7 后的默认值 = editorial */
+  const theme = ref<MiniappTheme>('editorial')
+  /** 后端上一次确认生效的主题（用于判断「未保存」） */
+  const savedTheme = ref<MiniappTheme>('editorial')
+  /** 读到了已停用的 classic（BE7 之前的老配置）→ 静默升级为 editorial 并给一句提示 */
+  const legacyThemeNotice = ref(false)
+  /**
+   * 后端未就绪（GET 里没有 theme 键）→ 主题区块降级为只读：
+   * 仍显示两张卡片并默认选中经典，可读、不报错，但不让改（改了也存不进去）。
+   */
+  const themeUnsupported = ref(false)
+  const themeDirty = computed(() => theme.value !== savedTheme.value)
   const popupImageBroken = ref(false)
   /** 每店默认展开哪一组路线（默认开车；其余折叠，避免 27 个输入框一屏） */
   const openRoutes = ref<Record<string, RouteKey[]>>({})
@@ -633,6 +758,25 @@
     }
   }
 
+  /**
+   * 只认 oriental；其余（含已停用的 classic、未知字符串、undefined）一律落 editorial。
+   * 这样即使 BE7 之后又出现新枚举值，页面也不会出现「空白选中态」。
+   */
+  function normalizeTheme(v: unknown): MiniappTheme {
+    return v === 'oriental' ? 'oriental' : 'editorial'
+  }
+
+  /**
+   * 选中主题（只改本地状态）。
+   *
+   * 后端未就绪时直接忽略 —— 虽然按钮已 `disabled`，但 disabled 只挡真实指针事件，
+   * `dispatchEvent` 合成事件仍会触发监听器；这里再兜一层，避免"看起来能改、其实存不进去"。
+   */
+  function selectTheme(v: MiniappTheme) {
+    if (themeUnsupported.value) return
+    theme.value = v
+  }
+
   function toNumberOrNull(v: unknown): number | null {
     if (v === null || v === undefined || v === '') return null
     const n = Number(v)
@@ -660,6 +804,10 @@
       if (!USE_BACKEND) {
         venues.value = DEMO_VENUES.map((key) => normalize({ key }))
         Object.assign(popup, emptyPopup())
+        theme.value = 'editorial'
+        savedTheme.value = 'editorial'
+        themeUnsupported.value = true
+        legacyThemeNotice.value = false
         demoNotice.value =
           '演示模式：当前没有连接 Laravel 后端，下面的配置是空白占位，保存不会生效。'
         updatedAt.value = ''
@@ -667,6 +815,20 @@
         const data = await apiGet<MiniappConfig>('/miniapp/config')
         venues.value = (data?.venues ?? []).map((v) => normalize(v))
         Object.assign(popup, normalizePopup(data?.popup))
+        // theme 由 BE5 新增；缺失时按经典只读展示，不当作错误
+        const rawTheme = (data as (MiniappConfig & { theme?: unknown }) | null)?.theme
+        if (typeof rawTheme === 'string') {
+          // 存量 classic：静默升级为 editorial（不报错、不留空白选中态），只提示一句
+          legacyThemeNotice.value = rawTheme === 'classic'
+          theme.value = normalizeTheme(rawTheme)
+          savedTheme.value = theme.value
+          themeUnsupported.value = false
+        } else {
+          theme.value = 'editorial'
+          savedTheme.value = 'editorial'
+          themeUnsupported.value = true
+          legacyThemeNotice.value = false
+        }
         updatedAt.value = data?.updatedAt ?? ''
         demoNotice.value = ''
       }
@@ -849,6 +1011,9 @@
       // 所以「每次传全量」在两种实现下都正确。popup 与 venues 一起提交，
       // 改弹窗不会清门店、改门店不会清弹窗。
       const payload = {
+        // theme 与 venues/popup 一起提交：后端是合并语义，全量提交才能保证
+        // 「只改主题不会清门店」「只改门店不会把主题改回默认」
+        theme: theme.value,
         venues: venues.value.map((v) => ({
           key: v.key,
           sub: v.sub,
@@ -893,6 +1058,12 @@
       // 用服务端返回的真值回填（后端可能做了归一：key 顺序、图片裁剪）
       if (Array.isArray(res?.venues)) venues.value = res.venues.map((v) => normalize(v))
       if (res?.popup) Object.assign(popup, normalizePopup(res.popup))
+      // 后端回什么就以什么为准（它可能驳回非法值）；没回就认为本次提交生效
+      const resTheme = (res as (MiniappConfig & { theme?: unknown }) | null)?.theme
+      savedTheme.value = typeof resTheme === 'string' ? normalizeTheme(resTheme) : theme.value
+      theme.value = savedTheme.value
+      // 保存后服务端已是新枚举，那句「经典已停用」就不用再挂着
+      legacyThemeNotice.value = false
       ElMessage.success(`已保存，小程序即刻生效（${updatedAt.value || '已更新'}）`)
     } catch (e) {
       const fieldErrors = collectValidationErrors(e)
@@ -1004,5 +1175,223 @@
 
   .route-collapse :deep(.el-collapse-item__content) {
     padding-bottom: 4px;
+  }
+
+  /* ---------------- 主题卡片 ---------------- */
+  .theme-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .theme-card {
+    position: relative;
+    flex: 1 1 260px;
+    max-width: 360px;
+    padding: 12px;
+    font: inherit;
+    color: var(--el-text-color-primary);
+    text-align: left;
+    cursor: pointer;
+    background: var(--el-fill-color-blank);
+    border: 1px solid var(--el-border-color);
+    border-radius: 10px;
+    transition:
+      border-color 0.15s,
+      box-shadow 0.15s,
+      background 0.15s;
+  }
+
+  .theme-card:hover {
+    border-color: var(--el-color-primary-light-5);
+  }
+
+  .theme-card.is-active {
+    background: var(--el-color-primary-light-9);
+    border: 2px solid var(--el-color-primary);
+    box-shadow: 0 2px 10px rgb(0 0 0 / 6%);
+  }
+
+  .theme-card.is-disabled {
+    cursor: not-allowed;
+    opacity: 0.72;
+  }
+
+  .theme-card__check {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    font-size: 11px;
+    color: #fff;
+    background: var(--el-color-primary);
+    border-radius: 50%;
+  }
+
+  .theme-card__label {
+    display: block;
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .theme-card__desc {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--el-text-color-secondary);
+  }
+
+  /* 手机示意框：120px 宽，纯 CSS 拼出来的「屏」 */
+  .theme-phone {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 120px;
+    height: 184px;
+    padding: 8px;
+    margin-top: 10px;
+    overflow: hidden;
+    background: var(--el-bg-color-page);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 12px;
+  }
+
+  .ph-hero {
+    display: block;
+    flex: 0 0 auto;
+    height: 44px;
+    border-radius: 4px;
+  }
+
+  /* ===== 编辑：暖白底 + 沉浸大图 + 一条细线分区 + 整宽深色圆角按钮 ===== */
+  .theme-phone.is-editorial {
+    background: #fcfbf8;
+    border-color: #ece7dc;
+  }
+
+  .ph-hero--warm {
+    height: 62px;
+    background: linear-gradient(135deg, #e7ddc9, #cbbfa6 55%, #a8997f);
+    border-radius: 6px;
+  }
+
+  /* 一条细线把「图」和「正文」分开 */
+  .is-editorial .ph-hair {
+    display: block;
+    flex: 0 0 auto;
+    height: 1px;
+    margin: 2px 0;
+    background: #e7e2d8;
+  }
+
+  .is-editorial .ph-line {
+    display: block;
+    flex: 0 0 auto;
+    height: 5px;
+    background: #efeae0;
+    border-radius: 3px;
+  }
+
+  .is-editorial .ph-line.is-short {
+    width: 58%;
+  }
+
+  /* 整宽深色主按钮（圆角 = 无衬线现代感） */
+  .is-editorial .ph-btn.is-wide {
+    display: block;
+    flex: 0 0 auto;
+    width: 100%;
+    height: 20px;
+    margin-top: auto;
+    background: #2b2724;
+    border-radius: 6px;
+  }
+
+  /* ===== 静奢东方：米灰底 + 大图沉入米灰 + 衬线标题 + 发丝线 + 直角描边按钮 + 香槟金标签 ===== */
+  .theme-phone.is-oriental {
+    background: #f2f4f2;
+    border-color: #e2e6e2;
+  }
+
+  /* 顶部大图向下渐隐进米灰底：这就是「沉入」的视觉做法 */
+  .ph-hero--mist {
+    position: relative;
+    height: 64px;
+    background: linear-gradient(180deg, #c9c3b4 0%, #d8d3c6 45%, #f2f4f2 100%);
+    border-radius: 0;
+  }
+
+  /* 香槟金小字标签，直角细边 */
+  .ph-gold {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    padding: 0 3px;
+    font-size: 7px;
+    line-height: 10px;
+    color: #c19a4b;
+    letter-spacing: 0.5px;
+    border: 1px solid #c19a4b;
+    border-radius: 0;
+  }
+
+  /* 衬线标题：真的用衬线字体渲染（Songti / STSong），和「无衬线」那张形成对比 */
+  .ph-serif {
+    display: block;
+    flex: 0 0 auto;
+    margin-top: 2px;
+    font-family: 'Songti SC', 'STSong', 'Noto Serif SC', serif;
+    font-size: 10px;
+    line-height: 14px;
+    color: #3a3a35;
+    letter-spacing: 2px;
+  }
+
+  /* 发丝线：比编辑那张的细线更淡 */
+  .is-oriental .ph-hairline {
+    display: block;
+    flex: 0 0 auto;
+    height: 1px;
+    margin: 2px 0;
+    background: #ddd8cf;
+  }
+
+  .is-oriental .ph-line.is-flat {
+    display: block;
+    flex: 0 0 auto;
+    height: 4px;
+    background: #e3e0d8;
+    border-radius: 0;
+  }
+
+  .is-oriental .ph-line.is-short {
+    width: 52%;
+  }
+
+  /*
+    1.5rpx 描边按钮：rpx 是小程序单位，1.5rpx ≈ 0.75px，
+    网页预览里按 1px 画才能看见；直角 + 衬线字，是全页最能区分主题的元素。
+  */
+  .is-oriental .ph-btn.is-outline {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 20px;
+    margin-top: auto;
+    font-family: 'Songti SC', 'STSong', serif;
+    font-size: 8px;
+    line-height: 1;
+    color: #3a3a35;
+    letter-spacing: 2px;
+    background: transparent;
+    border: 1px solid #3a3a35;
+    border-radius: 0;
   }
 </style>

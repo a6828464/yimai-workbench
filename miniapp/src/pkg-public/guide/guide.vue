@@ -196,6 +196,55 @@ const current = computed<GuideVenue>(
 /** 是否停在「选门店」这一步 */
 const choosing = computed(() => pickedKey.value === '')
 
+/* ---------- 主题（BE5：editorial 默认 | oriental） ----------
+ * 经典主题（深绿块头 + 方块按钮 + 卡片分区）已于 v3.16 弃用：
+ * 馆主选定「编辑（B）」与「静奢东方（A）」两套，classic 不再提供。
+ * 后端若还发 `classic`（存量配置），一律按 editorial 渲染 —— 见下面 guideTheme 的归一。
+ */
+
+/** 后台下发的原始主题值（未归一）；loadRemoteConfig 拿到配置后写入 */
+const themeRaw = ref('')
+
+/**
+ * 主题归一。
+ *
+ * 契约只有 `editorial` / `oriental`，**缺省、classic 与任何未知值一律当 editorial**：
+ * 这页是顾客扫码进来的对外页，宁可退回已定稿的默认主题，也不能因为后端写了个
+ * 已弃用的值就渲染成没有样式的半成品。api 层刻意不校验（见 api/miniapp.ts 的注释），
+ * 归一只有这一处。
+ */
+const guideTheme = computed<'editorial' | 'oriental'>(() =>
+  themeRaw.value === 'oriental' ? 'oriental' : 'editorial'
+)
+const isOriental = computed(() => guideTheme.value === 'oriental')
+
+/**
+ * 沉浸头部的背景：用门店第一张实景图铺满，压一层纵向渐变让白色大字可读。
+ *
+ * 为什么用 images[0] 而不是新开一个「头图」字段：
+ * 门店实景本来就是给顾客看的门头/环境照，语义完全重合；
+ * 多一个字段只会让馆主多填一处、多一处忘填。
+ * 没配图时返回空串 → 样式回落成纯深色，仍然成立（不是破图）。
+ */
+const heroStyle = computed(() => {
+  const src = current.value?.images?.[0]?.src
+  if (!src) return ''
+  /* 八段渐变：深色层在 74% 收口，再经「灰 → 浅灰 → 底色」三档过渡。
+       少于三档时，深色会直接跳到 #fcfbf8，在内容区交界处留一条可见硬边（实测过）。 */
+  return `background-image: linear-gradient(180deg, rgba(10,17,13,0.30) 0%, rgba(10,17,13,0.14) 26%, rgba(10,17,13,0.46) 54%, rgba(10,17,13,0.66) 74%, rgba(58,66,60,0.52) 84%, rgba(186,190,184,0.62) 92%, rgba(252,251,248,0.96) 97%, #fcfbf8 100%), url(${src})`
+})
+
+/**
+ * oriental 的沉浸头：同一张图、同一组渐变节点，只把**末两段换成米灰 #f2f4f2**，
+ * 让图「沉入」静奢东方的底色（不是 editorial 的暖白 #fcfbf8）。
+ * 数值直接取自 miniapp-ui-a 的定稿实现（那是馆主拍板的 A 方案），不重新调。
+ */
+const heroStyleOriental = computed(() => {
+  const src = current.value?.images?.[0]?.src
+  if (!src) return ''
+  return `background-image: linear-gradient(180deg, rgba(10,17,13,0.30) 0%, rgba(10,17,13,0.14) 26%, rgba(10,17,13,0.46) 54%, rgba(10,17,13,0.66) 74%, rgba(58,66,60,0.52) 84%, rgba(186,190,184,0.62) 92%, rgba(242,244,242,0.96) 97%, #f2f4f2 100%), url(${src})`
+})
+
 /**
  * 有没有视频号入口：**只看 channelsUser**。
  * channelsLive 不再参与判定 —— UI 已下线该入口（馆主要求去掉那两个字），
@@ -426,6 +475,9 @@ function toGuideVenue(raw: unknown): GuideVenue | null {
 async function loadRemoteConfig(): Promise<void> {
   try {
     const cfg = await fetchMiniappConfig()
+    // 主题与门店列表相互独立：即便 venues 为空（沿用本地默认值），后台选的主题也该生效。
+    // 归一在 guideTheme 里做，这里只负责把「后端到底发了什么」原样存下来。
+    themeRaw.value = cfg.theme ?? ''
     const mapped = cfg.venues
       .map(toGuideVenue)
       .filter((v): v is GuideVenue => v !== null)
@@ -514,6 +566,16 @@ function openMap(v: GuideVenue): void {
  */
 function copyVenueName(v: GuideVenue): void {
   copyText(`一麦瑜伽·普拉提（${v.key}）`, '门店名已复制，可在手机地图搜索')
+}
+
+/**
+ * editorial 的「复制地址」独立入口。
+ * 地址为空时退化成复制门店名 —— 与 openMap 的降级同一口径，
+ * 不会出现「写着复制地址，复制出来是个空字符串」。
+ */
+function copyAddress(v: GuideVenue): void {
+  if (v.address) copyText(v.address, '地址已复制')
+  else copyVenueName(v)
 }
 
 /** 门店电话：没配号码就直说，不做无效拨号（按钮层已按 phoneReady 不渲染，这里是二次兜底） */
@@ -605,62 +667,318 @@ onShareAppMessage(() => {
 </script>
 
 <template>
-  <view class="ym-page guide">
-    <!-- 第一步：选门店（两个大门店卡，拇指友好） -->
-    <view v-if="choosing" class="pick">
-      <text class="pick__title">你到哪家店？</text>
-      <text class="pick__desc">选门店后给出地址、电话、到店路线和门店视频号</text>
+  <view class="ym-page guide" :class="`guide--${guideTheme}`">
+    <!-- 第一步：选门店。两套主题是两种语言（editorial 大留白排版 / oriental 竖排题签），各写一份 -->
+    <template v-if="choosing">
+      <template v-if="!isOriental">
+        <view class="pick">
+                <text class="pick__title">你到哪家店？</text>
+                <text class="pick__desc">选门店后给出地址、电话、到店路线和门店视频号</text>
 
-      <view
-        v-for="v in guideVenues"
-        :key="v.key"
-        class="pickcard ym-tap"
-        @click="choose(v)"
-      >
-        <view class="pickcard__main">
-          <text class="pickcard__name">{{ v.key }}</text>
-          <text class="pickcard__sub">{{ v.sub }}</text>
+                <view
+                  v-for="v in guideVenues"
+                  :key="v.key"
+                  class="pickcard ym-tap"
+                  @click="choose(v)"
+                >
+                  <view class="pickcard__main">
+                    <text class="pickcard__name">{{ v.key }}</text>
+                    <text class="pickcard__sub">{{ v.sub }}</text>
+                  </view>
+                  <wd-icon name="arrow-right" size="16px" color="#8A948F" />
+                </view>
+
+                <text class="pick__tip">不确定先去哪家？两家都能约课，选离你近的一家就行。</text>
         </view>
-        <wd-icon name="arrow-right" size="16px" color="#8A948F" />
-      </view>
+      </template>
+      <template v-else>
+        <view class="pick">
+                <view class="pick__gold">
+                  <view class="pick__gold-line" />
+                  <text class="pick__gold-text">VISIT GUIDE</text>
+                </view>
+                <text class="pick__title">到店指引</text>
+                <text class="pick__desc">选好门店，查看专属的到店路线</text>
 
-      <text class="pick__tip">不确定先去哪家？两家都能约课，选离你近的一家就行。</text>
-    </view>
+                <!-- 竖排装饰：渐隐细线 + 竖排四字（右缘，与标题错层） -->
+                <view class="pick__vert">
+                  <view class="pick__vert-line" />
+                  <text class="pick__vert-text">静候光临</text>
+                </view>
+
+                <view class="pick__label">
+                  <text class="pick__label-text">选择门店</text>
+                  <view class="pick__label-rule" />
+                </view>
+
+                <view class="pick__strips">
+                  <view
+                    v-for="v in guideVenues"
+                    :key="v.key"
+                    class="pickstrip ym-tap"
+                    @click="choose(v)"
+                  >
+                    <view class="pickstrip__main">
+                      <text class="pickstrip__name">{{ v.key }}</text>
+                      <text class="pickstrip__sub">{{ v.sub }}</text>
+                    </view>
+                    <view class="pickstrip__arrow">
+                      <view class="pickstrip__arrow-line" />
+                      <view class="pickstrip__arrow-head" />
+                    </view>
+                  </view>
+                </view>
+
+                <view class="pick__foot">
+                  <view class="pick__foot-line" />
+                  <text class="pick__foot-text">一麦瑜伽·普拉提</text>
+                </view>
+        </view>
+      </template>
+    </template>
 
     <!-- 第二步：门店引导 -->
     <template v-else>
-      <view class="ghead">
-        <text class="ghead__name">{{ current.key }}</text>
-        <text class="ghead__sub">{{ current.sub }}</text>
-        <!-- 地址为空时给可执行文案（复制门店名去手机地图搜），不写「待补充」四个字 -->
-        <text class="ghead__addr" :class="{ 'ghead__addr--tbd': !current.address }">
-          {{ current.address || ADDRESS_TBD_HINT }}
-        </text>
-      </view>
+      <!--
+        头部与动作两套主题结构不同，各写一份（editorial：沉浸头 + B 方案按钮；oriental：静奢东方）。
+        editorial 的 ghead 才接 heroStyle；oriental 用 heroStyleOriental（渐变末段沉入米灰）。
+      -->
+      <!-- editorial：沉浸头 + 地址外置 + B 方案按钮 -->
+      <template v-if="!isOriental">
+        <view class="ghead is-editorial" :style="heroStyle">
+          <text class="ghead__label">YIMAI · PILATES</text>
+          <text class="ghead__name">{{ current.key }}</text>
+          <text class="ghead__sub">{{ current.sub }}</text>
+        </view>
 
-      <!-- 两个大动作：导航 / 电话。两者都带降级：
-           占位坐标 → 复制地址（或门店名）；号码待补 → 不渲染拨号，换成复制门店名 -->
-      <view class="acts">
-        <view class="acts__item ym-tap" @click="openMap(current)">
-          <wd-icon name="location" size="22px" color="#FFFFFF" />
-          <text class="acts__text">地图导航</text>
-          <text class="acts__hint">{{ mapHint }}</text>
+        <!-- 地址移到图外：图片底部要留渐变带，四行文字压在一起会挤，
+             而且地址是「要读清楚」的信息，放在浅底上比压在照片上更负责 -->
+        <view class="addrline">
+          <text class="addrline__text" :class="{ 'is-tbd': !current.address }">
+            {{ current.address || ADDRESS_TBD_HINT }}
+          </text>
         </view>
-        <view
-          v-if="phoneReady"
-          class="acts__item acts__item--plain ym-tap"
-          @click="callVenue(current)"
-        >
-          <wd-icon name="phone" size="22px" color="#1C6047" />
-          <text class="acts__text acts__text--dark">门店电话</text>
-          <text class="acts__hint acts__hint--dark">{{ current.phone }}</text>
+
+        <view class="acts-ed">
+          <!-- 主按钮：无坐标时文案直接变成「复制门店地址」——
+               写了「地图导航」点下去却是复制，比改一行文案更让人意外 -->
+          <view class="acts-ed__main ym-tap" @click="openMap(current)">
+            <wd-icon name="location" size="15px" color="#FFFFFF" />
+            <text class="acts-ed__main-text">{{ coordsReady ? '地图导航' : '复制门店地址' }}</text>
+          </view>
+          <!-- 两个纯文字入口。无坐标时「复制地址」不渲染：
+               主按钮已经承担同一个降级动作，两个入口指向同一件事只会让人犹豫 -->
+          <view class="acts-ed__sub">
+            <view v-if="phoneReady" class="acts-ed__link ym-tap" @click="callVenue(current)">
+              <wd-icon name="phone" size="12px" color="#8A948F" />
+              <text class="acts-ed__link-text">拨打电话</text>
+            </view>
+            <view v-else class="acts-ed__link ym-tap" @click="copyVenueName(current)">
+              <wd-icon name="copy" size="12px" color="#8A948F" />
+              <text class="acts-ed__link-text">复制门店名</text>
+            </view>
+            <view v-if="coordsReady" class="acts-ed__link ym-tap" @click="copyAddress(current)">
+              <wd-icon name="copy" size="12px" color="#8A948F" />
+              <text class="acts-ed__link-text">复制地址</text>
+            </view>
+          </view>
         </view>
-        <view v-else class="acts__item acts__item--plain ym-tap" @click="copyVenueName(current)">
-          <wd-icon name="copy" size="22px" color="#1C6047" />
-          <text class="acts__text acts__text--dark">复制门店名</text>
-          <text class="acts__hint acts__hint--dark">电话待补 · 地图里搜</text>
-        </view>
-      </view>
+      </template>
+
+      <!-- oriental：静奢东方（A 方案，移植自 miniapp-ui-a 定稿实现） -->
+      <template v-else>
+              <!-- 沉浸头图：门店第一张实景 + 八段渐变沉入米灰；店名衬线大字压底部 -->
+              <view class="ghead" :style="heroStyleOriental">
+                <view class="ghead__mark" />
+                <text class="ghead__name">{{ current.key }}</text>
+                <text class="ghead__sub">{{ current.sub }}</text>
+              </view>
+
+              <!-- 地址（图外浅底：地址是「要读清楚」的信息，放浅底比压照片上负责） -->
+              <view class="addrline">
+                <text class="addrline__text" :class="{ 'is-tbd': !current.address }">
+                  {{ current.address || ADDRESS_TBD_HINT }}
+                </text>
+                <text v-if="phoneReady" class="addrline__phone">
+                  门店电话 · {{ current.phone }}
+                </text>
+              </view>
+
+              <!-- 两个大动作：导航 / 电话。都带降级（坐标占位→复制；号码待补→复制门店名） -->
+              <view class="acts">
+                <view class="acts__item ym-tap" @click="openMap(current)">
+                  <view class="acts__ico">
+                    <view class="acts__ico-nav" />
+                  </view>
+                  <text class="acts__text">导航前往</text>
+                  <text class="acts__hint">{{ mapHint }}</text>
+                </view>
+                <view
+                  v-if="phoneReady"
+                  class="acts__item acts__item--plain ym-tap"
+                  @click="callVenue(current)"
+                >
+                  <view class="acts__ico">
+                    <view class="acts__ico-phone" />
+                  </view>
+                  <text class="acts__text">电话联系</text>
+                  <text class="acts__hint">{{ current.phone }}</text>
+                </view>
+                <view v-else class="acts__item acts__item--plain ym-tap" @click="copyVenueName(current)">
+                  <view class="acts__ico">
+                    <view class="acts__ico-copy" />
+                  </view>
+                  <text class="acts__text">复制门店名</text>
+                  <text class="acts__hint">电话待补 · 地图里搜</text>
+                </view>
+              </view>
+
+              <!-- 视频号（细线分隔；UI 上不出现那两个字，channelsLive 字段保留但无入口） -->
+              <view class="vcard">
+                <view class="vcard__head">
+                  <text class="vcard__title">视频号</text>
+                  <view class="vcard__rule" />
+                </view>
+                <text class="vcard__desc">
+                  {{ videoReady ? '场馆日常与课程片段' : '待配置视频号' }}
+                </text>
+                <view v-if="videoReady" class="vcard__acts">
+                  <view class="vrow ym-tap" @click="openChannels">
+                    <view class="vrow__play"><view class="vrow__tri" /></view>
+                    <view class="vrow__txt">
+                      <text class="vrow__name">一麦瑜伽 · 视频号</text>
+                      <text class="vrow__sub">场馆日常 · 课程片段</text>
+                    </view>
+                    <view class="vrow__arrow">
+                      <view class="vrow__arrow-line" />
+                      <view class="vrow__arrow-head" />
+                    </view>
+                  </view>
+                </view>
+                <view v-else class="vcard__ph ym-tap" @click="videoPlaceholder">
+                  <text class="vcard__ph-text">
+                    这里会给到门店视频号入口；目前还没配置，先按下面的图文指引到店即可。
+                  </text>
+                </view>
+              </view>
+
+              <!-- 门店视频：视频号入口下方；只有配了 videoUrl 才渲染，不留空壳 -->
+              <view v-if="current.videoUrl" class="videoblk">
+                <text class="videoblk__label">门店视频</text>
+                <!-- 直链（mp4/m3u8）才内嵌；视频号链接小程序播不了，退化成「点开看视频」按钮 -->
+                <video
+                  v-if="directVideo(current.videoUrl)"
+                  class="videoblk__player"
+                  :src="current.videoUrl"
+                  :controls="true"
+                  :show-center-play-btn="true"
+                  object-fit="contain"
+                  @error="onVideoError"
+                />
+                <view v-else class="vbtn vbtn--wide ym-tap" @click="openExternalVideo(current.videoUrl)">
+                  <text class="vbtn__text">点开看门店视频</text>
+                </view>
+              </view>
+
+              <!-- 门店实景：图 + 图注（「路线」专指下面三种出行方式，避免撞车） -->
+              <view class="imgs">
+                <view class="imgs__labelrow">
+                  <text class="imgs__label">门店实景</text>
+                  <view class="imgs__rule" />
+                </view>
+                <view
+                  v-for="(img, i) in current.images"
+                  :key="img.src + i"
+                  class="fig ym-tap"
+                  @click="previewImage(current.images, i)"
+                >
+                  <image class="fig__pic" :src="img.src" mode="aspectFill" />
+                  <view class="fig__cap">
+                    <view class="fig__dash" />
+                    <text class="fig__text">{{ img.caption }}</text>
+                    <text class="fig__zoom">点击放大</text>
+                  </view>
+                </view>
+              </view>
+
+              <!-- 到店路线：三种出行方式各自独立渲染，绝不把三段的图混在一起 -->
+              <view class="routes">
+                <view class="imgs__labelrow">
+                  <text class="imgs__label">到店路线</text>
+                  <view class="imgs__rule" />
+                </view>
+
+                <!-- 下划线式 tab（A 方案语言：细线 + 留白，不用胶囊分段条） -->
+                <view class="rtabs">
+                  <view
+                    v-for="t in ROUTE_TABS"
+                    :key="t.key"
+                    class="rtab ym-tap"
+                    :class="{ 'is-on': routeTab === t.key }"
+                    @click="selectRoute(t.key)"
+                  >
+                    <text class="rtab__text">{{ t.label }}</text>
+                  </view>
+                </view>
+
+                <!-- 路线导语（后台 note）：有值才渲染；长文折叠（阈值见 NOTE_FOLD_CHARS） -->
+                <view v-if="noteParagraphs.length" class="rnote">
+                  <view class="rnote__body" :class="{ 'is-folded': noteFolded }">
+                    <text v-for="(p, i) in noteParagraphs" :key="i" class="rnote__p">{{ p }}</text>
+                  </view>
+                  <text v-if="noteNeedsFold" class="rnote__toggle ym-tap" @click="toggleNote">
+                    {{ noteExpanded ? '收起' : '展开全文' }}
+                  </text>
+                </view>
+
+                <!-- ① 这一段有视频：直链内嵌，非直链退化成跳转按钮 -->
+                <template v-if="activeRoute.videoUrl">
+                  <video
+                    v-if="directVideo(activeRoute.videoUrl)"
+                    class="videoblk__player"
+                    :src="activeRoute.videoUrl"
+                    :controls="true"
+                    :show-center-play-btn="true"
+                    object-fit="contain"
+                    @error="onVideoError"
+                  />
+                  <view v-else class="vbtn vbtn--wide ym-tap" @click="openExternalVideo(activeRoute.videoUrl)">
+                    <text class="vbtn__text">点开看这段路线视频</text>
+                  </view>
+                </template>
+
+                <!-- ② 没视频但有图：只渲染这一段的图 -->
+                <template v-else-if="activeRoute.images.length">
+                  <view
+                    v-for="(img, i) in activeRoute.images"
+                    :key="img.src + i"
+                    class="fig ym-tap"
+                    @click="previewImage(activeRoute.images, i)"
+                  >
+                    <image class="fig__pic" :src="img.src" mode="aspectFill" />
+                    <view class="fig__cap">
+                      <view class="fig__dash" />
+                      <text class="fig__text">{{ img.caption }}</text>
+                      <text class="fig__zoom">点击放大</text>
+                    </view>
+                  </view>
+                </template>
+
+                <!-- ③ 视频和图片都没有：说清是这一段没配，而不是页面坏了 -->
+                <view v-else class="rtempty">
+                  <text class="rtempty__text">该路线指引待补充</text>
+                  <text class="rtempty__desc">
+                    {{ routeLabel(routeTab) }}暂时没有视频或图片，可先按上方地址导航到店，找不到就联系门店
+                  </text>
+                </view>
+              </view>
+
+              <view class="switch ym-tap" @click="switchVenue">
+                <view class="switch__line" />
+                <text class="switch__text">换一家门店</text>
+                <view class="switch__line" />
+              </view>
+      </template>
 
       <!-- 视频号（UI 上不出现那两个字；channelsLive 字段仍在，只是没有入口） -->
       <view class="vcard">
@@ -809,6 +1127,10 @@ onShareAppMessage(() => {
 <style lang="scss" scoped>
 @import '@/styles/tokens.scss';
 
+/* oriental 专用的两个本地变量（tokens 里没有；只在这页用，不污染全局）
+$serif: 'Songti SC', 'STSong', 'SimSun', serif;
+$gold: #c19a4b;
+
 .guide {
   padding: 24rpx 0 calc(48rpx + env(safe-area-inset-bottom));
 }
@@ -871,129 +1193,7 @@ onShareAppMessage(() => {
   color: $ink-300;
 }
 
-/* ---------- 门店头 ---------- */
-.ghead {
-  display: flex;
-  flex-direction: column;
-  gap: 8rpx;
-  padding: 36rpx 32rpx 32rpx;
-  margin: 0 24rpx;
-  color: $white;
-  /* 渐变 → 纯深墨绿。135° 的双色渐变是最容易显「模板化」的用法：
-     同色系两档在手机上几乎没有层次，只剩一层廉价的塑料感。
-     纯色反而更稳、更像品牌物料；圆角同步从 28 收到 20，靠留白立秩序而不是靠圆润 */
-  background: #0f1b16;
-  border-radius: 20rpx;
-}
-
-.ghead__name {
-  font-size: 42rpx;
-  font-weight: 600;
-  letter-spacing: 2rpx;
-}
-
-.ghead__sub {
-  font-size: 24rpx;
-  color: rgba($white, 0.72);
-}
-
-.ghead__addr {
-  margin-top: 8rpx;
-  font-size: 25rpx;
-  line-height: 1.5;
-  color: rgba($white, 0.9);
-}
-
-/* 地址待补时的降级文案：比真实地址弱一档，读起来像「提示」而不是「地址」 */
-.ghead__addr--tbd {
-  color: rgba($white, 0.78);
-}
-
-/* ---------- 导航 / 电话 ---------- */
-.acts {
-  display: flex;
-  gap: 20rpx;
-  margin: 24rpx 24rpx 0;
-}
-
-.acts__item {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 6rpx;
-  align-items: center;
-  justify-content: center;
-  /* 196 → 132rpx：原来这两个块占了小半屏，主操作不需要那么大，
-     顾客来这一页是「找路」，不是「按按钮」 */
-  min-height: 132rpx;
-  padding: 20rpx 16rpx;
-  color: $white;
-  /* 渐变 → 纯色，并去掉那层绿色投影。
-     给彩色按钮加同色投影会让它显得「浮起来又糊」，是廉价感的来源；
-     保留纯品牌绿已经足够承重，层次交给留白 */
-  background: $brand-700;
-  border-radius: 16rpx;
-}
-
-.acts__item--plain {
-  color: $brand-700;
-  background: #fcfbf8;
-  border: 1rpx solid $hairline;
-  box-shadow: none;
-}
-
-.acts__text {
-  margin-top: 6rpx;
-  font-size: 30rpx;
-  font-weight: 600;
-  letter-spacing: 2rpx;
-}
-
-.acts__text--dark {
-  color: $ink-800;
-}
-
-.acts__hint {
-  font-size: 21rpx;
-  color: rgba($white, 0.72);
-}
-
-.acts__hint--dark {
-  color: $ink-400;
-}
-
-/* ---------- 视频号 ---------- */
-.vcard {
-  padding: 26rpx 28rpx;
-  margin: 24rpx 24rpx 0;
-  background: #fcfbf8;
-  border-radius: 18rpx;
-  box-shadow: $shadow-card;
-}
-
-.vcard__head {
-  display: flex;
-  flex-direction: column;
-  gap: 6rpx;
-}
-
-.vcard__title {
-  font-size: 30rpx;
-  font-weight: 600;
-  color: $ink-800;
-}
-
-.vcard__desc {
-  font-size: 23rpx;
-  color: $ink-400;
-}
-
-.vcard__acts {
-  display: flex;
-  gap: 16rpx;
-  margin-top: 20rpx;
-}
-
+/* ---------- 视频号 / 门店视频 ---------- */
 .vbtn {
   display: flex;
   flex: 1;
@@ -1020,6 +1220,88 @@ onShareAppMessage(() => {
   color: $brand-700;
 }
 
+/* ---------- 门店视频 / 路线视频 ---------- */
+/* 固定 16:9 高度 + object-fit: contain：竖屏视频会留黑边，但绝不裁掉画面
+   （裁掉的往往是门头/指示牌，正是顾客要看的那部分） */
+/* 满宽按钮：视频号链接的降级入口，与路线段里的跳转按钮共用同一个类 */
+.vbtn--wide {
+  flex: none;
+  width: 100%;
+}
+
+/* ==========================================================================
+ * editorial 基线（B 方案沉浸式，v3.16 起是**默认主题**）
+ *
+ * 经典主题已于 v3.16 弃用，所以这一层从「覆盖层」提升为基线（无前缀）。
+ * oriental 的全部样式收在 .guide--oriental 下，两者互不干扰，没有 display 覆盖。
+ * ========================================================================== */
+
+.ghead {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* 内容贴底：店名压在图片下三分之一处，上方全部留给照片 */
+  justify-content: flex-end;
+  min-height: 600rpx;
+  /* 底部 56rpx 专供渐变带：文字若压在这段上会被半透明白盖住（这是位置问题，不是配色问题） */
+  padding: 40rpx 56rpx 56rpx;
+  /* 满铺出血：左右不留白、不要圆角。圆角会立刻把「沉浸」变回「卡片」 */
+  margin: 0;
+  color: $white;
+  background-color: #0f1b16;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  overflow: hidden;
+}
+
+.ghead__name {
+  /* 字重 300 + 大字号：靠尺寸立层级，加粗反而变土 */
+  font-size: 78rpx;
+  font-weight: 300;
+  letter-spacing: 0.06em;
+  line-height: 1.08;
+  text-shadow: 0 4rpx 40rpx rgba(0, 0, 0, 0.3);
+}
+
+.ghead__sub {
+  margin-top: 14rpx;
+  font-size: 24rpx;
+  letter-spacing: 0.04em;
+  color: rgba($white, 0.9);
+}
+
+.vcard {
+  /* 去卡片：不再有独立底色/圆角/阴影，靠上下留白与细线跟相邻区块分开 */
+  padding: 0;
+  margin: 40rpx 56rpx 0;
+  padding-top: 32rpx;
+  border-top: 1rpx solid $hairline;
+}
+
+.vcard__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+}
+
+.vcard__title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: $ink-800;
+}
+
+.vcard__desc {
+  font-size: 23rpx;
+  color: $ink-400;
+}
+
+.vcard__acts {
+  display: flex;
+  gap: 16rpx;
+  margin-top: 20rpx;
+}
+
 .vcard__ph {
   padding: 22rpx 20rpx;
   margin-top: 18rpx;
@@ -1033,9 +1315,10 @@ onShareAppMessage(() => {
   color: $ink-500;
 }
 
-/* ---------- 图文引导 ---------- */
 .imgs {
-  margin: 24rpx 24rpx 0;
+  margin: 40rpx 56rpx 0;
+  padding-top: 32rpx;
+  border-top: 1rpx solid $hairline;
 }
 
 .imgs__label {
@@ -1085,7 +1368,6 @@ onShareAppMessage(() => {
   color: $brand-600;
 }
 
-/* ---------- 门店视频 / 路线视频 ---------- */
 .videoblk {
   margin: 24rpx 24rpx 0;
 }
@@ -1098,8 +1380,6 @@ onShareAppMessage(() => {
   color: $ink-700;
 }
 
-/* 固定 16:9 高度 + object-fit: contain：竖屏视频会留黑边，但绝不裁掉画面
-   （裁掉的往往是门头/指示牌，正是顾客要看的那部分） */
 .videoblk__player {
   width: 100%;
   height: 400rpx;
@@ -1107,19 +1387,12 @@ onShareAppMessage(() => {
   border-radius: 18rpx;
 }
 
-/* 满宽按钮：视频号链接的降级入口，与路线段里的跳转按钮共用同一个类 */
-.vbtn--wide {
-  flex: none;
-  width: 100%;
-}
-
-/* ---------- 到店路线分段 ---------- */
 .routes {
-  margin: 24rpx 24rpx 0;
+  margin: 40rpx 56rpx 0;
+  padding-top: 32rpx;
+  border-top: 1rpx solid $hairline;
 }
 
-/* ---------- 路线导语（后台 note） ----------
-   浅灰底 + 正文字号：和下面的视频/图片拉开层次，但不抢「分段标题」的位置 */
 .rnote {
   padding: 20rpx 22rpx;
   margin-bottom: 20rpx;
@@ -1127,8 +1400,6 @@ onShareAppMessage(() => {
   border-radius: $r-sm;
 }
 
-/* 折叠态限高 6 行（25rpx × 1.75 ≈ 44rpx/行）：首屏仍能看到视频/图片的入口，
-   想看全文点「展开全文」—— 既不压缩信息，也不让 200 字把首屏占满 */
 .rnote__body.is-folded {
   max-height: 264rpx;
   overflow: hidden;
@@ -1154,26 +1425,35 @@ onShareAppMessage(() => {
 }
 
 .rtabs {
+  /* 胶囊分段条是「后台控件」的典型长相；改成下划线标签，
+     和整页的「细线 + 留白」语言一致 */
   display: flex;
-  gap: 12rpx;
-  padding: 6rpx;
-  margin-bottom: 20rpx;
-  background: $ink-50;
-  border-radius: 999rpx;
+  gap: 44rpx;
+  padding: 0;
+  margin-bottom: 26rpx;
+  background: transparent;
+  border-radius: 0;
+  border-bottom: 1rpx solid $hairline;
 }
 
 .rtab {
+  /* 下划线标签：去掉胶囊底与选中白块，靠字色与一条 2rpx 下划线表态 */
+  position: relative;
   display: flex;
   flex: 1;
   align-items: center;
   justify-content: center;
-  height: 76rpx;
-  border-radius: 999rpx;
+  height: 64rpx;
+  padding-bottom: 14rpx;
+  border-radius: 0;
 
-  /* 选中态用白底 + 轻阴影，与项目其它分段控件一致（不靠颜色堆对比度） */
   &.is-on {
-    background: $white;
-    box-shadow: $shadow-card;
+    background: transparent;
+    box-shadow: none;
+
+    /* 伪元素在 wxss 里可能被丢弃（本项目实测过 ::before 丢失），
+       所以下划线用 border-bottom 而不是 ::after */
+    border-bottom: 2rpx solid $ink-800;
   }
 }
 
@@ -1183,11 +1463,10 @@ onShareAppMessage(() => {
 }
 
 .rtab.is-on .rtab__text {
-  font-weight: 600;
-  color: $brand-700;
+  font-weight: 500;
+  color: $ink-800;
 }
 
-/* ---------- 路线指引待补充 ---------- */
 .rtempty {
   display: flex;
   flex-direction: column;
@@ -1209,7 +1488,6 @@ onShareAppMessage(() => {
   color: $ink-400;
 }
 
-/* ---------- 换店 ---------- */
 .switch {
   display: flex;
   align-items: center;
@@ -1224,5 +1502,828 @@ onShareAppMessage(() => {
 .switch__text {
   font-size: 27rpx;
   color: $ink-600;
+}
+
+/* ==========================================================================
+ * editorial 专属：B 方案按钮（整宽主按钮 + 两个文字入口）
+ *
+ * 与 oriental 的 `.acts`（发丝线描边按钮）是**两套 DOM**，所以这里不需要任何
+ * display 覆盖去和方块样式打架 —— 这是「结构差异用 v-if」换来的好处。
+ * ========================================================================== */
+
+.acts-ed {
+  margin: 40rpx 56rpx 0;
+  padding-bottom: 36rpx;
+  /* 与下一区块（视频号）用细线分开，代替卡片阴影 */
+  border-bottom: 1rpx solid $hairline;
+}
+
+.acts-ed__main {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+  justify-content: center;
+  /* 50px：拇指落点比 44px 更从容；再高就开始抢头部的注意力 */
+  height: 50px;
+  background: #17241d;
+  border-radius: 4rpx;
+}
+
+.acts-ed__main-text {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: $white;
+}
+
+.acts-ed__sub {
+  display: flex;
+  gap: 40px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 26rpx;
+}
+
+.acts-ed__link {
+  display: flex;
+  gap: 8rpx;
+  align-items: center;
+}
+
+.acts-ed__link-text {
+  font-size: 12px;
+  color: $ink-400;
+}
+
+/* ==========================================================================
+ * editorial 专属：图片出血
+ *
+ * 细线分区的左右基准是 56rpx（.imgs / .routes 的内边距），图片要贴到屏幕边缘，
+ * 就用负 margin 把这 56rpx 抵回来 —— 比在每个父容器上写 padding: 0 再给
+ * 其它子元素另加内边距更省事，也不会把标题与文字一起顶出边界。
+ * ========================================================================== */
+
+.imgs .imgcard,
+.routes .imgcard {
+  margin: 0 -56rpx;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* 出血图之间紧贴，不留在卡片时代的 20rpx 缝 */
+.imgs .imgcard + .imgcard,
+.routes .imgcard + .imgcard {
+  margin-top: 0;
+}
+
+/* 出血后图更高一些：满宽 460rpx 约等于 4:3 的门店实拍，不至于把人像裁成一条 */
+.imgcard__pic {
+  height: 460rpx;
+}
+
+
+/* ==========================================================================
+ * oriental：静奢东方（A 方案，2026-11 移植自 miniapp-ui-a 的定稿实现）
+ *
+ * 与 editorial 的区别不是「换配色」，而是两套排版语言：
+ *  - 米灰底 #f2f4f2 + 衬线（Songti SC）+ 发丝线分区（1px，无圆角无阴影）
+ *  - 墨绿 #1c6047 用于文字与描边，香槟金 #c19a4b 只出现在小标签与短线上
+ *  - 按钮是 1.5rpx 墨绿描边的直角框；路线 tab 是发丝线下划线（选中金色）
+ *  - 选店页是大留白 + 衬线大标 + 右缘竖排「静候光临」
+ *
+ * 整段样式都收在 .guide--oriental 下：与 editorial 的基线（无前缀）互不干扰，
+ * 也没有任何 display 覆盖 —— 换主题不会有样式互相打架。
+ * ========================================================================== */
+
+/* ==========================================================================
+ * A 方案「静奢东方」：米灰底 + 墨绿 + 香槟金（仅选店步标签）
+ * 衬线大字（Songti SC）、发丝线分区、无卡片阴影（靠留白与细线立秩序）
+ * ========================================================================== */
+
+$gold: #c19a4b;
+$serif: 'Songti SC', 'STSong', 'SimSun', serif;
+
+.guide--oriental {
+  /* 米灰底：与 A 方案头图渐变的末段同色，让照片「沉入」页面而不是贴在上面。
+     页面背景本来也是 #f2f4f2，这里显式写出来，是给以后改主题的人一个锚点 */
+  background: #f2f4f2;
+  padding: 0 0 calc(48rpx + env(safe-area-inset-bottom));
+}
+
+/* ---------- 第一步：选门店（纯排版 · 大留白） ---------- */
+.guide--oriental .pick {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 184rpx 62rpx 0;
+}
+
+.guide--oriental .pick__gold {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+}
+
+.guide--oriental .pick__gold-line {
+  width: 44rpx;
+  height: 1px;
+  background: $gold;
+}
+
+.guide--oriental .pick__gold-text {
+  font-size: 19rpx;
+  letter-spacing: 0.44em;
+  color: $gold;
+}
+
+.guide--oriental .pick__title {
+  margin-top: 32rpx;
+  font-family: $serif;
+  font-weight: 300;
+  font-size: 60rpx;
+  letter-spacing: 0.22em;
+  color: #1e2b25;
+}
+
+.guide--oriental .pick__desc {
+  margin-top: 28rpx;
+  font-size: 24rpx;
+  letter-spacing: 0.1em;
+  color: #7c8a82;
+}
+
+/* 竖排装饰：渐隐细线 + 竖排四字 */
+.guide--oriental .pick__vert {
+  position: absolute;
+  right: 68rpx;
+  top: 236rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28rpx;
+}
+
+.guide--oriental .pick__vert-line {
+  width: 1px;
+  height: 176rpx;
+  background: linear-gradient(180deg, #c3cdc6, rgba(195, 205, 198, 0));
+}
+
+.guide--oriental .pick__vert-text {
+  writing-mode: vertical-rl;
+  font-family: $serif;
+  font-weight: 300;
+  font-size: 22rpx;
+  letter-spacing: 0.5em;
+  color: #8a958e;
+}
+
+/* 宋式区块标题：小字 · 发丝线 · 宽字距 */
+.guide--oriental .pick__label {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  margin-top: 124rpx;
+  margin-bottom: 28rpx;
+}
+
+.guide--oriental .pick__label-text {
+  font-family: $serif;
+  font-size: 22rpx;
+  letter-spacing: 0.5em;
+  color: #5b6b62;
+  white-space: nowrap;
+}
+
+.guide--oriental .pick__label-rule {
+  flex: 1;
+  height: 1px;
+  background: $hairline;
+}
+
+/* 门店条：竖向长条 + 发丝线分隔（与首页同款语言） */
+.guide--oriental .pick__strips {
+  border-top: 1px solid $hairline;
+  border-bottom: 1px solid $hairline;
+}
+
+.guide--oriental .pickstrip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 30rpx 4rpx;
+
+  & + & {
+    border-top: 1px solid $hairline;
+  }
+}
+
+.guide--oriental .pickstrip__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.guide--oriental .pickstrip__name {
+  font-family: $serif;
+  font-weight: 400;
+  font-size: 40rpx;
+  letter-spacing: 0.1em;
+  color: $ink-800;
+}
+
+.guide--oriental .pickstrip__sub {
+  margin-top: 12rpx;
+  font-size: 21rpx;
+  letter-spacing: 0.16em;
+  color: $ink-400;
+}
+
+.guide--oriental .pickstrip__arrow {
+  position: relative;
+  width: 64rpx;
+  height: 24rpx;
+  flex: none;
+}
+
+.guide--oriental .pickstrip__arrow-line {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 48rpx;
+  height: 1px;
+  background: $brand-700;
+  opacity: 0.55;
+}
+
+.guide--oriental .pickstrip__arrow-head {
+  position: absolute;
+  right: 6rpx;
+  top: 50%;
+  width: 16rpx;
+  height: 16rpx;
+  border-top: 1px solid $brand-700;
+  border-right: 1px solid $brand-700;
+  transform: translateY(-50%) rotate(45deg);
+  opacity: 0.55;
+}
+
+.guide--oriental .pick__foot {
+  margin-top: auto;
+  padding: 72rpx 0 36rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24rpx;
+}
+
+.guide--oriental .pick__foot-line {
+  width: 60rpx;
+  height: 1px;
+  background: #d5dcd6;
+}
+
+.guide--oriental .pick__foot-text {
+  font-size: 19rpx;
+  letter-spacing: 0.42em;
+  padding-left: 0.42em;
+  color: #a6b1aa;
+}
+
+/* ---------- 门店头（沉浸式：整页唯一的「重」） ---------- */
+.guide--oriental .ghead {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* 内容贴底：店名压在图片下三分之一处，上方全部留给照片 */
+  justify-content: flex-end;
+  min-height: 600rpx;
+  /* 底部 112rpx 专供渐变带：文字若压在这段上会被半透明米灰盖住 */
+  padding: 40rpx 62rpx 112rpx;
+  /* 满铺出血：左右不留白、不要圆角 */
+  margin: 0;
+  color: $white;
+  background-color: #0f1b16;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  overflow: hidden;
+}
+
+/* 店名上方的一小段白色细线（A 方案标志性的「线先于字」） */
+.guide--oriental .ghead__mark {
+  width: 48rpx;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.75);
+  margin-bottom: 24rpx;
+}
+
+.guide--oriental .ghead__name {
+  font-family: $serif;
+  /* 字重 400 + 大字号：靠尺寸和字距立层级，加粗反而变土 */
+  font-weight: 400;
+  font-size: 54rpx;
+  letter-spacing: 0.14em;
+  line-height: 1.15;
+  text-shadow: 0 4rpx 40rpx rgba(0, 0, 0, 0.3);
+}
+
+.guide--oriental .ghead__sub {
+  margin-top: 18rpx;
+  font-size: 22rpx;
+  letter-spacing: 0.3em;
+  color: rgba($white, 0.9);
+}
+
+/* ---------- 地址（图外浅底） ---------- */
+.guide--oriental .addrline {
+  padding: 52rpx 62rpx 32rpx;
+  border-bottom: 1rpx solid $hairline;
+}
+
+.guide--oriental .addrline__text {
+  font-size: 26rpx;
+  line-height: 1.75;
+  letter-spacing: 0.04em;
+  color: $ink-600;
+}
+
+/* 地址待补时的降级文案：弱一档，读起来像「提示」而不是「地址」 */
+.guide--oriental .addrline__text.is-tbd {
+  color: $ink-400;
+  font-size: 24rpx;
+}
+
+.guide--oriental .addrline__phone {
+  display: block;
+  margin-top: 14rpx;
+  font-size: 22rpx;
+  letter-spacing: 0.12em;
+  color: $ink-400;
+}
+
+/* ---------- 导航 / 电话（1.5rpx 描边矩形） ---------- */
+.guide--oriental .acts {
+  display: flex;
+  gap: 24rpx;
+  margin: 40rpx 62rpx 0;
+}
+
+.guide--oriental .acts__item {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10rpx;
+  align-items: center;
+  justify-content: center;
+  min-height: 150rpx;
+  padding: 24rpx 16rpx;
+  /* 描边按钮：整页只有头部的照片是重的，按钮再实心就和照片抢重量 */
+  color: #17241d;
+  background: transparent;
+  border: 1.5rpx solid #1c6047;
+  border-radius: 8rpx;
+}
+
+.guide--oriental .acts__item--plain {
+  color: $ink-600;
+  border: 1.5rpx solid #d5dcd6;
+}
+
+/* 纯 CSS 图标底（28px 视觉，60rpx 触达）：细线圆 + 内部形状 */
+.guide--oriental .acts__ico {
+  width: 56rpx;
+  height: 56rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.guide--oriental .acts__ico-nav {
+  width: 24rpx;
+  height: 24rpx;
+  border: 1px solid currentColor;
+  border-radius: 50% 50% 50 0;
+  transform: rotate(-45deg);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 50%;
+  position: relative;
+}
+
+.guide--oriental .acts__ico-phone {
+  width: 16rpx;
+  height: 24rpx;
+  border: 1px solid currentColor;
+  border-radius: 4rpx;
+  position: relative;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 4rpx;
+    left: 3rpx;
+    right: 3rpx;
+    height: 14rpx;
+    border-top: 1px solid currentColor;
+  }
+}
+
+.guide--oriental .acts__ico-copy {
+  width: 20rpx;
+  height: 24rpx;
+  border: 1px solid currentColor;
+  border-radius: 3rpx;
+  position: relative;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: -6rpx;
+    left: -6rpx;
+    width: 20rpx;
+    height: 24rpx;
+    border: 1px solid currentColor;
+    border-radius: 3rpx;
+    border-bottom: none;
+    border-right: none;
+  }
+}
+
+.guide--oriental .acts__text {
+  font-size: 28rpx;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: #1c6047;
+}
+
+.guide--oriental .acts__item--plain .acts__text {
+  color: $ink-700;
+}
+
+.guide--oriental .acts__hint {
+  font-size: 21rpx;
+  letter-spacing: 0.02em;
+  color: $ink-400;
+}
+
+/* ---------- 视频号（细线分隔，无卡片底） ---------- */
+.guide--oriental .vcard {
+  padding: 64rpx 62rpx 0;
+  margin: 0;
+}
+
+.guide--oriental .vcard__head {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+}
+
+.guide--oriental .vcard__title {
+  font-family: $serif;
+  font-size: 22rpx;
+  letter-spacing: 0.5em;
+  color: #5b6b62;
+  white-space: nowrap;
+}
+
+.guide--oriental .vcard__rule {
+  flex: 1;
+  height: 1px;
+  background: $hairline;
+}
+
+.guide--oriental .vcard__desc {
+  display: block;
+  margin-top: 18rpx;
+  font-size: 23rpx;
+  color: $ink-400;
+}
+
+.guide--oriental .vcard__acts {
+  margin-top: 8rpx;
+}
+
+/* 视频号入口行：细线圆播放钮 + 名称 + 细箭头（A 方案语言） */
+.guide--oriental .vrow {
+  display: flex;
+  align-items: center;
+  gap: 28rpx;
+  padding: 26rpx 4rpx 8rpx;
+}
+
+.guide--oriental .vrow__play {
+  flex: none;
+  width: 64rpx;
+  height: 64rpx;
+  border: 1px solid rgba(28, 96, 71, 0.45);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.guide--oriental .vrow__tri {
+  width: 0;
+  height: 0;
+  border-left: 14rpx solid #1c6047;
+  border-top: 9rpx solid transparent;
+  border-bottom: 9rpx solid transparent;
+  margin-left: 5rpx;
+}
+
+.guide--oriental .vrow__txt {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+
+.guide--oriental .vrow__name {
+  font-family: $serif;
+  font-size: 30rpx;
+  letter-spacing: 0.08em;
+  color: $ink-800;
+}
+
+.guide--oriental .vrow__sub {
+  font-size: 21rpx;
+  letter-spacing: 0.14em;
+  color: $ink-400;
+}
+
+.guide--oriental .vrow__arrow {
+  position: relative;
+  width: 64rpx;
+  height: 24rpx;
+  flex: none;
+}
+
+.guide--oriental .vrow__arrow-line {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 48rpx;
+  height: 1px;
+  background: #1c6047;
+  opacity: 0.55;
+}
+
+.guide--oriental .vrow__arrow-head {
+  position: absolute;
+  right: 6rpx;
+  top: 50%;
+  width: 16rpx;
+  height: 16rpx;
+  border-top: 1px solid #1c6047;
+  border-right: 1px solid #1c6047;
+  transform: translateY(-50%) rotate(45deg);
+  opacity: 0.55;
+}
+
+.guide--oriental .vcard__ph {
+  padding: 26rpx 24rpx;
+  margin-top: 12rpx;
+  background: $ink-50;
+  border-radius: $r-sm;
+}
+
+.guide--oriental .vcard__ph-text {
+  font-size: 23rpx;
+  line-height: 1.7;
+  color: $ink-500;
+}
+
+/* ---------- 图文引导（门店实景 / 路线图共用 fig） ---------- */
+.guide--oriental .imgs,
+.guide--oriental .routes,
+.guide--oriental .videoblk {
+  margin: 56rpx 62rpx 0;
+}
+
+.guide--oriental .imgs__labelrow {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  margin-bottom: 24rpx;
+}
+
+.guide--oriental .imgs__label {
+  font-family: $serif;
+  font-size: 22rpx;
+  letter-spacing: 0.5em;
+  color: #5b6b62;
+  white-space: nowrap;
+}
+
+.guide--oriental .imgs__rule {
+  flex: 1;
+  height: 1px;
+  background: $hairline;
+}
+
+/* 图 + 图注：去卡片化（无底色/阴影），图注是「小字 + 短横线」 */
+.guide--oriental .fig {
+  & + & {
+    margin-top: 32rpx;
+  }
+}
+
+.guide--oriental .fig__pic {
+  width: 100%;
+  height: 400rpx;
+  border-radius: 10rpx;
+  background: $ink-100;
+}
+
+.guide--oriental .fig__cap {
+  display: flex;
+  align-items: baseline;
+  gap: 14rpx;
+  padding: 18rpx 8rpx 0;
+}
+
+.guide--oriental .fig__dash {
+  flex: none;
+  width: 28rpx;
+  height: 1px;
+  background: #c9d2cb;
+  align-self: center;
+}
+
+.guide--oriental .fig__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: $ink-500;
+}
+
+.guide--oriental .fig__zoom {
+  flex-shrink: 0;
+  font-size: 21rpx;
+  color: $brand-600;
+}
+
+/* ---------- 门店视频 / 路线视频 ---------- */
+.guide--oriental .videoblk__label {
+  display: block;
+  padding: 0 8rpx 24rpx;
+  font-family: $serif;
+  font-size: 22rpx;
+  letter-spacing: 0.5em;
+  color: #5b6b62;
+}
+
+/* 固定 16:9 高度 + object-fit: contain：竖屏视频会留黑边，但绝不裁掉画面
+   （裁掉的往往是门头/指示牌，正是顾客要看的那部分） */
+.guide--oriental .videoblk__player {
+  width: 100%;
+  height: 400rpx;
+  background: #000;
+  border-radius: 10rpx;
+}
+
+/* 满宽按钮：视频号链接的降级入口（描边矩形，与导航按钮同一语言） */
+.guide--oriental .vbtn {
+  display: flex;
+  gap: 8rpx;
+  align-items: center;
+  justify-content: center;
+  height: 92rpx;
+  color: #1c6047;
+  background: transparent;
+  border: 1.5rpx solid #1c6047;
+  border-radius: 8rpx;
+}
+
+.guide--oriental .vbtn--wide {
+  flex: none;
+  width: 100%;
+}
+
+.guide--oriental .vbtn__text {
+  font-size: 27rpx;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: #1c6047;
+}
+
+/* ---------- 路线导语（后台 note）：浅灰底 + 正文字号 ---------- */
+.guide--oriental .rnote {
+  padding: 28rpx 32rpx;
+  margin-bottom: 24rpx;
+  background: $ink-50;
+  border-radius: $r-sm;
+}
+
+/* 折叠态限高 6 行（25rpx × 1.75 ≈ 44rpx/行）：首屏仍能看到视频/图片的入口 */
+.guide--oriental .rnote__body.is-folded {
+  max-height: 264rpx;
+  overflow: hidden;
+}
+
+.guide--oriental .rnote__p {
+  display: block;
+  font-size: 25rpx;
+  line-height: 1.75;
+  color: $ink-600;
+  word-break: break-word;
+
+  & + & {
+    margin-top: 8rpx;
+  }
+}
+
+.guide--oriental .rnote__toggle {
+  display: block;
+  margin-top: 16rpx;
+  font-size: 23rpx;
+  color: $brand-600;
+}
+
+/* ---------- 到店路线分段：下划线式 tab ---------- */
+.guide--oriental .rtabs {
+  display: flex;
+  gap: 64rpx;
+  padding: 0;
+  margin-bottom: 32rpx;
+  background: transparent;
+  border-bottom: 1rpx solid $hairline;
+}
+
+.guide--oriental .rtab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 72rpx;
+  padding-bottom: 20rpx;
+  border-radius: 0;
+
+  /* 下划线标签：伪元素在 wxss 里可能被丢弃（本项目实测过），
+     所以下划线用 border-bottom 而不是 ::after。
+     ⚠️ 与源文件的一处**有意差异**：miniapp-ui-a 原文选中线是墨色 #1e2b25，
+     M7 明确要求「选中用香槟金细下划线」，这里改为 $gold（金只出现在小标签与短线，
+     符合 A 方案「金不压主」的用法）。文字仍用墨色，避免金色字发灰。 */
+  &.is-on {
+    border-bottom: 2rpx solid $gold;
+
+    .rtab__text {
+      font-weight: 500;
+      color: #1e2b25;
+    }
+  }
+}
+
+.guide--oriental .rtab__text {
+  font-size: 25rpx;
+  letter-spacing: 0.1em;
+  color: $ink-500;
+}
+
+/* ---------- 路线指引待补充 ---------- */
+.guide--oriental .rtempty {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+  padding: 48rpx 36rpx;
+  background: $ink-50;
+  border-radius: 10rpx;
+}
+
+.guide--oriental .rtempty__text {
+  font-size: 27rpx;
+  font-weight: 500;
+  color: $ink-600;
+}
+
+.guide--oriental .rtempty__desc {
+  font-size: 23rpx;
+  line-height: 1.7;
+  color: $ink-400;
+}
+
+/* ---------- 换店：细字链（左右两根短横线） ---------- */
+.guide--oriental .switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28rpx;
+  margin: 64rpx 62rpx 0;
+  height: 92rpx;
+}
+
+.guide--oriental .switch__line {
+  width: 52rpx;
+  height: 1px;
+  background: #d3dbd4;
+}
+
+.guide--oriental .switch__text {
+  font-size: 24rpx;
+  letter-spacing: 0.3em;
+  padding-left: 0.3em;
+  color: $brand-700;
 }
 </style>

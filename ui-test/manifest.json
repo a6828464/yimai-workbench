@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "project": "一麦瑜伽小程序 · UI 风格方向探索",
+  "round": "方向探索 Round 1",
+  "brief": "只保留原功能与逻辑（主页：约课/到店指引/员工入口；到店指引：选门店→导航/电话/视频号/实景/三段路线/换店），版式完全推翻重排。三个方向供对比选择，不与原代码混淆，独立 ui-test 目录。",
+  "lang": "zh",
+  "nativeViewport": { "width": 390, "height": 844 },
+  "candidates": [
+    {
+      "id": "d1",
+      "name": "A · 静奢东方",
+      "concept": "留白即高级：米灰底 + 墨绿 + 香槟金细线，衬线大字距，发丝线分区，上 2/3 沉浸图沉入米灰世界",
+      "kind": "html",
+      "source": "a-oriental/home.html",
+      "interactive": true,
+      "palette": ["#f2f4f2", "#fcfbf8", "#1c6047", "#2e7d5b", "#c19a4b", "#eaeeeb"],
+      "traits": ["静奢东方疗愈", "衬线大字 + 宽字距", "发丝线分区、无卡片阴影", "门店入口竖向长条非卡片", "下划线式路线 tab"],
+      "typography": "Noto Serif SC 标题 + PingFang SC 正文"
+    },
+    {
+      "id": "d2",
+      "name": "B · 奶油生活感",
+      "concept": "温暖圆润生活方式：奶油底 + 陶土橘 + 鼠尾草绿，大圆角软卡 + 手写英文装饰 + 花瓣圆点纹理",
+      "kind": "html",
+      "source": "b-cream/home.html",
+      "interactive": true,
+      "palette": ["#faf6ef", "#d97b4f", "#7c9885", "#5a4a3a", "#ffffff"],
+      "traits": ["明亮温暖女性向友好", "大圆角软卡 + 暖白描边", "门店大图卡（图上半铺满）", "彩色大圆动作按钮", "药丸分段器路线 tab"],
+      "typography": "PingFang SC + Caveat 手写英文点缀"
+    },
+    {
+      "id": "d3",
+      "name": "C · 暗夜高端会所",
+      "concept": "夜幕深绿私教奢牌：近黑墨绿底 + 暖铜金强调，毛玻璃卡 + 金细线 + 压暗大图，会员制俱乐部气质",
+      "kind": "html",
+      "source": "c-dark/home.html",
+      "interactive": true,
+      "palette": ["#0a120e", "#0e1713", "#c8a24e", "#f5efe4"],
+      "traits": ["都市精品私教馆", "毛玻璃门店卡 hover 金描边", "金色实心导航钮微光", "金色下划线路线 tab", "BOOK NOW 英文小字点缀"],
+      "typography": "Noto Serif SC + 金字距英文标签"
+    }
+  ]
+}

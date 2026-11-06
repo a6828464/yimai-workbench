@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<!--
+  一麦瑜伽·普拉提 小程序 · UI 方向评审 Mockup
+  风格 B：奶油生活感 · 温暖圆润（奶油底 #faf6ef / 陶土橘 #d97b4f / 鼠尾草绿 #7c9885 / 燕麦棕 #5a4a3a）
+  本页清单：home.html —— 小程序主页（奶油通页：品牌问候 + 两张门店大卡 + 到店指引胶囊 + 底部 slogan）
+  姊妹页：guide.html —— 到店指引（选门店 → 门店引导，两步切换，含东店降级态）
+  仅供 UI 方向评审，非最终实现
+-->
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一麦瑜伽·普拉提 · 主页（风格 B 奶油生活感）</title>
+<style>
+  :root{
+    --cream:#faf6ef;
+    --cream-card:#fffdf8;
+    --clay:#d97b4f;
+    --clay-deep:#c46840;
+    --clay-tint:rgba(217,123,79,.12);
+    --sage:#7c9885;
+    --sage-deep:#63806b;
+    --sage-light:#edf3ee;
+    --sage-tint:rgba(124,152,133,.14);
+    --ink:#5a4a3a;
+    --ink-soft:#93836f;
+    --white-line:#ffffff;
+    --shadow:0 12px 28px rgba(90,74,58,.10);
+    --shadow-soft:0 6px 16px rgba(90,74,58,.08);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    background:#17191a;
+    display:grid;place-items:center;
+    min-height:100vh;padding:24px 12px;
+    font-family:'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+  }
+  button{font-family:inherit;border:none;background:none;cursor:pointer;color:inherit;}
+  img{display:block;}
+
+  /* ===== iPhone 框 ===== */
+  .phone{
+    width:390px;height:844px;flex:none;
+    border:8px solid #000;border-radius:44px;background:#000;
+    box-shadow:0 34px 90px rgba(0,0,0,.55), 0 6px 18px rgba(0,0,0,.4);
+    overflow:hidden;position:relative;
+  }
+  .screen{
+    width:100%;height:100%;border-radius:36px;overflow:hidden;
+    background:var(--cream);
+    overflow-y:auto;overflow-x:hidden;
+    -webkit-overflow-scrolling:touch;scrollbar-width:none;position:relative;
+  }
+  .screen::-webkit-scrollbar{display:none;}
+
+  /* ===== 状态栏（纯 CSS 电池 / wifi / 信号）===== */
+  .st{
+    position:sticky;top:0;z-index:50;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:12px 24px 6px;
+    background:linear-gradient(to bottom, rgba(250,246,239,.94) 60%, rgba(250,246,239,0));
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  }
+  .st-time{font-size:15px;font-weight:600;color:#2e2820;letter-spacing:.3px;}
+  .st-ics{display:flex;align-items:center;gap:6px;}
+  .sig{display:flex;align-items:flex-end;gap:1.5px;height:11px;}
+  .sig i{width:3px;border-radius:1px;background:#2e2820;display:block;}
+  .sig i:nth-child(1){height:4px;} .sig i:nth-child(2){height:6px;}
+  .sig i:nth-child(3){height:8px;} .sig i:nth-child(4){height:10px;}
+  .wifi{position:relative;width:15px;height:11px;}
+  .wifi b{position:absolute;left:50%;bottom:-1px;transform:translateX(-50%) rotate(-45deg);
+    border:2px solid #2e2820;border-radius:50%;
+    border-bottom-color:transparent;border-left-color:transparent;border-right-color:transparent;display:block;}
+  .wifi b:nth-child(1){width:14px;height:14px;}
+  .wifi b:nth-child(2){width:9px;height:9px;}
+  .wifi b:nth-child(3){width:4px;height:4px;border:2px solid #2e2820;}
+  .batt{position:relative;width:24px;height:12px;border:1.5px solid rgba(46,40,32,.45);border-radius:3.5px;}
+  .batt::before{content:"";position:absolute;left:1.5px;top:1.5px;bottom:1.5px;width:14px;background:#2e2820;border-radius:2px;}
+  .batt::after{content:"";position:absolute;right:-4px;top:3px;width:2px;height:5px;background:rgba(46,40,32,.45);border-radius:0 2px 2px 0;}
+
+  /* ===== 微信小程序胶囊 ===== */
+  .cap{
+    position:absolute;top:46px;right:12px;z-index:60;
+    width:88px;height:32px;border-radius:16px;
+    background:rgba(255,255,255,.62);
+    border:1px solid rgba(90,74,58,.10);
+    box-shadow:0 4px 12px rgba(90,74,58,.08);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    display:flex;align-items:center;
+  }
+  .cap-l,.cap-r{flex:1;display:grid;place-items:center;}
+  .cap-l span{font-size:12px;letter-spacing:2.5px;color:#3a332b;font-weight:700;line-height:0;padding-bottom:3px;}
+  .cap-sep{width:1px;height:16px;background:rgba(90,74,58,.16);}
+  .cap-r i{width:13px;height:13px;border:1.6px solid #3a332b;border-radius:50%;position:relative;display:block;}
+  .cap-r i::after{content:"";position:absolute;inset:0;margin:auto;width:4px;height:4px;background:#3a332b;border-radius:50%;}
+
+  /* ===== 页面通用 ===== */
+  .page{position:relative;padding:0 20px 8px;}
+  .caveat{font-family:'Snell Roundhand','Songti SC',cursive;font-weight:500;color:var(--clay);line-height:1;}
+  .hi{width:120px;height:5px;border-radius:3px;background:rgba(46,40,32,.30);margin:16px auto 10px;}
+
+  /* 背景装饰：圆点 / 花瓣 */
+  .deco{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:0;}
+  .deco .dot{position:absolute;border-radius:50%;}
+  .deco .petal{position:absolute;border-radius:60% 0 60% 0;}
+  .page > *:not(.deco){position:relative;z-index:1;}
+
+  /* ===== 品牌头 ===== */
+  .brand{display:flex;align-items:center;gap:12px;padding-top:52px;}
+  .logo-wrap{
+    width:44px;height:44px;border-radius:50%;flex:none;
+    background:var(--cream-card);border:2px solid var(--white-line);
+    box-shadow:var(--shadow-soft);display:grid;place-items:center;
+  }
+  .logo-wrap img{width:28px;height:28px;object-fit:contain;}
+  .brand-name{font-size:17px;font-weight:600;color:var(--ink);letter-spacing:.5px;}
+  .brand-en{font-size:10px;color:var(--ink-soft);letter-spacing:2.5px;margin-top:3px;text-transform:uppercase;}
+
+  /* ===== 问候区 ===== */
+  .hello{margin-top:26px;}
+  .hello .caveat{font-size:23px;display:block;margin-bottom:6px;}
+  .hello h1{font-size:21px;font-weight:600;color:var(--ink);letter-spacing:.5px;}
+  .hello .sub{font-size:12.5px;color:var(--ink-soft);margin-top:7px;letter-spacing:.3px;}
+
+  /* ===== 门店大卡 ===== */
+  .store-card{
+    margin-top:16px;background:var(--cream-card);
+    border:2px solid var(--white-line);border-radius:26px;
+    box-shadow:var(--shadow);overflow:hidden;
+    transition:transform .25s ease, box-shadow .25s ease;
+  }
+  .store-card:hover{transform:translateY(-3px);box-shadow:0 18px 36px rgba(90,74,58,.14);}
+  .cover{position:relative;height:172px;overflow:hidden;}
+  .cover img{width:100%;height:100%;object-fit:cover;}
+  .cover img.pos-a{object-position:center 42%;}
+  .cover img.pos-b{object-position:center 60%;}
+  .cover-tag{
+    position:absolute;top:12px;right:12px;
+    background:rgba(255,253,248,.92);backdrop-filter:blur(4px);
+    border-radius:999px;padding:5px 11px;
+    font-size:11px;font-weight:600;color:var(--ink);
+    box-shadow:0 3px 10px rgba(90,74,58,.16);
+    display:flex;align-items:center;gap:5px;
+  }
+  .cover-tag::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--sage);}
+  .card-body{padding:16px 18px 18px;}
+  .store-name{font-size:18px;font-weight:600;color:var(--ink);letter-spacing:1px;}
+  .store-sub{font-size:12.5px;color:var(--ink-soft);margin-top:6px;letter-spacing:.3px;}
+  .cta{
+    margin-top:14px;width:100%;height:46px;border-radius:16px;
+    background:var(--clay);color:#fff;
+    font-size:15px;font-weight:600;letter-spacing:1px;
+    display:flex;align-items:center;justify-content:center;gap:6px;
+    box-shadow:0 10px 22px rgba(217,123,79,.30);
+    transition:background .2s ease, transform .15s ease, box-shadow .2s ease;
+    cursor:pointer;
+  }
+  .cta:hover{background:var(--clay-deep);box-shadow:0 12px 26px rgba(217,123,79,.38);}
+  .cta:active{transform:scale(.975);transform-origin:center;}
+
+  /* ===== 到店指引胶囊条 ===== */
+  .guide-pill{
+    margin-top:20px;height:56px;border-radius:999px;
+    background:var(--sage-light);border:2px solid var(--white-line);
+    box-shadow:var(--shadow-soft);
+    display:flex;align-items:center;gap:11px;padding:0 8px 0 8px;
+    text-decoration:none;color:var(--ink);
+    transition:transform .2s ease, box-shadow .2s ease, background .2s ease;
+  }
+  .guide-pill:hover{transform:translateY(-2px);box-shadow:var(--shadow);}
+  .guide-pill:active{transform:scale(.98);}
+  .gp-ico{
+    width:40px;height:40px;border-radius:50%;flex:none;
+    background:var(--sage);color:#fff;font-size:17px;
+    display:grid;place-items:center;
+    box-shadow:0 6px 14px rgba(124,152,133,.35);
+  }
+  .gp-txt{flex:1;font-size:13px;color:var(--ink-soft);}
+  .gp-txt b{color:var(--sage-deep);font-weight:600;}
+  .gp-arrow{font-size:18px;color:var(--sage-deep);padding-right:8px;font-weight:600;}
+
+  /* ===== 底部 slogan ===== */
+  .slogan{margin-top:30px;text-align:center;padding-bottom:4px;}
+  .petal-row{display:flex;justify-content:center;gap:8px;margin-bottom:12px;}
+  .petal-row .petal{position:relative;width:14px;height:14px;border-radius:60% 0 60% 0;}
+  .petal-row .petal:nth-child(1){background:rgba(217,123,79,.35);transform:rotate(18deg);}
+  .petal-row .petal:nth-child(2){background:rgba(124,152,133,.42);transform:rotate(45deg) scale(1.15);}
+  .petal-row .petal:nth-child(3){background:rgba(217,123,79,.30);transform:rotate(74deg);}
+  .slogan-txt{font-size:12px;color:var(--ink-soft);letter-spacing:4px;font-weight:500;}
+  .slogan .caveat{font-size:17px;display:block;margin-top:8px;color:rgba(217,123,79,.65);}
+
+  /* 入场动画 */
+  .fade-up{animation:fadeUp .55s ease both;}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
+  @media (prefers-reduced-motion:reduce){
+    .fade-up{animation:none;}
+    *{transition:none!important;}
+  }
+</style>
+</head>
+<body>
+  <div class="phone">
+    <div class="screen">
+
+      <!-- 状态栏 -->
+      <div class="st">
+        <span class="st-time">9:41</span>
+        <span class="st-ics">
+          <span class="sig"><i></i><i></i><i></i><i></i></span>
+          <span class="wifi"><b></b><b></b><b></b></span>
+          <span class="batt"></span>
+        </span>
+      </div>
+
+      <!-- 微信小程序胶囊 -->
+      <div class="cap">
+        <span class="cap-l"><span>•••</span></span>
+        <span class="cap-sep"></span>
+        <span class="cap-r"><i></i></span>
+      </div>
+
+      <div class="page">
+        <!-- 背景装饰：圆点 / 花瓣 -->
+        <div class="deco">
+          <span class="petal" style="top:118px;right:16px;width:26px;height:26px;background:rgba(217,123,79,.14);transform:rotate(24deg);"></span>
+          <span class="dot" style="top:150px;right:52px;width:10px;height:10px;background:rgba(124,152,133,.22);"></span>
+          <span class="dot" style="top:96px;right:34px;width:6px;height:6px;background:rgba(217,123,79,.20);"></span>
+          <span class="petal" style="top:640px;left:-10px;width:34px;height:34px;background:rgba(124,152,133,.14);transform:rotate(40deg);"></span>
+          <span class="dot" style="top:700px;left:30px;width:9px;height:9px;background:rgba(217,123,79,.16);"></span>
+          <span class="petal" style="bottom:120px;right:-8px;width:30px;height:30px;background:rgba(217,123,79,.10);transform:rotate(64deg);"></span>
+          <span class="dot" style="bottom:90px;left:24px;width:7px;height:7px;background:rgba(124,152,133,.20);"></span>
+        </div>
+
+        <!-- 品牌头 -->
+        <header class="brand fade-up">
+          <span class="logo-wrap"><img src="../assets/logo-green.png" alt="一麦瑜伽·普拉提"></span>
+          <span>
+            <span class="brand-name">一麦瑜伽·普拉提</span>
+            <span class="brand-en" style="display:block;">Yimai · Pilates Studio</span>
+          </span>
+        </header>
+
+        <!-- 问候 -->
+        <section class="hello fade-up" style="animation-delay:.06s;">
+          <span class="caveat">hello, yimai</span>
+          <h1>今晚也想来伸展一下？</h1>
+          <p class="sub">两家门店都在等你，垫子已经铺好啦</p>
+        </section>
+
+        <!-- 门店大卡 · 东部店 -->
+        <div class="store-card fade-up" style="animation-delay:.12s;">
+          <div class="cover">
+            <img class="pos-a" src="../assets/studio-cream.png" alt="东部店教室">
+            <span class="cover-tag">江东 · 场馆</span>
+          </div>
+          <div class="card-body">
+            <div class="store-name">东部店</div>
+            <p class="store-sub">小班普拉提 · 垫上与器械课室</p>
+            <button class="cta" type="button">去约课 →</button>
+          </div>
+        </div>
+
+        <!-- 门店大卡 · 绿地店 -->
+        <div class="store-card fade-up" style="animation-delay:.18s;">
+          <div class="cover">
+            <img class="pos-b" src="../assets/studio-cream.png" alt="绿地店教室">
+            <span class="cover-tag">绿地缤纷城 · 4楼</span>
+          </div>
+          <div class="card-body">
+            <div class="store-name">绿地店</div>
+            <p class="store-sub">自然光教室 · 商场直达电梯</p>
+            <button class="cta" type="button">去约课 →</button>
+          </div>
+        </div>
+
+        <!-- 第一次来 · 到店指引胶囊 -->
+        <a class="guide-pill fade-up" style="animation-delay:.24s;" href="guide.html">
+          <span class="gp-ico">📍</span>
+          <span class="gp-txt"><b>第一次来？</b> 查看到店指引</span>
+          <span class="gp-arrow">›</span>
+        </a>
+
+        <!-- 底部 slogan -->
+        <footer class="slogan fade-up" style="animation-delay:.3s;">
+          <div class="petal-row"><span class="petal"></span><span class="petal"></span><span class="petal"></span></div>
+          <div class="slogan-txt">看见 · 包容 · 超越</div>
+          <span class="caveat">see you on the mat</span>
+        </footer>
+
+        <div class="hi"></div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>

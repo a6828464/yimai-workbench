@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<!--
+  一麦瑜伽·普拉提 小程序 · UI 方向评审 Mockup
+  风格 B：奶油生活感 · 温暖圆润（奶油底 #faf6ef / 陶土橘 #d97b4f / 鼠尾草绿 #7c9885 / 燕麦棕 #5a4a3a）
+  本页清单：guide.html —— 到店指引（两步：先选门店 → 门店引导；绿地店完整态 + 东部店降级态；路线三 tab 药丸分段器）
+  姊妹页：home.html —— 小程序主页
+  仅供 UI 方向评审，非最终实现
+-->
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一麦瑜伽·普拉提 · 到店指引（风格 B 奶油生活感）</title>
+<style>
+  :root{
+    --cream:#faf6ef;
+    --cream-card:#fffdf8;
+    --clay:#d97b4f;
+    --clay-deep:#c46840;
+    --clay-tint:rgba(217,123,79,.12);
+    --sage:#7c9885;
+    --sage-deep:#63806b;
+    --sage-light:#edf3ee;
+    --ink:#5a4a3a;
+    --ink-soft:#93836f;
+    --track:rgba(90,74,58,.08);
+    --shadow:0 12px 28px rgba(90,74,58,.10);
+    --shadow-soft:0 6px 16px rgba(90,74,58,.08);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    background:#17191a;display:grid;place-items:center;min-height:100vh;padding:24px 12px;
+    font-family:'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;color:var(--ink);
+    -webkit-font-smoothing:antialiased;
+  }
+  button{font-family:inherit;border:none;background:none;cursor:pointer;color:inherit;}
+  img{display:block;}
+  .caveat{font-family:'Snell Roundhand','Songti SC',cursive;font-weight:500;color:var(--clay);line-height:1;}
+
+  /* ===== iPhone 框 ===== */
+  .phone{width:390px;height:844px;flex:none;border:8px solid #000;border-radius:44px;background:#000;
+    box-shadow:0 34px 90px rgba(0,0,0,.55),0 6px 18px rgba(0,0,0,.4);overflow:hidden;position:relative;}
+  .screen{width:100%;height:100%;border-radius:36px;overflow:hidden;background:var(--cream);
+    overflow-y:auto;overflow-x:hidden;scrollbar-width:none;position:relative;-webkit-overflow-scrolling:touch;}
+  .screen::-webkit-scrollbar{display:none;}
+
+  /* ===== 吸顶：状态栏 + 返回导航 ===== */
+  .topbar{position:sticky;top:0;z-index:50;
+    background:linear-gradient(to bottom,rgba(250,246,239,.95) 55%,rgba(250,246,239,0));
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);}
+  .st{display:flex;align-items:center;justify-content:space-between;padding:12px 24px 6px;}
+  .st-time{font-size:15px;font-weight:600;color:#2e2820;letter-spacing:.3px;}
+  .st-ics{display:flex;align-items:center;gap:6px;}
+  .sig{display:flex;align-items:flex-end;gap:1.5px;height:11px;}
+  .sig i{width:3px;border-radius:1px;background:#2e2820;display:block;}
+  .sig i:nth-child(1){height:4px}.sig i:nth-child(2){height:6px}.sig i:nth-child(3){height:8px}.sig i:nth-child(4){height:10px}
+  .wifi{position:relative;width:15px;height:11px;}
+  .wifi b{position:absolute;left:50%;bottom:-1px;transform:translateX(-50%) rotate(-45deg);
+    border:2px solid #2e2820;border-radius:50%;border-bottom-color:transparent;border-left-color:transparent;border-right-color:transparent;display:block;}
+  .wifi b:nth-child(1){width:14px;height:14px}.wifi b:nth-child(2){width:9px;height:9px}
+  .wifi b:nth-child(3){width:4px;height:4px;border:2px solid #2e2820;}
+  .batt{position:relative;width:24px;height:12px;border:1.5px solid rgba(46,40,32,.45);border-radius:3.5px;}
+  .batt::before{content:"";position:absolute;left:1.5px;top:1.5px;bottom:1.5px;width:14px;background:#2e2820;border-radius:2px;}
+  .batt::after{content:"";position:absolute;right:-4px;top:3px;width:2px;height:5px;background:rgba(46,40,32,.45);border-radius:0 2px 2px 0;}
+  .navrow{display:flex;align-items:center;gap:10px;padding:8px 16px 8px;}
+  .backbtn{width:34px;height:34px;border-radius:50%;flex:none;background:var(--cream-card);
+    border:2px solid #fff;box-shadow:var(--shadow-soft);display:grid;place-items:center;
+    font-size:22px;font-weight:600;color:var(--ink);line-height:1;padding-bottom:2px;
+    transition:transform .15s ease,box-shadow .2s ease;}
+  .backbtn:hover{box-shadow:var(--shadow);}
+  .backbtn:active{transform:scale(.92);}
+  .nav-title{font-size:15px;font-weight:600;color:var(--ink);letter-spacing:1px;}
+
+  /* ===== 微信小程序胶囊 ===== */
+  .cap{position:absolute;top:46px;right:12px;z-index:60;width:88px;height:32px;border-radius:16px;
+    background:rgba(255,255,255,.62);border:1px solid rgba(90,74,58,.10);
+    box-shadow:0 4px 12px rgba(90,74,58,.08);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    display:flex;align-items:center;}
+  .cap-l,.cap-r{flex:1;display:grid;place-items:center;}
+  .cap-l span{font-size:12px;letter-spacing:2.5px;color:#3a332b;font-weight:700;line-height:0;padding-bottom:3px;}
+  .cap-sep{width:1px;height:16px;background:rgba(90,74,58,.16);}
+  .cap-r i{width:13px;height:13px;border:1.6px solid #3a332b;border-radius:50%;position:relative;display:block;}
+  .cap-r i::after{content:"";position:absolute;inset:0;margin:auto;width:4px;height:4px;background:#3a332b;border-radius:50%;}
+
+  /* ===== 页面通用 ===== */
+  .page{position:relative;padding:0 20px 10px;}
+  .deco{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:0;}
+  .deco .dot{position:absolute;border-radius:50%;}
+  .deco .petal{position:absolute;border-radius:60% 0 60% 0;}
+  .page > *:not(.deco){position:relative;z-index:1;}
+  .sec-head{margin-top:24px;}
+  .sec-head .caveat{font-size:20px;display:block;margin-bottom:4px;}
+  .sec-head h2{font-size:17px;font-weight:600;color:var(--ink);letter-spacing:.5px;}
+  .fade-in{animation:fadeUp .45s ease both;}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+  @media (prefers-reduced-motion:reduce){.fade-in{animation:none;}*{transition:none!important;}}
+
+  /* ===== 第一步：选门店 ===== */
+  #step1{display:block;}
+  .step2{display:none;}
+  .intro{margin-top:14px;}
+  .intro h1{font-size:21px;font-weight:600;color:var(--ink);letter-spacing:.5px;}
+  .intro .sub{font-size:12.5px;color:var(--ink-soft);margin-top:7px;}
+  .pick-card{margin-top:14px;background:var(--cream-card);border:2px solid #fff;border-radius:24px;
+    box-shadow:var(--shadow);padding:12px;display:flex;align-items:center;gap:14px;width:100%;text-align:left;
+    transition:transform .22s ease,box-shadow .22s ease;}
+  .pick-card:hover{transform:translateY(-3px);box-shadow:0 18px 36px rgba(90,74,58,.14);}
+  .pick-card:active{transform:scale(.98);}
+  .pick-thumb{width:92px;height:92px;flex:none;border-radius:18px;overflow:hidden;}
+  .pick-thumb img{width:100%;height:100%;object-fit:cover;}
+  .pick-info{flex:1;min-width:0;}
+  .pick-name{font-size:16.5px;font-weight:600;color:var(--ink);letter-spacing:.5px;}
+  .pick-sub{font-size:12px;color:var(--ink-soft);margin-top:5px;letter-spacing:.2px;}
+  .pick-go{margin-top:8px;display:inline-flex;align-items:center;gap:4px;font-size:12.5px;font-weight:600;
+    color:var(--sage-deep);background:var(--sage-light);border-radius:999px;padding:5px 12px;}
+  .pick-arrow{font-size:18px;color:var(--ink-soft);flex:none;font-weight:600;}
+
+  /* ===== 第二步：门店引导 ===== */
+  .hero-wrap{position:relative;margin-top:8px;}
+  .hero{border-radius:24px;overflow:hidden;border:2px solid #fff;box-shadow:var(--shadow);height:196px;}
+  .hero img{width:100%;height:100%;object-fit:cover;}
+  .stamp{position:absolute;left:16px;bottom:-26px;width:74px;height:74px;border-radius:50%;
+    background:var(--cream-card);border:2px solid rgba(124,152,133,.55);box-shadow:var(--shadow);
+    display:grid;place-items:center;transform:rotate(-6deg);}
+  .stamp::before{content:"";position:absolute;inset:5px;border:1.5px dashed rgba(124,152,133,.6);border-radius:50%;}
+  .stamp b{font-size:13px;font-weight:600;color:var(--sage-deep);letter-spacing:1px;}
+  .store-row{margin-top:38px;display:flex;align-items:center;justify-content:space-between;gap:10px;}
+  .store-row h1{font-size:20px;font-weight:600;color:var(--ink);letter-spacing:.5px;}
+  .store-badge{font-size:11px;font-weight:600;color:var(--clay-deep);background:var(--clay-tint);
+    border-radius:999px;padding:6px 12px;letter-spacing:.5px;flex:none;}
+
+  /* 地址胶囊条 */
+  .addr{margin-top:16px;height:54px;border-radius:999px;background:var(--cream-card);border:2px solid #fff;
+    box-shadow:var(--shadow-soft);display:flex;align-items:center;gap:10px;padding:0 8px 0 8px;}
+  .addr:hover{box-shadow:var(--shadow);}
+  .addr-ico{width:38px;height:38px;border-radius:50%;flex:none;background:var(--sage-light);display:grid;place-items:center;font-size:15px;}
+  .addr-txt{flex:1;min-width:0;font-size:12.5px;color:var(--ink);letter-spacing:.2px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .addr-copy{width:38px;height:38px;border-radius:50%;flex:none;display:grid;place-items:center;
+    background:var(--clay-tint);font-size:15px;transition:transform .15s ease;}
+  .addr-copy:active{transform:scale(.9);}
+  .addr.hint{background:var(--sage-light);border-color:rgba(124,152,133,.25);}
+  .addr.hint .addr-ico{background:rgba(255,253,248,.9);}
+  .addr.hint .addr-txt{color:var(--sage-deep);}
+
+  /* 导航 / 电话 大圆按钮 */
+  .duo{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .bigbtn{height:62px;border-radius:20px;display:flex;align-items:center;justify-content:center;gap:8px;
+    font-size:14.5px;font-weight:600;letter-spacing:.5px;transition:transform .15s ease,box-shadow .2s ease,background .2s ease;}
+  .bigbtn:active{transform:scale(.96);}
+  .bigbtn .b-ico{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-size:16px;flex:none;}
+  .btn-nav{background:var(--clay);color:#fff;box-shadow:0 10px 22px rgba(217,123,79,.30);}
+  .btn-nav .b-ico{background:rgba(255,255,255,.22);}
+  .btn-nav:hover{background:var(--clay-deep);box-shadow:0 12px 26px rgba(217,123,79,.38);}
+  .btn-tel{background:var(--sage-light);color:var(--sage-deep);border:2px solid rgba(124,152,133,.55);}
+  .btn-tel .b-ico{background:#fff;}
+  .btn-tel:hover{border-color:var(--sage);box-shadow:0 8px 18px rgba(124,152,133,.25);}
+
+  /* 视频号区块（暖卡片） */
+  .video-card{margin-top:14px;border-radius:22px;padding:14px;display:flex;align-items:center;gap:12px;
+    background:linear-gradient(120deg,rgba(217,123,79,.16),rgba(217,123,79,.07));
+    border:2px solid #fff;box-shadow:var(--shadow-soft);}
+  .v-ico{width:46px;height:46px;border-radius:50%;flex:none;background:var(--clay);color:#fff;
+    display:grid;place-items:center;box-shadow:0 8px 16px rgba(217,123,79,.35);font-size:17px;}
+  .v-info{flex:1;min-width:0;}
+  .v-title{font-size:14px;font-weight:600;color:var(--ink);}
+  .v-sub{font-size:11.5px;color:var(--ink-soft);margin-top:4px;}
+  .v-go{flex:none;font-size:12.5px;font-weight:600;color:#fff;background:var(--clay);
+    border-radius:999px;padding:8px 15px;box-shadow:0 6px 14px rgba(217,123,79,.28);
+    transition:background .2s ease,transform .15s ease;}
+  .v-go:hover{background:var(--clay-deep);}
+  .v-go:active{transform:scale(.94);}
+
+  /* 门店实景图组 */
+  .gallery{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .gal-card{background:var(--cream-card);border:2px solid #fff;border-radius:20px;box-shadow:var(--shadow-soft);
+    overflow:hidden;transition:transform .22s ease,box-shadow .22s ease;}
+  .gal-card:hover{transform:translateY(-3px);box-shadow:var(--shadow);}
+  .gal-img{height:108px;}
+  .gal-img img{width:100%;height:100%;object-fit:cover;}
+  .gal-cap{padding:9px 11px 10px;}
+  .gal-cap b{display:block;font-size:12px;font-weight:600;color:var(--ink);letter-spacing:.2px;}
+  .gal-cap span{display:block;font-size:10.5px;color:var(--ink-soft);margin-top:3px;}
+
+  /* 到店路线：药丸分段器 */
+  .seg{margin-top:14px;display:flex;background:var(--track);border-radius:999px;padding:4px;gap:2px;}
+  .seg-btn{flex:1;height:36px;border-radius:999px;font-size:13px;color:var(--ink-soft);font-weight:500;
+    display:flex;align-items:center;justify-content:center;gap:5px;
+    transition:background .2s ease,box-shadow .2s ease,color .2s ease;}
+  .seg-btn:hover{color:var(--ink);}
+  .seg-btn.on{background:var(--cream-card);color:var(--clay);font-weight:600;
+    box-shadow:0 4px 10px rgba(90,74,58,.14);}
+  .route-panel{display:none;margin-top:12px;}
+  .route-panel.on{display:block;animation:fadeUp .35s ease both;}
+  .lead{background:var(--cream-card);border:2px solid #fff;border-radius:18px;box-shadow:var(--shadow-soft);
+    padding:13px 15px;display:flex;gap:10px;align-items:flex-start;}
+  .lead-ico{width:30px;height:30px;border-radius:50%;flex:none;background:var(--sage-light);
+    display:grid;place-items:center;font-size:14px;margin-top:1px;}
+  .lead p{font-size:12.5px;line-height:1.75;color:var(--ink);letter-spacing:.2px;}
+  .route-img{margin-top:12px;height:118px;border-radius:18px;overflow:hidden;border:2px solid #fff;
+    box-shadow:var(--shadow-soft);}
+  .route-img img{width:100%;height:100%;object-fit:cover;}
+
+  /* 换一家门店（虚线胶囊） */
+  .switch-pill{margin:20px auto 0;display:flex;width:max-content;align-items:center;gap:7px;
+    border:1.5px dashed rgba(90,74,58,.40);border-radius:999px;padding:11px 24px;
+    font-size:13px;color:var(--ink-soft);letter-spacing:.5px;
+    transition:border-color .2s ease,color .2s ease,transform .15s ease;}
+  .switch-pill:hover{border-color:var(--clay);color:var(--clay-deep);}
+  .switch-pill:active{transform:scale(.96);}
+
+  .hi{width:120px;height:5px;border-radius:3px;background:rgba(46,40,32,.30);margin:26px auto 6px;}
+
+  /* 复制成功 toast */
+  #toast{position:absolute;left:50%;bottom:96px;transform:translateX(-50%) translateY(8px);z-index:99;
+    background:rgba(46,40,32,.92);color:#fffdf8;font-size:12.5px;letter-spacing:1px;
+    border-radius:999px;padding:9px 18px;opacity:0;pointer-events:none;
+    transition:opacity .25s ease,transform .25s ease;box-shadow:0 10px 24px rgba(0,0,0,.3);}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+</style>
+</head>
+<body>
+  <div class="phone">
+    <div class="screen">
+
+      <!-- 吸顶：状态栏 + 返回 -->
+      <div class="topbar">
+        <div class="st">
+          <span class="st-time">9:41</span>
+          <span class="st-ics">
+            <span class="sig"><i></i><i></i><i></i><i></i></span>
+            <span class="wifi"><b></b><b></b><b></b></span>
+            <span class="batt"></span>
+          </span>
+        </div>
+        <div class="navrow">
+          <button class="backbtn" id="backBtn" type="button" aria-label="返回">‹</button>
+          <span class="nav-title">到店指引</span>
+        </div>
+      </div>
+
+      <!-- 微信小程序胶囊 -->
+      <div class="cap">
+        <span class="cap-l"><span>•••</span></span>
+        <span class="cap-sep"></span>
+        <span class="cap-r"><i></i></span>
+      </div>
+
+      <div class="page">
+        <div class="deco">
+          <span class="petal" style="top:210px;right:-8px;width:28px;height:28px;background:rgba(217,123,79,.12);transform:rotate(30deg);"></span>
+          <span class="dot" style="top:246px;right:36px;width:8px;height:8px;background:rgba(124,152,133,.22);"></span>
+          <span class="petal" style="top:760px;left:-10px;width:32px;height:32px;background:rgba(124,152,133,.13);transform:rotate(48deg);"></span>
+          <span class="dot" style="top:820px;left:26px;width:7px;height:7px;background:rgba(217,123,79,.16);"></span>
+          <span class="dot" style="bottom:140px;right:22px;width:9px;height:9px;background:rgba(217,123,79,.14);"></span>
+        </div>
+
+        <!-- ========== 第一步：先选门店 ========== -->
+        <section id="step1" class="fade-in">
+          <div class="intro">
+            <span class="caveat" style="font-size:22px;display:block;margin-bottom:5px;">let's go</span>
+            <h1>先选一家门店</h1>
+            <p class="sub">看看哪家离你更近，我们好提前留好位置</p>
+          </div>
+
+          <button class="pick-card" type="button" data-store="lvdi">
+            <span class="pick-thumb"><img src="../assets/studio-cream.png" alt="绿地店"></span>
+            <span class="pick-info">
+              <span class="pick-name">绿地店</span>
+              <span class="pick-sub" style="display:block;">绿地缤纷城 · 4 楼 · 自然光教室</span>
+              <span class="pick-go">查看指引 ›</span>
+            </span>
+            <span class="pick-arrow">›</span>
+          </button>
+
+          <button class="pick-card" type="button" data-store="dongbu">
+            <span class="pick-thumb"><img src="../assets/hero.jpg" alt="东部店"></span>
+            <span class="pick-info">
+              <span class="pick-name">东部店</span>
+              <span class="pick-sub" style="display:block;">江东 · 场馆 · 小班课室</span>
+              <span class="pick-go">查看指引 ›</span>
+            </span>
+            <span class="pick-arrow">›</span>
+          </button>
+
+          <div class="switch-pill" style="margin-top:26px;cursor:default;">
+            <span>🌱</span><span>两家店都欢迎第一次来的你</span>
+          </div>
+        </section>
+
+        <!-- ========== 第二步 · 绿地店（完整态） ========== -->
+        <section class="step2" id="step2-lvdi">
+          <div class="hero-wrap">
+            <div class="hero"><img src="../assets/studio-cream.png" alt="绿地店教室"></div>
+            <div class="stamp"><b>绿地店</b></div>
+          </div>
+
+          <div class="store-row">
+            <h1>绿地店</h1>
+            <span class="store-badge">绿地缤纷城 · 4 楼</span>
+          </div>
+
+          <div class="addr" role="button" tabindex="0" data-copy="宁波市江北区绿地缤纷城1号楼4楼">
+            <span class="addr-ico">📍</span>
+            <span class="addr-txt">宁波市江北区绿地缤纷城1号楼4楼</span>
+            <span class="addr-copy" title="复制地址">📋</span>
+          </div>
+
+          <div class="duo">
+            <button class="bigbtn btn-nav" type="button">
+              <span class="b-ico">🧭</span><span>导航前往</span>
+            </button>
+            <button class="bigbtn btn-tel" type="button" data-copy="0574-87214863">
+              <span class="b-ico">📞</span><span>拨打电话</span>
+            </button>
+          </div>
+
+          <div class="video-card">
+            <span class="v-ico">▶</span>
+            <span class="v-info">
+              <span class="v-title">一麦的视频号</span>
+              <span class="v-sub" style="display:block;">提前看看教室与课堂氛围</span>
+            </span>
+            <button class="v-go" type="button">去看看</button>
+          </div>
+
+          <div class="sec-head">
+            <span class="caveat">take a look</span>
+            <h2>门店实景</h2>
+          </div>
+          <div class="gallery">
+            <div class="gal-card">
+              <div class="gal-img"><img src="../assets/studio-cream.png" alt="4 楼前台"></div>
+              <div class="gal-cap"><b>4 楼前台</b><span>到店后出示指引</span></div>
+            </div>
+            <div class="gal-card">
+              <div class="gal-img"><img src="../assets/hero.jpg" alt="教室实景"></div>
+              <div class="gal-cap"><b>教室实景</b><span>自然光教室</span></div>
+            </div>
+          </div>
+
+          <div class="route" id="route-lvdi">
+            <div class="sec-head">
+              <span class="caveat">the way here</span>
+              <h2>到店路线</h2>
+            </div>
+            <div class="seg">
+              <button class="seg-btn on" type="button" data-tab="drive">🚗 开车</button>
+              <button class="seg-btn" type="button" data-tab="transit">🚇 公共交通</button>
+              <button class="seg-btn" type="button" data-tab="walk">🚶 步行</button>
+            </div>
+
+            <div class="route-panel on" data-panel="drive">
+              <div class="lead">
+                <span class="lead-ico">🅿️</span>
+                <p>绿地缤纷城地下停车场 B2 层直达电梯，4 楼出电梯右手边即前台。周末车流较大建议提前 10 分钟到店。</p>
+              </div>
+              <div class="route-img"><img src="../assets/studio-cream.png" alt="开车路线指引"></div>
+            </div>
+            <div class="route-panel" data-panel="transit">
+              <div class="lead">
+                <span class="lead-ico">🚇</span>
+                <p>乘地铁或公交至绿地缤纷城周边站点，从商场主入口进入大堂，乘直达电梯至 4 楼，出电梯右手边即前台。</p>
+              </div>
+              <div class="route-img"><img src="../assets/hero.jpg" alt="公共交通路线指引"></div>
+            </div>
+            <div class="route-panel" data-panel="walk">
+              <div class="lead">
+                <span class="lead-ico">🚶</span>
+                <p>步行至绿地缤纷城主入口，进入商场大堂后乘直达电梯至 4 楼，出电梯右手边即前台。</p>
+              </div>
+              <div class="route-img"><img src="../assets/studio-cream.png" style="object-position:center 88%;" alt="步行路线指引"></div>
+            </div>
+          </div>
+
+          <button class="switch-pill" type="button" data-back-select>
+            <span>↺</span><span>换一家门店</span>
+          </button>
+        </section>
+
+        <!-- ========== 第二步 · 东部店（降级态） ========== -->
+        <section class="step2" id="step2-dongbu">
+          <div class="hero-wrap">
+            <div class="hero"><img src="../assets/hero.jpg" alt="东部店教室"></div>
+            <div class="stamp"><b>东部店</b></div>
+          </div>
+
+          <div class="store-row">
+            <h1>东部店</h1>
+            <span class="store-badge">江东 · 场馆</span>
+          </div>
+
+          <!-- 地址待补：提示胶囊（点击可复制门店名） -->
+          <div class="addr hint" role="button" tabindex="0" data-copy="一麦瑜伽·普拉提 东部店">
+            <span class="addr-ico">💡</span>
+            <span class="addr-txt">地址待补，可复制门店名搜索</span>
+            <span class="addr-copy">📋</span>
+          </div>
+
+          <div class="duo">
+            <button class="bigbtn btn-nav" type="button">
+              <span class="b-ico">🧭</span><span>导航前往</span>
+            </button>
+            <!-- 电话未配：绿色块换「复制门店名」 -->
+            <button class="bigbtn btn-tel" type="button" data-copy="一麦瑜伽·普拉提 东部店">
+              <span class="b-ico">📋</span><span>复制门店名</span>
+            </button>
+          </div>
+
+          <div class="video-card">
+            <span class="v-ico">▶</span>
+            <span class="v-info">
+              <span class="v-title">一麦的视频号</span>
+              <span class="v-sub" style="display:block;">提前看看教室与课堂氛围</span>
+            </span>
+            <button class="v-go" type="button">去看看</button>
+          </div>
+
+          <div class="sec-head">
+            <span class="caveat">take a look</span>
+            <h2>门店实景</h2>
+          </div>
+          <div class="gallery">
+            <div class="gal-card">
+              <div class="gal-img"><img src="../assets/studio-cream.png" alt="前台"></div>
+              <div class="gal-cap"><b>前台</b><span>到店后出示指引</span></div>
+            </div>
+            <div class="gal-card">
+              <div class="gal-img"><img src="../assets/hero.jpg" alt="教室实景"></div>
+              <div class="gal-cap"><b>教室实景</b><span>自然光教室</span></div>
+            </div>
+          </div>
+
+          <div class="route" id="route-dongbu">
+            <div class="sec-head">
+              <span class="caveat">the way here</span>
+              <h2>到店路线</h2>
+            </div>
+            <div class="seg">
+              <button class="seg-btn on" type="button" data-tab="drive">🚗 开车</button>
+              <button class="seg-btn" type="button" data-tab="transit">🚇 公共交通</button>
+              <button class="seg-btn" type="button" data-tab="walk">🚶 步行</button>
+            </div>
+
+            <div class="route-panel on" data-panel="drive">
+              <div class="lead">
+                <span class="lead-ico">🅿️</span>
+                <p>场馆位于江东片区，周边停车信息完善中，可先复制门店名在地图 App 搜索到店。</p>
+              </div>
+              <div class="route-img"><img src="../assets/hero.jpg" alt="开车路线指引"></div>
+            </div>
+            <div class="route-panel" data-panel="transit">
+              <div class="lead">
+                <span class="lead-ico">🚇</span>
+                <p>可乘公交至江东片区场馆附近站点，具体路线待地址完善后更新。</p>
+              </div>
+              <div class="route-img"><img src="../assets/studio-cream.png" alt="公共交通路线指引"></div>
+            </div>
+            <div class="route-panel" data-panel="walk">
+              <div class="lead">
+                <span class="lead-ico">🚶</span>
+                <p>场馆临近街区，步行可达；详细入口指引待地址完善后更新。</p>
+              </div>
+              <div class="route-img"><img src="../assets/hero.jpg" style="object-position:center 20%;" alt="步行路线指引"></div>
+            </div>
+          </div>
+
+          <button class="switch-pill" type="button" data-back-select>
+            <span>↺</span><span>换一家门店</span>
+          </button>
+        </section>
+
+        <div class="hi"></div>
+      </div>
+
+      <!-- 复制成功提示 -->
+      <div id="toast">已复制</div>
+    </div>
+  </div>
+
+<script>
+  // —— 极少量原生 JS：两步切换 / 路线 tab / 复制反馈 ——
+  var screen = document.querySelector('.screen');
+  var step1 = document.getElementById('step1');
+  var steps = { lvdi: document.getElementById('step2-lvdi'), dongbu: document.getElementById('step2-dongbu') };
+  var inSelect = true;
+
+  function showSelect() {
+    inSelect = true;
+    step1.style.display = 'block';
+    step1.classList.remove('fade-in'); void step1.offsetWidth; step1.classList.add('fade-in');
+    Object.keys(steps).forEach(function (k) { steps[k].style.display = 'none'; });
+    screen.scrollTo({ top: 0 });
+  }
+  function showStore(name) {
+    inSelect = false;
+    step1.style.display = 'none';
+    Object.keys(steps).forEach(function (k) {
+      var el = steps[k];
+      el.style.display = (k === name) ? 'block' : 'none';
+      if (k === name) { el.classList.remove('fade-in'); void el.offsetWidth; el.classList.add('fade-in'); }
+    });
+    screen.scrollTo({ top: 0 });
+  }
+
+  var toastTimer = null;
+  function toast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); }, 1400);
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast('已复制'); }, function () { fallbackCopy(text); });
+    } else { fallbackCopy(text); }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); toast('已复制'); } catch (e) { toast('已复制'); }
+    ta.remove();
+  }
+
+  document.addEventListener('click', function (e) {
+    var pick = e.target.closest('[data-store]');
+    if (pick) { showStore(pick.dataset.store); return; }
+
+    if (e.target.closest('[data-back-select]')) { showSelect(); return; }
+
+    if (e.target.closest('#backBtn')) {
+      if (!inSelect) { showSelect(); } else { location.href = 'home.html'; }
+      return;
+    }
+
+    var seg = e.target.closest('.seg-btn');
+    if (seg) {
+      var route = seg.closest('.route');
+      route.querySelectorAll('.seg-btn').forEach(function (b) { b.classList.toggle('on', b === seg); });
+      route.querySelectorAll('.route-panel').forEach(function (p) {
+        p.classList.toggle('on', p.dataset.panel === seg.dataset.tab);
+      });
+      return;
+    }
+
+    var cp = e.target.closest('[data-copy]');
+    if (cp) { copyText(cp.dataset.copy); }
+  });
+</script>
+</body>
+</html>
