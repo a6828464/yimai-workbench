@@ -376,6 +376,10 @@ onShareAppMessage(() => shareToHome())
       </view>
 
       <view v-if="scriptSections.length" class="sl__script">
+        <!-- 微信审核要求：AI 生成内容必须带显著标识（深度合成类目整改，2026-11-07） -->
+        <view class="sl__ai-mark">
+          <text class="sl__ai-mark-text">内容由人工智能（AI）生成</text>
+        </view>
         <view v-for="s in scriptSections" :key="s.label" class="sl__script-block">
           <view class="sl__script-head">
             <ym-badge :text="s.label" tone="brand" />
@@ -387,6 +391,9 @@ onShareAppMessage(() => shareToHome())
       </view>
 
       <view v-else-if="scriptRaw && !scriptLoading" class="sl__script">
+        <view class="sl__ai-mark">
+          <text class="sl__ai-mark-text">内容由人工智能（AI）生成</text>
+        </view>
         <text class="sl__script-text">{{ scriptRaw }}</text>
         <wd-button size="small" plain block @click="copyScript">复制话术</wd-button>
       </view>
@@ -589,6 +596,24 @@ onShareAppMessage(() => shareToHome())
 
   &__script {
     margin-top: 20rpx;
+  }
+
+  /* AI 生成标识（微信深度合成整改要求：显著、可识别） */
+  &__ai-mark {
+    display: flex;
+    justify-content: center;
+    padding: 10rpx 0;
+    margin-bottom: 16rpx;
+    border: 1rpx solid rgba(46, 125, 91, 0.35);
+    border-radius: 8rpx;
+    background: rgba(46, 125, 91, 0.06);
+  }
+
+  &__ai-mark-text {
+    font-size: 22rpx;
+    letter-spacing: 0.06em;
+    color: #2e7d5b;
+    font-weight: 500;
   }
 
   &__script-block {

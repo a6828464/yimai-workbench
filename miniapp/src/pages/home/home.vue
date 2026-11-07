@@ -56,6 +56,8 @@ interface Venue {
   sub: string
   qr: string
   link: string
+  /** 门店电话（后台配置下发；站内一键拨号 = 预约闭环，不再强制跳外部小程序） */
+  phone: string
   /** 约课页路径（path=reservation-reservation-index 表示直达预约模块） */
   bookPath: string
   /** 门店首页路径（不带 path 参数，落到该店首页） */
@@ -80,6 +82,7 @@ const VENUES: Venue[] = [
     sub: '鄞州区',
     qr: '/static/book-east.jpg',
     link: '#小程序://Xyoga预约/LD9iekS0cCHuc5h',
+    phone: '0574-87567277',
     bookPath: enterPath('4250', true),
     homePath: enterPath('4250', false)
   },
@@ -88,6 +91,7 @@ const VENUES: Venue[] = [
     sub: '江北区',
     qr: '/static/book-green.jpg',
     link: '#小程序://Xyoga预约/SWccsoBp9d9RSPq',
+    phone: '0574-87214863',
     bookPath: enterPath('1', true),
     homePath: enterPath('1', false)
   }
@@ -169,10 +173,29 @@ function toast(title: string) {
 }
 
 /**
- * 约课主按钮：优先直开网页（少一次点选），再退到选门店。
- * 有 AppID 时用 navigateToMiniProgram —— 原生跳转体验最好，作最高优先。
+ * 门店卡主点击：**站内电话预约**（审核整改 2026-11-07：服务必须在站内闭环体验，
+ * 不再强制引流到其他小程序）。拨号是本机能力，不需要跳外部。
  */
-/** 跳约课小程序：path 必带 query，失败回退到小程序码 */
+function callVenue(v: Venue) {
+  if (!v.phone) {
+    toast('门店电话暂未配置')
+    return
+  }
+  uni.makePhoneCall({
+    phoneNumber: v.phone,
+    fail: () => toast('拨号取消或失败，可在到店指引里查看门店信息')
+  })
+}
+
+/** 到店指引：站内页（导航/电话/视频号/实景图文全在本小程序里） */
+function goVenueGuide(v: Venue) {
+  uni.navigateTo({ url: '/pkg-public/guide/guide?venue=' + encodeURIComponent(v.key) })
+}
+
+/**
+ * 在线约课（跳约课小程序）：改为**辅助入口**放弹层里——审核口径里它不能再是
+ * 顾客体验的主路径，主路径是站内电话预约 + 到店指引。
+ */
 function jumpToBook(v: Venue) {
   if (!BOOK_APPID) {
     openSheet(v)
@@ -202,16 +225,6 @@ function openSheet(v: Venue) {
 
 function closeSheet() {
   sheetVenue.value = null
-}
-
-/** 兜底路径：复制小程序链接，去微信聊天里发给自己再点 */
-function copyLink() {
-  if (!sheetVenue.value) return
-  uni.setClipboardData({
-    data: sheetVenue.value.link,
-    success: () => toast('已复制，粘贴到微信发送后点击即可打开'),
-    fail: () => toast('复制失败，可长按上方图片识别')
-  })
 }
 
 /**
@@ -660,12 +673,12 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
           <view class="home__cta-line" />
         </view>
 
-        <!-- 门店：细线分隔的行（不是方块卡）；到店指引并进同一组 -->
+        <!-- 门店：细线分隔的行（不是方块卡）；主点击=站内电话预约，副行=到店指引（审核整改：站内闭环） -->
         <view class="home__rows">
-          <view v-for="v in VENUES" :key="v.key" class="home__row ym-tap" @click="jumpToBook(v)">
+          <view v-for="v in VENUES" :key="v.key" class="home__row ym-tap" @click="callVenue(v)">
             <view class="home__row-l">
               <text class="home__row-t">{{ v.key }}</text>
-              <text class="home__row-s">{{ v.sub }}</text>
+              <text class="home__row-s">电话预约 · {{ v.phone || '待配置' }}</text>
             </view>
             <text class="home__row-a">→</text>
           </view>
@@ -701,16 +714,19 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
         <view class="home__sec-rule" />
       </view>
 
-      <!-- 竖向长条门店入口：发丝线分隔 -->
+      <!-- 竖向长条门店入口：主点击=站内电话预约，副行=到店指引详情（审核整改：站内闭环） -->
       <view class="home__venues">
-        <view v-for="v in VENUES" :key="v.key" class="home__venue ym-tap" @click="jumpToBook(v)">
-          <view class="home__venue-main">
+        <view v-for="v in VENUES" :key="v.key" class="home__venue">
+          <view class="home__venue-main ym-tap" @click="callVenue(v)">
             <text class="home__venue-name">{{ v.key }}</text>
-            <text class="home__venue-sub">{{ v.sub }}</text>
+            <text class="home__venue-sub">电话预约 · {{ v.phone || '待配置' }}</text>
           </view>
-          <view class="home__venue-arrow">
-            <view class="home__arrow-line" />
-            <view class="home__arrow-head" />
+          <view class="home__venue-side ym-tap" @click="goVenueGuide(v)">
+            <text class="home__venue-guide">到店指引</text>
+            <view class="home__venue-arrow">
+              <view class="home__arrow-line" />
+              <view class="home__arrow-head" />
+            </view>
           </view>
         </view>
       </view>
@@ -730,23 +746,17 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
       </view>
     </view>
 
-    <!-- 约课弹层：长按识别为主，复制链接兜底 -->
+    <!-- 约课弹层：**辅助入口**（审核整改后站内电话预约为主路径，这里是可选增强） -->
     <view v-if="sheetVenue" class="sheet" @click="closeSheet">
       <view class="sheet__panel" @click.stop>
-        <text class="sheet__title">{{ sheetVenue.key }} · 约课</text>
-        <text class="sheet__hint">长按下方小程序码识别</text>
-        <image
-          class="sheet__qr"
-          :src="sheetVenue.qr"
-          mode="aspectFit"
-          show-menu-by-longpress
-        />
-        <view class="sheet__go" @click="jumpToBook(sheetVenue)">
-          <text class="sheet__go-text">直接进入约课</text>
+        <text class="sheet__title">{{ sheetVenue.key }}</text>
+        <text class="sheet__hint">电话预约：{{ sheetVenue.phone || '待配置' }}</text>
+        <view class="sheet__go" @click="callVenue(sheetVenue)">
+          <text class="sheet__go-text">电话预约（站内）</text>
         </view>
-        <text class="sheet__tip">长按图片 → 识别小程序</text>
-        <view class="sheet__copy" @click="copyLink">
-          <text class="sheet__copy-text">复制约课链接</text>
+        <text class="sheet__tip">也可在线约课（跳约课小程序）</text>
+        <view class="sheet__copy" @click="jumpToBook(sheetVenue)">
+          <text class="sheet__copy-text">在线约课 ›</text>
         </view>
         <text class="sheet__close" @click="closeSheet">关闭</text>
       </view>
@@ -1191,6 +1201,21 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
     color: #7c8a82;
   }
 
+  /* 右侧「到店指引」辅助入口：与主点击（电话预约）分开两个可点区 */
+  .home__venue-side {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    flex: none;
+    padding: 8rpx 0 8rpx 24rpx;
+  }
+
+  .home__venue-guide {
+    font-size: 22rpx;
+    letter-spacing: 0.12em;
+    color: #a08749;
+  }
+
   /* 细箭头：长横线 + 斜角（品牌绿；到店指引用金色变体） */
   .home__venue-arrow {
     position: relative;
@@ -1454,16 +1479,9 @@ onShareAppMessage(() => shareSelf('一麦瑜伽·普拉提', '/pages/home/home')
 
   &__hint {
     margin-top: 10rpx;
-    font-size: 24rpx;
-    color: #7b8781;
-  }
-
-  &__qr {
-    width: 480rpx;
-    height: 480rpx;
-    margin-top: 22rpx;
-    border-radius: 16rpx;
-    background: #fff;
+    font-size: 26rpx;
+    font-weight: 500;
+    color: #4a5a52;
   }
 
   &__go {

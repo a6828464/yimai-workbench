@@ -178,6 +178,8 @@ onShareAppMessage(() => shareToHome())
 
       <view class="plcard__foot">
         <text class="plcard__from">{{ sourceText(p) || p.venue || '—' }}</text>
+        <!-- 微信深度合成整改：AI 生成的计划在列表也要显著标识（2026-11-07） -->
+        <text v-if="p.source === 'llm' && !p.sourceReviewId" class="plcard__ai">内容由人工智能（AI）生成</text>
         <view class="plcard__more">
           <text>{{ p.createdAt || '查看详情' }}</text>
           <wd-icon name="chevron-right" size="12px" color="#8A948F" />
@@ -364,6 +366,18 @@ onShareAppMessage(() => shareToHome())
 .plcard__from {
   font-size: 22rpx;
   color: $ink-400;
+}
+
+/* AI 生成标识（微信深度合成整改：显著、可识别） */
+.plcard__ai {
+  flex: none;
+  margin-left: 10rpx;
+  padding: 2rpx 10rpx;
+  font-size: 20rpx;
+  color: #2e7d5b;
+  border: 1rpx solid rgba(46, 125, 91, 0.4);
+  border-radius: 6rpx;
+  background: rgba(46, 125, 91, 0.06);
 }
 
 .plcard__more {

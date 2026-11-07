@@ -512,6 +512,8 @@ onShareAppMessage(() => shareToHome())
           <text v-if="bodyLine(plan)" class="pd__meta">{{ bodyLine(plan) }}</text>
           <view class="pd__tags">
             <ym-badge v-if="plan.sourceReviewId" text="课后分析流转" tone="info" />
+            <!-- 微信深度合成整改：AI 生成的计划必须显著标识（2026-11-07） -->
+            <ym-badge v-if="plan.source === 'llm'" text="内容由人工智能（AI）生成" tone="brand" />
             <ym-badge v-if="plan.venue" :text="plan.venue" tone="muted" />
           </view>
         </view>

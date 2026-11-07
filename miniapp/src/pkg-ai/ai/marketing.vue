@@ -504,6 +504,10 @@ onShareAppMessage(() => shareToHome())
       title="生成结果"
       :desc="`${candidates.length} 条候选${lastAt ? ' · ' + lastAt : ''}`"
     >
+      <!-- 微信审核要求：AI 生成内容必须带显著标识（深度合成类目整改，2026-11-07） -->
+      <view class="mk__ai-mark">
+        <text class="mk__ai-mark-text">内容由人工智能（AI）生成</text>
+      </view>
       <view v-for="(c, i) in candidates" :key="c.id" class="mk__cand">
         <view class="mk__cand-head">
           <ym-badge :text="`第 ${i + 1} 条`" tone="muted" />
@@ -831,6 +835,24 @@ onShareAppMessage(() => shareToHome())
     margin-top: 16rpx;
     font-size: 22rpx;
     color: $ink-400;
+  }
+
+  /* AI 生成标识（微信深度合成整改要求：显著、可识别） */
+  &__ai-mark {
+    display: flex;
+    justify-content: center;
+    padding: 10rpx 0 4rpx;
+    margin-bottom: 16rpx;
+    border: 1rpx solid rgba(46, 125, 91, 0.35);
+    border-radius: 8rpx;
+    background: rgba(46, 125, 91, 0.06);
+  }
+
+  &__ai-mark-text {
+    font-size: 22rpx;
+    letter-spacing: 0.06em;
+    color: #2e7d5b;
+    font-weight: 500;
   }
 
   &__bucket {
