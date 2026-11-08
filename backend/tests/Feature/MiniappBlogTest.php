@@ -143,13 +143,13 @@ final class MiniappBlogTest extends TestCase
         $this->assertStringNotContainsString('<p>', $excerpt);
     }
 
-    /** 单篇：返回标题 + 日期 + 全文 HTML + 封面。 */
+    /** 单篇：返回标题 + 日期 + 全文 + 封面；排版归一（语义 class + 剥内联样式）。 */
     public function test_show_returns_full_content(): void
     {
         Http::fake([
             'https://wp.test/wp-json/wp/v2/posts/55?*' => Http::response(
                 array_merge($this->makePost(55, '全文文章', '2026-11-05T08:00:00', 'https://wp.test/cover.jpg'), [
-                    'content' => ['rendered' => '<p>正文第一段。</p><p>正文第二段。</p>'],
+                    'content' => ['rendered' => '<p>正文第一段。</p><h2>大标题</h2><h3>小标题</h3><ul><li>要点一</li></ul><blockquote>引用</blockquote><p style="text-align:center;margin:20px 0"><img decoding="async" src="https://wp.test/a.jpg" alt="示例" style="max-width:100%" /></p>'],
                 ])
             ),
         ]);
@@ -158,7 +158,20 @@ final class MiniappBlogTest extends TestCase
 
         $this->assertSame('全文文章', $res->json('data.title'));
         $this->assertSame('https://wp.test/cover.jpg', $res->json('data.cover'));
-        $this->assertStringContainsString('正文第二段', (string) $res->json('data.content'));
+        $content = (string) $res->json('data.content');
+        $this->assertStringContainsString('正文第一段', $content);
+        // 排版归一：语义 class 已打上（前端 rich-text 靠这些 class 配层级样式）
+        $this->assertStringContainsString('class="wp-h2"', $content);
+        $this->assertStringContainsString('class="wp-h3"', $content);
+        $this->assertStringContainsString('class="wp-list"', $content);
+        $this->assertStringContainsString('class="wp-li"', $content);
+        $this->assertStringContainsString('class="wp-quote"', $content);
+        $this->assertStringContainsString('class="wp-img" src="https://wp.test/a.jpg" alt="示例"', $content);
+        // img 的内联样式/杂属性被剥掉（自适应交给前端 class）
+        $this->assertStringNotContainsString('max-width:100%', $content);
+        $this->assertStringNotContainsString('decoding=', $content);
+        // p 的内联 style 被剥掉（对齐与边距统一由前端 class 控制）
+        $this->assertStringNotContainsString('text-align:center', $content);
     }
 
     /** 单篇不存在 / WP 挂 → 404，不是 5xx。 */
@@ -185,5 +198,44 @@ final class MiniappBlogTest extends TestCase
 
         $this->getJson('/api/miniapp/blog', ['Authorization' => ''])
             ->assertOk();
+    }
+
+    /** 分页通道（?page=）：纯最新序、hasMore 判断、WP 挂给空页。 */
+    public function test_page_pagination_and_has_more(): void
+    {
+        // 11 篇 → 第 1 页 10 条 hasMore=true；第 2 页 1 条 hasMore=false
+        $all = [];
+        for ($i = 1; $i <= 11; $i++) {
+            $all[] = $this->makePost($i, "文章 {$i}", sprintf('2026-11-%02dT09:00:00', $i));
+        }
+
+        Http::fake([
+            'https://wp.test/wp-json/wp/v2/posts?per_page=11&page=1&*' => Http::response($all),
+            'https://wp.test/wp-json/wp/v2/posts?per_page=11&page=2&*' => Http::response([]),
+        ]);
+
+        $p1 = $this->getJson('/api/miniapp/blog?page=1')->assertOk();
+        $this->assertCount(10, $p1->json('data.items'));
+        $this->assertTrue($p1->json('data.hasMore'));
+        $this->assertSame(1, $p1->json('data.page'));
+
+        $p2 = $this->getJson('/api/miniapp/blog?page=2')->assertOk();
+        $this->assertSame([], $p2->json('data.items'));
+        $this->assertFalse($p2->json('data.hasMore'));
+
+        // page=0 钳到 1（不发负页号给 WP）
+        $this->getJson('/api/miniapp/blog?page=0')->assertOk();
+    }
+
+    /** 分页通道：WP 挂 → 空页 hasMore=false（列表页停止翻页，不报错）。 */
+    public function test_page_wp_down_returns_empty(): void
+    {
+        Http::fake(fn () => Http::response([], 500));
+
+        $res = $this->getJson('/api/miniapp/blog?page=1')->assertOk();
+
+        $this->assertSame([], $res->json('data.items'));
+        $this->assertFalse($res->json('data.hasMore'));
+        $this->assertSame('empty', $res->json('data.source'));
     }
 }

@@ -105,6 +105,46 @@ export function fetchBlogArticle(id: number, timeout = 10000): Promise<BlogArtic
   })
 }
 
+/** 分页结果（「全部文章」列表页用） */
+export interface BlogPageResult {
+  items: BlogCard[]
+  page: number
+  hasMore: boolean
+}
+
+/** GET /miniapp/blog?page=N —— 分页拉全部文章（纯最新序）；失败给空页（列表页停止翻页） */
+export function fetchBlogPage(page: number, timeout = DEFAULT_TIMEOUT): Promise<BlogPageResult> {
+  return new Promise<BlogPageResult>((resolve) => {
+    uni.request({
+      url: `${API_BASE}/miniapp/blog?page=${page}`,
+      method: 'GET',
+      timeout,
+      header: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      success: (res) => {
+        const status = res.statusCode
+        if (status < 200 || status >= 300) {
+          resolve({ items: [], page, hasMore: false })
+          return
+        }
+        const body = res.data as {
+          data?: { items?: unknown; page?: unknown; hasMore?: unknown }
+        }
+        const rawItems = Array.isArray(body?.data?.items) ? body.data.items : []
+        resolve({
+          items: rawItems.map(normalizeCard).filter((c): c is BlogCard => c !== null),
+          page: Number(body?.data?.page) || page,
+          hasMore: body?.data?.hasMore === true
+        })
+      },
+      fail: () => resolve({ items: [], page, hasMore: false })
+    })
+  })
+}
+
 // ------------------------------------------------------------------ 归一
 
 function str(v: unknown): string {

@@ -703,6 +703,37 @@
       </ElForm>
     </ElCard>
 
+    <!-- ===== 博客栏目（全局）：官网文章在到店指引页的展示 ===== -->
+    <ElCard shadow="never" class="mb-3">
+      <template #header>
+        <div class="flex-cb">
+          <span class="font-500">博客栏目</span>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-gray-400">{{ blog.enabled ? '已开启' : '已关闭' }}</span>
+            <ElSwitch v-model="blog.enabled" />
+          </div>
+        </div>
+      </template>
+
+      <ElAlert type="info" :closable="false" show-icon class="mb-3" title="官网文章自动同步，无需在这里维护内容">
+        <div class="text-xs leading-5">
+          文章来自官网（www.nbyimai.com）WordPress：在官网后台发文或勾「置顶」即自动出现在小程序到店指引页；
+          置顶文章排前面，其余名额用最新文章补足。这里只控制「显示几篇」和开关。
+        </div>
+      </ElAlert>
+
+      <ElForm label-width="104px" :disabled="!blog.enabled">
+        <ElFormItem label="显示篇数">
+          <ElRadioGroup v-model="blog.count">
+            <ElRadio v-for="n in 10" :key="n" :value="n">{{ n }}</ElRadio>
+          </ElRadioGroup>
+          <div class="field-tip">
+            到店指引页「一麦 · 博客」栏目显示的文章数（置顶优先，最新补足）。改完保存约 5 分钟内生效。
+          </div>
+        </ElFormItem>
+      </ElForm>
+    </ElCard>
+
     <div class="flex items-center gap-2">
       <ElButton
         type="primary"
@@ -726,6 +757,7 @@
   import { apiGet, apiPut, showApiError, toHttpError, USE_BACKEND } from '@/api/backend'
   import {
     uploadMiniappImage,
+    type MiniappBlogConfig,
     type MiniappConfig,
     type MiniappPopupConfig,
     type MiniappRouteConfig,
@@ -755,6 +787,7 @@
     heroImage: string
   }
   type PopupConfig = MiniappPopupConfig
+  type BlogConfig = MiniappBlogConfig
 
   /**
    * 小程序主题：只允许 editorial / oriental（BE7 起 classic 已停用）。
@@ -802,6 +835,8 @@
   /** 错误框标题：422 是「N 项校验」，403 等不是校验错，不能套同一句话 */
   const errorTitle = ref('保存被后端拒绝')
   const popup = reactive<PopupConfig>(emptyPopup())
+  /** 博客栏目（到店指引页「一麦 · 博客」）：开关 + 篇数（1-10） */
+  const blog = reactive<BlogConfig>(emptyBlog())
   /** 当前选中的主题（表单态）；BE7 后的默认值 = editorial */
   const theme = ref<MiniappTheme>('editorial')
   /** 后端上一次确认生效的主题（用于判断「未保存」） */
@@ -820,6 +855,10 @@
 
   function emptyPopup(): PopupConfig {
     return { enabled: false, title: '', content: '', imageUrl: '', frequency: 'once' }
+  }
+
+  function emptyBlog(): BlogConfig {
+    return { enabled: true, count: 3 }
   }
 
   /** 字段名 → 中文，用于把后端的 `errors` 键翻译成人话 */
@@ -924,6 +963,15 @@
     }
   }
 
+  /** 博客配置归一：老后端没下发 blog 键 → 默认（开 + 3 篇）；count 脏值钳回 1..10 */
+  function normalizeBlog(raw?: Partial<BlogConfig> | null): BlogConfig {
+    const n = Number(raw?.count)
+    return {
+      enabled: raw?.enabled !== false, // 缺省按「开」处理（后端默认就是开）
+      count: Number.isInteger(n) && n >= 1 && n <= 10 ? n : 3
+    }
+  }
+
   /**
    * 只认 oriental；其余（含已停用的 classic、未知字符串、undefined）一律落 editorial。
    * 这样即使 BE7 之后又出现新枚举值，页面也不会出现「空白选中态」。
@@ -1001,6 +1049,7 @@
         venues.value = (data?.venues ?? []).map((v) => normalize(v))
         homeHero.value = String(data?.homeHero ?? '')
         Object.assign(popup, normalizePopup(data?.popup))
+        Object.assign(blog, normalizeBlog(data?.blog))
         // theme 由 BE5 新增；缺失时按经典只读展示，不当作错误
         const rawTheme = (data as (MiniappConfig & { theme?: unknown }) | null)?.theme
         if (typeof rawTheme === 'string') {
@@ -1297,6 +1346,10 @@
           content: popup.content,
           imageUrl: popup.imageUrl,
           frequency: popup.frequency
+        },
+        blog: {
+          enabled: blog.enabled,
+          count: blog.count
         }
       }
       const res = await apiPut<MiniappConfig>('/miniapp/config', payload)
@@ -1311,6 +1364,7 @@
       const resHome = (res as (MiniappConfig & { homeHero?: unknown }) | null)?.homeHero
       if (typeof resHome === 'string') homeHero.value = resHome
       if (res?.popup) Object.assign(popup, normalizePopup(res.popup))
+      if (res?.blog) Object.assign(blog, normalizeBlog(res.blog))
       // 后端回什么就以什么为准（它可能驳回非法值）；没回就认为本次提交生效
       const resTheme = (res as (MiniappConfig & { theme?: unknown }) | null)?.theme
       savedTheme.value = typeof resTheme === 'string' ? normalizeTheme(resTheme) : theme.value

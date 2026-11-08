@@ -319,12 +319,33 @@
         {
           "path": "blog/article",
           "style": {
-            "navigationBarTitleText": "一麦 · 好文",
+            "navigationBarTitleText": "一麦 · 博客",
             "navigationBarTextStyle": "black",
             "navigationBarBackgroundColor": "#F2F4F2",
             "backgroundColor": "#F2F4F2",
             "backgroundColorTop": "#F2F4F2",
             "backgroundColorBottom": "#F2F4F2"
+          }
+        },
+        {
+          "path": "blog/list",
+          "style": {
+            "navigationBarTitleText": "一麦 · 博客",
+            "navigationBarTextStyle": "black",
+            "navigationBarBackgroundColor": "#F2F4F2",
+            "backgroundColor": "#F2F4F2",
+            "backgroundColorTop": "#F2F4F2",
+            "backgroundColorBottom": "#F2F4F2",
+            "enablePullDownRefresh": false
+          }
+        },
+        {
+          "path": "blog/web",
+          "style": {
+            "navigationBarTitleText": "官网",
+            "navigationBarTextStyle": "black",
+            "navigationBarBackgroundColor": "#F2F4F2",
+            "backgroundColor": "#F2F4F2"
           }
         },
         {

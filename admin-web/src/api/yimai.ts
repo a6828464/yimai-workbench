@@ -1074,6 +1074,13 @@ export interface MiniappPopupConfig {
   frequency: MiniappPopupFrequency
 }
 
+/** 博客栏目（到店指引页「一麦 · 博客」）：开关 + 篇数；文章内容在官网 WP 后台维护 */
+export interface MiniappBlogConfig {
+  enabled: boolean
+  /** 1-10，置顶优先 + 最新补足 */
+  count: number
+}
+
 /** `/miniapp/config` 的 data */
 export interface MiniappConfig {
   /**
@@ -1084,6 +1091,7 @@ export interface MiniappConfig {
   homeHero: string
   venues: MiniappVenueConfig[]
   popup: MiniappPopupConfig
+  blog: MiniappBlogConfig
   /** 空串 = 从未保存过（后端回落到内置默认值） */
   updatedAt: string
 }

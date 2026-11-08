@@ -42,6 +42,9 @@ final class MiniappBlogController extends Controller
 
     private const LIMIT_DEFAULT = 3;
 
+    /** 全部文章页的页大小（每页条数） */
+    private const PAGE_SIZE = 10;
+
     /**
      * GET /miniapp/blog?limit=3 —— 栏目卡片数据（置顶优先 + 最新补足）。
      *
@@ -51,6 +54,11 @@ final class MiniappBlogController extends Controller
      */
     public function index()
     {
+        // ?page= 存在 → 走「全部文章」分页通道（列表页用，纯最新序、不掺置顶合并）
+        if (request()->query('page') !== null) {
+            return $this->page();
+        }
+
         $limit = max(1, min(self::LIMIT_MAX, (int) request()->query('limit', self::LIMIT_DEFAULT)));
 
         $data = Cache::remember('miniapp:blog:list:'.$limit, self::LIST_TTL, function () {
@@ -84,6 +92,44 @@ final class MiniappBlogController extends Controller
         }
 
         return ok($data);
+    }
+
+    /**
+     * GET /miniapp/blog?page=1 —— 「全部文章」分页（文章列表页用）。
+     *
+     * 与栏目接口的区别：纯**最新序**（发布时间倒序）分页，不做置顶合并 ——
+     * 列表页是「翻全部」的语义，置顶逻辑留在到店指引的栏目里（首页小范围内置顶才有意义）。
+     * 响应：{ items, page, hasMore, source }；WP 挂 → 空页 hasMore=false，前端停止翻页。
+     */
+    private function page()
+    {
+        $page = max(1, (int) request()->query('page', 1));
+
+        $data = Cache::remember('miniapp:blog:page:'.$page, self::LIST_TTL, function () use ($page) {
+            try {
+                // 多拿 1 条只为判断 hasMore，出口前裁掉
+                $raw = $this->wpGet('?per_page='.(self::PAGE_SIZE + 1).'&page='.$page.'&_embed');
+                $items = [];
+                foreach ($raw as $p) {
+                    $item = $this->mapPost($p, (bool) ($p['sticky'] ?? false));
+                    if ($item) {
+                        $items[] = $item;
+                    }
+                }
+
+                return [
+                    'items' => array_slice($items, 0, self::PAGE_SIZE),
+                    'hasMore' => count($items) > self::PAGE_SIZE,
+                    'source' => 'live',
+                ];
+            } catch (\Throwable $e) {
+                Log::warning('miniapp blog page failed: '.$e->getMessage());
+
+                return ['items' => [], 'hasMore' => false, 'source' => 'empty'];
+            }
+        });
+
+        return ok(array_merge($data, ['page' => $page]));
     }
 
     // ------------------------------------------------------------------ 内部
@@ -186,8 +232,76 @@ final class MiniappBlogController extends Controller
         $mapped = $this->mapPost($p, (bool) ($p['sticky'] ?? false));
 
         return array_merge($mapped ?? [], [
-            'content' => (string) ($p['content']['rendered'] ?? ''),
+            // 排版归一：给标题/列表/引用/img 打上语义 class（wp-h2 / wp-h3 / wp-ul / wp-li /
+            // wp-quote / wp-img），前端 rich-text 用这些 class 配层级样式 —— 小程序 rich-text
+            // 吃不了外层 scoped CSS 的后代选择器，类名直连是唯一稳妥通道。
+            // 同时剥掉 WP 编辑器带来的内联 style（正文段落遗留的 text-align/margin 会打架），
+            // 但保留 img 的 src/alt（对齐靠 class，不靠内联）。
+            'content' => $this->normalizeContent((string) ($p['content']['rendered'] ?? '')),
         ]);
+    }
+
+    /**
+     * 全文 HTML 归一（只动这几件事，其余原样透传）：
+     *  1. h2/h3/h4 → wp-h2/h3/h4；ul/ol → wp-list；li → wp-li；blockquote → wp-quote；
+     *  2. img → wp-img（顺便剥掉内联 width/height，让图片按容器宽度自适应）；
+     *  3. 剥 p/figure 上的内联 style（WP 段落对齐/边距在小程序里水土不服）。
+     *
+     * 用正则而不是 DOM 解析器：WP 的 content.rendered 是良构片段（无 <html>/<body>），
+     * 标签就这几种形态，正则足够且零依赖；真遇到没见过的标签，透传不伤人。
+     */
+    private function normalizeContent(string $html): string
+    {
+        // 1) 标题加 class（保留标签上已有的 class：追加而不是覆盖）
+        $html = preg_replace_callback('/<h([234])(\s[^>]*)?>/i', function ($m) {
+            return '<h'.$m[1].$this->mergeClass($m[2] ?? '', 'wp-h'.$m[1]).'>';
+        }, $html) ?? $html;
+
+        // 2) 列表与引用
+        $html = preg_replace_callback('/<(ul|ol)(\s[^>]*)?>/i', function ($m) {
+            return '<'.$m[1].$this->mergeClass($m[2] ?? '', 'wp-list').'>';
+        }, $html) ?? $html;
+        $html = preg_replace_callback('/<li(\s[^>]*)?>/i', function ($m) {
+            return '<li'.$this->mergeClass($m[1] ?? '', 'wp-li').'>';
+        }, $html) ?? $html;
+        $html = preg_replace_callback('/<blockquote(\s[^>]*)?>/i', function ($m) {
+            return '<blockquote'.$this->mergeClass($m[1] ?? '', 'wp-quote').'>';
+        }, $html) ?? $html;
+
+        // 3) img：加 class + 只留 src/alt（剥内联尺寸与样式，交给前端自适应）
+        $html = preg_replace_callback('/<img\b([^>]*?)\/?>/i', function ($m) {
+            $attrs = (string) $m[1];
+            $src = '';
+            if (preg_match('/src\s*=\s*"([^"]+)"/i', $attrs, $s)) {
+                $src = $s[1];
+            }
+            $alt = '';
+            if (preg_match('/alt\s*=\s*"([^"]*)"/i', $attrs, $a)) {
+                $alt = $a[1];
+            }
+
+            return '<img class="wp-img" src="'.htmlspecialchars($src, ENT_QUOTES).'"'
+                .($alt !== '' ? ' alt="'.htmlspecialchars($alt, ENT_QUOTES).'"' : '').'>';
+        }, $html) ?? $html;
+
+        // 4) p / figure：剥内联 style（对齐与边距统一交给前端的 class 样式）
+        $html = preg_replace('/<(p|figure)\b([^>]*?)\sstyle\s*=\s*"[^"]*"([^>]*)>/i', '<$1$2$3>', $html) ?? $html;
+
+        return $html;
+    }
+
+    /** 把 class 追加进原有属性串（没有属性串就造一个）；已有 class 时不重复加 */
+    private function mergeClass(string $attrs, string $class): string
+    {
+        if ($attrs !== '' && preg_match('/class\s*=\s*"([^"]*)"/i', $attrs, $m)) {
+            if (str_contains($m[1], $class)) {
+                return $attrs;
+            }
+
+            return preg_replace('/class\s*=\s*"[^"]*"/i', 'class="'.$m[1].' '.$class.'"', $attrs) ?? $attrs;
+        }
+
+        return ($attrs === '' ? '' : $attrs).' class="'.$class.'"';
     }
 
     private function coverOf(array $p): string

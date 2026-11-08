@@ -619,6 +619,11 @@ function openArticle(c: BlogCard): void {
   uni.navigateTo({ url: `/pkg-public/blog/article?id=${c.id}` })
 }
 
+/** 「查看全部文章」→ 站内博客列表页（分页翻全部） */
+function goBlogList(): void {
+  uni.navigateTo({ url: '/pkg-public/blog/list' })
+}
+
 function choose(v: GuideVenue): void {
   pickedKey.value = v.key
 }
@@ -786,7 +791,7 @@ onShareAppMessage(() => {
                 <!-- 官网好文（置顶优先 + 最新补足，后端代理 WP；空 = 静默不渲染） -->
                 <view v-if="blogCards.length" class="blog">
                   <view class="imgs__labelrow blog__head">
-                    <text class="imgs__label">一麦 · 好文</text>
+                    <text class="imgs__label">一麦 · 博客</text>
                     <view class="imgs__rule" />
                   </view>
                   <view
@@ -801,6 +806,9 @@ onShareAppMessage(() => {
                       <text class="blogcard__date">{{ c.sticky ? '置顶 · ' : '' }}{{ c.date }}</text>
                     </view>
                   </view>
+<view class="blog__more ym-tap" @click="goBlogList">
+  <text class="blog__more-text">查看全部文章 ›</text>
+</view>
                 </view>
         </view>
       </block>
@@ -845,7 +853,7 @@ onShareAppMessage(() => {
                 <!-- 官网好文（与 editorial 版同数据；空 = 静默不渲染） -->
                 <view v-if="blogCards.length" class="blog">
                   <view class="imgs__labelrow blog__head">
-                    <text class="imgs__label">一麦 · 好文</text>
+                    <text class="imgs__label">一麦 · 博客</text>
                     <view class="imgs__rule" />
                   </view>
                   <view
@@ -860,6 +868,9 @@ onShareAppMessage(() => {
                       <text class="blogcard__date">{{ c.sticky ? '置顶 · ' : '' }}{{ c.date }}</text>
                     </view>
                   </view>
+<view class="blog__more ym-tap" @click="goBlogList">
+  <text class="blog__more-text">查看全部文章 ›</text>
+</view>
                 </view>
 
                 <view class="pick__foot">
@@ -1144,7 +1155,7 @@ onShareAppMessage(() => {
               <!-- 官网好文：门店详情最底（空 = 静默不渲染） -->
               <view v-if="blogCards.length" class="blog">
                 <view class="imgs__labelrow blog__head">
-                  <text class="imgs__label">一麦 · 好文</text>
+                  <text class="imgs__label">一麦 · 博客</text>
                   <view class="imgs__rule" />
                 </view>
                 <view
@@ -1159,6 +1170,9 @@ onShareAppMessage(() => {
                     <text class="blogcard__date">{{ c.sticky ? '置顶 · ' : '' }}{{ c.date }}</text>
                   </view>
                 </view>
+<view class="blog__more ym-tap" @click="goBlogList">
+  <text class="blog__more-text">查看全部文章 ›</text>
+</view>
               </view>
       </block>
 
@@ -1337,7 +1351,7 @@ onShareAppMessage(() => {
       <!-- 官网好文：门店详情最底（editorial 分支；空 = 静默不渲染） -->
       <view v-if="blogCards.length" class="blog">
         <view class="imgs__labelrow blog__head">
-          <text class="imgs__label">一麦 · 好文</text>
+          <text class="imgs__label">一麦 · 博客</text>
           <view class="imgs__rule" />
         </view>
         <view
@@ -1352,6 +1366,9 @@ onShareAppMessage(() => {
             <text class="blogcard__date">{{ c.sticky ? '置顶 · ' : '' }}{{ c.date }}</text>
           </view>
         </view>
+<view class="blog__more ym-tap" @click="goBlogList">
+  <text class="blog__more-text">查看全部文章 ›</text>
+</view>
       </view>
       </block>
     </block>
@@ -1760,6 +1777,19 @@ $gold: #c19a4b;
 
 .blog__head {
   margin-bottom: 20rpx;
+}
+
+/* 「查看全部文章 ›」入口：细字居中，卡片下隔一层 */
+.blog__more {
+  display: flex;
+  justify-content: center;
+  margin-top: 20rpx;
+}
+
+.blog__more-text {
+  font-size: 23rpx;
+  letter-spacing: 0.12em;
+  color: #a08749;
 }
 
 .blogcard {

@@ -146,6 +146,12 @@ final class MiniappConfigController extends Controller
         'frequency' => 'once',
     ];
 
+    /** 博客栏目默认值（enabled=false ⇒ 指引页不渲染栏目；count=1..10 卡片数，默认 3） */
+    public const DEFAULT_BLOG = [
+        'enabled' => true,
+        'count' => 3,
+    ];
+
     /** 门店键白名单（顺序即输出顺序）：服务端拒绝新增或删除门店，只允许改内容 */
     private const VENUE_KEYS = ['绿地店', '东部店'];
 
@@ -227,6 +233,11 @@ final class MiniappConfigController extends Controller
             ? $this->normalizePopup($current['popup'], (array) $data['popup'])
             : $current['popup'];
 
+        // ---- blog：博客栏目（开关 + 篇数）；同 popup 的合并语义 ----
+        $blog = array_key_exists('blog', $data)
+            ? $this->normalizeBlog($current['blog'], (array) $data['blog'])
+            : $current['blog'];
+
         // theme：只有提交了才改，否则沿用当前生效值（只传 venues 不该把主题冲回默认）
         $theme = array_key_exists('theme', $data)
             ? $this->normalizeTheme($data['theme'])
@@ -241,6 +252,7 @@ final class MiniappConfigController extends Controller
             'homeHero' => $homeHero,
             'venues' => $venues,
             'popup' => $popup,
+            'blog' => $blog,
             // 时间戳写进 JSON 而不是读 app_settings.updated_at：后者会被「保存清单阈值 / AI 配置」
             // 等任何一次设置写入刷新，用它会让「小程序配置更新时间」显示成别处的修改时间。
             'updatedAt' => now()->format('Y-m-d H:i:s'),
@@ -504,6 +516,11 @@ final class MiniappConfigController extends Controller
             'popup.content' => ['nullable', 'string', 'max:500'],
             'popup.imageUrl' => ['nullable', 'string', 'max:300', $media],
             'popup.frequency' => ['nullable', 'string', 'in:'.implode(',', self::POPUP_FREQUENCIES)],
+            // 博客栏目（全局）：开关 + 卡片数；count 越界在 normalizeBlog 里钳制（1..10），
+            // 这里只做类型闸门——数字给 422 比静默改写更诚实
+            'blog' => ['nullable', 'array'],
+            'blog.enabled' => ['nullable', 'boolean'],
+            'blog.count' => ['nullable', 'integer', 'between:1,10'],
         ];
     }
 
@@ -534,6 +551,10 @@ final class MiniappConfigController extends Controller
             'popup.title.max' => '弹窗标题最多 40 个字',
             'popup.content.max' => '弹窗内容最多 500 个字',
             'popup.frequency.in' => '弹窗展示频率只能是 once（只弹一次）或 always（每次打开都弹）',
+            'blog.array' => '博客栏目格式不正确',
+            'blog.enabled.boolean' => '博客栏目开关必须是 true 或 false',
+            'blog.count.integer' => '博客文章数量必须是整数',
+            'blog.count.between' => '博客文章数量只能在 1 到 10 篇之间',
         ];
     }
 
@@ -566,6 +587,9 @@ final class MiniappConfigController extends Controller
             'popup.content' => '弹窗内容',
             'popup.imageUrl' => '弹窗图片',
             'popup.frequency' => '弹窗展示频率',
+            'blog' => '博客栏目',
+            'blog.enabled' => '博客栏目开关',
+            'blog.count' => '博客文章数量',
         ];
     }
 
@@ -612,6 +636,8 @@ final class MiniappConfigController extends Controller
             'venues' => $venues,
             // 旧配置没有 popup 键 → 回落 DEFAULT_POPUP（enabled=false）
             'popup' => $this->normalizePopup(self::DEFAULT_POPUP, (array) ($cfg['popup'] ?? [])),
+            // 旧配置没有 blog 键 → 回落 DEFAULT_BLOG（enabled=true, count=3）
+            'blog' => $this->normalizeBlog(self::DEFAULT_BLOG, (array) ($cfg['blog'] ?? [])),
             'updatedAt' => (string) ($cfg['updatedAt'] ?? ''),
         ];
     }
@@ -698,6 +724,25 @@ final class MiniappConfigController extends Controller
             'imageUrl' => $this->normalizeUrl($this->pick($submitted, $base, 'imageUrl')),
             // 脏数据（手改库、老版本）一律回落到 once，不把非法值发给前端
             'frequency' => in_array($frequency, self::POPUP_FREQUENCIES, true) ? $frequency : 'once',
+        ];
+    }
+
+    /**
+     * 博客栏目归一：字段级合并（与 popup 同款语义——只提交 count 时 enabled 保留）。
+     * count 钳制在 1..10：0 或非数字回落默认 3（脏数据不外发给前端）。
+     *
+     * @param  array<string, mixed>  $base
+     * @param  array<string, mixed>  $submitted
+     * @return array{enabled: bool, count: int}
+     */
+    private function normalizeBlog(array $base, array $submitted): array
+    {
+        $count = $this->pick($submitted, $base, 'count');
+        $count = is_numeric($count) ? (int) $count : self::DEFAULT_BLOG['count'];
+
+        return [
+            'enabled' => (bool) $this->pick($submitted, $base, 'enabled'),
+            'count' => max(1, min(10, $count)),
         ];
     }
 

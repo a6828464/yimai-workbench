@@ -30,7 +30,7 @@ class MiniappThemeTest extends TestCase
 
         $this->assertSame('editorial', $data['theme'], '默认主题必须是 editorial（classic 已弃用）');
         // 顶层键顺序即契约：theme 在最前，其后 homeHero（t50）
-        $this->assertSame(['theme', 'homeHero', 'venues', 'popup', 'updatedAt'], array_keys($data));
+        $this->assertSame(['theme', 'homeHero', 'venues', 'popup', 'blog', 'updatedAt'], array_keys($data));
     }
 
     /** ② 更旧的配置（连 theme 键都没有）：补 editorial，且其它字段一个不丢。 */
@@ -134,6 +134,44 @@ class MiniappThemeTest extends TestCase
 
         // 被拒后库里的主题仍是默认值（没被写坏）
         $this->assertSame('editorial', $this->getJson('/api/miniapp/config')->json('data.theme'));
+    }
+
+    /** ⑩ 博客栏目：默认 enabled=true count=3；PUT 保存 + 合并语义 + 越界 422 + 脏数据钳制。 */
+    public function test_blog_defaults_and_save_merge_and_clamp(): void
+    {
+        // 默认值（GET 免登录）
+        $this->assertSame(
+            ['enabled' => true, 'count' => 3],
+            $this->getJson('/api/miniapp/config')->json('data.blog')
+        );
+
+        Sanctum::actingAs($this->super());
+
+        // 保存 count=5 → 生效
+        $this->putJson('/api/miniapp/config', ['blog' => ['count' => 5]])
+            ->assertOk()
+            ->assertJsonPath('data.blog.count', 5);
+        // 合并语义：只提交 count，enabled 保留默认 true
+        $this->assertSame(
+            ['enabled' => true, 'count' => 5],
+            $this->getJson('/api/miniapp/config')->json('data.blog')
+        );
+
+        // 关掉栏目 → enabled=false，count 保留
+        $this->putJson('/api/miniapp/config', ['blog' => ['enabled' => false]])->assertOk();
+        $this->assertSame(
+            ['enabled' => false, 'count' => 5],
+            $this->getJson('/api/miniapp/config')->json('data.blog')
+        );
+
+        // count 越界 → 422（类型闸门在 rules，不静默改写）
+        $this->putJson('/api/miniapp/config', ['blog' => ['count' => 11]])->assertStatus(422);
+        $this->putJson('/api/miniapp/config', ['blog' => ['count' => 0]])->assertStatus(422);
+        // 非整数 → 422
+        $this->putJson('/api/miniapp/config', ['blog' => ['count' => 'abc']])->assertStatus(422);
+
+        // 越界被拒后库里的值没被写坏
+        $this->assertSame(5, $this->getJson('/api/miniapp/config')->json('data.blog.count'));
     }
 
     /** ⑦ 其它非法值 422（含数字、未知词）；两个合法值都能保存。 */
