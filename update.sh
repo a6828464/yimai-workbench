@@ -408,11 +408,15 @@ if ! rsync -a \
   rollback_code "rsync 覆盖代码失败"
 fi
 
-# 升级包同时携带最新版更新脚本；在当前进程结束前覆盖自身不影响本次执行。
+# 升级包同时携带最新版更新脚本。⚠️ 不能在脚本运行中 cp 覆盖自身：bash 按字节偏移逐块读脚本，
+# 行数变化后同一偏移会落在**新文件的半行中间**——2026-11-09 实际翻车：
+# 「line 417: er.json: command not found」（composer.json 被从中间劈开），
+# 导致收尾段（migrate/optimize/健康检查）全部没跑。
+# 正确做法：先写临时文件，全部执行完再原子替换。
 if [ "$PACKED_UPDATE_OK" -eq 1 ]; then
-  cp "$RELEASE_ROOT/update.sh" "$SITE_ROOT/update.sh"
-  chmod 755 "$SITE_ROOT/update.sh"
-  echo "  已自举更新安装脚本 update.sh"
+  cp "$RELEASE_ROOT/update.sh" "$SITE_ROOT/update.sh.new"
+  chmod 755 "$SITE_ROOT/update.sh.new"
+  echo "  新版更新脚本已暂存（本次执行完后自动启用）"
 fi
 
 cd "$APP_ROOT"
@@ -456,6 +460,15 @@ for svc in php-fpm-85 php-fpm-84 php-fpm-83 php-fpm-82 php-fpm php8.5-fpm php8.4
     systemctl reload "$svc" 2>/dev/null && echo "已平滑重载 $svc" && break
   fi
 done
+
+# ── 自举收尾：脚本已执行完毕，现在才安全替换自身（前面只是暂存到 .new）──
+# 脚本运行中 cp 覆盖自身会让 bash 读到「新文件半行」（行错位），2026-11-09 实际翻车。
+if [ "$PACKED_UPDATE_OK" -eq 1 ] && [ -f "$SITE_ROOT/update.sh.new" ]; then
+  mv -f "$SITE_ROOT/update.sh.new" "$SITE_ROOT/update.sh"
+  chmod 755 "$SITE_ROOT/update.sh"
+  chown www:www "$SITE_ROOT/update.sh" 2>/dev/null || true
+  echo "  已自举更新安装脚本 update.sh（下一版本生效）"
+fi
 
 echo "更新完成"
 echo "  回滚点：数据库快照（后台「数据备份」页可见，标签「升级前」）+ 代码快照 $ROLLBACK_DIR"
