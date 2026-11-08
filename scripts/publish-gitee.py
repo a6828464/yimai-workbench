@@ -300,12 +300,24 @@ def ensure_release(releases, tag, name, body):
     if DRY:
         log(f"  [dry-run] 新建 release {tag}")
         return None
-    resp = http(
-        "POST",
-        f"/repos/{REPO}/releases",
-        {"tag_name": tag, "name": name, "body": body, "target_commitish": "main"},
-    )
-    return str(resp["id"])
+    try:
+        resp = http(
+            "POST",
+            f"/repos/{REPO}/releases",
+            {"tag_name": tag, "name": name, "body": body, "target_commitish": "main"},
+        )
+        return str(resp["id"])
+    except Exception:
+        # 幂等兜底：release 已被并发/上一次失败轮次创建（列表快照里看不到）时，
+        # gitee 会回 400/409。按 tag 重查一次，拿到 id 就复用，别让整轮发布死在这。
+        try:
+            existing = http("GET", f"/repos/{REPO}/releases/tags/{tag}")
+            if existing and existing.get("id"):
+                warn(f"  release {tag} 已存在（列表快照未含），复用 id={existing['id']}")
+                return str(existing["id"])
+        except Exception:
+            pass
+        raise
 
 
 def version_of(name):
