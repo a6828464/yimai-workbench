@@ -30,7 +30,7 @@ class MiniappHeroImageTest extends TestCase
         $data = $this->getJson('/api/miniapp/config')->assertOk()->json('data');
 
         $this->assertSame('', $data['homeHero'], '首页背景图默认空串（客户端决定兜底）');
-        $this->assertSame(['theme', 'homeHero', 'venues', 'popup', 'updatedAt'], array_keys($data));
+        $this->assertSame(['theme', 'homeHero', 'venues', 'popup', 'blog', 'updatedAt'], array_keys($data));
 
         foreach ($data['venues'] as $venue) {
             $this->assertArrayHasKey('heroImage', $venue, '每家店都必须有 heroImage 键（不是缺键）');
