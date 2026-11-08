@@ -43,6 +43,8 @@ import { computed, ref } from 'vue'
 import { onLoad, onShareAppMessage } from '@dcloudio/uni-app'
 import { copyText } from '@/utils/nav'
 import { fetchMiniappConfig } from '@/api/miniapp'
+// 博客栏目（官网好文，后端代理 WP REST —— 见 api/blog.ts 头注释）
+import { fetchBlogCards, type BlogCard } from '@/api/blog'
 // absolutizeImg 需要：把后台下发的 /api/... 相对路径图补全成绝对 URL
 import { API_BASE } from '@/utils/http'
 
@@ -600,7 +602,22 @@ onLoad((options) => {
   const hit = guideVenues.value.find((v) => v.key === venue)
   if (hit) pickedKey.value = hit.key
   void loadRemoteConfig()
+  // 博客栏目（官网好文）：选门店页与门店详情页底部共用一份数据，加载失败静默不渲染
+  void loadBlog()
 })
+
+/** 博客栏目数据（官网 WP 经后端代理）；空数组 = 今天不显示栏目 */
+const blogCards = ref<BlogCard[]>([])
+
+async function loadBlog(): Promise<void> {
+  const r = await fetchBlogCards(3)
+  blogCards.value = r.items
+}
+
+/** 点文章卡进站内文章页（pkg-public/blog/article，同分包） */
+function openArticle(c: BlogCard): void {
+  uni.navigateTo({ url: `/pkg-public/blog/article?id=${c.id}` })
+}
 
 function choose(v: GuideVenue): void {
   pickedKey.value = v.key
@@ -765,6 +782,26 @@ onShareAppMessage(() => {
                 </view>
 
                 <text class="pick__tip">不确定先去哪家？两家都能约课，选离你近的一家就行。</text>
+
+                <!-- 官网好文（置顶优先 + 最新补足，后端代理 WP；空 = 静默不渲染） -->
+                <view v-if="blogCards.length" class="blog">
+                  <view class="imgs__labelrow blog__head">
+                    <text class="imgs__label">一麦 · 好文</text>
+                    <view class="imgs__rule" />
+                  </view>
+                  <view
+                    v-for="c in blogCards"
+                    :key="c.id"
+                    class="blogcard ym-tap"
+                    @click="openArticle(c)"
+                  >
+                    <image v-if="c.cover" class="blogcard__cover" :src="c.cover" mode="aspectFill" />
+                    <view class="blogcard__main">
+                      <text class="blogcard__title">{{ c.title }}</text>
+                      <text class="blogcard__date">{{ c.sticky ? '置顶 · ' : '' }}{{ c.date }}</text>
+                    </view>
+                  </view>
+                </view>
         </view>
       </block>
       <block v-if="isOriental">
@@ -801,6 +838,26 @@ onShareAppMessage(() => {
                     <view class="pickstrip__arrow">
                       <view class="pickstrip__arrow-line" />
                       <view class="pickstrip__arrow-head" />
+                    </view>
+                  </view>
+                </view>
+
+                <!-- 官网好文（与 editorial 版同数据；空 = 静默不渲染） -->
+                <view v-if="blogCards.length" class="blog">
+                  <view class="imgs__labelrow blog__head">
+                    <text class="imgs__label">一麦 · 好文</text>
+                    <view class="imgs__rule" />
+                  </view>
+                  <view
+                    v-for="c in blogCards"
+                    :key="c.id"
+                    class="blogcard ym-tap"
+                    @click="openArticle(c)"
+                  >
+                    <image v-if="c.cover" class="blogcard__cover" :src="c.cover" mode="aspectFill" />
+                    <view class="blogcard__main">
+                      <text class="blogcard__title">{{ c.title }}</text>
+                      <text class="blogcard__date">{{ c.sticky ? '置顶 · ' : '' }}{{ c.date }}</text>
                     </view>
                   </view>
                 </view>
@@ -1083,6 +1140,26 @@ onShareAppMessage(() => {
                 <text class="switch__text">换一家门店</text>
                 <view class="switch__line" />
               </view>
+
+              <!-- 官网好文：门店详情最底（空 = 静默不渲染） -->
+              <view v-if="blogCards.length" class="blog">
+                <view class="imgs__labelrow blog__head">
+                  <text class="imgs__label">一麦 · 好文</text>
+                  <view class="imgs__rule" />
+                </view>
+                <view
+                  v-for="c in blogCards"
+                  :key="c.id"
+                  class="blogcard ym-tap"
+                  @click="openArticle(c)"
+                >
+                  <image v-if="c.cover" class="blogcard__cover" :src="c.cover" mode="aspectFill" />
+                  <view class="blogcard__main">
+                    <text class="blogcard__title">{{ c.title }}</text>
+                    <text class="blogcard__date">{{ c.sticky ? '置顶 · ' : '' }}{{ c.date }}</text>
+                  </view>
+                </view>
+              </view>
       </block>
 
       <!--
@@ -1255,6 +1332,26 @@ onShareAppMessage(() => {
 
       <view class="switch ym-tap" @click="switchVenue">
         <text class="switch__text">换一家门店</text>
+      </view>
+
+      <!-- 官网好文：门店详情最底（editorial 分支；空 = 静默不渲染） -->
+      <view v-if="blogCards.length" class="blog">
+        <view class="imgs__labelrow blog__head">
+          <text class="imgs__label">一麦 · 好文</text>
+          <view class="imgs__rule" />
+        </view>
+        <view
+          v-for="c in blogCards"
+          :key="c.id"
+          class="blogcard ym-tap"
+          @click="openArticle(c)"
+        >
+          <image v-if="c.cover" class="blogcard__cover" :src="c.cover" mode="aspectFill" />
+          <view class="blogcard__main">
+            <text class="blogcard__title">{{ c.title }}</text>
+            <text class="blogcard__date">{{ c.sticky ? '置顶 · ' : '' }}{{ c.date }}</text>
+          </view>
+        </view>
       </view>
       </block>
     </block>
@@ -1636,6 +1733,87 @@ $gold: #c19a4b;
   font-size: 23rpx;
   line-height: 1.6;
   color: $ink-400;
+}
+
+/* ==========================================================================
+ * 官网好文栏目（选门店页底 + 门店详情页底，两主题共用一套卡片；
+ * 数据空时整块不渲染，这里不会有空态样式）
+ * ========================================================================== */
+.blog {
+  margin-top: 56rpx;
+  padding: 0 24rpx;
+}
+
+/* 基础版 labelrow：oriental 已有前缀覆盖，这里给 editorial 下的博客栏兜底
+   （editorial 的门店实景区用的是纯 imgs__label，没有 labelrow —— 博客栏是新引入者） */
+.blog .imgs__labelrow {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+}
+
+.blog .imgs__rule {
+  flex: 1;
+  height: 1rpx;
+  background: $hairline;
+}
+
+.blog__head {
+  margin-bottom: 20rpx;
+}
+
+.blogcard {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  padding: 22rpx 24rpx;
+  background: $white;
+  border-radius: 16rpx;
+
+  /* 卡片之间细缝，不用线分隔（与实景图卡的间隔语言一致） */
+  & + & {
+    margin-top: 16rpx;
+  }
+}
+
+.blogcard__cover {
+  width: 168rpx;
+  height: 120rpx;
+  flex: none;
+  border-radius: 10rpx;
+  background: $ink-50;
+}
+
+.blogcard__main {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+  min-width: 0;
+}
+
+.blogcard__title {
+  /* 两行截断：标题超过两行就用省略号，栏目卡是入口不是正文 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 27rpx;
+  font-weight: 500;
+  line-height: 1.45;
+  color: $ink-800;
+}
+
+.blogcard__date {
+  font-size: 21rpx;
+  letter-spacing: 0.08em;
+  color: $ink-400;
+}
+
+/* oriental 主题微调：白卡在米灰底上要去圆角、改细线描边，贴合「发丝线分区」语言 */
+.guide--oriental .blogcard {
+  border: 1rpx solid rgba(34, 51, 43, 0.1);
+  border-radius: 4rpx;
+  box-shadow: none;
 }
 
 .switch {

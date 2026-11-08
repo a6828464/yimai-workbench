@@ -317,6 +317,17 @@
           }
         },
         {
+          "path": "blog/article",
+          "style": {
+            "navigationBarTitleText": "一麦 · 好文",
+            "navigationBarTextStyle": "black",
+            "navigationBarBackgroundColor": "#F2F4F2",
+            "backgroundColor": "#F2F4F2",
+            "backgroundColorTop": "#F2F4F2",
+            "backgroundColorBottom": "#F2F4F2"
+          }
+        },
+        {
           "path": "book/book",
           "style": {
             "navigationBarTitleText": "约课",

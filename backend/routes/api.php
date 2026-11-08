@@ -13,6 +13,7 @@ use App\Http\Controllers\KyController;
 use App\Http\Controllers\LeadController;
 use App\Http\Controllers\MarketingController;
 use App\Http\Controllers\MarketingFavoriteController;
+use App\Http\Controllers\MiniappBlogController;
 use App\Http\Controllers\MiniappConfigController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PayrollController;
@@ -81,6 +82,11 @@ Route::get('/miniapp/config', [MiniappConfigController::class, 'show'])->middlew
 // 路由层再约束字符集，控制器里还有一道严格正则 —— 任何 `..`/`.php` 都到不了 response()->file()。
 Route::get('/miniapp/uploads/{file}', [MiniappConfigController::class, 'uploadedFile'])
     ->where('file', '[A-Za-z0-9._-]+');
+// 小程序「到店指引」的博客栏目（只读、免登录；数据源是官网 WP REST，后端代理 + 缓存，
+// 小程序不直连 WP —— request 合法域名不用加，WP 也不直接吃小程序流量。见 MiniappBlogController）
+Route::get('/miniapp/blog', [MiniappBlogController::class, 'index'])->middleware('throttle:60,1');
+Route::get('/miniapp/blog/{id}', [MiniappBlogController::class, 'show'])
+    ->whereNumber('id')->middleware('throttle:60,1');
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);

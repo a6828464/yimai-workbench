@@ -176,4 +176,10 @@ return [
         'code' => env('REGISTRATION_CODE', ''),
     ],
 
+    // 官网 WordPress（小程序「到店指引」博客栏目数据源；生产与 API 同机）
+    // base_url 可用 WP_BLOG_BASE_URL 覆盖（本地开发指向测试 WP 时用）
+    'wp_blog' => [
+        'base_url' => env('WP_BLOG_BASE_URL', 'https://www.nbyimai.com'),
+    ],
+
 ];
