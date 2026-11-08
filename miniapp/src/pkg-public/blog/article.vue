@@ -115,14 +115,15 @@ function openOfficial(): void {
 
       <!-- 到店引导位：读完整篇 = 高意向顾客，这里放转化入口（选店指引 + 电话咨询） -->
       <view class="art__cta">
+        <view class="art__cta-mark" />
         <text class="art__cta-title">想来体验？</text>
         <text class="art__cta-desc">两家门店都有专业老师带你入门，第一次来可以先看指引</text>
         <view class="art__cta-row">
           <view class="art__cta-btn ym-tap" @click="goGuide">
             <text class="art__cta-btn-text">查看门店指引</text>
           </view>
-          <view class="art__cta-btn art__cta-btn--solid ym-tap" @click="callUs">
-            <text class="art__cta-btn-text is-solid">电话咨询</text>
+          <view class="art__cta-btn ym-tap" @click="callUs">
+            <text class="art__cta-btn-text">电话咨询</text>
           </view>
         </view>
       </view>
@@ -264,14 +265,21 @@ $serif: 'Songti SC', 'STSong', 'SimSun', serif;
     color: #a6b1aa;
   }
 
-  /* 到店引导位：文章读到底 = 高意向，给一条「内容 → 到店」的转化路径 */
+  /* 到店引导位（oriental 语言：无卡片阴影、细线框、衬线 + 金线装饰，不抢正文的戏） */
   &__cta {
     margin-top: 64rpx;
-    padding: 36rpx 32rpx;
+    padding: 40rpx 32rpx 36rpx;
     background: $white;
     border: 1rpx solid rgba(34, 51, 43, 0.1);
-    border-radius: 8rpx;
+    border-radius: 4rpx;
     text-align: center;
+  }
+
+  &__cta-mark {
+    width: 48rpx;
+    height: 1px;
+    margin: 0 auto 20rpx;
+    background: rgba(160, 135, 73, 0.6);
   }
 
   &__cta-title {
@@ -288,37 +296,32 @@ $serif: 'Songti SC', 'STSong', 'SimSun', serif;
     margin-top: 14rpx;
     font-size: 23rpx;
     line-height: 1.6;
+    letter-spacing: 0.04em;
     color: #7c8a82;
   }
 
   &__cta-row {
     display: flex;
     gap: 20rpx;
-    margin-top: 28rpx;
+    margin-top: 30rpx;
   }
 
+  /* 两个按钮：A 方案语言 —— 1.5rpx 墨绿描边直角，字距拉开；不用实心块（太重、突兀） */
   &__cta-btn {
     flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 80rpx;
+    height: 84rpx;
     border: 1.5rpx solid #1c6047;
-    border-radius: 4rpx;
-
-    &--solid {
-      background: #1c6047;
-    }
+    border-radius: 0;
+    background: transparent;
   }
 
   &__cta-btn-text {
-    font-size: 26rpx;
-    letter-spacing: 0.1em;
+    font-size: 25rpx;
+    letter-spacing: 0.2em;
     color: #1c6047;
-
-    &.is-solid {
-      color: #fcfbf8;
-    }
   }
 
   /* 「到官网看更多」：细字链（转化位之下，弱一级） */
@@ -336,8 +339,17 @@ $serif: 'Songti SC', 'STSong', 'SimSun', serif;
     text-decoration: underline;
   }
 }
+</style>
 
-/* ---------- rich-text 内部节点（wp-* 语义 class，后端 normalizeContent 打的） ---------- */
+<!--
+  rich-text 内部节点样式（wp-* 语义 class，后端 normalizeContent 打的）。
+
+  ⚠️ 必须放**非 scoped** 块：scoped 编译会变成 `.wp-h2[data-v-x]`（属性选择器），
+  而 rich-text 内部渲染的节点不带页面的 data-v 属性 → 一条都匹配不上，
+  表现就是「标题没层级、图片原尺寸无约束」（2026-11-09 v3.17.13 实际翻车，
+  0.9.8 用户端看到的就是这个）。非 scoped 的裸 class 选择器才能命中 rich-text 内部节点。
+-->
+<style lang="scss">
 .wp-h2 {
   display: block;
   margin: 56rpx 0 20rpx;
@@ -388,11 +400,13 @@ $serif: 'Songti SC', 'STSong', 'SimSun', serif;
   color: #5b6b62;
 }
 
+/* 图片：宽度锁死 100% + 高度 auto —— rich-text 里 img 不受容器约束时
+   会按原始像素渲染（「炸图」根因之一），这里必须显式压住 */
 .wp-img {
-  max-width: 100% !important;
-  width: 100%;
-  height: auto;
   display: block;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
   margin: 28rpx auto;
   border-radius: 10rpx;
 }

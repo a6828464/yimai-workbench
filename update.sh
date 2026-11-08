@@ -338,9 +338,11 @@ fi
 
 echo "── 生成升级前代码快照（回滚用）"
 mkdir -p "$ROLLBACK_DIR"
+# .deploy-backup 是热修时的人工备份目录：属主可能是 root（热修经 root scp 落盘），
+# 不排除会以「Permission denied」卡死快照并中止更新（2026-11-09 实际发生过）。
 tar czf "$ROLLBACK_DIR/backend-code.tar.gz" -C "$APP_ROOT" \
   --exclude='./vendor' --exclude='./storage' --exclude='./.env' --exclude='./node_modules' \
-  --exclude='./.update-backup' --exclude='./.update-work' . \
+  --exclude='./.update-backup' --exclude='./.update-work' --exclude='./.deploy-backup' . \
   || { echo "致命错误：代码快照生成失败，已中止更新。"; exit 1; }
 
 # ── 迁移必须随包到达（rsync 之前的硬门禁） ──────────────────────────

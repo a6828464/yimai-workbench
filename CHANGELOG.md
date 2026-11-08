@@ -1,5 +1,37 @@
 # 更新日志
 
+## 2026-11-09 ｜ fix: v3.17.14 修复博客文章页排版失效 + 转化按钮东方化 + update.sh 快照权限坑（小程序 0.9.9）
+
+### 排版失效根因（我方缺陷）
+
+v3.17.13 把 `wp-*` 样式写进了 article.vue 的 **scoped** 块：scoped 编译成
+`.wp-h2[data-v-x]` 属性选择器，而 **rich-text 内部渲染的节点不带 data-v 属性** →
+所有排版规则一条都命中不了。表现即用户所见：标题无层级、图片无约束原尺寸炸开。
+
+修复：wp-\* 样式整体搬进**独立非 scoped 样式块**（裸 class 选择器才能命中 rich-text
+内部节点），`.wp-img` 加 `width/height !important` 双保险。编译产物已验证：
+`.wp-h2{` 为裸 class、0 条 scoped 残留。
+
+### 转化按钮适配东方主题
+
+「想来体验？」区改 oriental 语言：去掉实心块按钮 → 两个**细描边直角按钮**
+（1.5rpx 墨绿描边、字距 0.2em）、标题上方金色短线装饰、卡片直角化——与指引页
+「导航/电话」按钮同款语言，不再突兀。
+
+### 后台「版本更新」Permission denied（已修）
+
+根因：root 身份热修部署的备份文件落 `.deploy-backup/`（root:root 600），
+后台更新以 www 用户跑 tar 快照读不了 → 安全中止。
+处置：备份目录已 chown www:www（www 模拟 tar exit 0 验证）；
+`update.sh` 快照排除清单补 `--exclude='./.deploy-backup'`（已部署生产），
+今后热修备份目录不再可能卡死更新。口径固化：root 热修后必须 chown 回 www。
+
+### 验证
+
+article.wxss 裸 class + width!important 在产物；vue-tsc 0；verify 81/28/15；
+生产 update.sh 换新（bash -n 通过）。**0.9.9 已上传**
+（二维码 `releases/miniapp-v0.9.9-qr.png`）。
+
 ## 2026-11-09 ｜ feat: v3.17.13 博客栏目五连升级（小程序 0.9.8）
 
 馆主拍板「12345 全部做」+ 栏目改名「一麦 · 博客」：
