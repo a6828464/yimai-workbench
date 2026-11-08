@@ -715,7 +715,13 @@
         </div>
       </template>
 
-      <ElAlert type="info" :closable="false" show-icon class="mb-3" title="官网文章自动同步，无需在这里维护内容">
+      <ElAlert
+        type="info"
+        :closable="false"
+        show-icon
+        class="mb-3"
+        title="官网文章自动同步，无需在这里维护内容"
+      >
         <div class="text-xs leading-5">
           文章来自官网（www.nbyimai.com）WordPress：在官网后台发文或勾「置顶」即自动出现在小程序到店指引页；
           置顶文章排前面，其余名额用最新文章补足。这里只控制「显示几篇」和开关。
@@ -728,7 +734,8 @@
             <ElRadio v-for="n in 10" :key="n" :value="n">{{ n }}</ElRadio>
           </ElRadioGroup>
           <div class="field-tip">
-            到店指引页「一麦 · 博客」栏目显示的文章数（置顶优先，最新补足）。改完保存约 5 分钟内生效。
+            到店指引页「一麦 · 博客」栏目显示的文章数（置顶优先，最新补足）。改完保存约 5
+            分钟内生效。
           </div>
         </ElFormItem>
       </ElForm>
