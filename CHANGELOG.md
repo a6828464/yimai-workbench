@@ -1,5 +1,68 @@
 # 更新日志
 
+## 2026-11-09 ｜ fix: v3.17.16 在线更新收尾段 chown 致命中断（属主整理改为尽力而为）
+
+### 现场
+
+v3.17.15 从后台点「在线更新」失败，日志尾部：
+
+```
+chown: changing ownership of '/www/wwwroot/oa.nbyimai.com/storage/app/private/sync-artifacts/2026/11/09/AUTO-…/…csv.gz': Operation not permitted
+（同一目录下十余个文件全部报错）
+```
+
+**代码其实已经换上了**：线上入口已变成包内的 `assets/index-BZWnzRC1.js`，首页 200、`/api/*` 401
+（Laravel 正常启动）。失败点落在 `rsync` / `migrate` **之后**的收尾段，所以是「更新完成了一半」：
+FPM 没重载、`update.sh` 自举没做、后台显示失败。
+
+### 根因
+
+`update.sh` 的属主整理原本是**无条件 + 不容错**两行：
+
+```bash
+chown -R www:www "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
+chmod -R 775 "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
+```
+
+后台按钮以 **www** 执行，而 `storage/app/private/sync-artifacts/` 里的文件属主是 **root**
+—— 来自 KeepYoga 同步的计划任务（宝塔「计划任务」默认以 root 跑 artisan）。非 root 进程
+`chown` 别人的文件必然 `EPERM`，`set -e` 直接把脚本停在收尾段。
+
+为什么以前没炸：Linux 上「chown 到与现状相同的 uid/gid」是放行的，所以只要 storage 全是
+www 的，这两行对 www 来说就是空跑；昨天 01:12 那次更新时，今天 05:30 的同步产物还不存在。
+**root 计划任务一旦写过 storage，任何一次后台更新都会炸在这里** —— 这是迟早必踩的坑。
+
+### 修法（`update.sh`）
+
+1. 属主整理全部 `2>/dev/null || true`：**失败只提示、不中止**。它是「尽力而为的收尾动作」，
+   不该有能力把一次已完成的升级判成失败。
+2. 全量 `chown -R` 只在 `id -u == 0` 时执行（非 root 跑没有 CAP_CHOWN，跑了也只是刷一屏错误）。
+   www 执行时不再尝试改属主，只 `chmod`（对自有文件有效）。
+3. 新增**关键目录可写性硬校验**：`storage/framework/{cache,sessions,views}`、`storage/logs`、
+   `bootstrap/cache` 若对当前用户不可写，明确打印「站点会 500」并给出该跑的 root 命令 ——
+   这才是真正致命的信号，必须让人看见（但仍不中止：中止修不好属主，只会留下半成品）。
+4. 注释写清 root 文件的来源（同步计划任务的执行用户），避免下次又被当成脚本 bug 排查。
+
+### 升级这一版要注意（自举死循环）
+
+现网 `update.sh` 还是**有缺陷的那一版**，它会卡在同一行，导致 `update.sh.new` 永远等不到
+`mv` —— 只发新包、直接再点更新会**在同一处再失败一次**。二选一先把新脚本送上台：
+
+- 服务器上以 root 跑一次：`chown -R www:www /www/wwwroot/oa.nbyimai.com/storage /www/wwwroot/oa.nbyimai.com/bootstrap/cache`
+  → 属主修好后，旧脚本的 chown 变成「改成相同属主」被内核放行 → 更新能跑完并完成自举；
+- 或者直接从发布包取 `update.sh` 覆盖站点根目录那份（宝塔文件管理器/`wget` 解包均可），
+  新版脚本容错，不依赖属主先修好。
+
+**根治（长期）**：把 KeepYoga 同步的计划任务改成 www 执行，或在宝塔加一条 root 计划任务
+每日 `chown -R www:www <站点>/storage` —— 否则 storage 会持续产生 root 文件。
+
+### 验证
+
+- `bash -n update.sh` 通过；本地模拟 www 场景（`chown` 全部 EPERM）脚本不再中途退出，
+  收尾段继续执行到「更新完成」，并正确打印不可写目录（若有）。
+- 线上复核：`https://oa.nbyimai.com/` 入口 `assets/index-BZWnzRC1.js`、首页 200、`/api/customers` 401
+  （说明 v3.17.15 的代码与后端已生效，本次补丁只改脚本与日志）。
+
 ## 2026-11-09 ｜ feat: v3.17.15 人员管理排序（列头 + 排序条 + 拖动定序）+ 登录后跳 404 修复
 
 ### 问题

@@ -443,15 +443,44 @@ fi
 
 # 统一文件属主：无论本次更新由后台按钮(www)还是计划任务(root)执行，
 # root 执行时只整理发布代码目录，跳过未变化的 vendor，降低系统盘元数据扫描峰值。
-# 注意：`.user.ini` 被宝塔以 chattr +i 锁定（防篡改），root 也无法改属主，
-# 属主整理需对其容错（storage/bootstrap-cache 仍严格归主）。
+#
+# ⚠️ 2026-11-09 实际翻车（v3.17.15 上线时）：下面两行原本**无条件、且不容错**，
+# 后台按钮以 www 执行时撞上 storage 里 root 属主的文件 →
+# `chown: ... Operation not permitted` → `set -e` 把更新中止在**收尾段**：
+# 代码已替换、迁移已跑，但 FPM 没重载、update.sh 自举没做，后台显示「更新失败」。
+#
+# 为什么 storage 里会有 root 文件：`storage/app/private/sync-artifacts/` 由 KeepYoga
+# 同步计划任务写入，宝塔「计划任务」默认以 root 跑 artisan —— 两条链路（www 跑更新、
+# root 跑同步）谁先写谁定属主，所以**不能假设 storage 一定是 www 的**。
+#
+# 三条口径：
+#  1. 属主整理是「尽力而为的收尾动作」，任何一条 chown/chmod 失败都只提示、不中止；
+#  2. 只有 root 才做全量归主（非 root 对别人的文件本来就没有 CAP_CHOWN，跑也是全错）；
+#  3. 真正会立刻让站点 500 的是「关键目录对当前执行用户不可写」—— 单独强校验并明确
+#     报出该跑哪条命令（仍不中止：这时中止也修不好属主，只会把半成品留在原地）。
+#
+# 另注：`.user.ini` 被宝塔以 chattr +i 锁定（防篡改），root 也改不了属主 —— 这也是
+# 上面每条 chown 都得容错的原因之一。
 if [ "$(id -u)" -eq 0 ]; then
   for path in app bootstrap config database public resources routes tests artisan composer.json composer.lock phpunit.xml; do
     [ -e "$APP_ROOT/$path" ] && chown -R www:www "$APP_ROOT/$path" 2>/dev/null || true
   done
+  chown -R www:www "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache" 2>/dev/null || true
 fi
-chown -R www:www "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
-chmod -R 775 "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache"
+chmod -R 775 "$APP_ROOT/storage" "$APP_ROOT/bootstrap/cache" 2>/dev/null || true
+
+# 可写性硬校验（storage/logs 写不进去，Laravel 第一个请求就 500）
+UNWRITABLE_DIRS=""
+for dir in storage/framework/cache storage/framework/sessions storage/framework/views storage/logs bootstrap/cache; do
+  mkdir -p "$APP_ROOT/$dir" 2>/dev/null || true
+  [ -w "$APP_ROOT/$dir" ] && continue
+  echo "  警告：$dir 对当前执行用户（$(id -un)）不可写 —— 站点会 500。"
+  UNWRITABLE_DIRS="${UNWRITABLE_DIRS}${UNWRITABLE_DIRS:+ }$dir"
+done
+if [ -n "$UNWRITABLE_DIRS" ]; then
+  echo "        以 root 执行一次即可修复：chown -R www:www $APP_ROOT/storage $APP_ROOT/bootstrap/cache"
+  echo "        修好目录权限后无需重跑更新（代码与迁移已生效）。不可写目录：$UNWRITABLE_DIRS"
+fi
 
 # 平滑重载 PHP-FPM：长驻进程可能持有旧 OPcache（含旧 autoload），导致新增类短暂 500。
 # 按常见命名逐个尝试，找不到服务则跳过（宝塔各版本命名不同）。
