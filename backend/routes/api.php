@@ -176,6 +176,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ---------- 人员管理（仅超管） ----------
     Route::get('/accounts', [AccountController::class, 'index']);
+    // 手动顺序（拖动排序）：写全量顺序。必须注册在 /accounts/{key} 之前，
+    // 否则 PUT /accounts/order 会先被当成「改 order 这个账号」。
+    Route::put('/accounts/order', [AccountController::class, 'updateOrder']);
     // 身份归一：查未映射姓名 / 认领名字 / 全量回填 / 合并账号。
     // 全部放在 /accounts/{key} 之前，避免 staff-mapping 被当成 key 参数吃掉。
     Route::get('/accounts/staff-mapping', [AccountController::class, 'staffMapping']);

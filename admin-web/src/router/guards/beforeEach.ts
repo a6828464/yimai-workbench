@@ -212,7 +212,11 @@ function handleLoginStatus(
   }
 
   // 未登录且访问需要权限的页面，跳转到登录页并携带 redirect 参数
-  userStore.logOut()
+  //
+  // `logOut({ redirect: false })`：守卫**自己**负责这次跳转（下一行 next），
+  // 若 logOut 内部再 push 一次，两次导航互相覆盖：先 push 的那次把「登录页 URL」
+  // 当成了 redirect 写进 query，层层套娃之后登录成功反而被送回登录页/404。
+  userStore.logOut({ redirect: false })
   next({
     name: 'Login',
     query: { redirect: to.fullPath }

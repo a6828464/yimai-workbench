@@ -260,6 +260,18 @@ export async function updateAccount(
 }
 
 /**
+ * 保存人员列表的**手动顺序**（仅超管）
+ *
+ * 传的是完整顺序而不是「谁挪到第几位」：拖动一次可能跨十几行，增量需要服务端
+ * 复现前端排序算法才对得上；传全量等于「前端看到什么就存什么」，不会静默错位。
+ * 后端会把这批账号重写成 10/20/30…，入参里没出现的账号按原顺序接在末尾。
+ */
+export async function reorderAccounts(keys: string[]): Promise<{ updated: number }> {
+  if (!USE_BACKEND) throw new Error('演示模式不支持调整顺序')
+  return apiPut<{ updated: number }>('/accounts/order', { order: keys })
+}
+
+/**
  * 人员归属映射总览（仅超管）
  *
  * 归属列存的是姓名，不是外键。未映射名单非空就说明有人看不到属于自己的数据。

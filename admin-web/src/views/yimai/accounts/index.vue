@@ -11,25 +11,72 @@
         </div>
       </template>
 
+      <!--
+        排序条
+        ------
+        与列头箭头读写同一份 sortState（理由见 script 里「排序」段的注释）。放在表格
+        上方而不是卡片标题行：手持端也要用，而标题行在 390px 上已经被两个按钮占满；
+        `.filter-bar` 的档位与换行规则由全站统一样式给，这里不写任何像素宽度。
+      -->
+      <div class="filter-bar">
+        <span class="text-sm text-gray-400">排序</span>
+        <ElSelect v-model="sortState.prop" class="f-xl" @change="onSortPropChange">
+          <ElOption v-for="o in SORT_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+        </ElSelect>
+        <!-- 升降序按钮在「默认」下不渲染：默认模式没有方向，留一个禁用的「降序」会让人
+             读成「默认 降序」，以为排过序 -->
+        <ElButton v-if="sortState.prop !== 'default'" @click="toggleSortOrder">
+          {{ sortState.order === 'ascending' ? '升序' : '降序' }}
+        </ElButton>
+        <!-- 自动排序只能表达「按哪个字段」，表达不了「店长在首位、老师按资历」这类业务顺序，
+             那类顺序靠拖动定，存进 users.sort_order 后就是列表的「默认」 -->
+        <ElButton @click="openOrder">调整顺序</ElButton>
+        <div class="filter-bar__spacer" />
+        <span class="text-xs text-gray-400">
+          共 {{ accounts.length }} 个账号<template v-if="disabledCount > 0">
+            （{{ disabledCount }} 个停用）</template
+          >
+        </span>
+      </div>
+
       <!-- 手持设备：改用卡片列表。宽表格的「操作」列 fixed=right 宽 300px，
            390px 视口里左右固定列就吃满了可见宽度，中间的数据列会被挤成零宽 -->
       <ElTable
         v-if="!isHandheld"
         ref="tableRef"
-        :data="accounts"
+        :data="sortedAccounts"
         border
         stripe
         v-loading="loading"
         :max-height="tableMaxHeight"
+        @sort-change="onSortChange"
       >
-        <ElTableColumn prop="userName" label="姓名" width="120" />
-        <ElTableColumn prop="key" label="登录名" width="130">
+        <ElTableColumn
+          prop="userName"
+          label="姓名"
+          width="120"
+          sortable="custom"
+          :sort-orders="SORT_ORDERS"
+        />
+        <ElTableColumn
+          prop="key"
+          label="登录名"
+          width="130"
+          sortable="custom"
+          :sort-orders="SORT_ORDERS"
+        >
           <template #default="{ row }">
             <span>{{ row.key }}</span>
             <ElTag v-if="row.self" size="small" effect="plain" class="ml-1">本人</ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="角色" width="190">
+        <ElTableColumn
+          prop="roles"
+          label="角色"
+          width="190"
+          sortable="custom"
+          :sort-orders="SORT_ORDERS"
+        >
           <template #default="{ row }">
             <ElTag
               v-for="r in row.roles"
@@ -43,7 +90,13 @@
             </ElTag>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="门店范围" min-width="160">
+        <ElTableColumn
+          prop="venues"
+          label="门店范围"
+          min-width="160"
+          sortable="custom"
+          :sort-orders="SORT_ORDERS"
+        >
           <template #default="{ row }">
             <ElTag v-for="v in row.venues" :key="v" size="small" effect="plain" class="mr-1">{{
               v
@@ -51,7 +104,13 @@
             <span v-if="!row.venues?.length" class="text-xs text-gray-400">双店</span>
           </template>
         </ElTableColumn>
-        <ElTableColumn label="状态" width="90">
+        <ElTableColumn
+          prop="status"
+          label="状态"
+          width="90"
+          sortable="custom"
+          :sort-orders="SORT_ORDERS"
+        >
           <template #default="{ row }">
             <ElTag size="small" :type="row.status === '启用' ? 'success' : 'info'">{{
               row.status
@@ -422,6 +481,54 @@
         <ElButton type="primary" :loading="saving" @click="doEdit">保存</ElButton>
       </template>
     </ElDialog>
+
+    <!--
+      调整顺序（拖动排序）
+
+      为什么是弹窗里的独立名单，而不是直接拖表格行：
+        · 表格带 fixed=right 的操作列，横向滚动时固定列与拖拽预览会互相错位；
+        · 手持端根本没有表格（卡片列表），两套渲染各写一份拖拽等于两份维护;
+        · 拖动是「改全局顺序」的高影响动作，放进一个明确边界的面板里，
+          配「取消」比在长表格里误拖安全。
+      拖动库是全站已在用的 vue-draggable-plus（表头列自定义顺序也用它），
+      handle 限定在把手，避免点按钮/选文字时被误判成拖动。
+    -->
+    <ElDialog v-model="orderDlg.visible" title="调整人员顺序" width="520px" destroy-on-close>
+      <div class="text-xs text-gray-400 mb-3">
+        按住左侧把手上下拖动。保存后这就是列表的「默认」顺序（新开通的账号一律排在末尾）。
+      </div>
+      <ElScrollbar max-height="52vh">
+        <VueDraggable v-model="orderDlg.list" :animation="150" handle=".order-row__handle">
+          <div v-for="(row, i) in orderDlg.list" :key="row.key" class="order-row">
+            <span class="order-row__handle" title="拖动">
+              <ArtSvgIcon icon="ri:drag-move-2-fill" />
+            </span>
+            <span class="order-row__idx">{{ i + 1 }}</span>
+            <span class="order-row__name">{{ row.userName }}</span>
+            <span class="order-row__key">{{ row.key }}</span>
+            <span class="order-row__tags">
+              <ElTag
+                v-for="r in row.roles"
+                :key="r"
+                size="small"
+                :type="roleType(r)"
+                effect="plain"
+                class="mr-1"
+              >
+                {{ ROLE_OPTIONS[r] ?? r }}
+              </ElTag>
+              <ElTag size="small" :type="row.status === '启用' ? 'success' : 'info'" effect="plain">
+                {{ row.status }}
+              </ElTag>
+            </span>
+          </div>
+        </VueDraggable>
+      </ElScrollbar>
+      <template #footer>
+        <ElButton @click="orderDlg.visible = false">取消</ElButton>
+        <ElButton type="primary" :loading="orderDlg.saving" @click="saveOrder">保存顺序</ElButton>
+      </template>
+    </ElDialog>
   </div>
 </template>
 
@@ -432,11 +539,14 @@
     getStaffMapping,
     listAccounts,
     mergeStaffAccount,
+    reorderAccounts,
     repairStaffMapping,
     saveStaffAliases,
     updateAccount
   } from '@/api/auth'
   import type { AccountRow, StaffMapping } from '@/api/auth'
+  import type { TableInstance } from 'element-plus'
+  import { VueDraggable } from 'vue-draggable-plus'
   import { useDevice } from '@/hooks/core/useDevice'
   import { useTableHeight } from '@/hooks/core/useTableHeight'
   import type {
@@ -465,6 +575,209 @@
   const loading = ref(false)
   const saving = ref(false)
   const accounts = ref<AccountRow[]>([])
+
+  // ---------- 排序 ----------
+  //
+  // ## 为什么是前端全量排序，而不是像「留资管理」那样下推给接口
+  //
+  // `/accounts` 一次返回**全部**账号（`User::orderBy('id')`，没有分页 —— 一个馆也就
+  // 十几到几十个号）。全量在手，排序就只是一个 computed：改顺序不产生请求，也没有
+  // 「第 2 页按什么排」的问题。留资管理必须下推是因为它服务端分页（一页 20~200 条），
+  // 前端只能在当前页里重排 —— 这里是相反的前提，别照抄那边的做法。
+  //
+  // ## 为什么两个入口共用一份 sortState
+  //
+  // 表格宽 1170px（7 列），笔记本 + 侧边栏时「状态」列头会横向滚出视野，光靠列头箭头
+  // 看不出「现在按什么排的」；而手持端是卡片列表，**根本没有列头**，排序条是唯一入口。
+  // 所以：列头（桌面，符合表格直觉）+ 排序条（永远可见、跨端一致）读写同一个状态。
+  //
+  // 列头用 `sortable="custom"`：数据由下面的 `sortedAccounts` 排好，让 EP 再排一次
+  // 会与卡片列表的顺序打架（同一个 computed 喂两处渲染）。
+  //
+  // ## 默认值为什么是「手动顺序」而不是姓名
+  //
+  // 默认顺序必须与后端 `/accounts` 的返回顺序一致（`sort_order` 优先、其次 id）。
+  // 若前端默认改成姓名序，表头没有任何箭头、数据却不是后端顺序，排查"新开通的号
+  // 去哪了"时会对不上。`sort_order` 没被拖动过时全员为 0，后端顺序即开通先后 ——
+  // 所以「默认」在拖过之后是手动顺序，没拖过就是开通先后，两者由后端一处决定。
+  const SORT_OPTIONS = [
+    { value: 'default', label: '默认（手动顺序）' },
+    { value: 'userName', label: '姓名' },
+    { value: 'key', label: '登录名' },
+    { value: 'roles', label: '角色' },
+    { value: 'venues', label: '门店' },
+    { value: 'status', label: '状态' }
+  ] as const
+
+  type SortProp = (typeof SORT_OPTIONS)[number]['value']
+  type SortOrder = 'ascending' | 'descending'
+
+  /**
+   * 列头的三档排序：升 / 降 / **清空**。
+   *
+   * 这里保留「清空」这一档（与留资管理刻意去掉的做法相反）：留资管理清空后会变成
+   * 「箭头没了但数据仍按日期倒序」，表头与数据自相矛盾；本页清空有确切含义 —— 回到
+   * 后端原始顺序（排序条的「默认」）。EP 的三档默认值即此，显式写出来是为了说明意图。
+   */
+  const SORT_ORDERS: (SortOrder | null)[] = ['ascending', 'descending', null]
+
+  const sortState = reactive<{ prop: SortProp; order: SortOrder }>({
+    prop: 'default',
+    order: 'ascending'
+  })
+
+  /**
+   * 角色排序位（数字越小越靠前）
+   *
+   * 与后端 `AccountController::ASSIGNABLE` 的「顺序即权限从大到小」保持一致：
+   * 超管 > 店长 > 授课老师 > 服务老师 > 新媒体。多角色账号取**最高**那个身份 ——
+   * 人读的是「他主要是谁」，不是「他还兼了什么」。
+   */
+  const ROLE_RANK: Record<string, number> = {
+    R_SUPER: 0,
+    R_MANAGER: 1,
+    R_TEACHER: 2,
+    R_SERVICE: 3,
+    R_MEDIA: 4
+  }
+
+  function roleRank(row: AccountRow): number {
+    const roles = row.roles?.length ? row.roles : [row.roleCode]
+    const ranks = roles.filter(Boolean).map((r) => ROLE_RANK[r] ?? 90)
+    return ranks.length ? Math.min(...ranks) : 99
+  }
+
+  /**
+   * 门店排序位：绿地店 → 东部店 → 双店。
+   *
+   * `venues` 为空数组在后端表示「双店（不限店）」，通常是超管/新媒体。升序时把它排在
+   * 最后：先看得到「属于某个店的人」，管理层集中在末尾，比混在中间更好数。
+   */
+  const VENUE_RANK: Record<string, number> = { 绿地店: 0, 东部店: 1 }
+
+  function venueRank(row: AccountRow): number {
+    if (!row.venues?.length) return 2
+    return Math.min(...row.venues.map((v) => VENUE_RANK[v] ?? 9))
+  }
+
+  /** 姓名序：用浏览器 Intl 的中文排序（拼音），与会员/留资页的 `localeCompare(x,'zh')` 同口径 */
+  function byName(a: AccountRow, b: AccountRow): number {
+    return a.userName.localeCompare(b.userName, 'zh')
+  }
+
+  function compareBy(a: AccountRow, b: AccountRow, prop: SortProp): number {
+    switch (prop) {
+      case 'userName':
+        return byName(a, b)
+      case 'key':
+        return a.key.localeCompare(b.key)
+      case 'status':
+        // 升序 = 启用在前：停用（离职/交接）的账号沉到底部，别占着第一屏
+        return (a.status === '启用' ? 0 : 1) - (b.status === '启用' ? 0 : 1)
+      case 'roles':
+        return roleRank(a) - roleRank(b)
+      case 'venues':
+        return venueRank(a) - venueRank(b)
+      default:
+        return 0
+    }
+  }
+
+  /**
+   * 排序后的账号列表 —— 表格与手持卡片**共用这一份**，两处不可能出现不同顺序。
+   *
+   * 两级比较：主键按 `sortState.order` 定方向，主键相同的行**始终**按姓名升序收尾。
+   * 若第二级也跟着降序，同角色/同状态的人会倒着排，扫视时人名来回跳。
+   */
+  const sortedAccounts = computed<AccountRow[]>(() => {
+    const { prop, order } = sortState
+    if (prop === 'default') return accounts.value // 后端原始顺序，原样返回（不拷贝）
+    const dir = order === 'ascending' ? 1 : -1
+    // 拷贝再排：就地 sort 会把 ref 里缓存的数组改掉，切回「默认」就回不到开通先后了
+    return [...accounts.value].sort((a, b) => {
+      const d = compareBy(a, b, prop)
+      if (d !== 0) return d * dir
+      // 主键相同：姓名升序兜底；按姓名排时用登录名兜底（同名不同号也能稳定）
+      return prop === 'userName' ? a.key.localeCompare(b.key) : byName(a, b)
+    })
+  })
+
+  /** 统计行：排序后顺手给出量级，省得数行 */
+  const disabledCount = computed(() => accounts.value.filter((a) => a.status !== '启用').length)
+
+  /**
+   * 排序条切换字段
+   *
+   * 必须把状态回灌给 ElTable：列头的箭头由 EP 内部维护，只改 `sortedAccounts` 不改
+   * 表格的话，用户会看到「数据按姓名排好了，表头箭头还停在状态上」。`sort()` 会回抛
+   * sort-change（init 为空），落到 onSortChange 时值与这里刚写的一样，不会来回弹。
+   */
+  function onSortPropChange() {
+    const table = tableRef.value as TableInstance | undefined
+    if (sortState.prop === 'default') {
+      // clearSort 是 silent 的（EP 内部 silent: true），不会回抛事件
+      table?.clearSort()
+      return
+    }
+    table?.sort(sortState.prop, sortState.order)
+  }
+
+  /** 升降序翻转（排序条按钮；「默认」态该按钮不渲染，所以这里收不到 default） */
+  function toggleSortOrder() {
+    if (sortState.prop === 'default') return
+    sortState.order = sortState.order === 'ascending' ? 'descending' : 'ascending'
+    const table = tableRef.value as TableInstance | undefined
+    table?.sort(sortState.prop, sortState.order)
+  }
+
+  /** 列头排序 → 排序条跟随（含第三下清空：清空即回到「默认（开通先后）」） */
+  function onSortChange(payload: { prop: string | null; order: string | null }) {
+    if (!payload.order) {
+      sortState.prop = 'default'
+      return
+    }
+    sortState.prop = (payload.prop ?? 'default') as SortProp
+    sortState.order = payload.order === 'ascending' ? 'ascending' : 'descending'
+  }
+
+  // ---------- 手动顺序（拖动排序） ----------
+  //
+  // 自动排序（按姓名/角色/门店…）表达不了「店长在首位、老师按资历排、离职的放末尾」
+  // 这类业务顺序，那类顺序只能由人拖着定。存到后端 users.sort_order 之后，它就是
+  // 列表的「默认」顺序 —— 也就是所有人打开页面看到的第一个样子。
+  const orderDlg = reactive<{ visible: boolean; saving: boolean; list: AccountRow[] }>({
+    visible: false,
+    saving: false,
+    list: []
+  })
+
+  function openOrder() {
+    // 起点用**当前屏幕上看到的顺序**，而不是 accounts 的原始顺序：用户是照着屏幕拖的，
+    // 若给他一个和屏幕不同的起点，第一下拖动就会「跳位」，看着像拖错了行。
+    // （当前是「按角色」排的话，起点就是角色序 —— 保存后它才变成默认顺序。）
+    orderDlg.list = [...sortedAccounts.value]
+    orderDlg.visible = true
+  }
+
+  async function saveOrder() {
+    orderDlg.saving = true
+    try {
+      const r = await reorderAccounts(orderDlg.list.map((x) => x.key))
+      // 保存后立刻切回「默认」：手动顺序就是默认顺序。若停在「按姓名」，
+      // 表格看起来没变化，用户会以为没保存成功。
+      sortState.prop = 'default'
+      sortState.order = 'ascending'
+      const table = tableRef.value as TableInstance | undefined
+      table?.clearSort()
+      orderDlg.visible = false
+      await load()
+      ElMessage.success(`顺序已保存（${r.updated} 个账号）`)
+    } catch (e) {
+      ElMessage.error(e instanceof Error ? e.message : '保存顺序失败')
+    } finally {
+      orderDlg.saving = false
+    }
+  }
 
   // ---------- 人员身份归一 ----------
   const mapDlg = reactive({
@@ -800,7 +1113,7 @@
   // 对比表格少放的：没有独立成行展示的门店/邮箱 —— 门店改用标签、邮箱并入副标题，
   // 信息都还在卡片上，只是换了更省纵向空间的位置。
   const cardRows = computed(() =>
-    accounts.value.map((row) => {
+    sortedAccounts.value.map((row) => {
       const tags: MobileCardTag[] = []
       for (const r of row.roles ?? []) {
         tags.push({ text: ROLE_OPTIONS[r] ?? r, type: roleType(r), effect: 'dark' })
@@ -853,3 +1166,73 @@
     })
   )
 </script>
+
+<style scoped lang="scss">
+  /*
+    调整顺序弹窗里的行
+    ------------------
+    这一行只是「给人拖着看的」：身份、状态都保留（拖的时候要认得出是谁），
+    但不再画成表格 —— 弹窗里放不下 7 列，横向滚动时拖动预览还会错位。
+    把手单独占一格且 cursor:grab，明确「只有抓这里才会拖」，避免选中文字也被判成拖动。
+  */
+  .order-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--art-border-color, #e5e7eb);
+    border-radius: 6px;
+    background: var(--art-main-bg-color, #fff);
+    margin-bottom: 6px;
+
+    &__handle {
+      display: flex;
+      align-items: center;
+      flex: none;
+      color: var(--art-text-gray-500, #9ca3af);
+      cursor: grab;
+
+      &:active {
+        cursor: grabbing;
+      }
+    }
+
+    // 序号跟着拖动实时变：这是「保存后会变成第几位」的唯一提示
+    &__idx {
+      flex: none;
+      width: 20px;
+      text-align: right;
+      color: var(--art-text-gray-400, #b0b4bb);
+      font-variant-numeric: tabular-nums;
+    }
+
+    &__name {
+      flex: none;
+      min-width: 64px;
+      font-weight: 500;
+    }
+
+    &__key {
+      flex: none;
+      min-width: 80px;
+      color: var(--art-text-gray-400, #9ca3af);
+      font-size: 12px;
+    }
+
+    &__tags {
+      flex: 1 1 auto;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 2px 0;
+    }
+
+    @include handheld-only {
+      gap: 6px;
+
+      &__key {
+        display: none;
+      }
+    }
+  }
+</style>

@@ -40,6 +40,7 @@ import { useWorktabStore } from './worktab'
 import { AppRouteRecord } from '@/types/router'
 import { setPageTitle } from '@/utils/router'
 import { resetRouterState } from '@/router/guards/beforeEach'
+import { RoutesAlias } from '@/router/routesAlias'
 import { useMenuStore } from './menu'
 import { StorageConfig } from '@/utils/storage/storage-config'
 import { StorageKeyManager } from '@/utils/storage/storage-key-manager'
@@ -171,8 +172,17 @@ export const useUserStore = defineStore(
     /**
      * 退出登录
      * 清空所有用户相关状态并跳转到登录页
+     *
+     * `redirect` 默认 true：界面上点「退出登录」要跳回登录页，并把当前页记成 redirect，
+     * 重新登录后能回到原处。
+     *
+     * **路由守卫里必须传 false**：守卫紧接着自己会 `next({ name: 'Login', ... })`，
+     * 若这里也 push 一次，两次导航互相覆盖，redirect 会一层层套娃 ——
+     * 旧实现正是这么把 `/auth/login?redirect=...` 当成 redirect 存进去的，
+     * 结果「登录成功后又被送回登录页 / 跳到一个不存在的页面」。
      */
-    const logOut = () => {
+    const logOut = (options: { redirect?: boolean } = {}) => {
+      const { redirect: shouldRedirect = true } = options
       // 先让服务端撤销当前 token，再清本地会话。
       //
       // 此前全仓 **0 处**调用 `POST /auth/logout`（后端端点存在且路由已注册），
@@ -218,9 +228,20 @@ export const useUserStore = defineStore(
       useMenuStore().setHomePath('')
       // 重置路由状态
       resetRouterState(0)
-      // 跳转到登录页，携带当前路由作为 redirect 参数
+
+      if (!shouldRedirect) return
+
+      // 跳转到登录页，携带当前路由作为 redirect 参数。
+      //
+      // 两条硬口径（缺一条就会复现「登录成功后跳回登录页/404」）：
+      //  1. 比较对象必须用 `RoutesAlias.Login`（真实路径 /auth/login）。
+      //     旧代码写的是字面量 '/login' —— 与真实路径不相等，于是「已经在登录页」
+      //     这件事判不出来，登录页的 URL 又被当成 redirect 记了一次，越套越长；
+      //  2. 已经在登录页时**不要**再带 redirect：登录成功后 `router.push(redirect)`
+      //     会把用户送回登录页（query 里的 ? 还会把路径切碎，落到 404）。
       const currentRoute = router.currentRoute.value
-      const redirect = currentRoute.path !== '/login' ? currentRoute.fullPath : undefined
+      const onLoginPage = currentRoute.path === RoutesAlias.Login
+      const redirect = onLoginPage ? undefined : currentRoute.fullPath
       router.push({
         name: 'Login',
         query: redirect ? { redirect } : undefined

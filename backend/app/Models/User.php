@@ -48,6 +48,10 @@ class User extends Authenticatable
         'phone',
         'avatar',
         'profile',
+        // 人员列表的手动顺序（拖动排序）。可批量赋值是必要的：开通账号时就要带上
+        // 「接在末尾」的编号；不放 fillable 的话 User::create 会静默丢掉这个字段，
+        // 新账号会以默认 0 跳到列表最前面（与「新人在末尾」的预期相反）。
+        'sort_order',
         // 微信绑定列：只允许通过绑定接口写入，不放进 $fillable 是有意的 ——
         // 放进 fillable 后任何 User::create($request->all()) 都能自封 openid，
         // 等于伪造微信身份登录。绑定走 forceFill + 唯一索引兜底。

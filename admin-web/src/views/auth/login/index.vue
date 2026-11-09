@@ -63,6 +63,7 @@
   import AppConfig from '@/config'
   import { useUserStore } from '@/store/modules/user'
   import { HttpError } from '@/utils/http/error'
+  import { RoutesAlias } from '@/router/routesAlias'
   import { fetchGetUserInfo, fetchLogin } from '@/api/auth'
   import { ElMessage, ElNotification, type FormInstance, type FormRules } from 'element-plus'
 
@@ -100,6 +101,29 @@
     return '/yimai/today'
   }
 
+  /**
+   * 只接受「站内绝对路径」作为登录后的跳转目标
+   *
+   * `?redirect=` 是 URL 里的一串明文，可能来自任何地方（书签、旧链接、别人贴的地址）。
+   * 直接 `router.push(redirect)` 时，下面这几类值都会把用户送到一个不存在的页面，
+   * 看起来就是「登录成功了却跳到 404 / 又回到登录页」：
+   *
+   *  - 登录页自己：`/auth/login?redirect=...`（历史遗留的套娃 redirect，旧版 logOut
+   *    把登录页 URL 当成了 redirect 存下来，一层层叠加）；
+   *  - 完整地址 `https://...`、协议相对地址 `//evil.com`：不是站内路由，router 匹配不到；
+   *  - 重复 query 参数被解析成数组（`?redirect=a&redirect=b`）：取第一个即可。
+   *
+   * 白名单式判断（必须 `/` 开头且不是 `//`、不是登录页）比黑名单可靠：
+   * 凡是存疑的取值一律丢弃，回落到按角色算出来的落地页，用户至少能进工作台。
+   */
+  function safeRedirectTarget(raw: unknown): string {
+    const value = Array.isArray(raw) ? raw[0] : raw
+    if (typeof value !== 'string') return ''
+    if (!value.startsWith('/') || value.startsWith('//')) return ''
+    if (value === RoutesAlias.Login || value.startsWith(`${RoutesAlias.Login}?`)) return ''
+    return value
+  }
+
   const handleSubmit = async () => {
     if (!formRef.value) return
 
@@ -125,7 +149,7 @@
 
       showLoginSuccessNotice(info.userName)
 
-      const redirect = route.query.redirect as string
+      const redirect = safeRedirectTarget(route.query.redirect)
       router.push(
         redirect || resolveLanding(info.roles ?? [], info.venues ?? [], info.venue ?? null)
       )

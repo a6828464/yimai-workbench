@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\StaffAlias;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 final class AccountController extends Controller
 {
@@ -28,13 +29,21 @@ final class AccountController extends Controller
         return implode(' + ', array_map(fn ($x) => $map[$x] ?? $x, $ordered));
     }
 
-    /** GET /accounts */
+    /**
+     * GET /accounts
+     *
+     * 排序口径：`sort_order` 优先，其次 `id`（开通先后）。
+     *
+     * `sort_order` 默认 0，所以**没拖过顺序**时全部账号同分，复合排序退化成原来的
+     * `orderBy('id')` —— 升级前后列表顺序一个字节都不变，不需要回填迁移。
+     * 一旦用过「调整顺序」，这批账号会被重写成 10/20/30…，新账号取 max+10 接末尾。
+     */
     public function index(Request $r)
     {
         abort_unless(userHasRole($r->user(), 'R_SUPER'), 403);
         $selfName = $r->user()->name;
 
-        return ok(User::orderBy('id')->get()->map(function ($u) use ($selfName) {
+        return ok(User::orderBy('sort_order')->orderBy('id')->get()->map(function ($u) use ($selfName) {
             $roles = userRoles($u);
 
             return [
@@ -52,6 +61,71 @@ final class AccountController extends Controller
                 'aliases' => StaffAlias::where('user_id', $u->id)->orderBy('id')->pluck('alias')->all(),
             ];
         }));
+    }
+
+    /**
+     * PUT /accounts/order —— 保存人员列表的手动顺序（前端拖动排序）
+     *
+     * 入参是**完整顺序**（登录名数组），而不是「谁挪到第几位」的增量。
+     * 拖动一次可能跨十几行，增量需要服务端复现前端的排序算法才能得到同一结果；
+     * 一旦两边在「同分 / 缺项 / 过滤后只拖了子集」上有差，顺序就会静默错位。
+     * 传全量 = 前端看到什么就存什么。
+     *
+     * 归一化口径（这三条决定了「保存顺序」会不会误伤没拖的行）：
+     *
+     * 1. 列表内的账号编号 10/20/30…（各留 9 个空位，将来插队不用重排全表）；
+     * 2. **列表里没有的账号**（别人刚开通、或前端只拖了某个子集）不丢弃、更不置 0，
+     *    而是按原有的 (sort_order, id) 顺序接在这批后面 —— 置 0 会让它们瞬间跳到最前面，
+     *    那是「保存顺序」不该产生的副作用；
+     * 3. 认不出的登录名直接忽略（账号可能刚被删掉）。
+     *
+     * 整个过程在一个事务里：部分成功会让列表停在「拖了一半」的中间态。
+     */
+    public function updateOrder(Request $r)
+    {
+        abort_unless(userHasRole($r->user(), 'R_SUPER'), 403);
+        $d = $r->validate([
+            'order' => 'required|array|min:1',
+            'order.*' => 'string',
+        ]);
+
+        $existing = User::orderBy('sort_order')->orderBy('id')->get(['id', 'username']);
+        $known = $existing->pluck('username')->all();
+
+        $ordered = [];
+        foreach ($d['order'] as $key) {
+            if (in_array($key, $known, true) && ! in_array($key, $ordered, true)) {
+                $ordered[] = $key;
+            }
+        }
+        abort_if($ordered === [], 422, '顺序里没有任何有效账号');
+
+        foreach ($known as $key) {
+            if (! in_array($key, $ordered, true)) {
+                $ordered[] = $key;
+            }
+        }
+
+        DB::transaction(function () use ($ordered) {
+            foreach ($ordered as $i => $key) {
+                // 直接走查询构造器：Eloquent 的 save/update 会自动带上 updated_at，
+                // 一次拖动把几十个账号的「修改时间」全刷新，等于把真正的编辑痕迹淹掉。
+                DB::table('users')->where('username', $key)->update(['sort_order' => ($i + 1) * 10]);
+            }
+        });
+
+        audit(
+            $r,
+            '排序',
+            '人员管理',
+            '',
+            '全部账号',
+            '双店',
+            '调整人员列表顺序：'.implode(' > ', array_slice($ordered, 0, 12))
+                .(count($ordered) > 12 ? ' …（共 '.count($ordered).' 个）' : '')
+        );
+
+        return ok(['updated' => count($ordered)]);
     }
 
     /**
@@ -426,6 +500,9 @@ final class AccountController extends Controller
             'venue' => $venue,
             'venues' => $venues,
             'status' => '启用',
+            // 新账号接在末尾（max+10）：手动顺序属于「业务顺序」，新人不该插到店长前面。
+            // 没人拖过顺序时全员都是 0，这里给出 10 也仍然排在它们之后 —— 与 id 序一致。
+            'sort_order' => (int) User::max('sort_order') + 10,
         ]);
         // 新账号建好就回填一次：如果业务数据里早就有同名（随心瑜/留资里写的就是这个真名），
         // 这一步会让那些行立刻带上 id —— 否则管理员要先开「身份归一」再点修复才生效。
