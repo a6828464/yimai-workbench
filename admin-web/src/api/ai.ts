@@ -829,6 +829,26 @@ export const MOMENTS_IMAGE_RULE =
 export const MOMENTS_IMAGE_NO_NOTE = '用户上传图片，未填说明'
 
 /**
+ * 「先看图再写」铁律（只在本次真的带图时进入提示词，无图时整段不出现）。
+ *
+ * ## 为什么要求模型**先输出图片理解、再写文案**
+ * 「理解图片」这件事对馆主是不可见的：模型只回 3 条文案时，馆主无法判断文案是真的用了图，
+ * 还是模型根本没看图、凭主题套了个通用模板 —— 后者在界面上与前者**完全同形**（典型假绿）。
+ * 让模型先把「它在图里看到了什么」说出来，再写文案，等于把这段推理摊在明面上：
+ * ① 馆主能一眼核对（图里明明是普拉提核心床，模型却说「空中瑜伽吊床」→ 立刻发现没读对）；
+ * ② 提示词层面把「看图」变成一个必须落地的中间产物，正文被迫引用具体元素；
+ * ③ 生成失败/降级时也有可对照的证据。
+ *
+ * 措辞约束：本段**不得出现「图1：」这类逐图编号**（逐图说明在 user 层单独成段，
+ * 见 `momentsImageNoteParagraphs`）；无图时整段不加入提示词，故无图提示词逐字不变。
+ */
+export const MOMENTS_IMAGE_READ_FIRST_RULE =
+  '看图铁律（本次带图，必须先看图再写）：先在 JSON 的 imageUnderstanding 字段里逐张写出你**真的看到**的画面 ——' +
+  '每张至少交代场景、人物、动作/体态、器械/道具、色调，画面里有可辨认文字（课表、标语、器材上的字）就照抄；' +
+  '某一项看不清楚就写「看不清」，不要编。写完图片理解再写正文：正文必须落在图片里的具体元素上' +
+  '（例如「这张是空中瑜伽的吊床」「垫子上还留着刚才的汗印」），禁止写与图无关的通用模板句。'
+
+/**
  * 读图（多模态）模型能力词表（**单一事实来源**）：命中即「看起来支持读图」。
  * 口径：只认显式能力词/型号，不做模糊猜测 —— 猜错会让用户误以为图片已被识别。
  * 大小写不敏感；新增服务商/型号时只改这一处，不在调用点散写 if。
@@ -862,6 +882,81 @@ export const MOMENTS_VISION_MODEL_TOKENS: RegExp[] = [
 export function resolveMomentsVisionModel(model: string): { supportsVision: boolean } {
   const name = String(model ?? '').trim()
   return { supportsVision: !!name && MOMENTS_VISION_MODEL_TOKENS.some((re) => re.test(name)) }
+}
+
+/**
+ * 生成前的读图守卫：**有图 + 当前模型看不了图**时给一段显眼、可照做的阻断提示。
+ *
+ * ## 为什么要单独一个守卫（而不是复用 visionHint 那行小字）
+ * `visionHint` 是**生成之后**返回的一行提醒，摆在结果区最上面，馆主点完生成、眼睛已经落在
+ * 文案上，那行小字基本看不见 —— 于是「我传了 3 张图，文案却跟图无关」会被理解成功能坏了。
+ * 守卫把同一件事实提前到**选图之后、点生成之前**说清楚，并给出直接修复入口（跳模型配置）。
+ *
+ * ## 判定口径
+ * - 能力判定仍只有 `MOMENTS_VISION_MODEL_TOKENS` 一处事实来源（这里只是翻译成给馆主看的话，
+ *   不在视图里另写一套正则，避免两处判定漂移）。
+ * - **无图时一律不打扰**（`blocked:false`）：选图才谈读图。
+ * - **不硬拦生成**：词表是「名字看起来能读图」的启发式，判错方向不能是「让用户用不了功能」。
+ *   故这里只负责说清楚 + 给入口，是否继续生成由用户决定。
+ * - 未接入大模型（`aiReady:false`）时同样会被判成「图片不会被识别」，但措辞指向「接入模型」
+ *   而不是「换读图模型」—— 两类原因的修复动作不同，不能混成一句话。
+ */
+export interface MomentsVisionGuard {
+  /** 是否要显示显眼阻止提示（无图恒 false） */
+  blocked: boolean
+  /** 本次是否已选图 */
+  hasImages: boolean
+  /** 能力判定结果（来自词表） */
+  supportsVision: boolean
+  /** 当前模型名（可能为空串） */
+  model: string
+  /** 显眼提示主句（blocked=false 时为空串） */
+  title: string
+  /** 具体原因与修复动作（blocked=false 时为空串） */
+  detail: string
+}
+
+export function resolveMomentsVisionGuard(input: {
+  hasImages: boolean
+  model: string
+  aiReady: boolean
+  imageCount?: number
+}): MomentsVisionGuard {
+  const model = String(input.model ?? '').trim()
+  const supportsVision = resolveMomentsVisionModel(model).supportsVision
+  const count = Math.max(0, Math.trunc(Number(input.imageCount ?? 0)) || 0)
+  const base: MomentsVisionGuard = {
+    blocked: false,
+    hasImages: !!input.hasImages,
+    supportsVision,
+    model,
+    title: '',
+    detail: ''
+  }
+  // 未选图 → 不打扰（与图无关的提醒只会变成噪音）
+  if (!input.hasImages) return base
+  const howMany = count > 0 ? `已选 ${Math.min(count, MOMENTS_MAX_IMAGES)} 张图` : '已选图片'
+  if (!input.aiReady) {
+    return {
+      ...base,
+      blocked: true,
+      title: `${howMany}，但还没接入大模型，图片不会被识别`,
+      detail:
+        '接入并启用大模型、且选择支持读图的型号后，模型才能看图写文案；未接入时生成的是本地模板草稿（不参考图片内容）。'
+    }
+  }
+  if (!supportsVision) {
+    return {
+      ...base,
+      blocked: true,
+      title: `${howMany}，但当前模型${model ? `「${model}」` : ''}看不了图，图片内容不会被识别`,
+      detail:
+        '本次生成会把图片一起发给模型，但这个型号不支持读图，文案只能凭主题写，自然对不上图。' +
+        '在「模型配置」里换成支持读图的型号（如 gpt-4o / qwen3-vl-max / glm-4v）后再生成，文案才会结合图片里的具体内容。' +
+        '（读图能力按模型名判定，若你确认该型号能读图，可直接继续生成。）'
+    }
+  }
+  return base
 }
 
 // ---------- 非超管展示用的「去数字」档位名 ----------
@@ -939,6 +1034,28 @@ export interface PromptLayer {
   content: string
 }
 
+/** 「图片理解」单张条目：序号与界面上的「图N」一一对应 */
+export interface MomentsImageReadItem {
+  /** 1-based 图序（与上传顺序一致） */
+  index: number
+  /** 该张的可见内容（场景 / 人物 / 动作 / 器械 / 色调 / 画面文字） */
+  detail: string
+}
+
+/**
+ * 「图片理解」区块：模型看图后先自述「看到了什么」，再写文案。
+ *
+ * 存在的理由：这是「理解图片内容」唯一**可被馆主感知**的证据。没有它，模型读没读图在界面上
+ * 完全同形（都是 3 条文案），只能靠猜。故这里既保留逐张条目（能分张时分行展示），
+ * 也保留整段原文（模型没分张、写成一段时同样照原样给出来，不吞内容）。
+ */
+export interface MomentsImageReadback {
+  /** 逐张条目；模型写成整段、没分张时为空数组 */
+  items: MomentsImageReadItem[]
+  /** 模型自述原文（已剥代码块与「图片理解：」前缀） */
+  text: string
+}
+
 export interface MomentsResult {
   drafts: MomentsDraft[]
   source: 'llm' | 'fallback'
@@ -948,6 +1065,12 @@ export interface MomentsResult {
    * 口径：只说明「可能不会被识别」，不承诺「已识别」；无图或模型支持读图时为空。
    */
   visionHint?: string
+  /**
+   * 本次生成模型先说出来的「图片理解」（逐张：场景/人物/动作/器械/色调/画面文字）。
+   * - 只有**本次真的随请求带图**且模型按要求先说了才非空；无图、本地模板降级时为空。
+   * - 模型没按格式回时为空（undefined），此时界面不伪造内容（配 warning 如实说明没给出图片理解）。
+   */
+  imageReadback?: MomentsImageReadback
   /** 本次实际提交给模型的提示词，供运营只读查看 */
   prompt: PromptLayer[]
   /**
@@ -1962,6 +2085,49 @@ function momentsImageUserNote(input: MomentsInput): string {
   return count > 0 ? `本次配图 ${count} 张，正文必须与该图片内容强关联。` : ''
 }
 
+/**
+ * 「先看图再写」铁律：仅在本次带图时进入 system 段（无图时整段不出现，无图提示词逐字不变）。
+ *
+ * 与 `momentsImageLines` 的分工：那一行是既有的「图片信息」锚点（逐图说明压在一行里，
+ * 质检 `图片信息` 项依赖它的形态）；这里只加「看图这件事怎么做」的规则，不改既有锚点。
+ */
+function momentsImageReadLines(input: MomentsInput): string[] {
+  const { count } = resolveMomentsImagePlan(input)
+  return count > 0 ? [MOMENTS_IMAGE_READ_FIRST_RULE] : []
+}
+
+/**
+ * 逐图说明独立成段（user 层）：每张图一行，与界面上的「图1 / 图2 / 图3」同序。
+ *
+ * 为什么要在 user 层再列一遍（system 的「图片信息」行已经压着一份）：
+ * 那行是「素材登记」的紧凑写法（`共N张。图1：…；图2：…`），模型容易当成背景信息一扫而过；
+ * 而「理解每张图」是本次任务的**输入主体**，必须是一段可逐条照做的清单。
+ * 这里只把同一份用户输入换行重排（不引入任何新事实），不改既有锚点行。
+ */
+function momentsImageNoteParagraphs(input: MomentsInput): string[] {
+  const plan = resolveMomentsImagePlan(input)
+  if (plan.count === 0) return []
+  const lines = plan.notes.map((note, i) => `图${i + 1}：${note}`)
+  const tail =
+    plan.attached > 0
+      ? '请先逐张说出你在这些图片里真正看到的场景/人物/动作/器械/色调/画面文字，再写文案。'
+      : '请按上面的说明理解这次要配的图，再写文案。'
+  return [['【图片逐张说明】', ...lines, tail].join('\n')]
+}
+
+/**
+ * 输出 schema 行：带图时要求先给 `imageUnderstanding` 再给 `drafts`，无图时与改造前完全一致。
+ * 键名固定（解析层按这几个键宽松收），值形态在提示词里写成示例，避免模型自由发挥成散文。
+ */
+function momentsSchemaLine(input: MomentsInput): string {
+  const drafts = '{"drafts":[{"id":"real|pro|convert","content":string,"reply":string}]}'
+  if (resolveMomentsImagePlan(input).count === 0) return drafts
+  return (
+    '{"imageUnderstanding":[{"index":1,"detail":"这一张：场景/人物/动作/器械/色调/画面里的文字"}],' +
+    '"drafts":[{"id":"real|pro|convert","content":string,"reply":string}]}'
+  )
+}
+
 /** 朋友圈提示词组装（供生成与质检共用；段落顺序：最高优先级 → 立场铁律 → 人设层 → 内容层 → 本次硬约束） */
 export function buildMomentsMessages(input: MomentsInput): PromptLayer[] {
   const goal = findMomentGoal(input.goalId ?? input.goal)
@@ -2005,9 +2171,10 @@ export function buildMomentsMessages(input: MomentsInput): PromptLayer[] {
       ? '输出格式：可以用1、2、3区分三条，但正文里不要出现“偏真实日常 / 偏专业信任 / 偏转化表达”这类标题，也不要使用 Markdown 标题符号。'
       : '',
     ...momentsImageLines(input),
+    ...momentsImageReadLines(input),
     `防折叠规则：${buildAntiFoldSection(!!input.antiFoldEnabled)}`,
     MOMENTS_DE_AI_RULE,
-    `严格输出 JSON（不要代码块、不要多余解释）：{"drafts":[{"id":"real|pro|convert","content":string,"reply":string}]}。` +
+    `严格输出 JSON（不要代码块、不要多余解释）：${momentsSchemaLine(input)}。` +
       `content 为朋友圈正文（不含“${FIRST_REPLY_MARKER}”标记），reply 为12-35字的首条回复。`
   ].filter(Boolean)
 
@@ -2031,6 +2198,7 @@ export function buildMomentsMessages(input: MomentsInput): PromptLayer[] {
     '【本次选择回显】',
     `内容层：${input.category}${input.topic ? ` / ${input.topic}` : ''}｜语气：${input.tone}｜目标：${goal.label}｜表达方式：${input.expression}`,
     `硬约束：单条 ${len.min}-${len.max} 字｜emoji ${mode.label}｜井号键 1-3 次｜${count === 3 ? '3 条' : '1 条'}｜首条回复必须输出（${FIRST_REPLY_MARKER}）`,
+    ...momentsImageNoteParagraphs(input),
     momentsImageUserNote(input),
     input.userInput && `我想表达的内容：${input.userInput}`
   ]
@@ -2449,6 +2617,263 @@ function parseMomentsDraftsLoose(text: string, count: number): MomentsDraft[] {
   return plain ? [{ id: 'real', label: '真实日常版', content: plain, reply: '' }] : []
 }
 
+// ---------- 「图片理解」解析（宽松三级：JSON 字段 → 分张文本 → 放弃） ----------
+//
+// 纪律：**这一层只负责把模型说的话捡回来**，不伪造、不补写。
+// 模型没按约定先给图片理解时，宁可不显示这一块（再由 generateMomentsCopy 如实告警），
+// 也绝不拿主题/图片说明拼一段看起来像「图片理解」的文字 —— 那正是要消灭的假绿。
+
+/** 结构化字段的中文键名（只给这几种加前缀，`detail`/`text`/`content` 这类整句字段不加） */
+const READBACK_STRUCT_LABELS: Record<string, string> = {
+  scene: '场景',
+  scenes: '场景',
+  place: '场景',
+  people: '人物',
+  person: '人物',
+  subject: '人物',
+  action: '动作',
+  pose: '体态',
+  motion: '动作',
+  equipment: '器械',
+  equipments: '器械',
+  prop: '道具',
+  props: '道具',
+  tone: '色调',
+  color: '色调',
+  colors: '色调',
+  lighting: '色调',
+  onscreentext: '画面文字',
+  signtext: '画面文字',
+  textonimage: '画面文字',
+  // `text` 只在**同一对象里还有别的结构化字段**时才当「画面文字」解释：
+  // 单独的 `{text:"一段完整描述"}` 里它就是整句描述，加前缀会把整段话读成「画面文字：…」。
+  text: '画面文字'
+}
+
+/**
+ * 判断「这个对象是不是结构化描述」的锚点键（不含 `text`）：
+ * 至少命中一个，才给字段加中文前缀 —— 否则把整句描述误标成某个维度。
+ */
+const READBACK_LABEL_ANCHORS = new Set(
+  Object.keys(READBACK_STRUCT_LABELS).filter((k) => k !== 'text')
+)
+
+/** 序号类键（不参与描述文本拼接，避免「1；空中瑜伽教室」这种噪音） */
+const READBACK_INDEX_KEY = /^(index|idx|i|n|no|order|image|img|photo|图|序号)$/i
+
+/** 剥代码块围栏与「图片理解：」前缀（模型常自带一层外壳） */
+function cleanReadbackText(text: unknown): string {
+  let s = String(text ?? '').trim()
+  s = s
+    .replace(/^```[a-zA-Z]*\s*/, '')
+    .replace(/```$/, '')
+    .trim()
+  s = s.replace(/^[【\[]?\s*图片理解\s*[】\]]?\s*[：:]\s*/, '').trim()
+  return s
+}
+
+/** 逐图行首：`图1：` / `第2张：` / `3.` / `1、` */
+const READBACK_ITEM_LINE =
+  /^\s*(?:图\s*(\d+)|第\s*(\d+)\s*[张幅]|(\d+)\s*[.、．)）:：])\s*[：:、.．\-\s]*(.*)$/
+
+/** 文本里是否有明确的逐图编号（没有的话不能把一段整述标成「图1」） */
+function hasReadbackItemMarker(text: string): boolean {
+  return /^\s*(?:图\s*\d+|第\s*\d+\s*[张幅]|\d+\s*[.、．)）:：])/m.test(text)
+}
+
+/** 把一段自然语言按「图N：」拆成逐张条目；没分张时返回空数组（调用方改走整段展示） */
+function splitReadbackText(text: string): MomentsImageReadItem[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+  const items: MomentsImageReadItem[] = []
+  let current: MomentsImageReadItem | null = null
+  let autoIndex = 1
+  const flush = (): void => {
+    if (current && current.detail.trim()) items.push({ ...current, detail: current.detail.trim() })
+    current = null
+  }
+  for (const line of lines) {
+    const m = line.match(READBACK_ITEM_LINE)
+    if (m && (m[1] || m[2] || m[3])) {
+      flush()
+      const picked = Number(m[1] || m[2] || m[3])
+      const index = Number.isFinite(picked) && picked > 0 ? Math.trunc(picked) : autoIndex
+      autoIndex = Math.max(autoIndex, index) + 1
+      current = { index, detail: (m[4] ?? '').trim() }
+      continue
+    }
+    if (current) current.detail = `${current.detail} ${line}`.trim()
+    else current = { index: autoIndex, detail: line }
+  }
+  flush()
+  return items
+}
+
+/** 任意值 → 一段描述文本（字符串原样；数组/对象按字段拼；结构化字段加中文前缀便于对读） */
+function readbackTextOf(value: unknown, withLabels: boolean): string {
+  if (typeof value === 'string') return cleanReadbackText(value)
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => readbackTextOf(v, withLabels))
+      .filter(Boolean)
+      .join('；')
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([k]) => !READBACK_INDEX_KEY.test(k.trim())
+    )
+    // 只有「结构化描述」才加中文前缀：至少命中一个锚点键（scene/people/action/…）
+    const structured =
+      withLabels && entries.some(([k]) => READBACK_LABEL_ANCHORS.has(k.trim().toLowerCase()))
+    const parts: string[] = []
+    for (const [k, v] of entries) {
+      const text = readbackTextOf(v, withLabels)
+      if (!text) continue
+      const label = structured ? READBACK_STRUCT_LABELS[k.trim().toLowerCase()] : ''
+      parts.push(label ? `${label}：${text}` : text)
+    }
+    return parts.join('；')
+  }
+  return ''
+}
+
+/** 逐张条目重排：序号去重、越界序号按出现顺序补正（保证与界面「图N」同序可分张） */
+function normalizeReadbackItems(items: MomentsImageReadItem[]): MomentsImageReadItem[] {
+  const used = new Set<number>()
+  return items.map((it, i) => {
+    const want = Number.isFinite(it.index) && it.index > 0 ? Math.trunc(it.index) : i + 1
+    const index = used.has(want) ? i + 1 : want
+    used.add(index)
+    return { index, detail: it.detail.trim() }
+  })
+}
+
+/** 任意形态的图片理解值 → { items, text }；拿不到任何可用文本时返回 undefined */
+function normalizeReadbackValue(
+  value: unknown
+): { items: MomentsImageReadItem[]; text: string } | undefined {
+  if (typeof value === 'string') {
+    const text = cleanReadbackText(value)
+    if (!text) return undefined
+    // 没有逐图编号（模型写成一段整体描述）时**不冒充分张**：items 留空，界面按整段渲染
+    const items = hasReadbackItemMarker(text) ? normalizeReadbackItems(splitReadbackText(text)) : []
+    return { items, text }
+  }
+  if (Array.isArray(value)) {
+    const items = value
+      .map((v, i) => {
+        const detail = readbackTextOf(v, true)
+        if (!detail) return null
+        const rawIndex =
+          v && typeof v === 'object'
+            ? Number(
+                (v as Record<string, unknown>).index ??
+                  (v as Record<string, unknown>).idx ??
+                  (v as Record<string, unknown>).image ??
+                  (v as Record<string, unknown>).n
+              )
+            : NaN
+        return { index: Number.isFinite(rawIndex) && rawIndex > 0 ? rawIndex : i + 1, detail }
+      })
+      .filter((it): it is MomentsImageReadItem => !!it)
+    if (!items.length) return undefined
+    const normalized = normalizeReadbackItems(items)
+    return {
+      items: normalized,
+      text: normalized.map((it) => `图${it.index}：${it.detail}`).join('\n')
+    }
+  }
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>
+    // `{items:[...]}` / `{images:[...]}` 这种再包一层的写法
+    for (const key of ['items', 'list', 'images', 'perImage', 'per_image']) {
+      if (obj[key] !== undefined) {
+        const inner = normalizeReadbackValue(obj[key])
+        if (inner) return inner
+      }
+    }
+    // `{"1":"…","2":"…"}` / `{image1:"…"}` 这种序号键写法
+    const keys = Object.keys(obj).filter((k) => k.trim())
+    if (keys.length && keys.every((k) => /\d/.test(k))) {
+      const items = keys
+        .map((k) => ({
+          index: Number(k.replace(/\D/g, '')) || 0,
+          detail: readbackTextOf(obj[k], true)
+        }))
+        .filter((it) => !!it.detail)
+        .sort((a, b) => a.index - b.index)
+      if (items.length) {
+        const normalized = normalizeReadbackItems(items)
+        return {
+          items: normalized,
+          text: normalized.map((it) => `图${it.index}：${it.detail}`).join('\n')
+        }
+      }
+    }
+    // 单张的结构化对象：整段展示（不冒充多张）
+    const detail = readbackTextOf(obj, true)
+    return detail ? { items: [{ index: 1, detail }], text: detail } : undefined
+  }
+  return undefined
+}
+
+/** 图片理解字段的候选键（归一化后比较：小写、去分隔符） */
+const MOMENTS_IMAGE_READ_KEYS = [
+  'imageunderstanding',
+  'imagereadback',
+  'imageread',
+  'imageanalysis',
+  'imagedescription',
+  'imagedesc',
+  'vision',
+  'understanding',
+  'pictureunderstanding',
+  'perception'
+]
+
+/** 文本里是否真的在讲图（用于「模型没按 JSON 回、但在 JSON 前先描述了一段图」的情形） */
+function looksLikeImageReadback(text: string): boolean {
+  return /图\s*\d|第\s*\d+\s*[张幅]/.test(text)
+}
+
+/**
+ * 从模型原文里捡回「图片理解」：
+ * 1）JSON 里的 imageUnderstanding 等键（正常路径）；
+ * 2）JSON 之前的自然语言段（模型先说了图，再给 JSON）；
+ * 3）都没有 → undefined（不伪造）。
+ *
+ * 注意：本函数**不改动**成稿解析路径（`parseMomentsDraftsLoose` 独立跑），
+ * 因此模型完全不理 imageUnderstanding 时，3 条文案照旧能出（容错不回退失败）。
+ */
+function parseMomentsImageReadbackLoose(text: string): MomentsImageReadback | undefined {
+  const raw = String(text ?? '').trim()
+  if (!raw) return undefined
+  const obj = looseJson(raw)
+  if (obj) {
+    const hit = Object.entries(obj).find(([k]) =>
+      MOMENTS_IMAGE_READ_KEYS.includes(
+        k
+          .trim()
+          .toLowerCase()
+          .replace(/[_\-\s]/g, '')
+      )
+    )
+    if (hit) {
+      const parsed = normalizeReadbackValue(hit[1])
+      if (parsed) return parsed
+    }
+  }
+  // 模型没按约定写字段：JSON 之前那段自然语言如果是逐张描述，同样作为图片理解回显
+  const head = raw.includes('{') ? raw.slice(0, raw.indexOf('{')) : raw
+  const cleaned = cleanReadbackText(head)
+  if (cleaned && looksLikeImageReadback(cleaned)) {
+    return { items: normalizeReadbackItems(splitReadbackText(cleaned)), text: cleaned }
+  }
+  return undefined
+}
+
 /**
  * 小红书笔记解析（容忍 coverText 的多种别名，兜底为 title）：
  * 数组优先 → 旧单对象回落 → 纯文本回落。
@@ -2775,6 +3200,11 @@ export async function generateMomentsCopy(input: MomentsInput): Promise<MomentsR
   let source: 'llm' | 'fallback' = 'fallback'
   let warning: string | undefined
   let visionHint: string | undefined
+  /**
+   * 模型先说出来的「图片理解」（本次真的带图、且模型说了才非空）。
+   * 它只来自模型原文，**不从主题/图片说明拼装** —— 否则就成了「伪造模型看懂了图」。
+   */
+  let imageReadback: MomentsImageReadback | undefined
   if (input.imageCount && input.imageCount > MOMENTS_MAX_IMAGES) {
     warning = `最多支持 ${MOMENTS_MAX_IMAGES} 张图片，第 ${MOMENTS_MAX_IMAGES + 1} 张起未纳入本次生成`
   }
@@ -2788,6 +3218,21 @@ export async function generateMomentsCopy(input: MomentsInput): Promise<MomentsR
       drafts = parseMomentsDraftsLoose(raw, count)
       if (!drafts.length) throw new Error('JSON_PARSE_FAIL')
       source = 'llm'
+      /**
+       * 图片理解：与成稿解析**各走各的**（成稿仍走 parseMomentsDraftsLoose）。
+       * 这样模型完全没按格式回时，3 条文案照旧能出，只是没有图片理解可回显 —— 容错不回退失败。
+       * 只有本次真的下了图才收：无图时模型多说了什么也不往界面上摆，避免与本次输入错位。
+       */
+      if (attachments.length) {
+        imageReadback = parseMomentsImageReadbackLoose(raw)
+        // 模型自称能读图、却一个字都没说图 → 如实说明（不假装它看过图），仍保留已生成的文案
+        if (!imageReadback && resolveMomentsVisionModel(store.config.model).supportsVision) {
+          warning = appendWarning(
+            warning,
+            '本次模型没有先给出图片理解，文案可能没有真正参考图片细节；可换读图模型后重试'
+          )
+        }
+      }
       if (drafts.length < count) {
         const returned = drafts.length
         const fb = fallbackMomentsDrafts(input)
@@ -2855,6 +3300,7 @@ export async function generateMomentsCopy(input: MomentsInput): Promise<MomentsR
     source,
     warning,
     visionHint,
+    imageReadback,
     prompt: messages,
     content: legacy.content,
     reply: legacy.reply

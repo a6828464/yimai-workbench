@@ -60,7 +60,9 @@ export interface ApprovalItem {
 
 /** 今日待办（TodayController::todo 的分组结构，字段随组类型不同） */
 export interface TodoGroup {
-  type: 'bookings' | 'renewals' | 'churnRisks' | 'birthdays' | 'trials' | 'reviews' | 'newLeads'
+  // tasks 也是真实存在的一组（后端 `'tasks' => $tasks`、工作台 TODO_LABELS.tasks = '今日任务'）；
+  // 早先漏在这里导致「今日任务」被类型层当成不可能的值。
+  type: 'bookings' | 'renewals' | 'churnRisks' | 'birthdays' | 'trials' | 'reviews' | 'newLeads' | 'tasks'
   label: string
   items: TodoItem[]
 }
@@ -75,6 +77,61 @@ export interface TodoItem {
   doneAt?: string
   customerId?: number
   leadId?: number
+
+  /* ---- v3.19.0 信息行契约（全部可选：后端没落地时页面整行不显示，不做假数据） ---- */
+
+  /*
+   * 以下每个键名都**逐字对齐后端 TodayController::todo() 实际下发的键**，
+   * 注释里的行号即溯源（改后端时按行号回查）。为什么不留「别名兜底」：
+   * 声明或读取后端从不下发的键，等于给后来的人留一条假路径 —— 真改名了也照样静默失效，
+   * 排查时还会以为「兜底分支在工作」。宁可读一个键、取不到就整段不显示。
+   */
+
+  /** 「为什么在这组」的现成句子（renewals L915 / churnRisks L967 / reviews L1173 / newLeads L1123） */
+  whyText?: string
+  /** 待续费的卡项提示，如 `私教小班 · 剩 3 节 · 7 天后到期`（renewals L914） */
+  cardHint?: string
+  /** 卡项名（renewals L913）；bookings / churnRisks 的卡名走 `mainCard`（L722 闭包 + L830 展开 / L962） */
+  cardName?: string
+  /** 主卡名（bookings L830 展开自 L722；renewals L889；churnRisks L962） */
+  mainCard?: string
+  /**
+   * 卡项余量（bookings L830 展开自 L722；renewals L890；churnRisks L963）。
+   * 单位由服务端在 whyText / cardHint 里写死为「节」（`$cardQty` 的默认单位），
+   * 这三个组**不下发 unit** —— 所以没有 `cardUnit` 这个键，别再声明它。
+   */
+  remainTimes?: number | null
+  /** 到期天数，负数为已过期（renewals L892；另有 L903 的 nextExpireDays 指「下一张卡」） */
+  expireDays?: number | null
+  /** 下一张卡的到期天数（renewals L903，与 expireDays 同源，前端暂未使用但确有其键） */
+  nextExpireDays?: number | null
+  /** 会员主卡到期日 `YYYY-MM-DD`（churnRisks L966，空值为 null） */
+  expireDate?: string | null
+  /** 上次到店日期（churnRisks）；前端只取 `MM-DD` 展示 */
+  lastVisit?: string | null
+  /** 距上次到店天数（churnRisks L954；负数为已过期，前端不读负值） */
+  lastVisitDays?: number | null
+  /** 生日组距离生日的天数（birthdays L1002；注意不是 expireDays） */
+  daysLater?: number | null
+  /** 生日组：`10-08`（birthdays L1008，后端只给 MM-DD，不带「生日」二字） */
+  birthdayText?: string
+  /** 生日组：`29 岁`（birthdays L1009） */
+  ageText?: string
+  /** 生日组：今天是否就是生日（birthdays L1001；由后端按门店时区判，前端不比本地时间） */
+  isToday?: boolean
+  /** 今日预约：近三个月出勤，左→右由远到近，与会员详情「近三档出勤」同口径（bookings L824） */
+  attend?: { m1?: number | null; m2?: number | null; m3?: number | null }
+  /** 今日预约：是否匹配到会员档案（bookings L829）。false 时 attend 三项全 0，不可当作「没来」 */
+  attendKnown?: boolean
+  /**
+   * 课程事实。bookings：time L806 / course L812 / kind L813 / teacher L814；
+   * trials：KY 分支 time L1042、course L1061、kind L1062、teacher L1048，
+   * 留资分支 time L1084、course L1100、kind L1101、teacher L1090（`kind` 在留资卡缺课型时为空串）。
+   */
+  kind?: string
+  course?: string
+  time?: string
+  teacher?: string
   [key: string]: unknown
 }
 
@@ -199,6 +256,18 @@ export interface CustomerCard {
   remaining?: number | null
   /** 剩余天数（期限卡）：后端 CardLifecycle 直接算好的余额，比 remaining 更能说明「还剩几天」 */
   residueDays?: number | null
+  /**
+   * 卡项「总量」，v3.19.0 后端新增（`CustomerController::cardBalance()` 算，会员详情用）。
+   *
+   * 各卡型的真实取值（不要照抄成「储值卡=总金额」，那是错的）：
+   *  · 次卡 = 原始行 `bound`（同步侧写的「剩余 + 已耗次数」）；
+   *  · 期限卡 = `validDays`（原始行 `bound` 恒 null，后端退回有效期总天数）；
+   *  · 储值卡 = **恒 null**（上游不给储值卡初始充值额，也没有 `consumed` 可兜底），
+   *    所以界面上储值卡只会显示「剩 1200 元」，没有「总 3000 元」。
+   * 取不到就是 null（未知 ≠ 0）。前端**不猜**、不拿 `bound` 自己算，缺失时只显示剩余量
+   * （见 detail.vue 的 cardRemain() 函数）。
+   */
+  boundTotal?: number | null
   bound?: number | null
   validDays?: number | null
   deadline?: string | null

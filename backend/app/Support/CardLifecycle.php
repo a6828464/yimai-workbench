@@ -694,6 +694,63 @@ final class CardLifecycle
         return [null, 'none'];
     }
 
+    /**
+     * 会员「到期日」的展示值 + 来源（v3.19.0，**唯一实现**；不要在控制器里再写一份）。
+     *
+     * ## 为什么需要
+     *
+     * `customers.expire_date` 是同步写入的派生列（＝当前实例最早 deadline，无当前实例才回退
+     * 最近历史，见 `KyMemberSyncService.php`）。同步没覆盖到的行（v3.9 之前的老快照、
+     * 手工创建的会员）它是空，而卡片自身的 `deadline` 是有值的 —— 展示层拿不到就显示 `—`，
+     * 店员无法判断该不该催续费。
+     *
+     * ## 为什么不能在同步侧修 / 不能写回库
+     *
+     * 1. 同步写的是**上游事实**。把推断值写回 `expire_date`，等于把推算当成事实源 ——
+     *    事后再也分不清「上游真给过这个日期」还是「我们自己推的」。
+     * 2. `expire_date` 同时是**判定输入**：待续费（deadline 命中）、五清单、`layer` 派生列
+     *    都读它。推断口径改一次就会连带改掉一批会员的清单归属，属于最难复盘的回归。
+     * 所以推断只活在响应里，并用第二个返回值显式标注来源。
+     *
+     * ## 为什么住在 CardLifecycle
+     *
+     * 推断口径必须与判定口径 `expireDateFrom()` 同源（本方法直接调它，不另算），
+     * 而「同一个会员两处不同答案」是最伤信任的一类分歧 —— 会员详情与今日待办的
+     * 流失风险卡都调本方法，保证唯一实现。
+     *
+     * @param  string|null  $stored  `customers.expire_date` 原值（原样返回，不擅自裁剪格式）
+     * @param  array<int,array<string,mixed>>  $cardsList  卡片行（只需 `state` 与 `deadline`）
+     * @return array{0:string|null,1:string}  [到期日, current（库里权威）|inferred（在用卡推出）|history（仅历史卡推出）|none]
+     */
+    public static function displayExpireDate(?string $stored, array $cardsList): array
+    {
+        $text = $stored === null ? '' : trim($stored);
+        if ($text !== '') {
+            return [$text, 'current'];
+        }
+
+        // 只喂 expireDateFrom 需要的两个字段；deadline 过 parseDate（Ymd / 时间戳 / 脏格式统一）。
+        // 不重新 normalize()：否则会出现「卡项列表显示在用、到期日却按另一套状态推」的分裂。
+        $instances = [];
+        foreach ($cardsList as $card) {
+            if (! is_array($card)) {
+                continue;
+            }
+            $instances[] = [
+                'state' => (string) ($card['state'] ?? 'current'),
+                'deadline' => self::parseDate($card['deadline'] ?? null),
+            ];
+        }
+
+        [$date, $state] = self::expireDateFrom($instances);
+
+        return match ($state) {
+            'current' => [$date, 'inferred'],
+            'history' => [$date, 'history'],
+            default => [null, 'none'],
+        };
+    }
+
     /** 历史实例的说明文案（§5.4；只用于 expiredBalance / historyCards，不进 renewal.why） */
     public static function historyNote(array $i, ?array $series = null): ?string
     {

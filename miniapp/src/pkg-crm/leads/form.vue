@@ -25,7 +25,7 @@ import { computed, ref, watch } from 'vue'
 import { onLoad, onShow, onUnload, onShareAppMessage } from '@dcloudio/uni-app'
 import { shareToHome } from '@/utils/share'
 import { requireLogin } from '@/utils/guard'
-import { requireFeature } from '@/utils/nav'
+import { goPath, requireFeature } from '@/utils/nav'
 // 长表单草稿：只用现成的 getJSON / setJSON / storage（storage.ts 已导出，不新增工具函数）
 import { getJSON, setJSON, storage } from '@/utils/storage'
 import { useUserStore } from '@/store/user'
@@ -65,6 +65,15 @@ const origin = ref<MiniappLead | null>(null)
  */
 const originCardSig = ref('')
 const saving = ref(false)
+/**
+ * 已经提交成功、正在等 navigateBack。
+ *
+ * 为什么不能只靠 saving：成功分支是 `showToast → setTimeout(navigateBack, 500)`，
+ * 而 finally 会把 saving 置回 false —— 那 500ms 里按钮既不是 loading 也可点，
+ * 手快连点就会**创建两条留资**（新建态尤其致命，编辑态则是一次无意义的空 PATCH）。
+ * 所以成功后再置这个标记，它在页面销毁前不再复位。
+ */
+const submitted = ref(false)
 const dupTip = ref('')
 const inited = ref(false)
 /** onLoad 的原始参数（等权限通过后再消费） */
@@ -76,6 +85,15 @@ const platforms = ref<string[]>([...FALLBACK_LEAD_ENUMS.orderPlatforms])
 /** 逐节体验课卡片（与网页端同一结构：后端 trial_cards JSON 透传） */
 type TrialCardDraft = {
   session: number
+  /**
+   * 客户端行标识（**不提交**，只当 v-for 的 key）。
+   *
+   * 为什么不能用下标当 key：`v-for="(c, i)"` + `:key="i"` 在删掉中间一节后，
+   * Vue 会按下标复用节点，导致「删第 2 节，第 3 节的输入框先闪一下第 2 节的值」，
+   * 小程序端还会有输入法焦点串位。session 也不行 —— 它在删除后会被重排。
+   * 所以给一个只增不减的本地序号，提交时自然被排除（toTrialPayload 不映射它）。
+   */
+  uid: number
   date: string
   time: string
   topic: string
@@ -94,6 +112,13 @@ type TrialCardDraft = {
    * 提交映射时把它摊在最前面，让本页编辑过的字段覆盖掉旧值。
    */
   raw?: Record<string, unknown>
+}
+
+/** 卡片行的本地自增 id（见 TrialCardDraft.uid 的注释） */
+let cardUidSeed = 0
+function nextCardUid(): number {
+  cardUidSeed += 1
+  return cardUidSeed
 }
 
 const form = ref({
@@ -233,6 +258,73 @@ async function loadEnums() {
   }
 }
 
+/* ---------- 脏值清洗（v3.19.0，与 picker 事故同批） ----------
+ *
+ * 为什么要洗：体验课卡片曾用错事件取值方式（见 pickerValue 的注释），把字符串
+ * `"undefined"` 当成**真值**写进了卡片字段，于是
+ * `[c.date, c.time].filter(Boolean).join(' ')` 把它拼进 `time` 写库 ——
+ * 库里现在可能真有 `trial_cards[*].time = "2026-11-03 undefined"`。
+ * 两端都要洗：回填时洗（不让脏值重新出现在界面上、也不让它被原样提交回去），
+ * 提交时再洗一次（粘贴、旧草稿同样能带进这类串）。
+ *
+ * 只拦「真值里的假值」这几个字面量，不做模糊纠错：把「null 号」这种真实内容吃掉，
+ * 比留下一个脏串更难查。
+ */
+const DIRTY_TOKENS = new Set(['undefined', 'null', 'nan', '[object object]'])
+
+/** 是否是「看似有值、其实是假值」的字符串 */
+function isDirtyText(s: string): boolean {
+  return DIRTY_TOKENS.has(s.trim().toLowerCase())
+}
+
+/** 文本清洗：null / undefined / 空串 / 脏字面量 → '' */
+function cleanText(v: unknown): string {
+  if (v === null || v === undefined) return ''
+  const s = String(v).trim()
+  if (!s || isDirtyText(s)) return ''
+  return s
+}
+
+/** 数字清洗：非数字（含 "undefined" / "12a" / 空）→ null，绝不产出 NaN / 0 顶替 */
+function cleanNumber(v: unknown): number | null {
+  const s = cleanText(v)
+  if (s === '') return null
+  const n = Number(s)
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * 从后端 `time` 串里抽日期与时间两段（本页把它们拆给两个 picker）。
+ *
+ * 后端约定是 `"YYYY-MM-DD HH:mm"`，但历史脏值长这样：`"2026-11-03 undefined"`、
+ * `"undefined"`、`"null"`。所以这里不按位置截取，而是各自用正则去找：
+ * 找到日期就要日期，找到时间就要时间，找不到就给空串（picker 显示占位文案）。
+ * 时间统一补成两位小时（`9:20` → `09:20`），否则 `<picker mode="time">` 的 value 不合法。
+ */
+function splitTimeText(raw: unknown): { date: string; time: string } {
+  const s = cleanText(raw)
+  const date = /(\d{4}-\d{2}-\d{2})/.exec(s)?.[1] ?? ''
+  const hm = /(\d{1,2}):(\d{2})/.exec(s)
+  const time = hm ? `${hm[1].padStart(2, '0')}:${hm[2]}` : ''
+  return { date, time }
+}
+
+/**
+ * 三态归一：`attended / noShow / cancelled` 是三个独立布尔，网页端与历史数据里
+ * 出现过两个同时为 true 的行。展示端 `cardStateIndex` 只认优先级最高的那个，
+ * 提交却会把三个原样带上 —— 于是「界面显示已爽约、库里记的是已上课」，改一次别处
+ * 就可能把状态悄悄改掉。回填与草稿恢复都过一遍这里，保证「显示什么就提交什么」。
+ * 优先级与 cardStateIndex 一致：已爽约 > 已上课 > 已取消。
+ */
+function normalizeCardState(c: { attended: boolean; noShow: boolean; cancelled: boolean }): void {
+  if (c.noShow) {
+    c.attended = false
+    c.cancelled = false
+    return
+  }
+  if (c.attended) c.cancelled = false
+}
+
 function hydrate(lead: MiniappLead) {
   form.value = {
     name: lead.name ?? '',
@@ -246,50 +338,76 @@ function hydrate(lead: MiniappLead) {
     status: lead.status || '新留资',
     grade: lead.grade || '',
     dealCard: lead.dealCard || '',
-    dealAmount: lead.dealAmount ? String(lead.dealAmount) : '',
+    // 0 是合法金额（如赠送/抵扣到 0）：只判 null/undefined，不能写成 `lead.dealAmount ?`，
+    // 否则 0 会被渲染成空串，再被 buildPatch 当成「用户清空了金额」提交 null
+    dealAmount: lead.dealAmount === null || lead.dealAmount === undefined ? '' : String(lead.dealAmount),
     couponName: lead.couponName || '',
     voucherCode: lead.voucherCode || '',
     redeemAmount:
       lead.redeemAmount !== null && lead.redeemAmount !== undefined ? String(lead.redeemAmount) : '',
     remark: (lead.remark as string) || '',
     trialCards: (lead.trialCards ?? []).map((c, i) => {
-      const raw = String(c.time || '')
-      // 后端 time 常是 "2026-11-03 19:20"（日期+时间），拆成两个 picker 的初值
-      const m = raw.match(/^(\d{4}-\d{2}-\d{2})[ T]?(\d{2}:\d{2})?/)
-      return {
-        session: c.session ?? i + 1,
-        date: m?.[1] || String(c.date || ''),
-        time: m?.[2] || '',
-        topic: c.topic || '',
-        teacher: c.teacher || '',
-        couponName: c.couponName || '',
-        voucherCode: c.voucherCode || '',
-        redeem: c.redeem !== null && c.redeem !== undefined ? String(c.redeem) : '',
-        total: c.total !== null && c.total !== undefined ? String(c.total) : '',
+      // 回填先洗脏值：库里的 "2026-11-03 undefined" 要拆成 date=2026-11-03 / time=''，
+      // 否则那个 "undefined" 会原样出现在格子上，并在下次提交时被写回去
+      const parsed = splitTimeText(c.time)
+      const ownDate = cleanText(c.date)
+      const card = {
+        // session 一律按数组顺序重排（与 toTrialPayload 同一口径），不留历史编号
+        session: i + 1,
+        uid: nextCardUid(),
+        date: /^\d{4}-\d{2}-\d{2}$/.test(ownDate) ? ownDate : parsed.date,
+        time: parsed.time,
+        topic: cleanText(c.topic),
+        teacher: cleanText(c.teacher),
+        couponName: cleanText(c.couponName),
+        voucherCode: cleanText(c.voucherCode),
+        redeem: cleanText(c.redeem),
+        total: cleanText(c.total),
         attended: Boolean(c.attended),
         noShow: Boolean(c.noShow),
         cancelled: Boolean(c.cancelled),
         // 整块留存原始卡片：本页不编辑的 platform / remaining 等字段靠它原样带回
         raw: { ...c }
       }
+      normalizeCardState(card)
+      return card
     })
   }
   // 基线签名要在回填完成时取：之后 buildPatch 拿「当前卡片」与它比较，判断卡片有没有被改过
   originCardSig.value = cardSignature(form.value.trialCards)
 }
 
-type PickerPayload = { value: string | number | string[] | number[] }
-
-function onPickVenue(e: PickerPayload) {
-  form.value.venue = String(e.value)
+/**
+ * picker 取值的**唯一入口**（v3.19.0 修「时间显示 undefined / 状态永远未开始」）。
+ *
+ * 这一页同时存在两种 picker，它们的事件载荷完全不同，这是这次翻车的根源：
+ *  · wot-design-uni `<wd-picker>`：`@confirm` 抛的是**组件自定义事件** `{ value }`（多列是数组）；
+ *  · 微信原生 `<picker>`：`@change` 抛的是**原生事件** `{ detail: { value } }`。
+ * 体验课卡片用的是原生 `<picker>`，但处理函数按 wd-picker 的契约写 `String(e.value)`
+ * —— 原生事件里 `e.value` 恒为 undefined，于是：
+ *    · 日期 / 时间格子被写成字符串 "undefined"（日期默认今天是合法值，症状被掩盖）；
+ *    · 状态算 `Number(undefined)` → NaN → 三个布尔全 false → 回显永远「未开始」。
+ *
+ * 所以取值只走这一个函数：先 `detail.value`（原生），再 `value`（wd-picker），
+ * 数组取末位（对应单列 picker）。以后换组件、加列数，都只有这一处要改。
+ */
+function pickerValue(e: unknown): string {
+  const ev = e as { detail?: { value?: unknown }; value?: unknown } | null | undefined
+  const raw = ev?.detail?.value ?? ev?.value
+  const v = Array.isArray(raw) ? raw[raw.length - 1] : raw
+  return cleanText(v)
 }
 
-function onPickSource(e: PickerPayload) {
-  form.value.source = String(e.value)
+function onPickVenue(e: unknown) {
+  form.value.venue = pickerValue(e)
 }
 
-function onPickPlatform(e: PickerPayload) {
-  form.value.orderPlatform = String(e.value)
+function onPickSource(e: unknown) {
+  form.value.source = pickerValue(e)
+}
+
+function onPickPlatform(e: unknown) {
+  form.value.orderPlatform = pickerValue(e)
 }
 
 /* ---------- 体验课卡片（上课记录 / 券码 / 核销） ----------
@@ -310,23 +428,62 @@ function cardStateLabel(c: TrialCardDraft): string {
   return CARD_STATES[cardStateIndex(c)]
 }
 
-function onCardState(i: number, e: PickerPayload): void {
-  const v = Number(e.value)
+/**
+ * 原生 `<picker :range>` 的 value 是**下标**（数字），走 pickerValue 后变成字符串。
+ * 越界/非数字一律忽略：宁可这次点击没生效，也不要写进一个不存在的状态。
+ * 三个布尔一次全部赋值 —— 互斥在这里保证，不指望调用方记得清另外两个。
+ */
+function onCardState(i: number, e: unknown): void {
   const c = form.value.trialCards[i]
   if (!c) return
-  c.attended = v === 1
-  c.noShow = v === 2
-  c.cancelled = v === 3
+  const idx = Number(pickerValue(e))
+  if (!Number.isInteger(idx) || idx < 0 || idx >= CARD_STATES.length) return
+  c.attended = idx === 1
+  c.noShow = idx === 2
+  c.cancelled = idx === 3
 }
 
-function onCardDate(i: number, e: PickerPayload): void {
+function onCardDate(i: number, e: unknown): void {
   const c = form.value.trialCards[i]
-  if (c) c.date = String(e.value)
+  if (!c) return
+  const v = pickerValue(e)
+  // 原生 date picker 的载荷是 "YYYY-MM-DD"；取不到有效值就保持原样，
+  // 绝不把空串/undefined 写进格子（那正是这次 bug 的表象）
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return
+  c.date = v
 }
 
-function onCardTime(i: number, e: PickerPayload): void {
+function onCardTime(i: number, e: unknown): void {
   const c = form.value.trialCards[i]
-  if (c) c.time = String(e.value)
+  if (!c) return
+  const v = pickerValue(e)
+  if (!/^\d{1,2}:\d{2}$/.test(v)) return
+  const [h, m] = v.split(':')
+  // 补成两位：`<picker mode="time">` 的 value 必须是 HH:mm，9:20 会被原生组件判为非法
+  c.time = `${h.padStart(2, '0')}:${m}`
+}
+
+/** session 按数组顺序重排：删掉中间一节后，第 3 节的编号必须变成 2（后端按它排序/展示） */
+function renumberCards(): void {
+  form.value.trialCards.forEach((c, i) => {
+    c.session = i + 1
+  })
+}
+
+/** 日期格子的兜底值：给 picker 一个合法初值，否则原生组件拿到空串会退回「今天」并可能告警 */
+function cardDateValue(c: TrialCardDraft): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(c.date)) return c.date
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** 时间格子的兜底值：同上，用当前时刻作为滚轮的起点（用户仍需确认才会写入） */
+function cardTimeValue(c: TrialCardDraft): string {
+  if (/^\d{1,2}:\d{2}$/.test(c.time)) return c.time.padStart(5, '0')
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 function addCard(): void {
@@ -334,6 +491,7 @@ function addCard(): void {
   const p = (n: number) => String(n).padStart(2, '0')
   form.value.trialCards.push({
     session: form.value.trialCards.length + 1,
+    uid: nextCardUid(),
     date: `${today.getFullYear()}-${p(today.getMonth() + 1)}-${p(today.getDate())}`,
     time: '',
     topic: '',
@@ -350,6 +508,11 @@ function addCard(): void {
 
 function removeCard(i: number): void {
   form.value.trialCards.splice(i, 1)
+  // 删完立刻重排：不重排的话第 3 节的 session 还是 3，界面上却写着「第 2 节」
+  // （提交时 toTrialPayload 也会重排，但页面内的 session 一旦和下标不一致，
+  //   卡片签名之外的比较、以及草稿里存下的旧编号都会对不上）
+  renumberCards()
+  // 删到空不留占位：数组空了模板就不渲染卡片，用户可再点「添加一节」
 }
 
 /** 单节卡片提交后的形状（与 LeadPayload.trialCards 的元素同型） */
@@ -359,25 +522,39 @@ type TrialCardPayload = NonNullable<LeadPayload['trialCards']>[number]
  * UI 卡片 → 提交结构。
  * 新建体与编辑体的 trialCards 都走这一份映射：后端 trial_cards 是**整体替换**，
  * 两处各写一遍必然漂移（新建漏了 session 重排、编辑忘了拼 time 之类都属于静默丢数据）。
+ *
+ * 每个文本字段都过 cleanText：`"undefined"` 在 JS 里是真值，前端不洗就会变成
+ * 库里的一条脏数据（trial_cards[*].time = "2026-11-03 undefined"）。
+ * 数字字段过 cleanNumber：非数字给 null，避免 NaN 参与比较与序列化。
  */
 function toTrialPayload(cards: TrialCardDraft[]): TrialCardPayload[] {
-  return cards.map((c, i) => ({
-    // 原始附加字段先摊开，下面本页编辑过的字段随后覆盖：既保住 platform / remaining，
-    // 又不会让旧值盖掉用户这次改的内容
-    ...(c.raw ?? {}),
-    session: i + 1,
-    date: c.date || undefined,
-    time: [c.date, c.time].filter(Boolean).join(' '),
-    topic: c.topic.trim(),
-    teacher: c.teacher.trim(),
-    couponName: c.couponName.trim(),
-    voucherCode: c.voucherCode.trim(),
-    redeem: c.redeem === '' ? null : Number(c.redeem),
-    total: c.total === '' ? null : Number(c.total),
-    attended: c.attended,
-    noShow: c.noShow,
-    cancelled: c.cancelled
-  }))
+  return cards.map((c, i) => {
+    // 逐字段先洗再拼：`"undefined"` 是**真值**，不洗就会被 join 进 time 写库
+    // （这正是上一版 bug 把脏数据落到 trial_cards 的链路）
+    const date = cleanText(c.date)
+    const time = cleanText(c.time)
+    return {
+      // 原始附加字段先摊开，下面本页编辑过的字段随后覆盖：既保住 platform / remaining，
+      // 又不会让旧值盖掉用户这次改的内容
+      ...(c.raw ?? {}),
+      session: i + 1,
+      // 没有日期就不带这个键（留一个 undefined 键在 PATCH 里是噪音，
+      // 也让「有没有这个字段」的判读变得依赖序列化实现）
+      ...(date ? { date } : {}),
+      // 只拼存在的那一段：有日期没时间 → "2026-11-03"；都有 → "2026-11-03 19:20"；都没有 → ''
+      time: [date, time].filter(Boolean).join(' '),
+      topic: cleanText(c.topic),
+      teacher: cleanText(c.teacher),
+      couponName: cleanText(c.couponName),
+      voucherCode: cleanText(c.voucherCode),
+      // 非数字给 null：`Number("undefined")` 是 NaN，JSON 序列化成 null 之前会先污染比较逻辑
+      redeem: cleanNumber(c.redeem),
+      total: cleanNumber(c.total),
+      attended: c.attended,
+      noShow: c.noShow,
+      cancelled: c.cancelled
+    }
+  })
 }
 
 /**
@@ -386,11 +563,31 @@ function toTrialPayload(cards: TrialCardDraft[]): TrialCardPayload[] {
  * 所以统一先过一遍 toTrialPayload，再比字符串。
  */
 function cardSignature(cards: TrialCardDraft[]): string {
-  return JSON.stringify(toTrialPayload(cards))
+  return stableStringify(toTrialPayload(cards))
 }
 
-function onPickStatus(e: PickerPayload) {
-  form.value.status = String(e.value)
+/**
+ * 键顺序无关的 JSON 序列化（只用于「有没有改过」的比较）。
+ *
+ * 为什么必须排序：卡片体里摊了后端原始卡片的附加字段（platform / remaining…），
+ * 它们的键顺序由后端 JSON 决定；一旦某次回填与另一次回填的键顺序不同，
+ * 普通 JSON.stringify 就会把「同一份数据」判成有改动 → 用户什么都没改却提交了整段卡片。
+ * 这类误判的代价是**整段覆盖**（后端 trial_cards 是整体替换语义）。
+ */
+function stableStringify(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`
+  if (v && typeof v === 'object') {
+    const o = v as Record<string, unknown>
+    return `{${Object.keys(o)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(v) ?? 'null'
+}
+
+function onPickStatus(e: unknown) {
+  form.value.status = pickerValue(e)
 }
 
 /**
@@ -398,8 +595,8 @@ function onPickStatus(e: PickerPayload) {
  * 「XX（历史值）」只是回显用的占位，**不能写回库里**（否则会存出「A（历史值）」这种新脏值），
  * 命中它就还原成原来的裸值。
  */
-function onPickTrialType(e: PickerPayload) {
-  const v = String(e.value)
+function onPickTrialType(e: unknown) {
+  const v = pickerValue(e)
   if (v === TRIAL_TYPE_UNSET) {
     form.value.grade = ''
     return
@@ -423,10 +620,53 @@ async function checkDup() {
   }
 }
 
+/**
+ * 提交前校验：**只拦「会写坏数据」的**，不替用户做业务判断。
+ *
+ * v3.19.0 补了三类（此前只校验三个必填，脏值全靠后端兜）：
+ *  ① 手机号填了就必须是 11 位数字 —— 它是查重与会员匹配的唯一键，写错了这条客资
+ *     永远匹配不上人（空着允许，留资本来就可能没电话）；
+ *  ② 金额/次数填了就必须是数字、且不能为负 —— 这类值现在会被 cleanNumber 洗成 null，
+ *     等于**静默吞掉用户刚敲的东西**，比直接提示难查得多；
+ *  ③ 卡片里的日期若填了必须是 YYYY-MM-DD（picker 保证，但草稿恢复可能带进脏值）。
+ * 不拦的事：手机号重复（产品口径是「只提示不拦截」）、姓名长度、备注长度（后端截断）。
+ */
 function validate(): string {
   if (!form.value.name.trim()) return '请填写客户姓名'
   if (!form.value.venue) return '请选择门店'
   if (!form.value.source) return '请选择来源渠道'
+
+  const phone = form.value.phone.trim()
+  if (phone && !/^1\d{10}$/.test(phone)) return '手机号需为 11 位数字，或留空'
+
+  // 整单金额
+  for (const [label, raw] of [
+    ['成交金额', form.value.dealAmount],
+    ['核销金额', form.value.redeemAmount]
+  ] as const) {
+    if (!cleanText(raw)) continue
+    const n = cleanNumber(raw)
+    if (n === null) return `${label}请填写数字`
+    if (n < 0) return `${label}不能为负`
+  }
+
+  // 逐节卡片
+  for (let i = 0; i < form.value.trialCards.length; i += 1) {
+    const c = form.value.trialCards[i]
+    const no = i + 1
+    for (const [label, raw] of [
+      ['总次数', c.total],
+      ['核销额', c.redeem]
+    ] as const) {
+      if (!cleanText(raw)) continue
+      const n = cleanNumber(raw)
+      if (n === null) return `第 ${no} 节${label}请填写数字`
+      if (n < 0) return `第 ${no} 节${label}不能为负`
+    }
+    if (cleanText(c.date) && !/^\d{4}-\d{2}-\d{2}$/.test(cleanText(c.date))) {
+      return `第 ${no} 节日期格式不对`
+    }
+  }
   return ''
 }
 
@@ -444,10 +684,12 @@ function buildCreatePayload(): LeadPayload {
     status: f.status,
     grade: f.grade || undefined,
     dealCard: f.dealCard.trim() || undefined,
-    dealAmount: f.dealAmount === '' ? null : Number(f.dealAmount),
+    // 金额走 cleanNumber：`Number('undefined')` 是 NaN，NaN 进 JSON 会变成 null，
+    // 但它在到达序列化之前已经污染过 buildPatch 的比较逻辑（NaN !== NaN 恒真）
+    dealAmount: cleanNumber(f.dealAmount),
     couponName: f.couponName.trim() || undefined,
     voucherCode: f.voucherCode.trim() || undefined,
-    redeemAmount: f.redeemAmount === '' ? null : Number(f.redeemAmount),
+    redeemAmount: cleanNumber(f.redeemAmount),
     // 与编辑态共用同一份卡片映射（含 session 重排、time 归一、raw 附加字段带回）
     trialCards: toTrialPayload(f.trialCards),
     remark: f.remark.trim() || undefined
@@ -479,13 +721,13 @@ function buildPatch(): Partial<LeadPayload> | null {
   if (cmp(f.grade, o.grade)) patch.grade = f.grade
   if (cmp(f.dealCard.trim(), o.dealCard)) patch.dealCard = f.dealCard.trim()
   const oAmount = o.dealAmount === null || o.dealAmount === undefined ? '' : String(o.dealAmount)
-  if (cmp(f.dealAmount, oAmount)) patch.dealAmount = f.dealAmount === '' ? null : Number(f.dealAmount)
+  if (cmp(f.dealAmount, oAmount)) patch.dealAmount = cleanNumber(f.dealAmount)
   if (cmp(f.couponName.trim(), o.couponName)) patch.couponName = f.couponName.trim()
   if (cmp(f.voucherCode.trim(), o.voucherCode)) patch.voucherCode = f.voucherCode.trim()
   const oRedeem =
     o.redeemAmount === null || o.redeemAmount === undefined ? '' : String(o.redeemAmount)
   if (cmp(f.redeemAmount, oRedeem)) {
-    patch.redeemAmount = f.redeemAmount === '' ? null : Number(f.redeemAmount)
+    patch.redeemAmount = cleanNumber(f.redeemAmount)
   }
   if (cmp(f.remark.trim(), o.remark)) patch.remark = f.remark.trim()
   // 体验课卡片：后端 trial_cards 是**整体替换**，所以不比单节、只比整段签名 ——
@@ -499,7 +741,8 @@ function buildPatch(): Partial<LeadPayload> | null {
 }
 
 async function submit() {
-  if (saving.value) return
+  // 双闸：saving 拦「请求在飞」，submitted 拦「已成功、等返回」的窗口期（见 submitted 注释）
+  if (saving.value || submitted.value) return
   const err = validate()
   if (err) {
     uni.showToast({ title: err, icon: 'none' })
@@ -530,6 +773,7 @@ async function submit() {
         return
       }
       const res = await updateLead(id.value, patch)
+      submitted.value = true
       // 提交成功即收工：草稿不清的话，下次进这条客资还会被问「要不要继续上次填写」
       clearFormDraft()
       if (res?.warnings?.length) {
@@ -543,23 +787,33 @@ async function submit() {
       }
     } else {
       const res = await createLead(buildCreatePayload())
+      submitted.value = true
       clearFormDraft()
       if (res?.warnings?.length) {
         uni.showModal({
           title: '已录入（含提示）',
           content: res.warnings.map((w) => w.message).join('\n'),
           showCancel: false,
-          success: () => uni.navigateBack()
+          success: () =>
+            uni.navigateBack({ delta: 1, fail: () => goPath('/pkg-crm/leads/leads') })
         })
         return
       }
       uni.showToast({ title: '已录入', icon: 'success' })
     }
-    setTimeout(() => uni.navigateBack(), 500)
+    // 深链直接打开本页时页面栈只有一层，navigateBack 会静默失败 → 用户以为没提交成功。
+    // fail 兜底回留资列表（提交已经成功，落点正确即可）。
+    setTimeout(() => {
+      uni.navigateBack({
+        delta: 1,
+        fail: () => goPath('/pkg-crm/leads/leads')
+      })
+    }, 500)
   } catch {
     /* http 层已 toast（422 的枚举错误文案会带允许值） */
   } finally {
-    saving.value = false
+    // 成功时保持 loading 直到页面返回：否则那 500ms 里按钮看起来「可以再点一次」
+    if (!submitted.value) saving.value = false
   }
 }
 
@@ -654,14 +908,31 @@ function applyFormDraft(snap: LeadFormState): void {
   form.value = {
     ...form.value,
     ...snap,
-    // 三态布尔在存储里可能被写成别的形态：恢复时统一归一，避免出现两个状态同时为真
-    trialCards: snap.trialCards.map((c, i) => ({
-      ...c,
-      session: i + 1,
-      attended: Boolean(c.attended),
-      noShow: Boolean(c.noShow),
-      cancelled: Boolean(c.cancelled)
-    }))
+    // 三态布尔在存储里可能被写成别的形态：恢复时统一归一，避免出现两个状态同时为真。
+    // 另外先剔掉非对象元素：数组判过了，但元素是不是对象没人保证 —— 旧版/手改的草稿里
+    // 混进 null 会让下面的 `c.uid` 直接抛错，而这个函数是在 showModal 回调里跑的（无 try）。
+    trialCards: snap.trialCards.filter((c) => c && typeof c === 'object').map((c, i) => {
+      const card = {
+        ...c,
+        session: i + 1,
+        uid: typeof c.uid === 'number' && c.uid > 0 ? c.uid : nextCardUid(),
+        attended: Boolean(c.attended),
+        noShow: Boolean(c.noShow),
+        cancelled: Boolean(c.cancelled),
+        // 草稿里可能存着上一版事故留下的 "undefined"：恢复时按同一套口径清洗，
+        // 否则脏值会跟着草稿一路进到提交体里
+        date: cleanText(c.date),
+        time: cleanText(c.time),
+        topic: cleanText(c.topic),
+        teacher: cleanText(c.teacher),
+        couponName: cleanText(c.couponName),
+        voucherCode: cleanText(c.voucherCode),
+        redeem: cleanText(c.redeem),
+        total: cleanText(c.total)
+      }
+      normalizeCardState(card)
+      return card
+    })
   }
 }
 
@@ -737,6 +1008,14 @@ onUnload(() => {
 /**
  * 编辑态回填：只在权限通过后执行一次。
  * 本地草稿 takeLeadDraft() 是「读后即删」的，不能在校验之前消费掉。
+ *
+ * v3.19.0 补一道 id 校验（潜在的写错行）：
+ * 列表行草稿是**全局单槽**（LEAD_DRAFT_KEY），`takeLeadDraft()` 只按「读后即删」给一份。
+ * 如果用户先点开 A（已 stage）但没进页面就退掉，随后打开 `?mode=edit&id=B`，
+ * 旧实现会把 A 的整行当 B 的基线回填 —— 用户在 B 上改一个字段，PATCH 就会拿 A 的
+ * 字段值去覆盖 B（后端只按 id 落库，不会察觉）。人工核对是查不出这种错误的。
+ * 所以：草稿 id 与 URL id 不一致时**丢弃草稿并保持 origin=null**，
+ * submit 里「没有基线就中止」那道闸会把后续操作拦下，让用户回列表重进。
  */
 function applyDraft() {
   const opt = opts.value
@@ -744,10 +1023,14 @@ function applyDraft() {
   mode.value = 'edit'
   id.value = Number(opt.id)
   const draft = takeLeadDraft()
-  if (draft) {
-    origin.value = draft
-    hydrate(draft)
+  if (!draft) return
+  if (Number(draft.id) !== id.value) {
+    // 基线不匹配：不清 id（页面仍是编辑态，submit 会因 origin 缺失而中止）
+    uni.showToast({ title: '原始数据已过期，请回列表重进', icon: 'none' })
+    return
   }
+  origin.value = draft
+  hydrate(draft)
 }
 
 // 权限：先登录，再校验「留资管理」功能权限；首个 show 才回填草稿 + 补渠道清单
@@ -878,7 +1161,7 @@ onShareAppMessage(() => shareToHome())
       title="体验课 / 上课记录"
       :desc="`共 ${form.trialCards.length} 节；录完在客资卡片上能看到每节状态、课程与券码`"
     >
-      <view v-for="(c, i) in form.trialCards" :key="i" class="tcard">
+      <view v-for="(c, i) in form.trialCards" :key="c.uid" class="tcard">
         <view class="tcard__head">
           <text class="tcard__title">第 {{ i + 1 }} 节</text>
           <view class="tcard__del ym-tap" @click="removeCard(i)">
@@ -887,11 +1170,15 @@ onShareAppMessage(() => shareToHome())
           </view>
         </view>
 
+        <!-- 三处都是**微信原生** picker（不是 wd-picker）：@change 给的是原生事件
+             `{detail:{value}}`，取值一律走 pickerValue()，不要在这里写 e.value。
+             :value 给兜底合法值（原生组件拿到空串/undefined 会退回「今天」并可能告警），
+             格子里的文案仍按真实值显示，没填就显示占位。 -->
         <view class="tcard__row">
-          <picker mode="date" :value="c.date" @change="onCardDate(i, $event)">
+          <picker mode="date" :value="cardDateValue(c)" @change="onCardDate(i, $event)">
             <view class="tcard__cell ym-tap">{{ c.date || '选日期' }}</view>
           </picker>
-          <picker mode="time" :value="c.time" @change="onCardTime(i, $event)">
+          <picker mode="time" :value="cardTimeValue(c)" @change="onCardTime(i, $event)">
             <view class="tcard__cell ym-tap">{{ c.time || '选时间' }}</view>
           </picker>
           <picker

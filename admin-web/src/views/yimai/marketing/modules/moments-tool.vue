@@ -227,6 +227,28 @@
         </div>
       </div>
 
+      <!--
+        读图守卫（t6）：**选好图就立刻**说清「这次图片会不会被识别」，而不是等生成完在结果区
+        角落留一行小字 —— 那时馆主眼睛已经在文案上，看到「文案跟图无关」只会以为功能坏了。
+        未选图时整块不渲染（与图无关的提醒只是噪音）；判定与措辞全部来自 api 层
+        resolveMomentsVisionGuard（能力词表仍是唯一事实来源，视图不另写一套正则）。
+        不硬拦生成：词表是「按模型名判定」的启发式，判错方向不能是「让人用不了功能」。
+      -->
+      <ElAlert v-if="visionGuard.blocked" class="mt-3" type="error" show-icon :closable="false">
+        <template #title>
+          <span class="font-500">{{ visionGuard.title }}</span>
+        </template>
+        <div class="text-xs leading-5">{{ visionGuard.detail }}</div>
+        <div v-if="isSuper" class="mk-btn-row mt-2">
+          <ElButton type="danger" size="small" @click="$router.push('/yimai/ai-config')">
+            去「模型配置」换成读图模型
+          </ElButton>
+        </div>
+        <div v-else class="text-xs text-g-500 mt-2">
+          读图模型由超管在「模型配置」里设置，可请超管切换后再生成。
+        </div>
+      </ElAlert>
+
       <ElFormItem :label-position="formLabelPosition" label="我想说" class="mt-2">
         <ElInput
           v-model="userInput"
@@ -282,6 +304,34 @@
         :closable="false"
         class="mb-3"
       />
+
+      <!--
+        「图片理解」回显（t6）：这是「模型真的看了图」唯一可感知的证据 ——
+        只给文案时，读没读图在界面上完全同形，馆主只能猜。这里把模型自述看到的画面
+        逐张摆出来，上面一眼就能核对（图里是普拉提核心床还是空中瑜伽吊床）。
+        内容**全部来自模型原文**（api 层解析），视图不拼、不补、不美化：
+        模型没说就整块不显示（配上面的 warning 如实说明），绝不伪造一段像样的描述。
+      -->
+      <div v-if="imageReadback" class="mk-check-list mb-3">
+        <div class="flex-cb">
+          <span class="text-xs font-500 text-g-700">
+            <i class="ri-eye-line mr-1" />图片理解（模型先看图，再写文案）
+          </span>
+          <ElButton link type="primary" size="small" @click="copyText(readbackText)">
+            复制
+          </ElButton>
+        </div>
+        <div v-for="it in imageReadback.items" :key="it.index" class="mk-check-item">
+          <span class="mk-check-item__label">图{{ it.index }}</span>
+          <span class="mk-check-item__detail">{{ it.detail }}</span>
+        </div>
+        <p
+          v-if="!imageReadback.items.length"
+          class="text-xs leading-6 text-g-600 whitespace-pre-wrap"
+        >
+          {{ imageReadback.text }}
+        </p>
+      </div>
       <div v-loading="generating">
         <div v-if="drafts.length" class="mk-result-list">
           <div v-for="(d, i) in drafts" :key="d.key" class="mk-result-card">
@@ -658,10 +708,18 @@
     MktDraftRow,
     MomentsInput,
     MomentsMatchReport,
+    MomentsResult,
     MomentsCategoryItem,
     PromptCheck,
     PromptLayer
   } from './marketing-api-bridge'
+  /**
+   * 读图守卫取自 api 层（`@/api/ai`）直连，不经 bridge：
+   * 判定读图能力靠的是 `MOMENTS_VISION_MODEL_TOKENS` 这张词表，属**引擎能力判定**，
+   * 与「界面 → 提示词入参」的形状契约（bridge 的职责）不是一回事；本仓 profile / training
+   * 等视图同样直连 `@/api/ai` 取引擎能力符号。此处不复制任何正则，视图只做展示。
+   */
+  import { resolveMomentsVisionGuard } from '@/api/ai'
   import type { MarketingHistoryItem, MyProfile } from '@/api/my'
   import {
     defaultMyProfile,
@@ -915,6 +973,22 @@
     )
   )
 
+  /**
+   * 生成前的读图守卫（t6）。
+   *
+   * `hasImages` 用**列表张数**（而不是已压缩好的 `imageUrls` 张数）：选了图那一刻就该看到
+   * 「这次的图会不会被识别」，不必等压缩完成才亮；压缩失败会把该图移出列表，提示随之消失。
+   * 判定与文案全部来自 api 层，视图不重算模型能力、也不自己写提示语。
+   */
+  const visionGuard = computed(() =>
+    resolveMomentsVisionGuard({
+      hasImages: uploadFileList.value.length > 0,
+      imageCount: uploadFileList.value.length,
+      model: aiStore.config.model,
+      aiReady: aiStore.isReady()
+    })
+  )
+
   // ==================== 生成铁律（api 层常量，只读展示） ====================
 
   /**
@@ -945,6 +1019,11 @@
   const promptMessages = ref<PromptLayer[]>([])
   /** 引擎返回的「当前模型可能不读图」如实提醒（有图才可能非空，视图不重算） */
   const visionHint = ref('')
+  /**
+   * 模型先说出来的「图片理解」（本次真的带图且模型说了才非空；无图/降级时为 undefined）。
+   * 视图只负责渲染，内容一律来自引擎解析结果。
+   */
+  const imageReadback = ref<MomentsResult['imageReadback']>(undefined)
   const favVisible = ref(false)
   const reportVisible = ref(false)
   const promptVisible = ref(false)
@@ -955,6 +1034,14 @@
 
   const hasResult = computed(() => drafts.value.length > 0)
   const latestResultContent = computed(() => drafts.value[0]?.content ?? '')
+  /** 「图片理解」纯文本（复制用）：能分张时按「图N：…」逐行，否则用模型原文 */
+  const readbackText = computed(() => {
+    const rb = imageReadback.value
+    if (!rb) return ''
+    return rb.items.length
+      ? rb.items.map((it) => `图${it.index}：${it.detail}`).join('\n')
+      : rb.text
+  })
   const promptText = computed(() =>
     promptMessages.value.map((m) => `[${m.role}]\n${m.content}`).join('\n\n')
   )
@@ -1025,6 +1112,8 @@
     promptMessages.value = []
     // 载入历史不是一次带图生成，上一条的读图提醒不能留在屏幕上误导用户
     visionHint.value = ''
+    // 同理：上一条的「图片理解」属于上一次的图，不能挂在这条历史记录上
+    imageReadback.value = undefined
   }
 
   function buildPersona() {
@@ -1106,6 +1195,7 @@
     generating.value = true
     warning.value = ''
     visionHint.value = ''
+    imageReadback.value = undefined
     try {
       const payload = buildPayload()
       const res = await generateMomentsCopy(payload)
@@ -1114,6 +1204,8 @@
       warning.value = res.warning ?? ''
       // 引擎返回的「当前模型可能不读图」提醒：视图只转发，不自己重算能力判定
       visionHint.value = res.visionHint ?? ''
+      // 模型先说出来的「图片理解」：有图且模型说了才有值，视图不补写、不美化
+      imageReadback.value = res.imageReadback
       promptMessages.value = res.prompt
       report.value = auditMomentsResult(payload, promptText.value, res.drafts)
     } finally {
@@ -1205,6 +1297,8 @@
     report.value = null
     promptMessages.value = []
     visionHint.value = ''
+    // 载入历史/收藏不是一次带图生成：上一条的「图片理解」不能留在屏幕上冒充本次结果
+    imageReadback.value = undefined
     favVisible.value = false
   }
 

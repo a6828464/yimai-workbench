@@ -15,6 +15,7 @@ use App\Models\Task;
 // 不导入时 `User` 会被解析成 App\Http\Controllers\User（不存在），
 // 于是类型提示在运行时抛 TypeError —— 且只在带 type 的调用路径上才炸。
 use App\Models\User;
+use App\Support\CardLifecycle;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -591,8 +592,24 @@ class CustomerController extends Controller
         // **不回写数据库、不改任何判定口径**。
         $cards = $this->allCards($c);
 
+        /*
+         * ── v3.19.0：到期日兜底（**只做展示层**，不改任何判定）──────────────────
+         * 真机反馈「这个人明明有卡，到期日却显示 —」：`customers.expire_date` 只在**同步跑过**
+         * 且能算出到期日时才有值（口径＝当前实例最早 deadline，见 KyMemberSyncService:727）；
+         * 历史行（v3.9 之前的快照、手工建的会员）没有这一列，而卡片自身的 `deadline` 是有值的。
+         * 这里在响应组装层补一次推导，并用 `expireDateSource`
+         * 把「库里权威值」与「从卡项推出来的值」显式区分开 —— 不区分就等于把推断当事实。
+         * 待续费判定 / 五清单 / layer 派生列读的仍是原列，本处不回写、不新增列。
+         */
+        $customer = camel($c);
+        // 推导口径只有一份（CardLifecycle::displayExpireDate）：今日待办的流失风险卡也调它，
+        // 否则同一个会员会出现「详情说到期日可推断、待办说无到期日」两套答案。
+        [$resolvedExpireDate, $expireDateSource] = CardLifecycle::displayExpireDate($c->expire_date, $cards['cardsList']);
+        $customer['expireDate'] = $resolvedExpireDate;
+        $customer['expireDateSource'] = $expireDateSource;
+
         return ok([
-            'customer' => camel($c),
+            'customer' => $customer,
             'logs' => $logs,
             'leads' => $leads,
             'cardsList' => $cards['cardsList'],
@@ -648,11 +665,29 @@ class CustomerController extends Controller
                 $isMain = true;
                 $mainMarked = true;
             }
-            $out[] = $card + [
+            /*
+             * v3.19.0：逐卡补「剩余量 / 初始余额 / 已用量」三件套。
+             *
+             * 为什么必须在这里补、而不是改同步写入：同步侧 `cards_list` 里
+             * **只给次卡写 `bound`**（期限卡/储值卡恒 null），而且**从来没有 `remaining` 键**。
+             * 小程序「全部卡项」按 `card.remaining` 渲染剩余量，于是次卡只剩一行「到期 X」，
+             * 看不到还剩几节 —— 这正是一线反馈的「次卡没有剩余次数」。
+             * 改同步就要动 cards_list 契约（判定层输入），风险远大于收益；这里是纯展示聚合，
+             * 只读透传、不回写、不新增列。
+             */
+            $balance = self::cardBalance($card);
+            $row = $card + [
                 'state' => $state,
                 'stateLabel' => self::CARD_STATE_LABELS[$state] ?? $state,
                 'isMain' => $isMain,
             ];
+            // 行内已有合法 remaining 时尊重原值（老快照可能自带），只补缺的
+            if (! is_numeric($row['remaining'] ?? null)) {
+                $row['remaining'] = $balance['remaining'];
+            }
+            $row['boundTotal'] = $balance['boundTotal'];
+            $row['consumed'] = $balance['consumed'];
+            $out[] = $row;
         };
 
         foreach ($current as $card) {
@@ -689,6 +724,86 @@ class CustomerController extends Controller
                 'total' => count($out),
             ],
         ];
+    }
+
+    /**
+     * 单张卡的「剩余量 / 初始余额 / 已用量」（v3.19.0，会员详情「全部卡项」用）。
+     *
+     * ── 口径唯一 owner：`App\Support\CardLifecycle::normalize()` ──────────────
+     * 本方法**不重写**类型与剩余量的判定：`type` / `unit` / `remaining` 全部由
+     * normalize() 归一（次卡=residue 取整、期限卡=由 deadline 推导的剩余天数、
+     * 储值卡=residue 金额）。理由与 `CardLifecycle` 类头注释一致：两份实现必然分叉，
+     * 分叉的形态就是「列表说剩 3 节、详情说剩 2 节」这种查不出根因的缺陷。
+     *
+     * ── 初始余额（boundTotal）的取值顺序 ─────────────────────────────────
+     *  1. 行内 `bound`（`KyMemberSyncService::summarizeCards` 写的就是「剩余 + 已耗次数」，
+     *     次卡的权威分母；期限卡/储值卡该列恒 null，所以只能往下走）；
+     *  2. 期限卡退回 `validDays`（有效期总天数 = expiry_months*30 + expiry_days，
+     *     同样由 normalize() 算好，与判定层的「有效期占比」分母同源）；
+     *  3. 行内同时有 residue 与 consumed 时，`boundTotal = residue + consumed`；
+     *  4. 都取不到 → null（**未知 ≠ 0**：写 0 会让界面显示「共 0 节」，比不显示更糟）。
+     *
+     * ── 已用量（consumed）────────────────────────────────────────────────
+     * 与 boundTotal 同来源：`boundTotal - residue`（不足则收敛到 0）。
+     * 期限卡例外，恒给 null：期限卡的「已用天数」等于挂钟走过天数，
+     * 与权益消耗不是同一个量（续期过的卡还会算出负数），不猜。
+     *
+     * 一个反直觉的已知限制：次卡的 bound 是同步侧用上游 `usage_total / 单次折算价`
+     * 推导出来的，上游字段缺失时同步侧会把 bound 退成「仅剩余次数」——
+     * 那种卡会显示「剩 3 / 共 3」，属于上游数据缺失，不是这里的口径问题。
+     *
+     * @return array{remaining: int|float|null, boundTotal: int|float|null, consumed: int|float|null}
+     */
+    private static function cardBalance(array $card): array
+    {
+        $rowBound = is_numeric($card['bound'] ?? null) ? (float) $card['bound'] : null;
+        $rowResidue = is_numeric($card['residue'] ?? null) ? (float) $card['residue'] : null;
+        $rowConsumed = is_numeric($card['consumed'] ?? null) ? (float) $card['consumed'] : null;
+
+        $instance = CardLifecycle::normalize($card);
+        $type = (int) $instance['type'];
+        $unit = (string) $instance['unit'];
+
+        $remaining = $instance['remaining'];
+
+        if ($rowBound !== null) {
+            $boundTotal = $rowBound;
+        } elseif ($type === CardLifecycle::TYPE_TIME && $instance['validDays'] !== null) {
+            $boundTotal = (float) $instance['validDays'];
+        } elseif ($rowResidue !== null && $rowConsumed !== null) {
+            $boundTotal = $rowResidue + $rowConsumed;
+        } else {
+            $boundTotal = null;
+        }
+
+        if ($type === CardLifecycle::TYPE_TIME) {
+            $consumed = $rowConsumed;
+        } elseif ($boundTotal !== null && $rowResidue !== null) {
+            $consumed = max(0.0, $boundTotal - $rowResidue);
+        } else {
+            $consumed = $rowConsumed;
+        }
+
+        return [
+            'remaining' => self::fmtQty($remaining, $unit),
+            'boundTotal' => self::fmtQty($boundTotal, $unit),
+            'consumed' => self::fmtQty($consumed, $unit),
+        ];
+    }
+
+    /**
+     * 节 / 天 取整、元保留 2 位，null 原样返回。
+     *
+     * 与 `helpers.php::customerDecision()` 的 `instanceSnapshots` 逐字同口径
+     * （unit==='元' ? round(2) : (int) floor），前端两处读到的小数位数才不会打架。
+     */
+    private static function fmtQty(?float $value, string $unit): int|float|null
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return $unit === '元' ? round($value, 2) : (int) floor($value);
     }
 
     /** GET /customers/{id}/renewal-evaluation */

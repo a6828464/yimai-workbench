@@ -60,6 +60,33 @@ const c = computed(() => detail.value?.customer ?? null)
  */
 const cards = computed<CustomerCard[]>(() => detail.value?.cardsList ?? [])
 
+/* ---------- 到期日来源（v3.19.0） -------------------------------------------------
+ *
+ * 后端口径（CustomerController::resolveExpireDate）：
+ *  - `current`  库里的 `customers.expire_date` 有值，**权威**；
+ *  - `inferred` 库为空，由「在用卡」里最近的 deadline 推出；
+ *  - `history`  库为空且在用卡都没有 deadline，只能由历史卡推出（依据更弱）；
+ *  - `none`     卡项里也没有到期日。
+ *
+ * 为什么页面上要标出来：`inferred` / `history` 都是**推断值**，写回库的是同步侧的上游事实。
+ * 店员看到日期就得能分清「系统权威值」还是「我们替他推的」—— 不标注，等于拿推断当依据去催续费。
+ * 类型就放在本页：目前只有这一格消费它，等第二个页面要用再上提 types/index.ts。
+ */
+type ExpireDateSource = 'current' | 'inferred' | 'history' | 'none'
+
+const expireDateSource = computed<ExpireDateSource>(() => {
+  const raw = String(
+    (detail.value?.customer as (CustomerDetail['customer'] & { expireDateSource?: string }) | undefined)
+      ?.expireDateSource ?? ''
+  )
+  return raw === 'current' || raw === 'inferred' || raw === 'history' || raw === 'none' ? raw : 'none'
+})
+
+/** 非权威值（推断）→ 日期下方补一行极小字；`none` 没有日期，不标 */
+const expireDateInferred = computed(
+  () => expireDateSource.value === 'inferred' || expireDateSource.value === 'history'
+)
+
 const CARD_STATE_LABEL: Record<string, string> = {
   current: '在用',
   unactivated: '未开卡',
@@ -113,29 +140,104 @@ function cardKind(card: CustomerCard): 'times' | 'days' | 'money' | 'other' {
 }
 
 /**
- * 卡项剩余（2026-11 修，馆主点名）。
+ * 卡型对应的计量单位：储值卡金额、期限卡天数、次卡以后端 `unit` 为准（缺省「节」）。
+ * 与 cardTotalOf / cardResidueOf 同一命名风格；叫 cardUnitOf 而不是 cardUnit，
+ * 是为了不和「以前声明过、但后端从不下发的 `cardUnit` 字段」撞名（见 types/index.ts 的说明）。
+ */
+function cardUnitOf(card: CustomerCard): string {
+  const kind = cardKind(card)
+  if (kind === 'money') return '元'
+  if (kind === 'days') return '天'
+  return String(card.unit || '节')
+}
+
+/**
+ * 卡项「总量」（v3.19.0 修，馆主点名：次卡只显示到期日、看不到总共几张几次）。
  *
- * 病根：期限卡的 `remaining` 恒为 null，旧实现只看 remaining → 永远落到「按到期日计」，
- * 后端算好的 `residueDays`（剩余天数）根本没用上，所以「余额一直不显示」。
- * 现在按卡的性质分流：
- *  - 期限卡：优先 residueDays → 老数据回退 daysUntil → 都没有才说「按到期日计」；
- *  - 次卡：`剩 N 节`；储值卡：`剩 N 元`（不再掉进到期日口径）；
- *  - 已过期（state=history 或任一余额为负）：一律「已过期」。
+ * **只认 `boundTotal`**，不在前端自己拼「总量」。它在后端 `CustomerController::cardBalance()`
+ * 里按卡型逐个取，三种卡型的真相并不一样，这里如实地写清楚（改注释前先读那段代码）：
+ *
+ *  · 次卡：取原始行的 `bound`（同步侧 `KyMemberSyncService::summarizeCards` 写的就是
+ *    「剩余 + 已耗次数」，是次卡的权威分母）→ 能显示「总 12 节 · 剩 3 节」。
+ *    已知限制：上游缺 usage_total 时同步侧会把 bound 退成「仅剩余次数」，
+ *    那种卡会显示「剩 3 / 共 3」，属于上游数据缺失，不是前端算错。
+ *  · 期限卡：原始行 `bound` 恒 null，后端退回 `validDays`（expiry_months*30 + expiry_days）
+ *    → 能显示「总 90 天 · 剩 12 天」。
+ *  · 储值卡：**拿不到总额** —— 原始行 `bound` 恒 null（同步侧只给次卡写这一列），
+ *    它又不是期限卡，原始行也没有 `consumed` 列可供「residue + consumed」兜底，
+ *    所以后端的 `boundTotal` 对储值卡**恒为 null**。前端于是只显示「剩 1200 元」，
+ *    看不到「总 3000 元」—— 不是这里漏判，是上游根本没给；
+ *    要做成「总 N 元」得先让同步侧写储值卡的初始充值额，属后端/上游的事。
+ *  · 都取不到时后端给 **null 而不是 0**（未知 ≠ 0，写 0 会显示「总 0 节」）。
+ *
+ * 所以前端只做一件事：`boundTotal` 有值就显示「总 X · 剩 Y」，为 null 就退化成只显示剩余量
+ * （见 cardRemain）。绝不自己拿 `bound` 再算一遍 —— 后端已经处理过取值顺序，
+ * 前端再判一次只会多一份会分叉的口径。
+ */
+function cardTotalOf(card: CustomerCard): number | null {
+  return numOrNull(card.boundTotal)
+}
+
+/**
+ * 剩余量：**先读 `remaining`**（v3.19.0 后端已把它统一成三种卡型的唯一入口 ——
+ * 次卡=节数、期限卡=由 deadline 推导的剩余天数、储值卡=金额），
+ * 只有老快照没这个键时才回退期限卡的 residueDays / daysUntil。
+ *
+ * 为什么不再优先 residueDays：期限卡的真实权威在 `CardLifecycle::normalize()`，
+ * 它算出来的就是 remaining；前端另开一条「先看 residueDays」的岔路，一旦后端修了
+ * 剩余量口径（本次正是修这个），前端还在读旧键，就会出现「列表说剩 3 天、详情说 —
+ * 按到期日计」的对不上。读一个键，口径只有一份。
+ */
+function cardResidueOf(card: CustomerCard): number | null {
+  const value = numOrNull(card.remaining)
+  if (value !== null) return value
+  if (cardKind(card) === 'days') return numOrNull(card.residueDays) ?? numOrNull(card.daysUntil)
+  return null
+}
+
+/**
+ * 卡项「总 / 剩」展示（2026-11 修，馆主点名）。
+ *
+ * 病根两条，一起修：
+ *  ① 期限卡的 `remaining` 恒为 null，旧实现只看 remaining → 永远落到「按到期日计」，
+ *     后端算好的 `residueDays` 根本没用上，所以「余额一直不显示」；
+ *  ② 次卡只显示到期日，看不出「总共 12 节、用了 9 节」—— 判读续费时最需要这层对比。
+ *
+ * 现在的口径（与后端 t1 契约一致；`boundTotal` 的来源见 cardTotalOf 的注释）：
+ *  - 次卡：`总 12 节 · 剩 3 节`
+ *  - 期限卡：`总 90 天 · 剩 12 天`
+ *  - 储值卡：后端 `boundTotal` **恒 null**（上游不给充值总额）→ 实际显示 `剩 1200 元`；
+ *    「总 N 元」这条分支留着，但要等同步侧开始写储值卡初始额才会出现，别当成现成功能
+ *  - `boundTotal` 缺失：只显示 `剩 N 节`，绝不拼出「总 null 节」
+ *  - 已过期（state=history 或任一余额为负）：前面加「已过期」，**但保留总/剩** ——
+ *    「这张卡当年买了多少、用掉多少」是历史事实，抹掉就等于把档案改成空白；
+ *    负余额按 0 显示（`剩 -3 天` 是脏数据，不往界面上渲染）。
  */
 function cardRemain(card: CustomerCard): string {
-  if (String(card.state ?? '') === 'history') return '已过期'
-  if (isNegative(card.residueDays) || isNegative(card.remaining) || isNegative(card.daysUntil)) {
-    return '已过期'
+  const expired =
+    String(card.state ?? '') === 'history' ||
+    isNegative(card.residueDays) ||
+    isNegative(card.remaining) ||
+    isNegative(card.daysUntil)
+
+  const total = cardTotalOf(card)
+  const residue = cardResidueOf(card)
+  const unit = cardUnitOf(card)
+
+  // 已过期：先给结论，再给总/剩（历史用量仍要看得见）
+  if (expired) {
+    const parts = ['已过期']
+    if (total !== null) parts.push(`总 ${total} ${unit}`)
+    if (residue !== null) parts.push(`剩 ${Math.max(0, residue)} ${unit}`)
+    return parts.join(' · ')
   }
-  if (cardKind(card) === 'days') {
-    const days = numOrNull(card.residueDays) ?? numOrNull(card.daysUntil)
-    return days === null ? '按到期日计' : `剩 ${days} 天`
+
+  if (residue === null) {
+    // 期限卡连剩余天数都拿不到时，只能说明「按到期日计」（旧口径，保留）；
+    // 其余卡型没有余额就说「—」，不编数字
+    return cardKind(card) === 'days' ? '按到期日计' : '—'
   }
-  const amount = numOrNull(card.remaining)
-  if (amount === null) return '—'
-  if (cardKind(card) === 'money') return `剩 ${amount} 元`
-  // 次卡与未知类型：单位以后端为准（缺省「节」，与旧口径一致）
-  return `剩 ${amount} ${card.unit || '节'}`
+  return `${total === null ? '' : `总 ${total} ${unit} · `}剩 ${residue} ${unit}`
 }
 
 /** 卡项到期日（只到天） */
@@ -492,6 +594,8 @@ onShareAppMessage(() => shareToHome())
           </view>
           <view class="grid__cell">
             <text class="grid__value ym-num">{{ toDateStr(c.expireDate) || '—' }}</text>
+            <!-- 推断值必须自证来源：小字压在日期下方，字号比 label 还小，不抢日期本身 -->
+            <text v-if="expireDateInferred && c.expireDate" class="grid__hint">按卡项推断</text>
             <text class="grid__label">到期日</text>
           </view>
           <view class="grid__cell">
@@ -1221,6 +1325,16 @@ onShareAppMessage(() => shareToHome())
 .grid__label {
   font-size: 21rpx;
   color: $ink-400;
+}
+
+/*
+ * 推断来源标注（v3.19.0）：比 label（21rpx）再小一档、用更浅的金色，
+ * 目的是「看得见但不抢戏」—— 它只解释日期的来路，不是可点可改的信息。
+ */
+.grid__hint {
+  font-size: 18rpx;
+  line-height: 1.2;
+  color: $gold-500;
 }
 
 .rows {
