@@ -70,6 +70,55 @@ class TodoActionTest extends TestCase
         $this->assertDatabaseHas('todo_actions', ['todo_key' => 'renewal:'.$c->id, 'action' => '已沟通待跟进']);
     }
 
+    /**
+     * 沟通备注必须进**会员档案的留痕**，而不是只停在待办行上。
+     *
+     * 现场口径（2026-11 服务老师真机反馈）：「只是点个已沟通太形式化，万一离职或换服务老师，
+     * 下一个老师对这个会员不清楚」。要让下一个人看得懂，沟通内容必须落到
+     * `audit_logs` 的 `module = 会员管理`（会员 360 读的就是这一份），
+     * 而 `todo_actions.remark` 按 (todo_key, action_date) 覆盖、只留当天最后一条，撑不起交接。
+     *
+     * 同一条测试顺带钉住「空备注不写留痕」：否则每天点一次「已沟通」会灌满
+     * 一堆「已沟通：」的空行，留痕本身就没法看了。
+     */
+    public function test_mark_renewal_with_remark_writes_member_audit_trail(): void
+    {
+        Sanctum::actingAs($this->user('manager-green', '绿地店长', 'R_MANAGER', '绿地店'));
+        $c = Customer::create([
+            'name' => '沟通留痕会员', 'phone' => '13800000021', 'phone_tail' => '0021',
+            'venue' => '绿地店', 'source' => 'KeepYoga', 'owner' => '绿地店长', 'consultant' => '绿地店长',
+            'main_card' => '私教卡', 'remain_times' => 2, 'attend_m3' => 1, 'layer' => 'P4', 'status' => '在籍',
+        ]);
+
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'renewals', 'key' => 'renewal:'.$c->id, 'action' => '已沟通',
+            'customerId' => $c->id, 'touch' => true, 'remark' => '已电话沟通，她说膝盖恢复中，10 月再来',
+        ])->assertOk();
+
+        $this->assertDatabaseHas('audit_logs', [
+            'module' => '会员管理',
+            'target_id' => (string) $c->id,
+            'action' => '沟通记录',
+        ]);
+        $log = \App\Models\AuditLog::where('module', '会员管理')->where('target_id', (string) $c->id)->first();
+        $this->assertStringContainsString('膝盖恢复中', (string) $log->detail);
+
+        // 会员 360 的留痕就是这个接口，必须当场能读到
+        $detail = $this->getJson('/api/customers/'.$c->id)->assertOk()->json('data.logs');
+        $this->assertTrue(collect($detail)->contains(fn ($l) => ($l['action'] ?? '') === '沟通记录'));
+
+        // 空备注：不写第二条留痕（只有当天 pending 那条待办被更新）
+        $this->postJson('/api/today/todo/action', [
+            'type' => 'renewals', 'key' => 'renewal:'.$c->id, 'action' => '已沟通',
+            'customerId' => $c->id, 'touch' => true,
+        ])->assertOk();
+
+        $this->assertSame(
+            1,
+            \App\Models\AuditLog::where('module', '会员管理')->where('target_id', (string) $c->id)->where('action', '沟通记录')->count()
+        );
+    }
+
     public function test_teacher_cannot_mark_lead_assigned_to_other_teacher(): void
     {
         Sanctum::actingAs($this->user('teacher-b', '老师B', 'R_TEACHER', '绿地店'));

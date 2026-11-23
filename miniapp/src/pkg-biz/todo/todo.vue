@@ -37,6 +37,14 @@ interface FlatItem {
   tags: string[]
   done: boolean
   doneBy?: string
+  /**
+   * 处理后留下的沟通备注（后端 `doneRemark`）。
+   *
+   * 同一组待办是**全店共享**的：谁先处理，其他人再打开就看到「已由 嘉欣 处理」。
+   * 不带这行备注的话，「她上次到底说了什么」只能点进会员 360 才看得到，
+   * 而员工反馈的正是「对这个客户还是不清楚」。
+   */
+  doneRemark?: string
   /** 后端下发的会员 id：既用于 todoAction 回执，也用于「点行进会员 360」 */
   customerId?: number
   /** 后端下发的留资 id：用于 todoAction 回执 + 点行跳留资列表 */
@@ -203,6 +211,7 @@ function normalize(raw: RawTodo) {
         tags: tagsOf(it, type),
         done: Boolean(it.done),
         doneBy: it.doneBy ? String(it.doneBy) : undefined,
+        doneRemark: it.doneRemark ? String(it.doneRemark) : undefined,
         customerId: explicitCustomer ?? fromKey.customerId,
         leadId: explicitLead ?? fromKey.leadId,
         actions: DEFAULT_ACTIONS[type] ?? ['已处理']
@@ -239,7 +248,79 @@ async function load() {
   }
 }
 
-async function act(item: FlatItem, action: string) {
+/**
+ * 哪些动作需要「先写一句沟通内容」。
+ *
+ * 起因（2026-11 真机反馈，服务老师在群里提的原话）：
+ *   「已沟通里面点进去，感觉最好可以有一栏这次沟通的内容备忘……因为如果只是点个已沟通，
+ *     有一点形式化，对这个客户还是不清楚的」。
+ *
+ * 所以 `已沟通` 点下去先弹备注面板，写不写都行（面板里有「只标记」），但不写就永远
+ * 没有交接信息。其它动作（已到店 / 爽约 / 已祝福 / 已提交）是同一天几十次的高频点击，
+ * 加一步会明显拖慢，**不加**。要扩就把动作名加进这个集合，别在模板里另写条件。
+ */
+const NEEDS_REMARK = new Set(['已沟通'])
+
+/**
+ * 快捷短语：一麦续费/流失场景里最常出现的六种沟通结果。
+ *
+ * 员工在门店前台用一只手打字，逐字敲备注必然演变成「不写」。点一下填进去、还能改，
+ * 才能让「写备注」这件事的成本低到愿意做。文案只描述**沟通结果**，不预设结论。
+ */
+const NOTE_PRESETS = [
+  '已电话沟通，本周内到店',
+  '已微信跟进，还没回',
+  '在考虑，月底给答复',
+  '价格敏感，已介绍活动',
+  '出差/受伤，延期跟进',
+  '已明确不再续'
+]
+
+const noteOpen = ref(false)
+const noteText = ref('')
+const noteItem = ref<FlatItem | null>(null)
+const noteAction = ref('')
+
+/** 动作入口：沟通类动作先开备注面板，其余动作保持「一键闭环」 */
+function onAction(it: FlatItem, action: string): void {
+  if (!NEEDS_REMARK.has(action)) {
+    void submit(it, action)
+
+    return
+  }
+  noteItem.value = it
+  noteAction.value = action
+  noteText.value = ''
+  noteOpen.value = true
+}
+
+/** 点快捷短语：填入 / 再点取消（同一句不重复堆叠） */
+function togglePreset(text: string): void {
+  if (noteText.value.includes(text)) {
+    noteText.value = noteText.value.replace(text, '').replace(/^；|；$/g, '').trim()
+
+    return
+  }
+  noteText.value = noteText.value ? `${noteText.value}；${text}` : text
+}
+
+/**
+ * 备注面板的两个出口：
+ *  - `withRemark = true`  → 保存内容并标记（remark 会写进会员档案的操作留痕）
+ *  - `withRemark = false` → 只标记，不写内容（等同旧行为，但不会静默丢字）
+ *
+ * 无论走哪条都先关面板：小程序里 popup 盖着调接口，成功后一行 toast 会被遮住。
+ */
+function confirmNote(withRemark: boolean): void {
+  const it = noteItem.value
+  const action = noteAction.value
+  const text = withRemark ? noteText.value.trim() : ''
+  noteOpen.value = false
+  if (!it) return
+  void submit(it, action, text)
+}
+
+async function submit(item: FlatItem, action: string, remark = '') {
   const opId = `${item.type}:${item.key}`
   if (acting.value === opId) return
   acting.value = opId
@@ -248,6 +329,9 @@ async function act(item: FlatItem, action: string) {
       type: item.type,
       key: item.key,
       action,
+      // 空字符串不发：后端 `nullable` 收到 '' 也会落一条空备注，
+      // 而空备注在会员留痕里是纯噪音（后端只在非空时写会员留痕）。
+      remark: remark !== '' ? remark : undefined,
       customerId: item.customerId,
       leadId: item.leadId,
       touch: action === '已沟通' ? true : undefined
@@ -467,6 +551,8 @@ onShareAppMessage(() => shareToHome())
         </view>
 
         <text v-if="it.done" class="titem__done">已由 {{ it.doneBy || '同事' }} 处理</text>
+        <!-- 同事写下的沟通内容，同一行里直接看得到（后端 doneRemark） -->
+        <text v-if="it.done && it.doneRemark" class="titem__donenote ym-ellipsis">{{ it.doneRemark }}</text>
 
         <!-- tasks 组的 actions 是空数组（后端 todoAction 的 type 白名单不含 tasks，
              放任何按钮都会 422）：没有动作时不要渲染空容器，否则行尾多出 16rpx 空白 -->
@@ -477,7 +563,7 @@ onShareAppMessage(() => shareToHome())
               plain
               block
               :disabled="acting === `${it.type}:${it.key}`"
-              @click.stop="act(it, a)"
+              @click.stop="onAction(it, a)"
             >
               {{ a }}
             </wd-button>
@@ -485,6 +571,53 @@ onShareAppMessage(() => shareToHome())
         </view>
       </view>
     </ym-section>
+
+    <!-- 沟通备注面板（2026-11 员工反馈）：只对 NEEDS_REMARK 里的动作弹出。
+         内容写进会员档案的操作留痕（后端 module=会员管理），换服务老师接手时可见。 -->
+    <wd-popup
+      v-model="noteOpen"
+      position="bottom"
+      safe-area-inset-bottom
+      custom-style="border-radius: 28rpx 28rpx 0 0;"
+    >
+      <view class="note">
+        <view class="note__head">
+          <text class="note__title">这次沟通说了什么？</text>
+          <text class="note__sub ym-ellipsis">{{ noteItem?.title }}</text>
+        </view>
+
+        <view class="note__presets">
+          <view
+            v-for="p in NOTE_PRESETS"
+            :key="p"
+            class="note__chip ym-tap"
+            :class="{ 'is-on': noteText.includes(p) }"
+            @click="togglePreset(p)"
+          >
+            {{ p }}
+          </view>
+        </view>
+
+        <wd-textarea
+          v-model="noteText"
+          :maxlength="200"
+          show-word-limit
+          placeholder="也可以自己写：她的顾虑、约好的下一步、下次跟进时间…"
+          custom-class="note__input"
+        />
+
+        <text class="note__tips">会写进这个会员的操作留痕，换老师接手也看得到。</text>
+
+        <view class="note__btns">
+          <view class="note__btnwrap">
+            <wd-button plain block @click="confirmNote(false)">只标记</wd-button>
+          </view>
+          <view class="note__btnwrap">
+            <wd-button type="primary" block @click="confirmNote(true)">保存并标记</wd-button>
+          </view>
+        </view>
+      </view>
+    </wd-popup>
   </view>
 </template>
 
@@ -671,6 +804,16 @@ onShareAppMessage(() => shareToHome())
   color: $ink-400;
 }
 
+/* 同事写下的沟通内容：与「已由 X 处理」同色系但再浅一档，长内容单行截断，
+   全文去会员 360 的「操作留痕」看 —— 列表里要的是「有人说过什么」，不是完整纪要。 */
+.titem__donenote {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: $ink-600;
+}
+
 .titem__actions {
   display: flex;
   gap: 16rpx;
@@ -678,6 +821,75 @@ onShareAppMessage(() => shareToHome())
 }
 
 .titem__btnwrap {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- 沟通备注面板 ---------- */
+.note {
+  display: flex;
+  flex-direction: column;
+  gap: 18rpx;
+  padding: 32rpx 28rpx calc(28rpx + env(safe-area-inset-bottom));
+  background: $white;
+}
+
+.note__head {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.note__title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: $ink-900;
+}
+
+.note__sub {
+  font-size: 24rpx;
+  color: $ink-400;
+}
+
+.note__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14rpx;
+}
+
+.note__chip {
+  padding: 12rpx 20rpx;
+  font-size: 24rpx;
+  color: $ink-600;
+  background: $ink-50;
+  border: 2rpx solid $hairline;
+  border-radius: 999rpx;
+}
+
+.note__chip.is-on {
+  color: $brand-700;
+  background: $brand-100;
+  border-color: $brand-500;
+}
+
+.note__input :deep(.wd-textarea__inner) {
+  min-height: 160rpx;
+  font-size: 26rpx;
+}
+
+.note__tips {
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: $ink-400;
+}
+
+.note__btns {
+  display: flex;
+  gap: 16rpx;
+  margin-top: 6rpx;
+}
+
+.note__btnwrap {
   flex: 1;
   min-width: 0;
 }

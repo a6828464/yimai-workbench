@@ -40,7 +40,7 @@ class CustomerController extends Controller
      * 实测预流失徽标显示 4、点进去只有 3 行，多的那条是 layer=P5 的留资客资。
      * 所以这里抽成一处，index / options / list-counts 三处共用 —— 复制粘贴就是制造第二套口径。
      */
-    private function scopedCustomerQuery(User $u, ?string $type)
+    private function scopedCustomerQuery(User $u, ?string $type, bool $onlyMine = false)
     {
         $q = scopeCustomersForUser(Customer::query(), $u);
         if (userHasRole($u, 'R_MEDIA')) {
@@ -49,8 +49,23 @@ class CustomerController extends Controller
             scopeLeadOnlyCustomers($q);
         }
         $this->applyTypeFilter($q, $type);
+        // 「只看我负责的」：叠加在角色范围**之后**，只可能更窄（见 helpers 的 scopeCustomersToMine）
+        if ($onlyMine) {
+            $q = scopeCustomersToMine($q, $u);
+        }
 
         return $q;
+    }
+
+    /**
+     * 列表的「只看我负责的」开关：`GET ...?scope=mine`。
+     *
+     * 只认 `mine` 一个值，其它（含拼错、空串）一律当「不启用」——列表是高频接口，
+     * 参数写错时报 422 会把整页打成错误态，静默退回全范围更安全（范围本身仍受角色约束）。
+     */
+    private function wantsOnlyMine(Request $r): bool
+    {
+        return $r->query('scope') === 'mine';
     }
 
     /**
@@ -76,7 +91,7 @@ class CustomerController extends Controller
     public function options(Request $r)
     {
         $u = $r->user();
-        $q = $this->scopedCustomerQuery($u, 'member');
+        $q = $this->scopedCustomerQuery($u, 'member', $this->wantsOnlyMine($r));
         $consultants = $q->whereNotNull('consultant')->where('consultant', '!=', '')
             ->distinct()->orderBy('consultant')->pluck('consultant');
 
@@ -107,7 +122,11 @@ class CustomerController extends Controller
             if (userHasRole($u, 'R_SUPER')) {
                 return ok(['counts' => $toCounts($lists)]);
             }
-            $scopedSet = array_flip(scopeCustomersForUser(Customer::query(), $u)->pluck('id')->all());
+            $compatQuery = scopeCustomersForUser(Customer::query(), $u);
+            if ($this->wantsOnlyMine($r)) {
+                $compatQuery = scopeCustomersToMine($compatQuery, $u);
+            }
+            $scopedSet = array_flip($compatQuery->pluck('id')->all());
             foreach ($lists as $key => $ids) {
                 $lists[$key] = count(array_filter((array) $ids, fn ($id) => isset($scopedSet[$id])));
             }
@@ -116,7 +135,7 @@ class CustomerController extends Controller
         }
 
         // ── 与 /customers 同源路径 ──
-        $scopedSet = array_flip($this->scopedCustomerQuery($u, $type)->pluck('id')->all());
+        $scopedSet = array_flip($this->scopedCustomerQuery($u, $type, $this->wantsOnlyMine($r))->pluck('id')->all());
         foreach ($lists as $key => $ids) {
             $lists[$key] = count(array_filter((array) $ids, fn ($id) => isset($scopedSet[$id])));
         }
@@ -166,7 +185,7 @@ class CustomerController extends Controller
         }
 
         // 其它角色：与 list-counts 同一份交集算法，只是保留 id 而不是数个数
-        $scopedSet = array_flip($this->scopedCustomerQuery($u, null)->pluck('id')->all());
+        $scopedSet = array_flip($this->scopedCustomerQuery($u, null, $this->wantsOnlyMine($r))->pluck('id')->all());
         $out = [];
         foreach ($lists as $key => $ids) {
             $out[$key] = array_values(array_filter(
@@ -183,7 +202,7 @@ class CustomerController extends Controller
     {
         $u = $r->user();
         // 可见范围（角色 + 新媒体 + type）与 list-counts / options 同源，见 scopedCustomerQuery()
-        $q = $this->scopedCustomerQuery($u, $r->query('type'));
+        $q = $this->scopedCustomerQuery($u, $r->query('type'), $this->wantsOnlyMine($r));
         if ($n = trim((string) $r->query('name', ''))) {
             $q->where('name', 'like', "%{$n}%");
         }
@@ -794,6 +813,10 @@ class CustomerController extends Controller
         $q = scopeCustomersForUser(Customer::query(), $u)
             ->whereNotNull('enrolled_at')
             ->whereBetween('enrolled_at', [$start, $end.' 23:59:59']);
+        // 「只看我负责的」：新客培育同样是客户清单，也要能被这个开关收窄
+        if ($this->wantsOnlyMine($r)) {
+            $q = scopeCustomersToMine($q, $u);
+        }
         // 店长锁定本店、服务老师/授课老师由 scope 限定本人；超管/新媒体可按需选门店
         if (! userHasRole($u, 'R_MANAGER') && ! isTeacherSide($u->role) && $venue !== '') {
             $q->where('venue', $venue);

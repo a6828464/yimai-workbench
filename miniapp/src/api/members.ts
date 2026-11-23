@@ -31,6 +31,14 @@ export interface CustomerQuery {
   evaluationStatus?: string
   /** member = 只算正式会员（排除 layer=P5 的未成交客资） */
   type?: 'member' | 'lead'
+  /**
+   * `mine` = 只看我负责的（会籍顾问或负责人是我）。
+   *
+   * 与 /leads 同一个参数名与语义（口径见 utils/mineScope.ts）。默认不传 = 后端并集
+   * （我负责的 ∪ 我教过的学员），切换开关要同时把 list-counts / list-ids 的口径对上，
+   * 否则徽标数与列表行数会分裂。
+   */
+  scope?: 'mine'
   current?: number
   size?: number
 }
@@ -79,8 +87,18 @@ export function fetchCustomers(query: CustomerQuery = {}) {
 }
 
 /** 徽标计数：必须带 type，否则徽标数与点进去的行数不同源 */
-export function fetchMemberListCounts(type: 'member' | 'lead' = 'member') {
-  return http.get<MemberListCounts>('/customers/list-counts', { type })
+/**
+ * 五清单徽标计数。
+ *
+ * `scope` 必须与列表请求**同步传**：后端 list-counts 复用与 `/customers` 同一套
+ * `scopedCustomerQuery()`，「徽标数 = 页签行数」就是靠这个同源保证的。
+ * 勾了「只看我负责的」却只给列表加 scope → 徽标还是全店数字，员工会以为数据错乱。
+ */
+export function fetchMemberListCounts(
+  type: 'member' | 'lead' = 'member',
+  scope?: 'mine'
+) {
+  return http.get<MemberListCounts>('/customers/list-counts', { type, scope })
 }
 
 export function fetchCustomerDetail(id: number) {

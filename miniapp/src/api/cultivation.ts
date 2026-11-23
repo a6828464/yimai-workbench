@@ -82,6 +82,13 @@ export interface CultivationQuery {
   /** 姓名模糊 */
   name?: string
   cardType?: CultivationKind
+  /**
+   * `mine` = 只看我负责的（顾问/负责人是我）。
+   *
+   * 与 /customers、/leads 同一个参数名与语义（口径见 utils/mineScope.ts）：
+   * 新客培育也是一份客户清单，员工同样会问「这个新客不是我的怎么在这」。
+   */
+  scope?: 'mine'
 }
 
 /** 课型展示顺序与文案（页面 segmented、进度标签共用这一份） */

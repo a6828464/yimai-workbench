@@ -291,6 +291,21 @@ function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const signal = explicitSignal ?? activePageScope()?.signal
   const origin = pageGuard ? currentPage() : null
 
+  /**
+   * 剔除 `undefined` 值（只剔 undefined，**保留 null 与空串**）。
+   *
+   * 为什么必须在发请求前剔：`wx.request` 会把对象里的 undefined 序列化成字符串
+   * `"undefined"` 拼进 query。于是 `fetchTasks({ status: tab === '全部' ? undefined : tab })`
+   * 在「全部」页签实际发出了 `?status=undefined`，后端按状态精确匹配 → 0 条，
+   * 页面显示「暂无任务」而接口本身有 8 条（实测复现：`?status=undefined` → total=0，
+   * 去掉该参数 → total=8）。POST/PUT 的 JSON body 里 undefined 本来就会被 JSON.stringify
+   * 丢掉，这里统一处理也让 GET 与写请求口径一致。
+   */
+  const safeData =
+    data && typeof data === 'object' && !Array.isArray(data)
+      ? Object.fromEntries(Object.entries(data as Record<string, unknown>).filter(([, v]) => v !== undefined))
+      : data
+
   return new Promise<T>((resolve, reject) => {
     let settled = false
     let task: TaskLike | null = null
@@ -340,7 +355,7 @@ function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
       url: API_BASE + path,
       // uni.request 的 method 联合类型不含 PATCH，但 mp-weixin 运行时支持；按 any 断言
       method: method as 'GET',
-      data,
+      data: safeData,
       timeout,
       header: {
         'Content-Type': 'application/json',

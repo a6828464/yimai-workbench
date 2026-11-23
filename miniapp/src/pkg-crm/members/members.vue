@@ -25,6 +25,7 @@ import {
   fetchCustomers,
   fetchMemberListCounts
 } from '@/api/members'
+import { useMineScope } from '@/utils/mineScope'
 import type { MiniappCustomer, RenewalReason } from '@/types'
 
 const tab = ref('all')
@@ -54,6 +55,19 @@ const venueOptions = venueFilter.options
 const venue = venueFilter.venue
 /** 只有真的选了单店才发 venue 参数（"全部门店" 不发，保持后端默认范围） */
 const venueParam = venueFilter.venueParam
+
+/**
+ * 「只看我负责的」（口径见 utils/mineScope.ts）。
+ *
+ * 会员列表的默认范围是「本人归属 ∪ 我教过的学员」，老师会读到「这不是我的客户」；
+ * 打开开关只留顾问/负责人是我的，关掉回到并集。后端是叠加收窄，不可能放大范围。
+ */
+const {
+  visible: mineVisible,
+  onlyMine,
+  scopeParam,
+  toggle: toggleMine,
+} = useMineScope()
 /** 单店账号展示的锁定标签 */
 const lockedVenue = venueFilter.lockedLabel
 
@@ -147,6 +161,7 @@ async function load(reset = false) {
       ...keywordParams(),
       list: tab.value === 'all' ? undefined : MEMBER_LIST_OF_TAB[tab.value],
       venue: venueParam.value,
+      scope: scopeParam.value,
       current: page.value,
       size: 20
     })
@@ -182,11 +197,17 @@ function reloadByFilter(): void {
 
 async function loadCounts() {
   try {
-    const res = await fetchMemberListCounts('member')
+    const res = await fetchMemberListCounts('member', scopeParam.value)
     counts.value = res.counts ?? {}
   } catch {
     /* 徽标失败不阻塞列表 */
   }
+}
+
+/** 切换「只看我负责的」：清空已加载行再按新口径拉第一页（与切页签同一套 requestSeq 纪律） */
+function onToggleMine(): void {
+  toggleMine()
+  reloadByFilter()
 }
 
 function switchTab(key: string) {
@@ -327,6 +348,21 @@ onShareAppMessage(() => shareToHome())
           </wd-drop-menu>
         </view>
       </view>
+
+      <!-- 「只看我负责的」：只有按人角色（服务/授课老师）才有这一说，判据见 utils/mineScope.ts。
+           右边那行小字直接写出两种口径的差别 —— 员工反馈的「怎么出现别人的客户」，
+           就是因为默认范围里含了「我教过的学员」。 -->
+      <view v-if="mineVisible" class="scopebar">
+        <view
+          class="scopebar__chip ym-tap"
+          :class="{ 'is-on': onlyMine }"
+          @click="onToggleMine"
+        >
+          <wd-icon name="user" size="12px" />
+          <text class="scopebar__text">只看我负责的</text>
+        </view>
+        <text class="scopebar__hint">{{ onlyMine ? '仅顾问/负责人是我' : '含我教过的学员' }}</text>
+      </view>
     </view>
 
     <!-- 排序作用范围（F15）：纯前端重排已加载行，不写清楚会被当成「全库排序」 -->
@@ -439,6 +475,39 @@ onShareAppMessage(() => shareToHome())
 .filters {
   background: $white;
   border-bottom: 2rpx solid $hairline;
+}
+
+.scopebar {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+  padding: 0 24rpx 14rpx;
+}
+
+.scopebar__chip {
+  display: inline-flex;
+  gap: 8rpx;
+  align-items: center;
+  padding: 10rpx 20rpx;
+  color: $ink-600;
+  background: $ink-50;
+  border: 2rpx solid $hairline;
+  border-radius: 999rpx;
+}
+
+.scopebar__chip.is-on {
+  color: $brand-700;
+  background: $brand-100;
+  border-color: $brand-500;
+}
+
+.scopebar__text {
+  font-size: 23rpx;
+}
+
+.scopebar__hint {
+  font-size: 22rpx;
+  color: $ink-400;
 }
 
 .filters__row {

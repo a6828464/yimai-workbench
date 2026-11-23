@@ -19,6 +19,7 @@ import { requireLogin } from '@/utils/guard'
 import { requireFeature } from '@/utils/nav'
 import { canUse } from '@/utils/permission'
 import { useVenueFilter } from '@/utils/venue'
+import { useMineScope } from '@/utils/mineScope'
 import { useUserStore } from '@/store/user'
 import { LEAD_STATUSES, fetchLeads, stageLeadDraft } from '@/api/leads'
 import type { LeadEnums, MiniappLead } from '@/types'
@@ -51,6 +52,19 @@ const venueOptions = venueFilter.options
 const venue = venueFilter.venue
 /** 只有真的选了单店才发 venue 参数 */
 const venueParam = venueFilter.venueParam
+
+/**
+ * 「只看我负责的」（口径见 utils/mineScope.ts）。
+ *
+ * 留资默认范围是「我负责的 ∪ 我上过体验课的」，老师会看到别人名下的客资；
+ * 打开开关只留 `service_teacher` 是我的，关掉回到并集。后端叠加收窄，不会放大范围。
+ */
+const {
+  visible: mineVisible,
+  onlyMine,
+  scopeParam,
+  toggle: toggleMine,
+} = useMineScope()
 /** 单店账号展示的锁定标签 */
 const lockedVenue = venueFilter.lockedLabel
 
@@ -89,6 +103,7 @@ async function load(reset = false) {
       ...keywordParams(),
       status: status.value || undefined,
       venue: venueParam.value,
+      scope: scopeParam.value,
       current: page.value,
       size: 20
     })
@@ -134,6 +149,12 @@ function onTabChange(payload: { name: string | number }) {
 }
 
 /** 切换门店：记住这次选择，然后回到第一页重新拉 */
+/** 切换「只看我负责的」：清空已加载行 + 作废在途响应，按新口径拉第一页 */
+function onToggleMine(): void {
+  toggleMine()
+  reloadByFilter()
+}
+
 function onVenueChange() {
   venueFilter.commit()
   reloadByFilter()
@@ -319,6 +340,21 @@ onShareAppMessage(() => shareToHome())
           <text class="create-btn__text">记一条</text>
         </view>
       </view>
+
+      <!-- 「只看我负责的」：只有按人角色才显示（判据见 utils/mineScope.ts）。
+           右行小字说明两种口径差别：默认含「我上过体验课」的客资，那也是员工
+           反馈「留资里出现别人客户」的来源。 -->
+      <view v-if="mineVisible" class="scopebar">
+        <view
+          class="scopebar__chip ym-tap"
+          :class="{ 'is-on': onlyMine }"
+          @click="onToggleMine"
+        >
+          <wd-icon name="user" size="12px" />
+          <text class="scopebar__text">只看我负责的</text>
+        </view>
+        <text class="scopebar__hint">{{ onlyMine ? '仅服务老师是我' : '含我上过体验课的' }}</text>
+      </view>
     </view>
 
     <view class="hint">
@@ -469,6 +505,39 @@ onShareAppMessage(() => shareToHome())
 .filters {
   background: $white;
   border-bottom: 2rpx solid $hairline;
+}
+
+.scopebar {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+  padding: 0 24rpx 14rpx;
+}
+
+.scopebar__chip {
+  display: inline-flex;
+  gap: 8rpx;
+  align-items: center;
+  padding: 10rpx 20rpx;
+  color: $ink-600;
+  background: $ink-50;
+  border: 2rpx solid $hairline;
+  border-radius: 999rpx;
+}
+
+.scopebar__chip.is-on {
+  color: $brand-700;
+  background: $brand-100;
+  border-color: $brand-500;
+}
+
+.scopebar__text {
+  font-size: 23rpx;
+}
+
+.scopebar__hint {
+  font-size: 22rpx;
+  color: $ink-400;
 }
 
 .filters__row {

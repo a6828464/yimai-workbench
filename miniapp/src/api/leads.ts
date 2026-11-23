@@ -22,6 +22,13 @@ export interface LeadQuery {
   venue?: string
   dateFrom?: string
   dateTo?: string
+  /**
+   * `mine` = 只看我负责的（服务老师是我）。
+   *
+   * 与 /customers 同一个参数名与语义（口径见 utils/mineScope.ts）。默认不传 = 后端并集
+   * （我负责的 ∪ 我上过体验课的），那正是员工反馈「留资里出现别人客户」的来源。
+   */
+  scope?: 'mine'
   current?: number
   size?: number
 }

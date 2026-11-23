@@ -184,6 +184,8 @@ export async function queryNewMemberCultivation(params: {
   venue?: string
   name?: string
   cardType?: string
+  /** `mine` = 只看我负责的（顾问/负责人是我），口径见小程序 utils/mineScope.ts */
+  scope?: 'mine'
 }): Promise<NewMemberCultivationResult> {
   if (USE_BACKEND) {
     const empty = {
@@ -708,6 +710,8 @@ export function queryLeads(
     /** 排序字段（后端白名单，当前只放行 leadDate）与方向（ascending/descending） */
     sortBy?: string
     sortOrder?: 'ascending' | 'descending'
+    /** `mine` = 只看我负责的（服务老师是我），口径见小程序 utils/mineScope.ts */
+    scope?: 'mine'
   }
 ) {
   if (USE_BACKEND) {
@@ -941,13 +945,17 @@ function mockCustomerTypeMatches(c: YimaiCustomer, type?: string): boolean {
  * @param type 客户类型过滤，与 `/customers` 同义（会员管理页传 `'member'`）。
  *   **不传时不带该 query 参数，行为与改动前逐字一致**（向后兼容）。
  */
-export async function queryMemberListCounts(type?: string): Promise<Record<string, number>> {
+export async function queryMemberListCounts(
+  type?: string,
+  scope?: 'mine'
+): Promise<Record<string, number>> {
   if (USE_BACKEND) {
-    // type 透传给后端 `list-counts`：它在服务端复用与 `/customers` 同一套
+    // type / scope 透传给后端 `list-counts`：它在服务端复用与 `/customers` 同一套
     // scopedCustomerQuery()，这样「徽标数 = 页签行数」由同一处保证。
+    // 少传 scope 的后果很具体：勾上「只看我负责的」后徽标还是全店数字、列表却已收窄。
     const d = await apiGet<{ counts: Record<string, number> }>(
       '/customers/list-counts',
-      type ? { type } : undefined
+      type || scope ? { type, scope } : undefined
     )
     return d.counts ?? {}
   }
@@ -981,10 +989,11 @@ export async function queryMemberListCounts(type?: string): Promise<Record<strin
  *
  * 调用方（会员页）对失败做降级：这是辅助信息，挂了不该让列表不可用。
  */
-export async function queryMemberListIds(): Promise<Record<string, number[]>> {
+export async function queryMemberListIds(scope?: 'mine'): Promise<Record<string, number[]>> {
   if (USE_BACKEND) {
     const d = await apiGet<{ lists?: Record<string, Array<number | string>> }>(
-      '/customers/list-ids'
+      '/customers/list-ids',
+      scope ? { scope } : undefined
     )
     const out: Record<string, number[]> = {}
     for (const [key, raw] of Object.entries(d?.lists ?? {})) {
@@ -1238,6 +1247,13 @@ export function queryCustomers(
     haveCourse?: string
     remainRange?: string
     evaluationStatus?: string
+    /**
+     * `mine` = 只看我负责的（会籍顾问或负责人是我）。
+     *
+     * 默认不传 = 后端并集（我负责的 ∪ 我教过的学员）。开关的语义与小程序
+     * `utils/mineScope.ts` 完全一致，后端是叠加收窄（`scopeCustomersToMine()`）。
+     */
+    scope?: 'mine'
   }
 ): Promise<{
   records: YimaiCustomer[]
@@ -1283,6 +1299,7 @@ export function queryCustomers(
       remainMax: params.remainRange || undefined,
       consultant: params.consultant || undefined,
       evaluationStatus: params.evaluationStatus || undefined,
+      scope: params.scope,
       current: params.current,
       size: params.size
     } as Record<string, unknown>).then((d) => ({

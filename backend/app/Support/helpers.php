@@ -1249,6 +1249,34 @@ function scopeCustomersForUser($query, User $user)
 }
 
 /**
+ * 会员列表的**可选收窄**：「只看我负责的」（前端 `scope=mine`）。
+ *
+ * ## 为什么需要它（2026-11 真机反馈）
+ *
+ * `scopeCustomersForUser()` 给老师侧的是「本人归属 **∪** 授课关系」的并集：
+ * 授课老师会看到自己上过私教课的所有学员 —— 那些人的会籍顾问/负责人往往是别人。
+ * 系统语义没错（上课要看学员卡项与出勤），但员工打开「会员管理」时读到的信息是
+ * 「这里有不是我的客户」，于是反复反馈「出现了不属于我的客户」。
+ *
+ * 解决办法不是砍掉授课通道（会误伤排课），而是给列表一个**叠加式**的收窄开关：
+ * 打开就只留「我负责的」（会籍顾问或负责人命中本人），关掉回到原并集。
+ *
+ * ## 三条纪律
+ *
+ * 1. **只能叠加，不能替换**：调用方必须在 `scopeCustomersForUser()` 之后调用，
+ *    于是结果永远是「角色范围 ∩ 我负责」，不可能比原范围更宽。
+ * 2. **id 或姓名任一命中**：与 `staffOwnerFilter()` 同口径（历史行只存姓名）。
+ * 3. **不含授课关系**：私教学员/体验课学员不属于「我负责的」，否则开关毫无意义。
+ */
+function scopeCustomersToMine($query, User $user)
+{
+    return $query->where(function ($q) use ($user) {
+        $q->where(staffOwnerFilter($user, 'consultant_user_id', 'consultant'))
+            ->orWhere(staffOwnerFilter($user, 'owner_user_id', 'owner'));
+    });
+}
+
+/**
  * 客资可见范围（多角色取并集），口径与会员一致。
  *
  *  超管  → 不加条件（双店）
@@ -1342,6 +1370,20 @@ function scopeLeadsForUser($query, User $user)
             $outer->orWhere($mediaScope);
         }
     });
+}
+
+/**
+ * 客资列表的**可选收窄**：「只看我负责的」（前端 `scope=mine`）。
+ *
+ * 与 `scopeCustomersToMine()` 同一条产品口径：只留 `service_teacher`（会籍顾问/服务老师）
+ * 命中本人的客资。**不含** `trial_teacher`（我上过体验课 ≠ 我负责这条客资）——
+ * 那正是授课老师抱怨「留资管理里有别人的客户」的来源。
+ *
+ * 调用位置必须在 `scopeLeadsForUser()` 之后（叠加，不是替换）。
+ */
+function scopeLeadsToMine($query, User $user)
+{
+    return $query->where(staffOwnerFilter($user, 'service_teacher_user_id', 'service_teacher'));
 }
 
 /**

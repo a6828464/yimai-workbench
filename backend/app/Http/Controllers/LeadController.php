@@ -263,6 +263,12 @@ class LeadController extends Controller
         // 授课老师＝本人客资＋本人上过体验课的＋本人私教学员的；新媒体＝部门录入的。
         // 这里不再按角色分支调用 —— 漏掉任何一个角色都等于把全量客资交出去。
         $q = scopeLeadsForUser(Lead::query(), $u);
+        // 「只看我负责的」：叠加在角色范围之后（`scopeLeadsToMine` 只认 service_teacher 命中本人）。
+        // 授课老师默认能看到「自己上过体验课」的客资，员工读成「这不是我的客户」——
+        // 开关打开就回到「我负责的」这一个口径，关掉仍是原并集。
+        if ($r->query('scope') === 'mine') {
+            $q = scopeLeadsToMine($q, $u);
+        }
         if ($n = $r->query('name')) {
             $q->where('name', 'like', "%{$n}%");
         }

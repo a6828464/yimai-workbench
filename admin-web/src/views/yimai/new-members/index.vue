@@ -49,6 +49,10 @@
         <ElRadioButton label="small" value="small">小班</ElRadioButton>
         <ElRadioButton label="group" value="group">团课</ElRadioButton>
       </ElRadioGroup>
+      <!-- 「只看我负责的」：只有按人角色显示（判据与会员/留资页同源） -->
+      <ElCheckbox v-if="isTeacher" v-model="onlyMine" class="ml-1" @change="reload">
+        只看我负责的
+      </ElCheckbox>
       <div class="filter-bar__spacer" />
       <ElButton type="primary" :loading="loading" @click="reload">查询</ElButton>
       <ElButton @click="resetFilters">重置</ElButton>
@@ -319,6 +323,11 @@
   const venue = ref('')
   const name = ref('')
   const cardType = ref('')
+  /**
+   * 「只看我负责的」：勾上后请求带 scope=mine，后端在角色范围上叠加
+   * `scopeCustomersToMine()`，summary 与 records 一起收窄（不会统计是全店、名单是本人）。
+   */
+  const onlyMine = ref(false)
   const records = ref<NewMemberCultivation[]>([])
   const page = ref({ current: 1, size: 20 })
   /** 概览卡片筛选：空=不筛选；与上方筛选条叠加生效 */
@@ -415,6 +424,8 @@
         end: dateRange.value[1],
         venue: venue.value || undefined,
         name: name.value || undefined,
+        // 新客培育也是一份客户清单：开关打开只留「我负责的」，后端 summary 同步收窄
+        scope: onlyMine.value ? 'mine' : undefined,
         cardType: cardType.value || undefined
       })
       records.value = res.records
@@ -433,6 +444,7 @@
     name.value = ''
     cardType.value = ''
     statFilter.value = ''
+    onlyMine.value = false
     reload()
   }
 

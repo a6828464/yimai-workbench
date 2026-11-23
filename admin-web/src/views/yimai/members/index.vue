@@ -87,6 +87,17 @@
             :value="status"
           />
         </ElSelect>
+        <!-- 「只看我负责的」：只有按人角色（服务/授课老师）才有这一说。
+             默认范围是并集（我负责的 ∪ 我教过的学员），勾上只留顾问/负责人是我的 ——
+             这就是员工反馈「会员管理里出现不属于自己归属的客户」的开关。 -->
+        <ElCheckbox
+          v-if="canScopeMine"
+          v-model="searchForm.onlyMine"
+          class="ml-1"
+          @change="reloadFromFirstPage"
+        >
+          只看我负责的
+        </ElCheckbox>
         <ElButton type="primary" plain @click="reloadFromFirstPage">查询</ElButton>
       </div>
 
@@ -1440,6 +1451,12 @@
   const userStore = useUserStore()
   const roles = computed(() => userStore.getUserInfo.roles ?? [])
   const isManager = computed(() => roles.value.includes('R_MANAGER'))
+  /** 是否显示「只看我负责的」：与后端 userIsTeacherSide() 对齐（服务老师 / 授课老师） */
+  const canScopeMine = computed(
+    () => roles.value.includes('R_SERVICE') || roles.value.includes('R_TEACHER')
+  )
+  /** 请求参数：未勾选 / 非按人角色时不传（保持后端默认并集） */
+  const mineScope = computed(() => (searchForm.value.onlyMine ? ('mine' as const) : undefined))
   /** 数据范围说明：随当前门店/清单/顾问筛选动态显示 */
   const scopeHint = computed(() => {
     const venue = searchForm.value.venue || userStore.getUserInfo.venue || '双店'
@@ -1915,7 +1932,12 @@
     list: '',
     consultant: '',
     venue: '',
-    evaluationStatus: ''
+    evaluationStatus: '',
+    /**
+     * 「只看我负责的」（口径见小程序 utils/mineScope.ts）：勾上后请求带 scope=mine，
+     * 后端在角色范围之上再叠加 `scopeCustomersToMine()`，只可能更窄不会更宽。
+     */
+    onlyMine: false
   })
   const page = ref({ current: 1, size: 20 })
   /** 当前页数据（服务端分页） */
@@ -1988,6 +2010,7 @@
         venue: searchForm.value.venue || undefined,
         consultant: searchForm.value.consultant || undefined,
         evaluationStatus: searchForm.value.evaluationStatus || undefined,
+        scope: mineScope.value,
         type: 'member',
         current: page.value.current,
         size: page.value.size
@@ -2015,7 +2038,7 @@
       // 必须带 `type: 'member'`：本页页签列表走 `/customers?type=member`
       // （排除 layer=P5 的未成交客资）。徽标不带 type 就会按「全部客户」算，
       // 于是出现「徽标 4、点进去 3 行」——徽标数与行数必须同源（t16/t17）。
-      listCounts.value = await queryMemberListCounts('member')
+      listCounts.value = await queryMemberListCounts('member', mineScope.value)
     } catch {
       /* 徽标计数失败不阻塞列表，保留上次值 */
     }
@@ -2043,7 +2066,7 @@
    */
   async function loadMemberListIds() {
     try {
-      const lists = await queryMemberListIds()
+      const lists = await queryMemberListIds(mineScope.value)
       const map: Record<number, MemberListFilter[]> = {}
       // 按 FILTER_KEYS 顺序落桶，保证同一会员的标签顺序每次渲染都一致（与改造前相同）。
       // 后端给的是 int，但契约跨 JSON 边界后可能是字符串 —— 这里再 Number() 一次，

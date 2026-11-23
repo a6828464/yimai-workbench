@@ -203,14 +203,21 @@ nginx/PHP 都没拦；若返回 **413** 才是被体积上限拒掉。
 生产环境需配置 Laravel 调度器，用于执行系统日志、人员操作日志和模型生成记录的保留策略，以及 KeepYoga 双店每日定时增量同步（`ky:autosync`，05:30 自动执行，当天已同步的门店自动跳过，也可在后台「KeepYoga同步」手动触发）：
 
 ```cron
-* * * * * cd /www/wwwroot/站点目录/backend && php artisan schedule:run >> /dev/null 2>&1
+# 站点根目录直接就是 Laravel 根（artisan 在站点根）——现行发行包解压后的布局
+* * * * * sudo -u www bash -c 'cd /www/wwwroot/站点目录 && php artisan schedule:run' >> /dev/null 2>&1
+
+# 站点根下还有一层 backend/（旧布局，artisan 在 backend/ 内）
+# * * * * * sudo -u www bash -c 'cd /www/wwwroot/站点目录/backend && php artisan schedule:run' >> /dev/null 2>&1
 ```
 
-> 路径以站点实际部署为准：宝塔站点根目录下的 Laravel 目录为 `backend`（发行包内为 `app/backend`）。
+> 路径以站点实际部署为准，**先 `ls` 看 `artisan` 落在哪一层**：现行发行包解压后 `artisan` 在站点根；只有旧布局才在 `backend/` 下。路径写错时任务每分钟都「执行成功」但 `cd` 报错、调度器等于没装。
+>
+> **必须用 `sudo -u www` 以站点运行用户执行**（不要用 root 裸跑）。root 跑 `artisan` 会在 `storage/` 下生成 root 属主的目录，之后后台（php-fpm 的 `www` 用户）再写同一路径就报 `mkdir(): Permission denied` —— 表现为「定时同步正常、手动全量同步必失败」，且任务列表里只有一句 `mkdir(): Permission denied`、看不出路径。已踩过的现场：2026-11-09 河源生产 `sync-artifacts/2026/11/09/` 由 root 创建，当天所有手动全量同步全部失败。
 >
 > 未配置此计划任务时，`ky:autosync` 每日定时同步与保留策略清理都不会执行，且没有任何报错——手工同步不受影响。排查方式：
 >
-> 1. 服务器执行 `cd /www/wwwroot/站点目录/backend && php artisan schedule:list`，能列出 `ky:autosync`（每日 05:30）等条目即为正常。
+> 1. 服务器执行 `cd /www/wwwroot/站点目录 && php artisan schedule:list`（旧布局加 `/backend`），能列出 `ky:autosync`（每日 05:30）等条目即为正常。
+> 1b. 属主自查：`find storage -not -user www | head` 应无输出；有输出就 `chown -R www:www storage bootstrap/cache`。
 > 2. 后台「系统管理 → 系统日志 → 运行日志」按关键词 `KeepYoga 同步` 过滤，手动同步与系统定时同步（含「当天已同步，跳过」）都会逐条留痕；「KeepYoga同步 → 历史同步批次」的「触发方」列可区分操作人与「系统定时」。
 
 系统日志默认保留 7 天，人员操作日志默认保留 **180 天**（可在日志页面调整，也能设为永久保留）；未配置调度器时，修改保留策略会立即清理一次，但之后不会按日自动清理。

@@ -25,6 +25,7 @@ import { useUserStore } from '@/store/user'
 import { goPath, requireFeature } from '@/utils/nav'
 import { isManagerOrAbove, isSuper } from '@/utils/permission'
 import { useVenueFilter, VENUE_ALL } from '@/utils/venue'
+import { useMineScope } from '@/utils/mineScope'
 import {
   CULTIVATION_HEALTH_META,
   CULTIVATION_KINDS,
@@ -104,6 +105,19 @@ const venueFilter = useVenueFilter()
 const venue = venueFilter.venue
 const venueParam = venueFilter.venueParam
 
+/**
+ * 「只看我负责的」（口径见 utils/mineScope.ts）。
+ *
+ * 注意：本页 `summary` 的统计口径跟着后端范围走 —— 打开开关后统计与名单一起收窄，
+ * 不存在「统计是全店、名单是本人」的分裂（`hasActiveFilter` 也会把开关算成生效筛选）。
+ */
+const {
+  visible: mineVisible,
+  onlyMine,
+  scopeParam,
+  toggle: toggleMine,
+} = useMineScope()
+
 /** 判据与留资/会员页同源（utils/venue.ts）：**账号授权门店数 > 1** 才给切店 */
 const canPickVenue = venueFilter.canSwitch
 
@@ -181,7 +195,12 @@ const hasMore = computed(() => visible.value < filtered.value.length)
 
 const hasActiveFilter = computed(
   // 门店用 venueParam 判：选中「全部门店」等于没筛（哨兵值不算生效条件）
-  () => !!healthFilter.value || !!kindValue.value || !!submitted.value || !!venueParam.value
+  () =>
+    !!healthFilter.value ||
+    !!kindValue.value ||
+    !!submitted.value ||
+    !!venueParam.value ||
+    !!scopeParam.value
 )
 
 /** 健康度 → 中文（筛选行与空态文案共用） */
@@ -234,7 +253,8 @@ async function load(): Promise<void> {
       name: submitted.value.trim() || undefined,
       cardType: kindValue.value || undefined,
       // venueParam：全部门店时是 undefined（后端按默认范围），不会把哨兵值当门店名发过去
-      venue: venueParam.value
+      venue: venueParam.value,
+      scope: scopeParam.value as 'mine' | undefined
     })
     // 响应回来时筛选已经变了 → 丢弃，别把旧口径的数据写进新筛选的结果
     if (seq !== requestSeq) return
@@ -265,6 +285,12 @@ function reload(): void {
 }
 
 /* ---------------- 交互 ---------------- */
+
+/** 切换「只看我负责的」：走与其它筛选一致的 pendingReload 路径（丢弃在途旧响应） */
+function onToggleMine(): void {
+  toggleMine()
+  void load()
+}
 
 function search(): void {
   submitted.value = keyword.value.trim()
@@ -400,6 +426,19 @@ onShareAppMessage(() => shareToHome())
         @search="search"
         @clear="search"
       />
+      <!-- 「只看我负责的」：只有按人角色才显示（判据见 utils/mineScope.ts） -->
+      <view v-if="mineVisible" class="scopebar">
+        <view
+          class="scopebar__chip ym-tap"
+          :class="{ 'is-on': onlyMine }"
+          @click="onToggleMine"
+        >
+          <wd-icon name="user" size="12px" />
+          <text class="scopebar__text">只看我负责的</text>
+        </view>
+        <text class="scopebar__hint">{{ onlyMine ? '仅顾问/负责人是我' : '含我教过的学员' }}</text>
+      </view>
+
       <view class="nm__seg">
         <wd-segmented
           :value="kindLabel"
@@ -518,6 +557,40 @@ onShareAppMessage(() => shareToHome())
 
 <style lang="scss" scoped>
 @import '@/styles/tokens.scss';
+
+/* ---------- 「只看我负责的」开关（与会员/留资页同一个视觉元件） ---------- */
+.scopebar {
+  display: flex;
+  gap: 12rpx;
+  align-items: center;
+  padding: 4rpx 0 0;
+}
+
+.scopebar__chip {
+  display: inline-flex;
+  gap: 8rpx;
+  align-items: center;
+  padding: 10rpx 20rpx;
+  color: $ink-600;
+  background: $ink-50;
+  border: 2rpx solid $hairline;
+  border-radius: 999rpx;
+}
+
+.scopebar__chip.is-on {
+  color: $brand-700;
+  background: $brand-100;
+  border-color: $brand-500;
+}
+
+.scopebar__text {
+  font-size: 23rpx;
+}
+
+.scopebar__hint {
+  font-size: 22rpx;
+  color: $ink-400;
+}
 
 .nm {
   &__stats {

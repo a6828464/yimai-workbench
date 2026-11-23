@@ -42,6 +42,10 @@
         </ElSelect>
         <ElButton @click="reloadFromFirstPage">查询</ElButton>
         <ElButton @click="resetFilters">重置</ElButton>
+        <!-- 「只看我负责的」：只有按人角色显示（服务/授课老师），判据与小程序同源 -->
+        <ElCheckbox v-if="isTeacher" v-model="filters.onlyMine" class="ml-1" @change="load">
+          只看我负责的
+        </ElCheckbox>
         <div class="filter-bar__spacer" />
         <ElButton type="primary" v-ripple @click="openCreate">新增留资</ElButton>
       </div>
@@ -759,7 +763,14 @@
     phone: '',
     venue: '',
     status: '',
-    dateRange: null as [string, string] | null
+    dateRange: null as [string, string] | null,
+    /**
+     * 「只看我负责的」：勾上后请求带 scope=mine，只留 `service_teacher` 是我的客资。
+     *
+     * 默认范围是并集（我负责的 ∪ 我上过体验课的），授课老师会看到别人名下的客资 ——
+     * 员工反馈的「留资里出现别人的客户」就是这一条。口径见小程序 utils/mineScope.ts。
+     */
+    onlyMine: false
   })
   /**
    * 每页条数档位
@@ -944,8 +955,11 @@
     loading.value = true
     try {
       const [dateFrom, dateTo] = filters.value.dateRange ?? [undefined, undefined]
+      // onlyMine 是前端开关，不能原样发给后端（后端只认 scope）；解构剔除再转换
+      const { onlyMine, ...leadQuery } = filters.value
       const res = await queryLeads({
-        ...filters.value,
+        ...leadQuery,
+        scope: onlyMine ? 'mine' : undefined,
         dateFrom,
         dateTo,
         current: page.value.current,
@@ -1006,7 +1020,9 @@
   )
 
   function resetFilters() {
-    filters.value = { name: '', phone: '', venue: '', status: '', dateRange: null }
+    // onlyMine 一并复位：否则「重置」之后列表仍是「只看我负责的」的收窄结果，
+    // 而复选框已经看起来是未勾选状态（口径与视觉分裂，员工会当成数据丢了）
+    filters.value = { name: '', phone: '', venue: '', status: '', dateRange: null, onlyMine: false }
     reloadFromFirstPage()
   }
 

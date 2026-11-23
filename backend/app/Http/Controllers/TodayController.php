@@ -1131,11 +1131,34 @@ final class TodayController extends Controller
             }
 
             // 业务流转 2：续费/流失沟通 → 更新会员最近触达，保证 2 周触达口径不断档
-            if (! empty($d['customerId']) && ! empty($d['touch'])) {
+            //
+            // 同时把**沟通内容落到会员档案的留痕**（`module = 会员管理`，`target_id = 会员 id`）。
+            // 为什么必须落在这里：小程序员工真机反馈「点个已沟通太形式化，换人接手时对这个
+            // 客户还是不清楚」—— 因为 `TodoAction.remark` 按 `(todo_key, action_date)` 覆盖，
+            // 只保留当天最后一条，而且会员 360 读的是 `AuditLog` 里 `module = 会员管理` 的记录
+            // （`CustomerController::show()`），两边不通。沟通内容是**交接事实**，必须进流水：
+            // 一条沟通一条日志，谁在什么时候说了什么，下一个服务老师点开会员就看得到。
+            //
+            // 只在 `remark` 非空时写：空备注写一条「已沟通：」是噪音，历史留痕会被灌满。
+            if (! empty($d['customerId'])) {
                 $c = Customer::find($d['customerId']);
                 if ($c) {
                     abort_unless(canAccessCustomer($u, $c), 403, '无权处理该会员');
-                    $c->update(['last_touch' => $today]);
+                    if (! empty($d['touch'])) {
+                        $c->update(['last_touch' => $today]);
+                    }
+                    $remarkText = (string) ($d['remark'] ?? '');
+                    if ($remarkText !== '') {
+                        audit(
+                            $r,
+                            '沟通记录',
+                            '会员管理',
+                            $c->id,
+                            "{$c->name}（{$c->venue}）",
+                            $c->venue,
+                            "{$d['action']}：{$remarkText}"
+                        );
+                    }
                 }
             }
 

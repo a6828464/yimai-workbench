@@ -287,6 +287,51 @@ class StaffDirectory
     }
 
     /**
+     * 被**多个账号同时持有**的名字（本名 / 别名 / 已登记昵称）。
+     *
+     * ## 这是「员工看到别人客户」的第一号成因，必须能被管理员看见
+     *
+     * `namesFor()` 不做歧义过滤，是**有意**的：它要把「同一行只存了姓名、没存 id」的
+     * 历史数据判给本人（不然改名/换账号后旧数据对本人直接消失）。代价是：两个账号
+     * 同名时（离职账号没停用，又建了一个同名的；或给某人加了别人的本名当别名），
+     * 两个账号的 `whereIn(归属列, 名字)` 会**同时命中同一批行** —— 互相看到对方客户。
+     *
+     * 所以这类冲突不在查询里偷偷取舍（取舍会让数据静默消失），而是列出来交给运维处理：
+     * 停用旧账号 / 补 `*_user_id` / 删掉错加的别名。`yimai:visibility-audit` 与
+     * 人员管理「归属映射」读的都是本方法，不各自算一份。
+     *
+     * @return array<string, array{name:string, accounts:array<int,string>}>
+     */
+    public function sharedNames(): array
+    {
+        $owner = [];
+        foreach ($this->accounts() as $row) {
+            $names = array_filter(array_unique(array_merge(
+                [$row['name']],
+                $row['aliases'],
+                $row['nickname'] !== '' ? [$row['nickname']] : []
+            )), fn ($n) => trim((string) $n) !== '');
+
+            foreach ($names as $n) {
+                $owner[trim((string) $n)][] = (string) $row['key'];
+            }
+        }
+
+        $out = [];
+        foreach ($owner as $name => $keys) {
+            $keys = array_values(array_unique($keys));
+            if (count($keys) < 2) {
+                continue;
+            }
+            $out[$name] = ['name' => (string) $name, 'accounts' => $keys];
+        }
+
+        ksort($out);
+
+        return $out;
+    }
+
+    /**
      * 业务数据里出现过、但对不上任何账号的姓名。
      *
      * 每条带 `counts`（出现在哪些列的多少行）、`suggestions`（疑似账号，按证据强度排序）
