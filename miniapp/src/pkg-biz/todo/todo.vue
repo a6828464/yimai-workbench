@@ -110,7 +110,7 @@ const DEFAULT_ACTIONS: Record<string, string[]> = {
   tasks: []
 }
 
-/** 深链 ?tab=xxx 想定位的组（只用于滚动定位，不再用于过滤，见 scrollToPendingTab） */
+/** 深链 ?tab=xxx 想选中的组：onLoad 收下，首次 load 成功后消费一次（见 applyInitialTab） */
 const pendingTab = ref('')
 
 const groups = ref<{ type: string; label: string; items: FlatItem[] }[]>([])
@@ -118,6 +118,30 @@ const loading = ref(false)
 const failed = ref(false)
 const loaded = ref(false)
 const acting = ref('')
+
+/**
+ * 分类条（v3.19.0 二次修订）。
+ *
+ * ## 为什么「去掉『全部』」但「保留分类条」
+ * 馆主的原话是「『今日代办』里面有一个『全部』的分类没有意义存在」—— 他要去掉的是那个
+ * **内容等于「所有组堆在一起」的 tab**：它和下面的分组卡片完全重复，而且默认选中它时
+ * 一眼看下去六组糊成一屏。
+ * 但分类条本身是这一页的**导航骨架**：删掉之后「按场景看数据」就没有入口了
+ * （馆主后来原话：「现在一个分类都没有，怎么看数据」）。所以：
+ *   · 分类项 = GROUPS 原样（顺序即优先级，不折叠、不排序、不加「全部」）；
+ *   · 内容区只渲染当前选中的那一组（不再全量铺开）。
+ */
+const TAB_TYPES = new Set(GROUPS.map((g) => g.type))
+
+/** 当前选中的分类。初值取第一项，真正落哪个由 applyInitialTab 决定 */
+const active = ref(GROUPS[0].type)
+
+/**
+ * 用户是否已经「定住」了分类。
+ * 目的：页面每次 onShow 都会重拉一次（从会员详情返回也会），重拉后不能把用户刚选的
+ * 分类重置回默认组。所以只有第一次（或深链进来时）才自动挑，之后一律保留当前选择。
+ */
+let tabPinned = false
 
 /** 全组未完成总数（页头一句话讲清今天还剩多少） */
 const pendingCount = computed(() =>
@@ -131,22 +155,55 @@ function pendingOf(g: { items: FlatItem[] }): number {
 /** 组名查表（弹窗标题「待续费 · 张女士」用，省得每处再 find 一遍） */
 const GROUP_LABEL: Record<string, string> = Object.fromEntries(GROUPS.map((g) => [g.type, g.label]))
 
+/** 当前组（内容区只渲染这一组；groups 恒为 8 项，所以正常一定有值） */
+const currentGroup = computed(() => groups.value.find((g) => g.type === active.value) ?? null)
+
+/** 当前分类名（页头 / 空态文案用） */
+const activeLabel = computed(() => GROUP_LABEL[active.value] ?? '')
+
+/** 有线索的组数（页头角标；空组也占一个 tab，但不参与这个数字） */
+const groupsWithItems = computed(() => groups.value.filter((g) => g.items.length > 0).length)
+
+/** 全组条目数（判断「今天是不是真的清零」用） */
+const totalItems = computed(() => groups.value.reduce((n, g) => n + g.items.length, 0))
+
 /**
- * 深链 ?tab=churnRisks → **滚到那一组**，而不是过滤到只剩那一组。
- *
- * 为什么改成滚动：馆主 2026-11 砍掉了「全部」分类，页面固定按 GROUPS 顺序铺开所有
- * 有线索的组（顺序即优先级，不做折叠）。但工作台的指标卡、待办摘要仍然会带
- * `?tab=` 进来，直接丢弃会让「点指标卡进来却停在列表顶部」变成新的困惑。
- * 找不到对应组（今天那一组没线索）时安静留在顶部，不报错、不过滤。
+ * tab 角标：该组未完成数，与组内 `pendingOf` **同一个口径**
+ * （`done` 的条目算已完成、不计入）—— 两处各写一遍必然出现「tab 上 3、进去只有 2」。
  */
-function scrollToPendingTab(): void {
-  const t = pendingTab.value
+function tabCount(type: string): number {
+  const g = groups.value.find((x) => x.type === type)
+  return g ? pendingOf(g) : 0
+}
+
+function selectTab(type: string): void {
+  if (!TAB_TYPES.has(type)) return
+  active.value = type
+  tabPinned = true
+}
+
+/**
+ * 决定进页面看哪一组（每次 load 成功后调一次）：
+ *  1. 深链 `?tab=xxx` 命中 → 直接选它（工作台指标卡/待办摘要会带这个参数进来）。
+ *     未知值/空值不报错，走第 2 步 —— 决不能让传错一个 type 变成整页空白。
+ *  2. 用户已经手动切过（或已经自动选过）→ 保留当前选择，不因为刷新把人踢回默认组。
+ *  3. 否则选**第一个有线索的组**（items 非空）：不固定「今日预约」，
+ *     免得进页面就是一个空组还得自己找数据。
+ *  4. 全部为空 → 落 GROUPS[0]（今日预约），由模板显示正常空态（不是白屏）。
+ */
+function applyInitialTab(): void {
+  const wanted = pendingTab.value
   pendingTab.value = ''
-  if (!t || !groups.value.some((g) => g.type === t)) return
-  // 等这一帧渲染完再量节点：load() 里刚给 groups 赋值，同帧还查不到 #grp-xxx
-  setTimeout(() => {
-    uni.pageScrollTo({ selector: `#grp-${t}`, duration: 240, fail: () => {} })
-  }, 60)
+  if (wanted && TAB_TYPES.has(wanted)) {
+    active.value = wanted
+    tabPinned = true
+    return
+  }
+  if (tabPinned) return
+  const first = groups.value.find((g) => g.items.length > 0)
+  active.value = first?.type ?? GROUPS[0].type
+  // 自动选一次之后就定住：后续下拉刷新/从详情返回不再跳分类
+  tabPinned = true
 }
 
 /**
@@ -458,7 +515,9 @@ function normalize(raw: RawTodo) {
       }
     })
     return { type, label, items }
-  }).filter((g) => g.items.length > 0)
+  })
+  // 注意：**不再 filter 掉空组**。分类条要恒有 8 项（空组也要能点、也要能显示计数 0 与空态），
+  // 过滤掉就等于「今天这组没线索 → 连分类都消失」，与「按场景看」相悖。
 }
 
 /**
@@ -479,8 +538,8 @@ async function load() {
     groups.value = normalize(raw ?? {})
     loaded.value = true
     failed.value = false
-    // 深链 ?tab=xxx：数据到位后再滚，否则目标组还没渲染出来
-    scrollToPendingTab()
+    // 数据到位后再决定看哪一组（深链优先 → 否则第一个有线索的组）
+    applyInitialTab()
   } catch {
     if (my !== loadSeq) return
     /* http 层已 toast */
@@ -730,11 +789,11 @@ function openCustomer(item: FlatItem): void {
 }
 
 /**
- * 深链：/pkg-biz/todo/todo?tab=renewals → 进页面后**滚到**「待续费」那一组。
+ * 深链：/pkg-biz/todo/todo?tab=renewals → 进页面后**选中**「待续费」分类。
  *
- * 注意语义已经变了：v3.19.0 砍掉「全部」分类后不再有「按 tab 过滤」这回事，
- * 页面永远是「全部有线索的组按优先级铺开」。所以 ?tab= 只作为定位提示，
- * 传错 / 传空 / 今天那组没线索 —— 一律安静留在顶部（绝不再出现「整屏空白」这种失败）。
+ * 语义是「选中分类」，不是「滚到某个区块」：分类条回来了，内容区只渲染选中那一组，
+ * 所以 ?tab= 就是初始 active。传错 / 传空 → 不报错，交给 applyInitialTab 落默认组
+ * （绝不再出现「整屏空白」这种失败）。
  */
 onLoad((options) => {
   pendingTab.value = String((options as Record<string, string>)?.tab ?? '')
@@ -757,18 +816,37 @@ onShareAppMessage(() => shareToHome())
 
 <template>
   <view class="ym-page todo">
-    <!-- 顶部摘要：全店未完成总数 + 有线索的组数（v3.19.0 起没有分组标签，数字即全量） -->
+    <!-- 顶部摘要：数字跟随当前分类，角标给全店总量（两个数字都不浪费） -->
     <view class="thero">
       <view class="thero__main">
-        <text class="thero__label">今日待办</text>
+        <text class="thero__label">{{ activeLabel }}</text>
         <view class="thero__value-row">
-          <text class="thero__value ym-num">{{ pendingCount }}</text>
+          <text class="thero__value ym-num">{{ tabCount(active) }}</text>
           <text class="thero__unit">项待处理</text>
         </view>
       </view>
       <view class="thero__side">
-        <ym-badge :text="`${groups.length} 组有线索`" tone="brand" plain />
+        <ym-badge :text="`今日共 ${pendingCount} 项`" tone="brand" plain />
       </view>
+    </view>
+
+    <!-- 分类条：8 项 = GROUPS 原样，**不含「全部」**（理由见 GROUPS/TAB_TYPES 注释）。
+         横滑 + sticky，切一下只换内容区，不重新请求。 -->
+    <view class="tabbar">
+      <scroll-view class="tabbar__scroll" scroll-x :show-scrollbar="false">
+        <view class="tabbar__inner">
+          <view
+            v-for="t in GROUPS"
+            :key="t.type"
+            class="tabbar__item ym-tap"
+            :class="{ 'is-active': active === t.type }"
+            @click="selectTab(t.type)"
+          >
+            <text class="tabbar__label">{{ t.label }}</text>
+            <text v-if="tabCount(t.type)" class="tabbar__count ym-num">{{ tabCount(t.type) }}</text>
+          </view>
+        </view>
+      </scroll-view>
     </view>
 
     <!-- 三态 -->
@@ -793,7 +871,7 @@ onShareAppMessage(() => shareToHome())
     </view>
 
     <ym-empty
-      v-else-if="loaded && !groups.length"
+      v-else-if="loaded && totalItems === 0"
       icon="check-circle"
       text="今日待办已全部清零"
       desc="没有需要闭环的动作，保持节奏"
@@ -801,12 +879,21 @@ onShareAppMessage(() => shareToHome())
       @action="load"
     />
 
-    <!-- 一组一张卡，顺序即 GROUPS 里的优先级（不折叠、不按数量排序）。
-         id 只给深链定位用（?tab=xxx → pageScrollTo('#grp-xxx')），不参与展示。 -->
-    <view v-for="g in groups" :id="`grp-${g.type}`" :key="g.type" class="gsection">
+    <!-- 单个分类为空是正常状态（分类常在、数据不一定有），给一句能看懂的话，别白屏 -->
+    <ym-empty
+      v-else-if="currentGroup && !currentGroup.items.length"
+      icon="check-circle"
+      :text="`「${activeLabel}」今天没有待办`"
+      desc="切到上方其它分类看看，或下拉刷新"
+      action-text="重新拉取"
+      @action="load"
+    />
+
+    <!-- 内容区只渲染当前分类（v3.19.0：不再把六组全量铺开 —— 那是旧「全部」tab 的行为） -->
+    <view v-if="currentGroup && currentGroup.items.length" class="gsec">
       <ym-section
-        :title="g.label"
-        :desc="pendingOf(g) ? `${pendingOf(g)} 项待处理` : '本组已闭环'"
+        :title="currentGroup.label"
+        :desc="pendingOf(currentGroup) ? `${pendingOf(currentGroup)} 项待处理` : '本组已闭环'"
       >
       <!-- ⚠️ 事件顺序（2026-11 真机 bug 修复，馆主反馈「点已沟通先跳详情页，返回后才弹面板」）
            旧写法：整行 <view @click="openCustomer(it)"> 包住按钮，指望 wd-button 上的
@@ -820,7 +907,7 @@ onShareAppMessage(() => shareToHome())
                 `catchtap`，在微信小程序里由框架层截断，事件到不了任何祖先节点。
            这样「先弹窗/先提交」在结构上成立，不依赖 wot 组件是否透传 stop。 -->
       <view
-        v-for="it in g.items"
+        v-for="it in currentGroup.items"
         :key="it.key"
         class="titem"
         :class="{ 'is-done': it.done }"
@@ -929,13 +1016,76 @@ onShareAppMessage(() => shareToHome())
   --wot-button-small-radius: 10rpx;
 }
 
-/* ---------- 分组锚点 ----------
- * 每组的容器只承担两件事：给深链一个可滚到的位置（#grp-xxx）、把组间距隔开。
- * 不做折叠/吸顶 —— 馆主要求「一眼看全六组」，分组顺序即优先级。 */
-.gsection {
-  & + & {
-    margin-top: 8rpx;
-  }
+/* ---------- 分类条（横向滑动 + 吸顶） ----------
+ * 视觉沿用 v3.19.0 第一版那一套：胶囊标签 + 计数角标，选中态用品牌色实心。
+ * 只保留 8 个业务分类，没有「全部」—— 理由见 script 里 TAB_TYPES 的注释。 */
+.tabbar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: $white;
+  border-top: 2rpx solid $hairline;
+  border-bottom: 2rpx solid $hairline;
+}
+
+.tabbar__scroll {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.tabbar__inner {
+  display: inline-flex;
+  gap: 12rpx;
+  padding: 14rpx 24rpx;
+}
+
+.tabbar__item {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 8rpx;
+  align-items: center;
+  height: 80rpx;
+  padding: 0 26rpx;
+  background: $ink-50;
+  border-radius: 999rpx;
+}
+
+.tabbar__item.is-active {
+  background: $brand-500;
+}
+
+.tabbar__label {
+  font-size: 26rpx;
+  color: $ink-600;
+}
+
+.tabbar__item.is-active .tabbar__label {
+  font-weight: 600;
+  color: $white;
+}
+
+.tabbar__count {
+  min-width: 34rpx;
+  height: 34rpx;
+  padding: 0 8rpx;
+  font-size: 20rpx;
+  line-height: 34rpx;
+  text-align: center;
+  color: $brand-700;
+  background: $brand-100;
+  border-radius: 999rpx;
+}
+
+.tabbar__item.is-active .tabbar__count {
+  color: $brand-700;
+  background: $white;
+}
+
+/* ---------- 当前分类的内容区 ----------
+ * 只渲染一组，所以不需要「组间距」；保留一层容器是为了将来能加区块动效/锚点，
+ * 不再承担深链定位（滚动定位已随「全量铺开」一起删掉，见 applyInitialTab）。 */
+.gsec {
+  padding-top: 8rpx;
 }
 
 /* ---------- 头部摘要 ---------- */
