@@ -169,14 +169,66 @@ class EnsureUserIsEnabled
      * （可见范围里的「归属于自己的会籍顾问的会员」），所以 serviceTeacher 需要放开给自己。
      * 保留的两条业务控制不变：不能指派给别人、不能自己标记成交。
      */
-    private const TEACHER_FIELDS_CREATE = ['leadDate', 'name', 'phone', 'wechat', 'demand', 'source', 'orderPlatform', 'venue', 'serviceTeacher', 'status', 'remark'];
+    private const TEACHER_FIELDS_CREATE = [
+        'leadDate', 'name', 'phone', 'wechat', 'demand', 'source', 'orderPlatform', 'venue',
+        'serviceTeacher', 'status', 'remark',
+        /*
+         * ── v3.21.0（t19）：这两项是白名单**漏了**，不是业务不允许 ─────────────
+         * 老师接电话约体验课时必须能录「约了哪天几点、什么课型」：
+         *  - `trialCards`：体验课卡片（多节，含时间/主题/老师/券）；
+         *  - `grade`：课型/体验课类型。
+         * 两个字段 `LeadController::store` 的 `$leadFields` 本来就支持落库（列也在表里），
+         * 所以这里补白名单即可，不动写入侧。
+         */
+        'trialCards', 'grade',
+    ];
 
     private const TEACHER_FIELDS_UPDATE = ['demand', 'status', 'remark', 'serviceTeacher', 'trialTime', 'trialTopic', 'trialTeacher', 'trialCards'];
 
     private function assertTeacherFields(Request $request, bool $creating, User $user): void
     {
         $allowed = $creating ? self::TEACHER_FIELDS_CREATE : self::TEACHER_FIELDS_UPDATE;
-        abort_if(array_diff(array_keys($request->all()), $allowed) !== [], 403, '老师无权修改该客资字段');
+
+        /*
+         * ════════════════════════════════════════════════════════════════
+         * v3.21.0（t19）：白名单外字段从「整单 403」改成「剥离 + 审计」
+         * ════════════════════════════════════════════════════════════════
+         *
+         * ## 事故现场（2026-11 老师真机反馈「没有新建客资的权限」）
+         *
+         * 旧实现是这一行：
+         *
+         *     abort_if(array_diff(array_keys($request->all()), $allowed) !== [], 403, '老师无权修改该客资字段');
+         *
+         * 它把**请求体的全部键**跟白名单比对，多一个键就整单 403。而小程序
+         * `leads/form.vue` 的 `buildCreatePayload()` 必然带 7 个白名单外的键：
+         * `grade / dealCard / dealAmount / couponName / voucherCode / redeemAmount / trialCards`
+         * （`trialCards` 即使只是空数组也会出现在 JSON 里）。于是**每个老师 100% 建不了客资**，
+         * 且报错文案是「老师无权修改该客资字段」—— 员工只会理解成「我没权限」，
+         * 根本查不到真正原因。管理层走 `isManagerSide` 分支跳过这段检查，所以只有老师中招。
+         *
+         * ## 为什么改成剥离而不是继续拒绝
+         *
+         * 这个契约太脆：前端**多传一个与该权限无关的键**，整单就被拒。表单字段会不断增删，
+         * 靠「两边键集合严格相等」来守越权，等于把一次表单改版升级成一次全量功能不可用。
+         * 越权真正要防的是「字段被写入」，而不是「字段出现过」—— 所以：
+         * 白名单外的键**从请求里摘掉**，后续校验与落库都看不到它，等同于「没填」。
+         *
+         * 剥离动作**必须留痕**（见 auditStrippedFields）：静默丢弃会制造新的
+         * 「我明明填了，怎么没保存」—— 那正是这次事故的另一半。
+         */
+        $input = $request->all();
+        $stripped = array_values(array_diff(array_keys($input), $allowed));
+        if ($stripped !== []) {
+            // 用 replace() 而不是 `$request->request->remove()`：JSON 请求的请求体在
+            // `json()` 那个 bag 里（`request` bag 是空的），只摘 request bag 会**摘不掉**，
+            // 于是「说了剥离、实际照样被控制器读到」。replace() 走 getInputSource()，
+            // form 与 JSON 两种形态都正确。
+            $request->replace(array_intersect_key($input, array_flip($allowed)));
+            $this->auditStrippedFields($request, $user, $stripped, $creating);
+        }
+
+        // 下面两条是**真正的越权防线**，与上面的剥离无关，保持硬拒绝：
         if ($request->exists('serviceTeacher')) {
             abort_unless(
                 staffUserId((string) $request->input('serviceTeacher')) === (int) $user->id
@@ -188,6 +240,37 @@ class EnsureUserIsEnabled
         if ($request->exists('status')) {
             abort_if($request->input('status') === '已成交', 403, '老师不能直接标记成交，请由店长完成');
         }
+    }
+
+    /**
+     * 被剥离字段的留痕（v3.21.0 / t19）。
+     *
+     * 为什么必须写：剥离本身是「静默丢弃」的近义词 —— 如果连一条日志都不留，
+     * 下一位老师填了管理字段却看到没保存时，仍然只能靠猜（这次事故的一半正是这个）。
+     * 落 `module = 留资管理`、`action = 字段剥离`，detail 里列出**字段名**（不含值：
+     * 值是客户信息，日志不该成为新的 PII 面），谁在什么时候尝试提交了哪些管理字段一目了然。
+     *
+     * 只记字段名不记值，也不改请求的其他部分 —— 这条日志是「可追溯」，不是「可复现」。
+     *
+     * @param  array<int,string>  $stripped  被摘掉的键名（已按请求顺序）
+     */
+    private function auditStrippedFields(Request $request, User $user, array $stripped, bool $creating): void
+    {
+        $name = trim((string) $request->input('name', ''));
+        $venue = (string) $request->input('venue', '');
+        if ($venue === '') {
+            $venue = (string) ($user->venue ?? '');
+        }
+
+        audit(
+            $request,
+            '字段剥离',
+            '留资管理',
+            $creating ? '0' : (string) ($request->route('id') ?? '0'),
+            ($creating ? '新建客资' : '编辑客资').($name !== '' ? '：'.$name : ''),
+            $venue !== '' ? $venue : '双店',
+            '老师提交了白名单外字段，已剥离（未写入）：'.implode('、', $stripped)
+        );
     }
 
     private function leadRules(bool $creating): array

@@ -328,7 +328,16 @@ class LeadAuthorizationTest extends TestCase
         ])->assertOk()->json('data.id');
         $this->assertDatabaseHas('leads', ['id' => $id, 'venue' => '绿地店', 'status' => '新留资']);
 
-        $this->patchJson("/api/leads/{$id}", ['dealAmount' => 5000])->assertForbidden();
+        /*
+         * v3.21.0（t19）：管理字段（dealAmount 这类）从「整单 403」改成「剥离」——
+         * 请求照常 200，但字段不进库，并留一条「字段剥离」审计。
+         * 为什么改：前端多传一个键就整单拒绝，曾导致「老师 100% 建不了客资」；
+         * 越权要防的是**字段被写入**，不是字段出现过。真正该硬拒的两条（指派给别人、
+         * 标记成交）在下面两行仍然是 403。
+         */
+        $this->patchJson("/api/leads/{$id}", ['dealAmount' => 5000])->assertOk();
+        $this->assertNull(\App\Models\Lead::find($id)->deal_amount, '被剥离的金额不得落库');
+        $this->assertDatabaseHas('audit_logs', ['module' => '留资管理', 'action' => '字段剥离']);
         $this->patchJson("/api/leads/{$id}", ['serviceTeacher' => '其他老师'])->assertForbidden();
         $this->patchJson("/api/leads/{$id}", [
             'serviceTeacher' => '限制老师',

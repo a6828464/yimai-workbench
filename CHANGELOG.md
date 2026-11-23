@@ -1,5 +1,39 @@
 # 更新日志
 
+## 2026-11-24 ｜ fix: v3.20.2 老师无法新建客资（字段白名单整单拒绝）
+
+### 现场
+
+老师反馈：「我们角色没有新建客资的权限，自己接电话或自己渠道接到的客资无法新建」。报错文案是「老师无权修改该客资字段」。
+
+### 根因（不是权限问题）
+
+`EnsureUserIsEnabled::assertTeacherFields()` 用 `array_diff(array_keys($request->all()), $allowed) !== []` 判断越权——**请求里多一个键就整单 403**。而白名单只有 11 个键，小程序 `buildCreatePayload()` 固定提交 18 个：
+
+```
+白名单：leadDate name phone wechat demand source orderPlatform venue serviceTeacher status remark
+多出来：grade dealCard dealAmount couponName voucherCode redeemAmount trialCards
+```
+
+`trialCards` 即使为空数组也会出现在 JSON 里，所以老师**必然**被拒，与填什么无关。管理层（店长/超管/新媒体）走 `isManagerSide` 分支跳过这段检查，因此只有老师中招。而这些字段在 `leadFields` 与表列里本来就支持保存——是白名单漏了，不是业务不允许。
+
+### 改动
+
+- **后端**：整单 403 改为**剥离白名单外字段 + 写审计**（`module=留资管理 / action=字段剥离`，只记字段名不记值，避免日志变成新的 PII 面）。实现上必须用 `$request->replace()`——JSON 请求体在 `json` bag 里，只动 `request` bag 会「说剥离、实际照样被控制器读到」。
+- CREATE 白名单补 `trialCards` 与 `grade`：老师接电话约体验课时必须能录「约了哪天几点、什么课型」。
+- **两条越权防线原样保留**：把客资指派给别人 → 403；`status=已成交` → 403（老师录入的客资自动归本人，成交由店长确认）。
+- **小程序**：提交体按角色裁剪（老师侧不发金额/券类 5 个字段），管理岗逐字不变；界面上那些字段保留但置灰、标「由店长填写」——隐藏会让老师以为本该没有，也看不到成交进度还没人填。
+- 两条既有测试随契约变更调整（原断言 403，现断言 200 + 字段未落库 + 存在剥离审计）。**授权面没有扩大**，这些值仍然写不进去，变的只是失败形态。
+
+### 验证
+
+- 后端 `php artisan test`：**1126 passed / 27 skipped**；新增 `TeacherLeadCreateFieldStripTest` 4 例（R_SERVICE 与 R_TEACHER 各跑一遍完整小程序 payload；指派别人 403；标记成交 403；管理层同 payload 原样落库且无剥离审计）
+- `miniapp`：`vue-tsc --noEmit` exit 0、`build:mp-weixin` 通过；36 项行为断言（老师侧 5 个管理字段全无、其余 11 个业务字段一个不少；店长/超管/新媒体新建体与改造前深度相等）
+
+### 提醒
+
+这次的真实触发面是「旧版小程序 + 任意后端」：前端已会裁剪，但**员工必须用新版小程序**；后端也需更新到本版，其他端（网页端旧代码、外部调用）发全量 payload 时才不会被拒。
+
 ## 2026-11-23 ｜ fix: v3.20.1 待办分类条恢复（去掉「全部」，但保留导航）
 
 ### 现场

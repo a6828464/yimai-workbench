@@ -284,7 +284,14 @@ class LeadDealTimeTest extends TestCase
         $this->assertNull($lead->deal_amount, '只填成交时间时不应影响成交金额');
     }
 
-    /** 老师的可写字段白名单不应因为本改动而放开成交时间（授权面不得扩大） */
+    /**
+     * 老师的可写字段白名单不应因为本改动而放开成交时间（授权面不得扩大）。
+     *
+     * v3.21.0（t19）起口径从「整单 403」改成「剥离」：请求照常成功，但 dealAt 不进库。
+     * 授权面**没有扩大**（值仍然写不进去），变的只是失败形态 —— 从「整张表单被拒」
+     * 变成「只丢那一个字段并留痕」。原因见 EnsureUserIsEnabled::assertTeacherFields()：
+     * 前端多带一个键就整单 403，曾让老师 100% 建不了客资（t19 事故）。
+     */
     public function test_teacher_still_cannot_write_deal_at(): void
     {
         $teacher = User::factory()->create([
@@ -297,15 +304,17 @@ class LeadDealTimeTest extends TestCase
         ]);
         Sanctum::actingAs($teacher);
 
-        // store：老师提交成交时间 → 整个请求被拒（与既有 dealAmount 同一条授权路径）
-        $this->postJson('/api/leads', [
+        // store：老师提交成交时间 → 请求成功但 dealAt 被剥离（不落库）
+        $id = $this->postJson('/api/leads', [
             'name' => '老师填成交时间', 'source' => '到店', 'venue' => '绿地店',
             'dealAt' => '2026-09-20',
-        ])->assertForbidden();
+        ])->assertOk()->json('data.id');
+        $this->assertNull(\App\Models\Lead::find($id)->deal_at, '被剥离的成交时间不得落库');
+        $this->assertDatabaseHas('audit_logs', ['module' => '留资管理', 'action' => '字段剥离']);
 
         // update：同上
         $lead = $this->lead(['service_teacher' => '成交时间老师']);
-        $this->patchJson("/api/leads/{$lead->id}", ['dealAt' => '2026-09-20'])->assertForbidden();
+        $this->patchJson("/api/leads/{$lead->id}", ['dealAt' => '2026-09-20'])->assertOk();
         $this->assertNull($lead->fresh()->deal_at);
     }
 

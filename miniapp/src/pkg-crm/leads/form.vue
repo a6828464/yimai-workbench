@@ -41,7 +41,7 @@ import {
   type LeadPayload
 } from '@/api/leads'
 import { fetchStaffOptions, matchStaff, type StaffOption } from '@/api/staff'
-import { ROLE_SHORT, type RoleCode } from '@/utils/permission'
+import { ROLE_SHORT, hasAnyRole, isManagerOrAbove, type RoleCode } from '@/utils/permission'
 import type { MiniappLead } from '@/types'
 
 const user = useUserStore()
@@ -670,9 +670,67 @@ function validate(): string {
   return ''
 }
 
+/* ---------- 按角色裁剪提交体（v3.20.0 修「老师无法新建客资」） ----------
+ *
+ * ## 事故现场
+ * 服务端对老师侧（服务老师 / 授课老师）只接受 11 个字段，而这一页固定提交 18 个。
+ * 多出来的 `dealCard / dealAmount / couponName / voucherCode / redeemAmount` 会触发
+ * **整单 403**（「老师无权修改该客资字段」）—— 老师填完一整屏点提交，一个字段都没存下来，
+ * 看起来就是「系统坏了」。这不是权限收得严，而是**提交体没有按角色收窄**。
+ *
+ * ## 为什么前端也要裁（而不是把责任全推给后端）
+ * 后端这一轮会改成「静默剥离管理字段」而不是 403，但发版有窗口期：
+ * 老后端 + 新小程序、或后端回滚，老师就又被整单拒。所以前端裁是**第二道防线**，
+ * 不是后端的替代品 —— 真正的安全边界仍在服务端（改一个请求就能绕过前端）。
+ *
+ * ## 口径
+ *  · 管理岗（店长 / 超管 / 新媒体）：一个字段都不动。他们本来就有这些字段的写权限，
+ *    裁掉会让「只改了成交金额」变成空 PATCH → 误报「没有改动」。
+ *  · 老师侧（有 R_SERVICE / R_TEACHER 且不是管理岗）：去掉 5 个管理字段，
+ *    **保留** trialCards / grade / remark 等 —— 少一个就是「录了没保存」。
+ *  · 什么角色都没有的账号：不裁（与改动前的行为一致，默认宽松）。
+ *
+ * ## 为什么集中在一个函数里
+ * 创建与编辑两条路径共用同一份裁剪。各写一遍必然漂移，而漂移的形态就是
+ * 「新建能存、编辑报 403」这种只在某条路径上出现的怪错。
+ */
+const MANAGER_ONLY_FIELDS = [
+  'dealCard',
+  'dealAmount',
+  'couponName',
+  'voucherCode',
+  'redeemAmount'
+] as const
+
+/**
+ * 当前账号是否属于「老师侧」（只能填非管理字段）。
+ *
+ * 管理岗判定**不直接用** `isManagerOrAbove`：`roles.json` 的 MGMT 组是
+ * `[R_SUPER, R_MANAGER]`，**不含 R_MEDIA**，而新媒体侧也有金额/券码的写权限。
+ * 所以显式把 R_MEDIA 一起算进管理岗，避免「新媒体 + 授课」双角色账号被误裁。
+ */
+const isTeacherSide = computed(() => {
+  const roles = user.roles
+  if (isManagerOrAbove(roles) || hasAnyRole(roles, ['R_MEDIA'])) return false
+  return hasAnyRole(roles, ['R_SERVICE', 'R_TEACHER'])
+})
+
+/**
+ * 裁剪唯一入口：管理岗原样返回（逐字不变），老师侧删掉管理字段。
+ * 泛型只为了保留入参类型，调用方拿到的还是 LeadPayload / Partial<LeadPayload>。
+ */
+function trimForRole<T extends object>(payload: T): T {
+  if (!isTeacherSide.value) return payload
+  const next: Record<string, unknown> = { ...(payload as Record<string, unknown>) }
+  for (const key of MANAGER_ONLY_FIELDS) delete next[key]
+  return next as T
+}
+
 function buildCreatePayload(): LeadPayload {
   const f = form.value
-  return {
+  // 注意 return 的是 trimForRole(...)：老师侧的 5 个管理字段在这里被摘掉，
+  // 其余字段（含 trialCards / grade / remark）原样保留
+  return trimForRole({
     name: f.name.trim(),
     venue: f.venue,
     source: f.source,
@@ -693,7 +751,7 @@ function buildCreatePayload(): LeadPayload {
     // 与编辑态共用同一份卡片映射（含 session 重排、time 归一、raw 附加字段带回）
     trialCards: toTrialPayload(f.trialCards),
     remark: f.remark.trim() || undefined
-  }
+  })
 }
 
 /**
@@ -737,7 +795,10 @@ function buildPatch(): Partial<LeadPayload> | null {
   if (cardSignature(f.trialCards) !== originCardSig.value) {
     patch.trialCards = toTrialPayload(f.trialCards)
   }
-  return patch
+  // 与新建体共用同一份裁剪（见 trimForRole）：老师侧 PATCH 也不能带管理字段，
+  // 否则「改个电话」也会因为夹带了 dealAmount 被后端整单拒。
+  // 老师侧本来也改不了这些字段（界面置灰），所以裁完不会丢掉他们的任何输入。
+  return trimForRole(patch)
 }
 
 async function submit() {
@@ -1206,37 +1267,49 @@ onShareAppMessage(() => shareToHome())
       </view>
     </ym-section>
 
-    <ym-section title="成交与备注">
+    <!-- 成交与备注：后三个（卡项/金额/券）是**店长口径**。
+         老师侧保留展示但置灰（不是隐藏）—— 隐藏会让老师以为「这里就该没有」，
+         而置灰 + 一句说明能让他看到「成交进度还没人填」，也不会填完才发现没保存。
+         说明同时写在标题下的 desc 里，避免老师滑到输入框才发现点不动。 -->
+    <ym-section
+      title="成交与备注"
+      :desc="isTeacherSide ? '成交卡项 / 金额 / 券码由店长填写（已置灰）；你填的备注与体验课照常保存' : ''"
+    >
       <wd-input
         v-model="form.dealCard"
         label="成交卡项"
-        placeholder="成交时填写"
+        :placeholder="isTeacherSide ? '由店长填写' : '成交时填写'"
+        :disabled="isTeacherSide"
         label-width="200rpx"
       />
       <wd-input
         v-model="form.dealAmount"
         label="成交金额"
         type="digit"
-        placeholder="未成交可留空"
+        :placeholder="isTeacherSide ? '由店长填写' : '未成交可留空'"
+        :disabled="isTeacherSide"
         label-width="200rpx"
       />
       <wd-input
         v-model="form.couponName"
         label="券名"
-        placeholder="平台核销券名称，如体验课次卡"
+        :placeholder="isTeacherSide ? '由店长填写' : '平台核销券名称，如体验课次卡'"
+        :disabled="isTeacherSide"
         label-width="200rpx"
       />
       <wd-input
         v-model="form.voucherCode"
         label="券码"
-        placeholder="平台核销券码（可选）"
+        :placeholder="isTeacherSide ? '由店长填写' : '平台核销券码（可选）'"
+        :disabled="isTeacherSide"
         label-width="200rpx"
       />
       <wd-input
         v-model="form.redeemAmount"
         label="核销金额"
         type="digit"
-        placeholder="已核销金额，可留空"
+        :placeholder="isTeacherSide ? '由店长填写' : '已核销金额，可留空'"
+        :disabled="isTeacherSide"
         label-width="200rpx"
       />
       <wd-textarea
