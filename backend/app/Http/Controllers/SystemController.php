@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\LeadTrialTimeCleaner;
 use Illuminate\Http\Request;
 use Throwable;
 
@@ -134,6 +135,62 @@ final class SystemController extends Controller
      *
      * ?limit=3（默认 3，夹在 1..10）。文件缺失或解析不出标题时 `records` 是空数组，不是 500。
      */
+    /**
+     * POST /system/clean-trial-time：清理留资体验课卡片里的 undefined 类脏值（超管专用）。
+     *
+     * ## 为什么要有这个接口
+     *
+     * 清洗逻辑早就有了（`yimai:leads-clean-trial-time`），但馆主**没有 SSH 通道**，
+     * 「你直接去执行，我只要达到目的」这件事在后台无按钮时只是一句愿望。
+     * 所以这里把它做成可点的入口：先 `dryRun=true` 看命中数与样例，再 `dryRun=false` 落库。
+     *
+     * ## 为什么不是「用 shell 调 artisan」
+     *
+     * 从 HTTP 里 shell 出去调 `php artisan` 是典型的「路径、权限、超时、并发」四重不稳定：
+     * 生产上 `php` 二进制不一定在 PATH、web 用户可能没有写权限、命令跑超了会撑爆请求，
+     * 两个店长同时点还会并发跑两次。这里**直接调用服务层**（与命令同一个
+     * `LeadTrialTimeCleaner`），在请求进程内同步执行，行为与命令一字不差。
+     *
+     * ## 边界
+     *
+     * - 只动 `leads.trial_cards` 的六个字段与 `trial_teacher` 镜像列；`trial_teacher_user_id`
+     *   只统计不修改（见 service 类注释：它参与可见性）。
+     * - 不新增列、不改任何判定口径；写库走 Eloquent cast + saveQuietly，不写裸 SQL。
+     * - 分批处理（默认 500 行/批），避免大表一次性 hydrate。
+     */
+    public function cleanTrialTime(Request $r)
+    {
+        requireSuper($r);
+
+        $d = $r->validate([
+            // 缺省即 dry-run：**漏传必须是安全方向**，不能默认写库
+            'dryRun' => 'sometimes|boolean',
+            'samples' => 'sometimes|integer|min:0|max:10',
+        ]);
+        $dryRun = (bool) ($d['dryRun'] ?? true);
+        $samples = (int) ($d['samples'] ?? 3);
+
+        $stats = app(LeadTrialTimeCleaner::class)->run(! $dryRun, 500, $samples);
+
+        // 真正落库时记一条审计：谁在什么时候清了脏数据（可追溯，含命中/写入行数）
+        if (! $dryRun) {
+            audit(
+                $r,
+                '数据清理',
+                '系统',
+                'leads.trial_cards',
+                '留资体验课卡片脏值',
+                (string) ($r->user()->venue ?? '双店'),
+                "命中 {$stats['hitRows']} 行，写入 {$stats['writtenRows']} 行；"
+                .'字段分布：'.json_encode($stats['fieldHits'], JSON_UNESCAPED_UNICODE)
+            );
+            invalidateBusinessCaches('analytics');
+        }
+
+        // 原始统计直接回给前端：dryRun 时看命中与样例，apply 后看写入行数
+        return ok($stats);
+    }
+
     public function changelog(Request $r)
     {
         $limit = (int) $r->query('limit', 3);

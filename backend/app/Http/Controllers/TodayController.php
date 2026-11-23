@@ -898,6 +898,15 @@ final class TodayController extends Controller
 
                     return [
                         'id' => $c['id'],
+                        // v3.20.0：补 customerId（值＝会员 id）。
+                        //
+                        // 事实要准确（审查用 git 推翻过一版说法）：本组此前**只有 id**，小程序靠待办
+                        // key 前缀隐式解析会员 id（`renewal:123` → 123）才把留痕写进会员档案，所以
+                        // 「留痕写不进去」不是小程序的问题；真正的缺口是**网页端没有这条兜底链**
+                        // （生日组读 `row.customerId ?? null`，会漏写）。
+                        // 现在显式下发，两端都不再依赖 key 解析。语义与其它组一致：
+                        // **这是会员 id，不是待办 id**。
+                        'customerId' => $c['id'],
                         'key' => 'renewal:'.$c['id'],
                         'name' => $c['name'],
                         'phone' => (string) ($c['phone'] ?? ''),
@@ -970,6 +979,8 @@ final class TodayController extends Controller
 
                     return [
                         'id' => $c['id'],
+                        // v3.20.0：同 renewals —— 流失风险栏目的标记也要写进会员留痕
+                        'customerId' => $c['id'],
                         'key' => 'churn:'.$c['id'],
                         'name' => $c['name'],
                         'phone' => (string) ($c['phone'] ?? ''),
@@ -1018,6 +1029,8 @@ final class TodayController extends Controller
 
                     return [
                         'id' => $c['id'],
+                        // v3.20.0：同 renewals —— 生日关怀栏目的祝福也要写进会员留痕
+                        'customerId' => $c['id'],
                         'key' => 'birthday:'.$c['id'],
                         'name' => $c['name'],
                         'phone' => (string) ($c['phone'] ?? ''),
@@ -1570,6 +1583,16 @@ final class TodayController extends Controller
                     }
                     $remarkText = (string) ($d['remark'] ?? '');
                     if ($remarkText !== '') {
+                        /*
+                         * v3.20.0：detail 前面加**来源栏目**标签（馆主原话：「我是从待续费页面
+                         * 标记了他，然后备注了内容，你得把这个显示出来」）。
+                         *
+                         * 标签取 `$typeLabels[$d['type']]` —— 与待办页签的中文名同一份映射，
+                         * 不在这里再写一套中文，否则待办叫「待续费」、留痕叫「续费提醒」，
+                         * 店长又要猜。
+                         * 前缀写进 detail 而不是新增列：会员 360 的留痕列表直接渲染 detail，
+                         * 不需要前端再解析一次；而且 `audit_logs.detail` 是 text 列，不担心长度。
+                         */
                         audit(
                             $r,
                             '沟通记录',
@@ -1577,7 +1600,7 @@ final class TodayController extends Controller
                             $c->id,
                             "{$c->name}（{$c->venue}）",
                             $c->venue,
-                            "{$d['action']}：{$remarkText}"
+                            '['.($typeLabels[$d['type']] ?? $d['type']).'] '."{$d['action']}：{$remarkText}"
                         );
                     }
                 }

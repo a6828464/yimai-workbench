@@ -456,6 +456,36 @@ function logTime(v?: string): string {
   return String(v).replace('T', ' ').slice(0, 16)
 }
 
+/**
+ * 操作留痕的行数据：把后端写在 `detail` 前面的**栏目前缀**拆成一枚小标签。
+ *
+ * 为什么由前端拆、而不是前端自己按 module 推导栏目：
+ * 后端 t12 起直接把来源写进 `detail`（形如 `[待续费] 已沟通：张女士说月底答复`），
+ * 这是它唯一的口径来源。前端再按 module / action 猜一次，就会多出一份会分叉的映射，
+ * 将来后端加一个新栏目，前端还得跟着改。这里只做一件事：把开头那对方括号摘出来渲染。
+ *
+ * 两个细节：
+ *  ① 有前缀时**不再单独渲染 `log.action`** —— 前缀后面的正文本身就带动作名
+ *     （`已沟通：…`），否则会渲染成「已沟通 · [待续费] 已沟通：…」重复一遍；
+ *  ② 没有前缀的历史行（t12 之前写入的、或其它模块的留痕）保持原样 `动作 · 内容`。
+ */
+const logList = computed(() =>
+  (detail.value?.logs ?? []).slice(0, 8).map((log) => {
+    const raw = String(log.detail ?? '')
+    // 只认「行首的短方括号」：老数据里内容本身带 [ ] 的情况不会命中
+    const m = /^\[([^\]\n]{1,16})\]\s*(.*)$/.exec(raw)
+    const tag = m ? m[1] : ''
+    const text = m ? m[2] || String(log.action ?? '') : [log.action, raw].filter(Boolean).join(' · ')
+    return {
+      id: log.id,
+      tag,
+      text,
+      time: logTime(log.createdAt),
+      operator: log.operator ? String(log.operator) : ''
+    }
+  })
+)
+
 function toLeadForm(leadId: number) {
   // 关联留资只在详情里展示跳转；编辑回列表页做（列表行已有完整字段）
   uni.navigateTo({ url: `/pkg-crm/leads/leads?focus=${leadId}` })
@@ -855,12 +885,16 @@ onShareAppMessage(() => shareToHome())
       <!-- 操作留痕（客户分析里的「查看全部留痕」锚点指向这里） -->
       <view id="logs">
         <ym-section v-if="detail?.logs?.length" title="操作留痕" desc="最近 8 条">
-          <view v-for="log in detail.logs.slice(0, 8)" :key="log.id" class="log-row">
+          <view v-for="log in logList" :key="log.id" class="log-row">
             <view class="log-row__dot" />
             <view class="log-row__main">
-              <text class="log-row__text">{{ log.action }} · {{ log.detail }}</text>
+              <view class="log-row__line">
+                <!-- 栏目前缀（后端写进 detail 的 `[待续费]`）→ 一枚小标签，其余照常 -->
+                <text v-if="log.tag" class="log-row__tag">{{ log.tag }}</text>
+                <text class="log-row__text">{{ log.text }}</text>
+              </view>
               <text class="log-row__time ym-num">
-                {{ logTime(log.createdAt) }}<text v-if="log.operator"> · {{ log.operator }}</text>
+                {{ log.time }}<text v-if="log.operator"> · {{ log.operator }}</text>
               </text>
             </view>
           </view>
@@ -1460,10 +1494,32 @@ onShareAppMessage(() => shareToHome())
   min-width: 0;
 }
 
+.log-row__line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8rpx;
+  align-items: baseline;
+}
+
+/* 栏目标签：像一枚小记号，比正文弱一档但颜色取自品牌色，扫列表时先看到它 */
+.log-row__tag {
+  flex-shrink: 0;
+  padding: 2rpx 10rpx;
+  font-size: 20rpx;
+  line-height: 1.6;
+  color: $brand-700;
+  background: $brand-50;
+  border: 2rpx solid $brand-100;
+  border-radius: 6rpx;
+}
+
 .log-row__text {
+  flex: 1;
+  min-width: 0;
   font-size: 26rpx;
   line-height: 1.5;
   color: $ink-700;
+  word-break: break-all;
 }
 
 .log-row__time {

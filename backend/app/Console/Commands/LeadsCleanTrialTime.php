@@ -2,7 +2,7 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Lead;
+use App\Services\LeadTrialTimeCleaner;
 use Illuminate\Console\Command;
 
 /**
@@ -91,149 +91,24 @@ class LeadsCleanTrialTime extends Command
 
     protected $description = '清理 leads.trial_cards / trial_teacher 里历史写入的 undefined/null/NaN/[object Object] 脏值（默认 dry-run）';
 
-    /** 允许清洗的卡片字段（其它键一律不动） */
-    private const CARD_FIELDS = ['date', 'time', 'topic', 'teacher', 'couponName', 'voucherCode'];
+    /*
+     * 清洗口径**不在这里**：唯一实现在 `App\Services\LeadTrialTimeCleaner`
+     * （命令与 `POST /system/clean-trial-time` 共用同一份，避免「命令说 12 行、后台说 9 行」）。
+     * 本类只负责命令行参数与输出格式。
+     */
 
-    /** 结构化字段：允许把出现在字符串中间的脏 token 压掉（日期时间混进 token 一定是缺陷） */
-    private const STRUCTURED_FIELDS = ['date', 'time'];
-
-    /** 脏 token，全部小写（比对时统一 mb_strtolower + trim） */
-    private const DIRTY_TOKENS = ['undefined', 'null', 'nan', '[object object]'];
-
-    /** 压掉脏 token 的正则：`[object Object]` 中间的空格可能是任意空白 */
-    private const STRIP_PATTERN = '/(?:undefined|\[object\s+object\]|nan|null)/i';
-
-    public function handle(): int
+    public function handle(LeadTrialTimeCleaner $cleaner): int
     {
         $apply = (bool) $this->option('apply');
-        $sampleLimit = max(0, (int) $this->option('samples'));
-        $chunk = max(1, (int) $this->option('chunk'));
-
-        $scanned = 0;
-        $hitRows = 0;
-        $cardHitRows = 0;
-        $teacherHitRows = 0;
-        $written = 0;
-        $fieldHits = array_fill_keys(self::CARD_FIELDS, 0);
-        $samples = [];
-        // 「脏名 + 残留归属 id」：只读统计，本轮不动（见 handle 上方注释与类注释「为什么不顺手清 id」）
-        $staleOwnerRows = 0;
-        $staleOwnerSamples = [];
-
-        Lead::query()
-            ->select(['id', 'trial_cards', 'trial_teacher', 'trial_teacher_user_id'])
-            ->chunkById($chunk, function ($leads) use (
-                $apply, $sampleLimit, &$scanned, &$hitRows, &$cardHitRows, &$teacherHitRows,
-                &$written, &$fieldHits, &$samples, &$staleOwnerRows, &$staleOwnerSamples
-            ): void {
-                foreach ($leads as $lead) {
-                    $scanned++;
-
-                    // 原始 JSON（不经 trialCards 访问器，避免把补出来的 session 一起写回库）
-                    $rawCards = $lead->getRawOriginal('trial_cards');
-                    $cards = is_array($rawCards) ? $rawCards : (json_decode((string) $rawCards, true) ?: []);
-
-                    $cleanCards = [];
-                    $changedFields = [];   // 样例用：「cards[0].time」=> [before, after]
-                    $cardHitRowsInLead = 0;
-                    foreach ($cards as $index => $card) {
-                        if (! is_array($card)) {
-                            // 非数组条目原样保留：不猜、不删（删掉等于替用户丢数据）
-                            $cleanCards[] = $card;
-
-                            continue;
-                        }
-                        $before = $card;
-                        $card = $this->sanitizeCard($card, $fieldHits);
-                        if ($card !== $before) {
-                            $cardHitRowsInLead++;
-                            foreach ($card as $field => $value) {
-                                if (in_array($field, self::CARD_FIELDS, true)
-                                    && ($before[$field] ?? null) !== $value) {
-                                    $changedFields['cards['.$index.'].'.$field] = [$before[$field] ?? null, $value];
-                                }
-                            }
-                        }
-                        $cleanCards[] = $card;
-                    }
-
-                    // trial_teacher 是「第一节 teacher」的镜像列，脏值会一起污染（影响可见性与课时统计）
-                    $rawTeacher = $lead->getRawOriginal('trial_teacher');
-                    $teacherDirty = $this->isDirtyToken($rawTeacher);
-                    if ($teacherDirty) {
-                        $changedFields['trial_teacher'] = [$rawTeacher, ''];
-                    }
-
-                    /*
-                     * 「脏名 + 残留归属 id」只读统计（馆主 2026-11 要求：本轮不清，但要可见）。
-                     *
-                     * 统计面比「命中行」更宽：`trial_teacher` **本来就是空串**但 `trial_teacher_user_id`
-                     * 仍 > 0 的行也算 —— 那正是「名字没了、归属还挂着」的形态。
-                     * 这些 id 参与 `scopeLeadsForUser()` 的可见性判断，不能由命令替人拍。
-                     */
-                    $teacherEmptyAfter = $teacherDirty || trim((string) $rawTeacher) === '';
-                    $staleOwnerId = (int) ($lead->getRawOriginal('trial_teacher_user_id') ?? 0);
-                    if ($teacherEmptyAfter && $staleOwnerId > 0) {
-                        $staleOwnerRows++;
-                        if (count($staleOwnerSamples) < min(3, max(1, $sampleLimit))) {
-                            $staleOwnerSamples[] = [
-                                'id' => (int) $lead->id,
-                                'trialTeacher' => '',   // 清洗后的值（脏 token 会被清成空串）
-                                'trialTeacherUserId' => $staleOwnerId,
-                            ];
-                        }
-                    }
-
-                    if ($cardHitRowsInLead === 0 && ! $teacherDirty) {
-                        continue;   // 没命中：完全不碰这一行（updated_at 也不动）
-                    }
-
-                    $hitRows++;
-                    if ($cardHitRowsInLead > 0) {
-                        $cardHitRows++;
-                    }
-                    if ($teacherDirty) {
-                        $teacherHitRows++;
-                    }
-
-                    if (count($samples) < $sampleLimit) {
-                        $samples[] = ['id' => (int) $lead->id, 'changed' => $changedFields];
-                    }
-
-                    if (! $apply) {
-                        continue;
-                    }
-
-                    // 只赋值真正需要改的列，再由 cast 编码；saveQuietly 不触发事件/通知/审计
-                    if ($cardHitRowsInLead > 0) {
-                        $lead->trial_cards = $cleanCards;
-                    }
-                    if ($teacherDirty) {
-                        $lead->trial_teacher = '';
-                    }
-                    $lead->saveQuietly();
-                    $written++;
-                }
-            });
-
-        $stats = [
-            'mode' => $apply ? 'apply' : 'dry-run',
-            'scannedRows' => $scanned,
-            'hitRows' => $hitRows,
-            'cardHitRows' => $cardHitRows,
-            'teacherHitRows' => $teacherHitRows,
-            'fieldHits' => $fieldHits,
-            'writtenRows' => $written,
-            'samples' => $samples,
-            'staleOwnerRows' => $staleOwnerRows,
-            'staleOwnerSamples' => $staleOwnerSamples,
-        ];
+        $stats = $cleaner->run(
+            $apply,
+            max(1, (int) $this->option('chunk')),
+            max(0, (int) $this->option('samples'))
+        );
 
         if ((bool) $this->option('json')) {
-            // JSON 模式不带样文明细里的自由文本？—— 样例就是给人看的，脚本只要计数，故剔除
-            unset($stats['samples']);
-            $stats['staleOwnerRows'] = $staleOwnerRows;
-            unset($stats['staleOwnerSamples']);
+            // 脚本只要统计：样例里的自由文本（课程名/老师名）不出现在 JSON 里
+            unset($stats['samples'], $stats['staleOwnerSamples']);
             $this->line((string) json_encode($stats, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
 
             return self::SUCCESS;
@@ -242,66 +117,6 @@ class LeadsCleanTrialTime extends Command
         $this->renderReport($stats, $apply);
 
         return self::SUCCESS;
-    }
-
-    /**
-     * 清洗一张卡片（只动 CARD_FIELDS）。
-     *
-     * @param  array<string,mixed>  $card
-     * @param  array<string,int>  $fieldHits  按字段累加命中次数（引用传，报告用）
-     * @return array<string,mixed>
-     */
-    private function sanitizeCard(array $card, array &$fieldHits): array
-    {
-        foreach (self::CARD_FIELDS as $field) {
-            if (! array_key_exists($field, $card)) {
-                continue;   // 键本来就没有：不补键（补了会改变卡片形状）
-            }
-            $value = $card[$field];
-
-            if ($this->isDirtyToken($value)) {
-                $card[$field] = '';
-                $fieldHits[$field]++;
-
-                continue;
-            }
-
-            // 只有结构化字段做子串压缩；自由文本只做上面的整串判定（见类注释 3.）
-            if (in_array($field, self::STRUCTURED_FIELDS, true) && is_string($value)) {
-                $stripped = $this->stripDirtyTokens($value);
-                if ($stripped !== $value) {
-                    $card[$field] = $stripped;
-                    $fieldHits[$field]++;
-                }
-            }
-        }
-
-        return $card;
-    }
-
-    /**
-     * 整串是否等于脏 token（大小写不敏感）。
-     *
-     * 只认**字符串**：JSON `null` 与空串对前端等价，且不是本次要清的形态，
-     * 把它也算脏值会让命令去重写一大批无关行（见类注释 4.）。数组/数字同理不猜。
-     */
-    private function isDirtyToken(mixed $value): bool
-    {
-        if (! is_string($value)) {
-            return false;
-        }
-
-        return in_array(mb_strtolower(trim($value)), self::DIRTY_TOKENS, true);
-    }
-
-    /** 压掉字符串里的脏 token 与多余空白（`"2026-11-03 undefined"` → `"2026-11-03"`） */
-    private function stripDirtyTokens(string $value): string
-    {
-        $stripped = preg_replace(self::STRIP_PATTERN, ' ', $value);
-        $stripped = $stripped ?? $value;
-        $stripped = preg_replace('/\s+/u', ' ', $stripped) ?? $stripped;
-
-        return trim($stripped);
     }
 
     /**

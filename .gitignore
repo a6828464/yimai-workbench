@@ -80,3 +80,8 @@ backend/public/assets/
 # 发版用的临时二维码（微信开发者工具登录码 / 预览码），不入库
 miniapp/wx-login.png
 miniapp/wx-preview.png
+
+# 运维排障截图（微信后台登录码 / 版本管理页），不入库
+mp-login.png
+mp-login-qr.png
+mp-version.png

@@ -356,6 +356,17 @@
             "navigationBarBackgroundColor": "#0e1a16",
             "backgroundColor": "#ffffff"
           }
+        },
+        {
+          "path": "share/view",
+          "style": {
+            "navigationBarTitleText": "一麦 · 专属内容",
+            "navigationBarTextStyle": "black",
+            "navigationBarBackgroundColor": "#F2F4F2",
+            "backgroundColor": "#F2F4F2",
+            "backgroundColorTop": "#F2F4F2",
+            "backgroundColorBottom": "#F2F4F2"
+          }
         }
       ]
     }

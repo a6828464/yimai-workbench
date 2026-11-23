@@ -1,5 +1,17 @@
 <template>
   <div class="list-page list-page--fill">
+    <!--
+      留资体验课数据清理（v3.19.0 · t16）：挂在「系统管理 → 系统日志」这一页的独立卡片里
+      （不新建菜单项）。放在日志卡片**上方**是因为本页是固定视口高度的列表页，
+      下面的内容要滚动才能看到 —— 馆主点进来找这个入口时不该先猜它在哪。
+      卡片自带 `style="flex: 0 0 auto"`：页面规则里 `.list-page > .el-card` 是 `flex: 1 1 auto`
+      （日志卡片要撑满），不关掉的话两块会各占一半高、日志表被压掉一半。
+      超管门槛有三层：① 动态路由是按角色过滤后的菜单注册的（`MenuProcessor.filterMenuByRoles`），
+      非超管根本没有这条路由；② 本组件内 `v-roles="'R_SUPER'"` 再收一道（角色中途变化时即时生效）；
+      ③ 接口侧 `SystemController::cleanTrialTime` 里 `requireSuper()` 硬拦 403。
+    -->
+    <LeadTrialCleanCard />
+
     <ElCard>
       <div class="filter-bar">
         <ElDatePicker
@@ -126,6 +138,7 @@
 
 <script setup lang="ts">
   import { ElMessage } from 'element-plus'
+  import LeadTrialCleanCard from './lead-trial-clean-card.vue'
   import {
     getRetentionSettings,
     getSystemLogs,

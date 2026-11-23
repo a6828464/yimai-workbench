@@ -13,7 +13,8 @@
  */
 import { computed, reactive, ref } from 'vue'
 import { onLoad, onShareAppMessage } from '@dcloudio/uni-app'
-import { shareToHome } from '@/utils/share'
+import { shareSelf, shareToHome } from '@/utils/share'
+import { issueShareToken, shareViewPath } from '@/api/share'
 import { useUserStore } from '@/store/user'
 import { requireFeature } from '@/utils/nav'
 import { isManagerOrAbove } from '@/utils/permission'
@@ -474,8 +475,51 @@ onLoad((query?: Record<string, string | undefined>) => {
   void loadPlan()
 })
 
-// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
-onShareAppMessage(() => shareToHome())
+/* ---------- 分享给客户（v3.20.0） ----------
+ *
+ * 训练计划本来就是给学员照着练的，但详情页要求登录 → 直接转发对方只看到登录墙。
+ * 走「单份内容 token」：`POST /share/plan/{id}/token` → 免登录的
+ * `/pkg-public/share/view?t=<token>`，客户端打开固定看到这一份，还要输手机号后四位。
+ *
+ * 注意训练计划**可能没有校验码**（`training_plans` 没有手机号列，只能沿
+ * source_review_id 回溯学员号）：后端此时返回 needCode=false，链接只靠 token 保护。
+ * 这种链接必须在生成时就把风险说清（见下方 showModal），不能当普通链接发出去。
+ */
+const shareToken = ref('')
+const shareNeedCode = ref(true)
+const sharing = ref(false)
+
+async function onShareToCustomer(): Promise<void> {
+  if (sharing.value || !planId.value) return
+  sharing.value = true
+  try {
+    const res = await issueShareToken('plan', planId.value)
+    shareToken.value = res.token
+    shareNeedCode.value = res.needCode
+    if (!res.needCode) {
+      uni.showModal({
+        title: '这份计划没有校验码',
+        content: '该学员没有可用手机号，此链接一旦转发谁都能看，请只发给本人。',
+        showCancel: false
+      })
+    } else {
+      uni.showToast({ title: '已生成，点「转发给客户」', icon: 'none' })
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : ''
+    uni.showToast({ title: msg || '生成分享链接失败，请稍后重试', icon: 'none' })
+  } finally {
+    sharing.value = false
+  }
+}
+
+// 转发：**没有分享 token 时**一律回首页（员工页分享自己会撞 requireLogin 登录墙）；
+// 生成过 token 后，转发落到免登录公开页并固定这一份 —— 见 utils/share.ts 的 shareSelf。
+onShareAppMessage(() =>
+  shareToken.value
+    ? shareSelf('一麦 · 训练计划', shareViewPath(shareToken.value))
+    : shareToHome()
+)
 </script>
 
 <template>
@@ -533,6 +577,36 @@ onShareAppMessage(() => shareToHome())
           >
             删除
           </wd-button>
+        </view>
+
+        <!-- 分享给客户：先生成单份 token，再点「转发给客户」（两步的原因见 onShareToCustomer） -->
+        <view v-if="planId" class="pd__share">
+          <wd-button
+            v-if="!shareToken"
+            size="small"
+            plain
+            :loading="sharing"
+            :disabled="sharing"
+            @click="onShareToCustomer"
+          >
+            分享给客户
+          </wd-button>
+          <!-- 原生 button 才能触发转发面板；样式在本页 scss 里重置 -->
+          <button v-else class="pd__share-btn" open-type="share">转发给客户</button>
+          <!-- 换发：同一份内容再生成一个新 token，**旧链接立刻失效** ——
+               链接被转错群时的撤回手段（后端 issue 是幂等换发，不新增行） -->
+          <text v-if="shareToken" class="pd__share-reset ym-tap" @click="onShareToCustomer">
+            重新生成（旧链接失效）
+          </text>
+          <text class="pd__share-hint">
+            {{
+              shareToken
+                ? shareNeedCode
+                  ? '链接已生成：学员需输入手机号后四位才能看'
+                  : '注意：这份计划没有校验码，谁拿到链接都能看'
+                : '生成一条只指向这份计划的链接，学员无需登录'
+            }}
+          </text>
         </view>
 
         <ym-section title="训练目标">
@@ -739,6 +813,43 @@ onShareAppMessage(() => shareToHome())
     align-items: center;
     gap: 16rpx;
     padding: 20rpx 28rpx 0;
+  }
+
+  /* ---------- 分享给学员 ---------- */
+  &__share {
+    display: flex;
+    flex-direction: column;
+    gap: 10rpx;
+    align-items: flex-start;
+    padding: 16rpx 28rpx 0;
+  }
+
+  /* 原生 button：微信默认整宽 + 自带边框，这里重置成小胶囊 */
+  &__share-btn {
+    height: 60rpx;
+    padding: 0 26rpx;
+    font-size: 24rpx;
+    line-height: 60rpx;
+    color: $brand-700;
+    background: $brand-100;
+    border-radius: 999rpx;
+
+    &::after {
+      border: none;
+    }
+  }
+
+  &__share-hint {
+    font-size: 21rpx;
+    line-height: 1.5;
+    color: $ink-400;
+  }
+
+  /* 重新生成：次要动作，用文字链而不是第二个按钮（避免与「转发给客户」抢视觉） */
+  &__share-reset {
+    font-size: 21rpx;
+    color: $ink-400;
+    text-decoration: underline;
   }
 
   /* 草稿不是最新时的提示条（F19）：用告警色细条，不抢主内容 */

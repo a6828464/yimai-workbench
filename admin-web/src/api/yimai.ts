@@ -2102,6 +2102,86 @@ export function verifyBackup(scope: 'local' | 'remote', name: string): Promise<K
   return apiPost('/backup/verify', { scope, name } as unknown as Record<string, unknown>)
 }
 
+// ==================== 系统数据清理（仅超管） ====================
+
+/**
+ * 留资体验课卡片的「可清洗字段」口径（与后端 `LeadTrialTimeCleaner::CARD_FIELDS` 逐字一致）。
+ *
+ * 只列这六个：清洗**只动**这些字段，`session/attended/noShow/total/raw` 等键与成交金额一律不碰。
+ * 前端用它做「按字段分布」的展示顺序与未知字段兜底（服务端将来加字段也不会漏显示）。
+ */
+export const TRIAL_CLEAN_FIELDS = [
+  'date',
+  'time',
+  'topic',
+  'teacher',
+  'couponName',
+  'voucherCode'
+] as const
+
+export type TrialCleanField = (typeof TRIAL_CLEAN_FIELDS)[number]
+
+/** 单个会员（lead 行）的清洗样例：`changed` 的键形如 `cards[0].date` / `trial_teacher` */
+export interface TrialCleanSample {
+  /** 会员 id（后端 lead id） */
+  id: number
+  /** 字段路径 → [清前, 清后] */
+  changed: Record<string, [unknown, unknown]>
+}
+
+/** 「老师名被清空、但归属 id 还挂着」的行（只统计，后端永不修改） */
+export interface TrialCleanStaleOwnerSample {
+  id: number
+  trialTeacher: string
+  trialTeacherUserId: number
+}
+
+/**
+ * 清洗结果（后端 `POST /system/clean-trial-time` 原样返回 `LeadTrialTimeCleaner::run()` 的统计）。
+ *
+ * 契约来源：后端 t12 已落地（`app/Services/LeadTrialTimeCleaner.php` 的 `@return` 注释）。
+ * 字段语义：
+ * - `mode`：`dry-run` 只统计 / `apply` 已写库；
+ * - `hitRows`：命中（有脏值）的会员行数，`cardHitRows` / `teacherHitRows` 是按「卡片字段 / 老师汇总列」拆开的两类；
+ * - `fieldHits`：按字段累计命中次数（与 `TRIAL_CLEAN_FIELDS` 同键）；
+ * - `writtenRows`：**真正写库**的行数（dry-run 恒为 0）；
+ * - `samples`：前 N 条 before/after 样例（默认 3）；
+ * - `staleOwnerRows`：脏名 + 残留归属 id 的行数（只提示，需人工判断）。
+ */
+export interface TrialCleanResult {
+  mode: 'dry-run' | 'apply'
+  scannedRows: number
+  hitRows: number
+  cardHitRows: number
+  teacherHitRows: number
+  fieldHits: Record<string, number>
+  writtenRows: number
+  samples: TrialCleanSample[]
+  staleOwnerRows: number
+  staleOwnerSamples: TrialCleanStaleOwnerSample[]
+}
+
+/**
+ * 清理留资体验课卡片里的历史脏值（`undefined` / `null` / `NaN` / `[object Object]`）。
+ *
+ * - `dryRun: true`（默认）**只统计不写库**；`false` 才落库，并由后端记一条「数据清理」审计。
+ * - 超管专用：后端 `SystemController::cleanTrialTime` 里 `requireSuper()` 硬拦（403）。
+ * - 演示模式（未连后端）没有等价数据可清，直接给一句人话错误，不假装成功。
+ */
+export function cleanLeadTrialTime(input: {
+  dryRun: boolean
+  /** 返回几条 before/after 样例，0..10，缺省 3（保持与命令一致） */
+  samples?: number
+}): Promise<TrialCleanResult> {
+  if (!USE_BACKEND) {
+    throw new Error('数据清理作用于服务端数据库，需连接后台服务后才能执行')
+  }
+  return apiPost<TrialCleanResult>('/system/clean-trial-time', {
+    dryRun: input.dryRun,
+    ...(input.samples === undefined ? {} : { samples: input.samples })
+  })
+}
+
 // ==================== 数据看板 ====================
 
 export interface DashboardDayPoint {

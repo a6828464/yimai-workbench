@@ -58,6 +58,14 @@ final class TrainingPlanController extends Controller
         return staffOwnsRow($u, $row, 'created_by_user_id', 'created_by');
     }
 
+    /**
+     * 对外分享签发时的可读判定（v3.20.0）：与 index/canRead 同口径，逻辑未改。
+     */
+    public function canView(Request $r, TrainingPlan $row): bool
+    {
+        return $this->canRead($r, $row);
+    }
+
     /** POST /training-plans：新建一条（也可用于带客户端 id 的补传） */
     public function store(Request $r)
     {

@@ -220,8 +220,17 @@ export interface CustomerDetail {
   /** 会员管理模块的操作留痕（最近的在前） */
   logs: {
     id: number
+    /** 动作名（`已沟通` / `已祝福` / `新建客资` …） */
     action: string
     operator?: string
+    /**
+     * 留痕正文。v3.19.0（后端 t12）起，来自今日待办的动作会在**行首**写栏目前缀，
+     * 形如 `[待续费] 已沟通：张女士说月底答复`；更早的历史行没有前缀。
+     *
+     * 前端只按「行首长方括号」把它拆成一枚标签（见 detail.vue 的 logList），
+     * **不**再按 action/module 自己推导栏目 —— 前缀是后端唯一口径，
+     * 前端另算一份只会在后端加栏目时静默错位。
+     */
     detail?: string
     createdAt?: string
     [key: string]: unknown

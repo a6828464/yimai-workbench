@@ -69,6 +69,18 @@ final class PostClassReviewController extends Controller
         return false;
     }
 
+    /**
+     * 对外分享签发时的可见性判定（v3.20.0）。
+     *
+     * 只是把私有的 isVisible() 暴露成公开入口，**判定逻辑一字未改** ——
+     * 分享链接的可见面必须与「能不能在详情页看这条」完全一致；在别处重写一份
+     * 必然分叉，分叉的形态是「列表里看不到，却能把链接发给客户」。
+     */
+    public function canView(User $u, PostClassReview $row): bool
+    {
+        return $this->isVisible($u, $row);
+    }
+
     /** 服务老师是否对这条记录有可见关系（自己名下的会员或客资） */
     private function serviceOwns(User $u, PostClassReview $row): bool
     {

@@ -21,6 +21,7 @@ use App\Http\Controllers\PostClassReviewController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\PublicShareController;
 use App\Http\Controllers\ShareController;
+use App\Http\Controllers\ShareTokenController;
 use App\Http\Controllers\SyncJobController;
 use App\Http\Controllers\SystemController;
 use App\Http\Controllers\TaskController;
@@ -225,6 +226,12 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/post-class-reviews/{id}/to-plan', [PostClassReviewController::class, 'toPlan']);
     Route::post('/post-class-reviews/{id}/share', [PostClassReviewController::class, 'share']);
 
+    // ---------- 单份内容对外分享 token（v3.20.0） ----------
+    // 客户分析 / 训练计划各生成一枚 32 字节随机 token：分享卡片 path 带上它 → 固定到那一份，
+    // 客户不可能「点到别人的内容」。公开读取在 /public/share/{token}（免登录 + 手机号后四位）。
+    Route::post('/share/{kind}/{id}/token', [ShareTokenController::class, 'issue'])
+        ->whereIn('kind', ['review', 'plan']);
+
     // Legacy browser import (retained only for old clients)
     Route::post('/customers/import', [KyController::class, 'legacyImport']);
 
@@ -287,6 +294,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/system/retention', [SystemController::class, 'retentionUpdate']);
     // 注意：/system/changelog 不在登录组里，见文件末尾「公开接口」——小程序未登录也要看版本说明
     Route::post('/system/update', [SystemController::class, 'update']);
+    // 留资体验课卡片脏值清理（超管；body {dryRun:boolean}，缺省 dry-run）。
+    // 直接调 LeadTrialTimeCleaner，不经 shell 调 artisan —— 见控制器注释。
+    Route::post('/system/clean-trial-time', [SystemController::class, 'cleanTrialTime']);
 
     // ---------- 薪酬计算（仅超管：控制器内每个端点首行 requireSuper，与 BackupController 同模式） ----------
     // 身份标签枚举的唯一下发点；前端必须从这里取，禁止在 payroll/ 下再写一份硬编码列表
@@ -316,6 +326,9 @@ Route::prefix('public')->middleware('throttle:60,1')->group(function () {
     Route::get('/training/{code}', [PublicShareController::class, 'training']);
     Route::get('/post-class/{code}', [PublicShareController::class, 'postClass']);
     Route::get('/sales/{token}', [PublicShareController::class, 'sales']);
+    // 单份内容分享（客户分析 / 训练计划）：token 绑定唯一一份内容，
+    // 失败口径 410 失效 / 401 需输入手机号后四位 / 403 号码不匹配 —— 见 ShareTokenController
+    Route::get('/share/{token}', [ShareTokenController::class, 'show']);
 });
 
 /*

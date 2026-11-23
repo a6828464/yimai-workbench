@@ -66,8 +66,11 @@ interface FlatItem {
  *
  * ⚠️ 2026-11-06 补 `tasks`：此前只有 7 组，后端 `return ok([... 'tasks' => $tasks])`
  * 与工作台 `TODO_LABELS.tasks = '今日任务'` 都有这一组，唯独本页的 GROUPS 漏了 →
- * 「今日任务」在待办页完全不渲染（数据到了、页面不显示），而且 `?tab=tasks` 深链
- * 命中不了 TAB_TYPES 会静默回落「全部」。属于「数据存在但看不见」的 P1。
+ * 「今日任务」在待办页完全不渲染（数据到了、页面不显示）。属于「数据存在但看不见」的 P1。
+ *
+ * ⚠️ 2026-11（v3.19.0）馆主砍掉了顶部「全部」分类：原来的 tab 条第一项是「全部」，
+ * 语义等于「不分组滚动全部」，与下面的分组卡片完全重复。现在**进入即按本数组顺序
+ * 铺开所有有线索的组**（顺序即优先级，不做折叠、不按数量排序）。
  */
 const GROUPS: { type: string; label: string }[] = [
   { type: 'bookings', label: '今日预约' },
@@ -89,7 +92,15 @@ const GROUPS: { type: string; label: string }[] = [
  * 所以这一组的正确动作是「点行进任务中心」，而不是在待办页改状态。
  */
 const DEFAULT_ACTIONS: Record<string, string[]> = {
-  bookings: ['已到店', '已联系'],
+  /**
+   * 今日预约**不给动作按钮**（v3.19.0，馆主原话：「『已到店』『已联系』这两个按钮没有用，
+   * 反而遮蔽了前面显示的信息，可以直接删掉」）。
+   *
+   * 只删渲染层：后端 `todoAction` 的 bookings/trials 流转语义一个字没动 ——
+   * 体验课组的「已接待」仍走它，工作台其它入口也可能在用。
+   * 这一组现在只读：课程 · 时间 · 老师 · 近三月出勤 · 卡项余量。
+   */
+  bookings: [],
   renewals: ['已沟通'],
   churnRisks: ['已沟通'],
   birthdays: ['已祝福'],
@@ -99,18 +110,14 @@ const DEFAULT_ACTIONS: Record<string, string[]> = {
   tasks: []
 }
 
-/** 顶部标签条：全部 + 8 组，顺序即 GROUPS 顺序（不按数量排序） */
-const ALL_TAB = { type: 'all', label: '全部' }
-const TABS: { type: string; label: string }[] = [ALL_TAB, ...GROUPS]
-const TAB_TYPES = new Set(TABS.map((t) => t.type))
+/** 深链 ?tab=xxx 想定位的组（只用于滚动定位，不再用于过滤，见 scrollToPendingTab） */
+const pendingTab = ref('')
 
 const groups = ref<{ type: string; label: string; items: FlatItem[] }[]>([])
 const loading = ref(false)
 const failed = ref(false)
 const loaded = ref(false)
 const acting = ref('')
-/** 当前选中的分组（all = 依次展示全部非空组） */
-const active = ref(ALL_TAB.type)
 
 /** 全组未完成总数（页头一句话讲清今天还剩多少） */
 const pendingCount = computed(() =>
@@ -121,30 +128,25 @@ function pendingOf(g: { items: FlatItem[] }): number {
   return g.items.filter((it) => !it.done).length
 }
 
-/** 当前标签下要渲染的组（全部 = 按 GROUPS 顺序，空的组 normalize 时已剔除） */
-const visibleGroups = computed(() =>
-  active.value === ALL_TAB.type ? groups.value : groups.value.filter((g) => g.type === active.value)
-)
+/** 组名查表（弹窗标题「待续费 · 张女士」用，省得每处再 find 一遍） */
+const GROUP_LABEL: Record<string, string> = Object.fromEntries(GROUPS.map((g) => [g.type, g.label]))
 
-/** 当前标签的未完成数（全部 = 总数） */
-const activePending = computed(() => {
-  if (active.value === ALL_TAB.type) return pendingCount.value
-  const g = groups.value.find((x) => x.type === active.value)
-  return g ? pendingOf(g) : 0
-})
-
-const activeLabel = computed(() => TABS.find((t) => t.type === active.value)?.label ?? '全部')
-
-/** tab 角标用（0 不显示，避免一条待办都没有还挂个 0） */
-function tabCount(type: string): number {
-  if (type === ALL_TAB.type) return pendingCount.value
-  const g = groups.value.find((x) => x.type === type)
-  return g ? pendingOf(g) : 0
-}
-
-function selectTab(type: string) {
-  if (!TAB_TYPES.has(type)) return
-  active.value = type
+/**
+ * 深链 ?tab=churnRisks → **滚到那一组**，而不是过滤到只剩那一组。
+ *
+ * 为什么改成滚动：馆主 2026-11 砍掉了「全部」分类，页面固定按 GROUPS 顺序铺开所有
+ * 有线索的组（顺序即优先级，不做折叠）。但工作台的指标卡、待办摘要仍然会带
+ * `?tab=` 进来，直接丢弃会让「点指标卡进来却停在列表顶部」变成新的困惑。
+ * 找不到对应组（今天那一组没线索）时安静留在顶部，不报错、不过滤。
+ */
+function scrollToPendingTab(): void {
+  const t = pendingTab.value
+  pendingTab.value = ''
+  if (!t || !groups.value.some((g) => g.type === t)) return
+  // 等这一帧渲染完再量节点：load() 里刚给 groups 赋值，同帧还查不到 #grp-xxx
+  setTimeout(() => {
+    uni.pageScrollTo({ selector: `#grp-${t}`, duration: 240, fail: () => {} })
+  }, 60)
 }
 
 /**
@@ -477,6 +479,8 @@ async function load() {
     groups.value = normalize(raw ?? {})
     loaded.value = true
     failed.value = false
+    // 深链 ?tab=xxx：数据到位后再滚，否则目标组还没渲染出来
+    scrollToPendingTab()
   } catch {
     if (my !== loadSeq) return
     /* http 层已 toast */
@@ -487,64 +491,101 @@ async function load() {
 }
 
 /**
- * 哪些动作需要「先写一句沟通内容」。
+ * 标记弹窗的快捷短语：**按场景（分组）+ 动作**给，不再共用一套。
  *
- * 起因（2026-11 真机反馈，服务老师在群里提的原话）：
- *   「已沟通里面点进去，感觉最好可以有一栏这次沟通的内容备忘……因为如果只是点个已沟通，
- *     有一点形式化，对这个客户还是不清楚的」。
+ * 起因（2026-11 馆主原话）：「标记会员这边有一个弹窗，里面是『这次沟通说了什么』。
+ * 可以给上面的不同场景分类，都放两个简单的快捷短语进去」。
+ * 之前六条全是续费语气（「在考虑，月底答复」），点到生日祝福上完全不搭；
+ * 标题也统一叫「这次沟通说了什么」，看不出自己在标记哪一组。
  *
- * `已沟通` 点下去先弹备注面板，写不写都行（面板里有「只标记」），但不写就永远
- * 没有交接信息。`已祝福`（v3.19.0 加）同理但诉求不同：生日祝福是**一次性动作**，
- * 三个月后回看「到底微信祝福了还是打了电话」全靠这句话，所以也给面板。
- * 其它动作（已到店 / 爽约 / 已提交 / 已首响）是同一天几十次的高频点击，加一步会明显
- * 拖慢，**不加**。要扩就把动作名加进这个集合，别在模板里另写条件。
+ * 三条设计口径：
+ *  ① 一张表管到底：短语、是否弹窗、标题、placeholder 全从这里推，模板里不写条件分支；
+ *  ② 「有短语 = 需要留痕」：表里给了这一组这个动作的短语，就点开面板；没给就一键闭环
+ *     （已提交 / 已首响 / 无效客资 这类高频动作不该多一次点击）；
+ *  ③ 短语只描述**这一组最常见的结果**，文案不预设结论，也不跨场景借用。
+ *
+ * 新增组或动作时只改这张表；`已到店 / 已联系`（今日预约）已按馆主要求整组去掉，见
+ * DEFAULT_ACTIONS.bookings。
  */
-const NEEDS_REMARK = new Set(['已沟通', '已祝福'])
+const SCENE_PRESETS: Record<string, Record<string, string[]>> = {
+  // 待续费：只剩「约到店」和「还在考虑」两种真实结局
+  renewals: {
+    已沟通: ['已电话沟通，本周到店', '在考虑，月底答复']
+  },
+  // 流失风险：召回成功 / 召回无回音 / 明确不练了，三种都要能被一句话说清
+  churnRisks: {
+    已沟通: ['已微信召回，等她回', '已电话，说忙完这阵来', '暂时不练了，先放着']
+  },
+  // 生日关怀：门店真实就这四种送法，前两条最常用所以排前面
+  birthdays: {
+    已祝福: ['已微信祝福', '已电联祝福', '已准备礼物', '已当面祝福']
+  },
+  // 体验课：接待结果只有「有戏 / 没戏」，爽约则记一句改约
+  trials: {
+    已接待: ['已接待，体验不错', '已接待，暂不报名'],
+    爽约: ['已联系改约']
+  }
+}
 
-/**
- * 快捷短语：一麦续费/流失场景里最常出现的六种沟通结果。
- *
- * 员工在门店前台用一只手打字，逐字敲备注必然演变成「不写」。点一下填进去、还能改，
- * 才能让「写备注」这件事的成本低到愿意做。文案只描述**沟通结果**，不预设结论。
- */
-const NOTE_PRESETS = [
-  '已电话沟通，本周内到店',
-  '已微信跟进，还没回',
-  '在考虑，月底给答复',
-  '价格敏感，已介绍活动',
-  '出差/受伤，延期跟进',
-  '已明确不再续'
-]
+/** 取某组某动作的快捷短语；没有就返回空数组（= 该动作一键闭环、不弹面板） */
+function presetsOf(type: string, action: string): string[] {
+  return SCENE_PRESETS[type]?.[action] ?? []
+}
 
-/**
- * 生日祝福的快捷短语（v3.19.0）：门店真实就这四种送法，四种之外才是手写。
- * 与 NOTE_PRESETS 分开：生日不需要「价格敏感」这类续费话术，混在一起点错更麻烦。
- */
-const BLESS_PRESETS = ['已微信祝福', '已电联祝福', '已准备礼物', '已当面祝福']
+/** 是否需要先写一句留痕：有场景短语就需要（口径见 SCENE_PRESETS 注释②） */
+function needsNote(type: string, action: string): boolean {
+  return presetsOf(type, action).length > 0
+}
 
 const noteOpen = ref(false)
 const noteText = ref('')
 const noteItem = ref<FlatItem | null>(null)
 const noteAction = ref('')
 
-/** 当前面板是「生日祝福」还是「沟通备注」——标题、短语、提示语三处都跟着它切换 */
-const isBless = computed(() => noteAction.value === '已祝福')
-const notePresets = computed(() => (isBless.value ? BLESS_PRESETS : NOTE_PRESETS))
-const noteTitle = computed(() => (isBless.value ? '生日祝福怎么送的？' : '这次沟通说了什么？'))
-const notePlaceholder = computed(() =>
-  isBless.value
-    ? '也可以补一句：送的什么、她回了什么、要不要下周再问候…'
-    : '也可以自己写：她的顾虑、约好的下一步、下次跟进时间…'
-)
+/** 短语跟着「组 + 动作」走（体验课的「已接待」与「爽约」短语不同） */
+const notePresets = computed(() => {
+  const it = noteItem.value
+  return it ? presetsOf(it.type, noteAction.value) : []
+})
+
+/** 标题带场景：`待续费 · 张女士`（馆主要求，不再统一叫「这次沟通说了什么」） */
+const noteTitle = computed(() => {
+  const it = noteItem.value
+  if (!it) return ''
+  return [GROUP_LABEL[it.type] ?? '', it.title].filter(Boolean).join(' · ')
+})
+
+/**
+ * 副标题用这条待办自己的「为什么在这里」（info 第一行：剩几节 / 多久没来 / 几点上课）。
+ * 写备注时最需要的正是这层上下文，而不是再重复一遍名字。
+ */
+const noteSubtitle = computed(() => {
+  const it = noteItem.value
+  if (!it) return ''
+  return it.info[0] || noteAction.value
+})
+
+/** 输入框引导语也按场景给：生日问「怎么送的」，体验课问「上得怎么样」 */
+const notePlaceholder = computed(() => {
+  const type = noteItem.value?.type ?? ''
+  if (type === 'birthdays') return '也可以补一句：送的什么、她回了什么、要不要下周再问候…'
+  if (type === 'trials') return '也可以补一句：上了什么课、学员反馈、下次要不要跟进…'
+  if (type === 'churnRisks') return '也可以补一句：为什么走、有没有可能回来、什么时候再问…'
+  return '也可以自己写：她的顾虑、约好的下一步、下次跟进时间…'
+})
+
 const noteTips = computed(() =>
-  isBless.value
+  noteItem.value?.type === 'birthdays'
     ? '会写进这个会员的操作留痕 —— 明年这个时候能查到今年是怎么送的。'
     : '会写进这个会员的操作留痕，换老师接手也看得到。'
 )
 
-/** 动作入口：需要留痕的动作先开面板（绝不再先跳会员详情），其余动作保持「一键闭环」 */
+/**
+ * 动作入口：需要留痕的动作先开面板（绝不再先跳会员详情），其余动作保持「一键闭环」。
+ * 「需不需要留痕」由 SCENE_PRESETS 决定（见 needsNote），不再维护第二份动作白名单。
+ */
 function onAction(it: FlatItem, action: string): void {
-  if (!NEEDS_REMARK.has(action)) {
+  if (!needsNote(it.type, action)) {
     void submit(it, action)
 
     return
@@ -688,13 +729,15 @@ function openCustomer(item: FlatItem): void {
   uni.showToast({ title: '这条待办没有关联客户档案', icon: 'none' })
 }
 
-// 深链：/pkg-biz/todo/todo?tab=bookings（或 ?tab=newLeads）→ 直接落在对应分组
+/**
+ * 深链：/pkg-biz/todo/todo?tab=renewals → 进页面后**滚到**「待续费」那一组。
+ *
+ * 注意语义已经变了：v3.19.0 砍掉「全部」分类后不再有「按 tab 过滤」这回事，
+ * 页面永远是「全部有线索的组按优先级铺开」。所以 ?tab= 只作为定位提示，
+ * 传错 / 传空 / 今天那组没线索 —— 一律安静留在顶部（绝不再出现「整屏空白」这种失败）。
+ */
 onLoad((options) => {
-  const t = String((options as Record<string, string>)?.tab ?? '')
-  // 未知 / 空值一律回落「全部」：工作台指标卡和待办摘要都会带 ?tab= 进来，
-  // 传错一个 type 就整屏空白是最糟的失败方式 —— 宁可让人看全量。
-  // （此前是「不认识就不动 active」，效果相同但意图不明，这里写死回落值）
-  active.value = t && TAB_TYPES.has(t) ? t : ALL_TAB.type
+  pendingTab.value = String((options as Record<string, string>)?.tab ?? '')
 })
 
 onShow(() => {
@@ -714,40 +757,18 @@ onShareAppMessage(() => shareToHome())
 
 <template>
   <view class="ym-page todo">
-    <!-- 顶部摘要：数字跟随当前标签 -->
+    <!-- 顶部摘要：全店未完成总数 + 有线索的组数（v3.19.0 起没有分组标签，数字即全量） -->
     <view class="thero">
       <view class="thero__main">
-        <text class="thero__label">{{ active === 'all' ? '今日待办' : activeLabel }}</text>
+        <text class="thero__label">今日待办</text>
         <view class="thero__value-row">
-          <text class="thero__value ym-num">{{ activePending }}</text>
+          <text class="thero__value ym-num">{{ pendingCount }}</text>
           <text class="thero__unit">项待处理</text>
         </view>
       </view>
       <view class="thero__side">
-        <ym-badge
-          :text="active === 'all' ? `${groups.length} 组有线索` : `${visibleGroups[0]?.items.length ?? 0} 项`"
-          tone="brand"
-          plain
-        />
+        <ym-badge :text="`${groups.length} 组有线索`" tone="brand" plain />
       </view>
-    </view>
-
-    <!-- 顶部固定分组标签条：全部 + 8 组，横向可滚 -->
-    <view class="tabbar">
-      <scroll-view class="tabbar__scroll" scroll-x :show-scrollbar="false">
-        <view class="tabbar__inner">
-          <view
-            v-for="t in TABS"
-            :key="t.type"
-            class="tabbar__item ym-tap"
-            :class="{ 'is-active': active === t.type }"
-            @click="selectTab(t.type)"
-          >
-            <text class="tabbar__label">{{ t.label }}</text>
-            <text v-if="tabCount(t.type)" class="tabbar__count ym-num">{{ tabCount(t.type) }}</text>
-          </view>
-        </view>
-      </scroll-view>
     </view>
 
     <!-- 三态 -->
@@ -780,21 +801,13 @@ onShareAppMessage(() => shareToHome())
       @action="load"
     />
 
-    <ym-empty
-      v-else-if="!visibleGroups.length"
-      icon="check-circle"
-      :text="`${activeLabel} 今日无待办`"
-      desc="切到「全部」看看其他组"
-      action-text="看全部"
-      @action="selectTab('all')"
-    />
-
-    <ym-section
-      v-for="g in visibleGroups"
-      :key="g.type"
-      :title="g.label"
-      :desc="pendingOf(g) ? `${pendingOf(g)} 项待处理` : '本组已闭环'"
-    >
+    <!-- 一组一张卡，顺序即 GROUPS 里的优先级（不折叠、不按数量排序）。
+         id 只给深链定位用（?tab=xxx → pageScrollTo('#grp-xxx')），不参与展示。 -->
+    <view v-for="g in groups" :id="`grp-${g.type}`" :key="g.type" class="gsection">
+      <ym-section
+        :title="g.label"
+        :desc="pendingOf(g) ? `${pendingOf(g)} 项待处理` : '本组已闭环'"
+      >
       <!-- ⚠️ 事件顺序（2026-11 真机 bug 修复，馆主反馈「点已沟通先跳详情页，返回后才弹面板」）
            旧写法：整行 <view @click="openCustomer(it)"> 包住按钮，指望 wd-button 上的
            `@click.stop` 拦住冒泡。**拦不住**，原因有两层：
@@ -847,11 +860,13 @@ onShareAppMessage(() => shareToHome())
         <!-- 同事写下的沟通内容，同一行里直接看得到（后端 doneRemark） -->
         <text v-if="it.done && it.doneRemark" class="titem__donenote ym-ellipsis">{{ it.doneRemark }}</text>
       </view>
-    </ym-section>
+      </ym-section>
+    </view>
 
-    <!-- 留痕面板（2026-11 员工反馈 / v3.19.0 加生日祝福）：只对 NEEDS_REMARK 里的动作弹出。
-         同一个面板两种语义（isBless 切换标题/短语/提示语），视觉完全一致 ——
-         员工不用学两套；内容都写进会员档案的操作留痕（后端 module=会员管理）。 -->
+    <!-- 留痕面板（2026-11 员工反馈 / v3.19.0 按场景分短语）：
+         只有 SCENE_PRESETS 里配了短语的「组 + 动作」才会弹出（needsNote），其余一键闭环。
+         标题带场景（`待续费 · 张女士`）、副标题带「为什么在这里」、短语按场景给，
+         内容写进会员档案的操作留痕（后端 module=会员管理）。 -->
     <wd-popup
       v-model="noteOpen"
       position="bottom"
@@ -861,7 +876,7 @@ onShareAppMessage(() => shareToHome())
       <view class="note">
         <view class="note__head">
           <text class="note__title">{{ noteTitle }}</text>
-          <text class="note__sub ym-ellipsis">{{ noteItem?.title }}</text>
+          <text class="note__sub ym-ellipsis">{{ noteSubtitle }}</text>
         </view>
 
         <view class="note__presets">
@@ -914,66 +929,13 @@ onShareAppMessage(() => shareToHome())
   --wot-button-small-radius: 10rpx;
 }
 
-/* ---------- 顶部固定分组标签条 ---------- */
-.tabbar {
-  position: sticky;
-  top: 0;
-  z-index: 6;
-  background: $white;
-  border-top: 2rpx solid $hairline;
-  border-bottom: 2rpx solid $hairline;
-}
-
-.tabbar__scroll {
-  width: 100%;
-  white-space: nowrap;
-}
-
-.tabbar__inner {
-  display: inline-flex;
-  gap: 12rpx;
-  padding: 14rpx 24rpx;
-}
-
-.tabbar__item {
-  display: inline-flex;
-  flex-shrink: 0;
-  gap: 8rpx;
-  align-items: center;
-  height: 80rpx;
-  padding: 0 26rpx;
-  background: $ink-50;
-  border-radius: 999rpx;
-}
-
-.tabbar__item.is-active {
-  background: $brand-500;
-}
-
-.tabbar__label {
-  font-size: 26rpx;
-  color: $ink-600;
-}
-
-.tabbar__item.is-active .tabbar__label {
-  font-weight: 600;
-  color: $white;
-}
-
-.tabbar__count {
-  min-width: 34rpx;
-  height: 34rpx;
-  padding: 0 8rpx;
-  font-size: 20rpx;
-  line-height: 34rpx;
-  text-align: center;
-  color: $brand-700;
-  background: $brand-100;
-  border-radius: 999rpx;
-}
-
-.tabbar__item.is-active .tabbar__count {
-  background: $white;
+/* ---------- 分组锚点 ----------
+ * 每组的容器只承担两件事：给深链一个可滚到的位置（#grp-xxx）、把组间距隔开。
+ * 不做折叠/吸顶 —— 馆主要求「一眼看全六组」，分组顺序即优先级。 */
+.gsection {
+  & + & {
+    margin-top: 8rpx;
+  }
 }
 
 /* ---------- 头部摘要 ---------- */

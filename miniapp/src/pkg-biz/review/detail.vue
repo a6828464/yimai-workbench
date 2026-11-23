@@ -21,7 +21,8 @@
  */
 import { computed, reactive, ref } from 'vue'
 import { onLoad, onShareAppMessage } from '@dcloudio/uni-app'
-import { shareToHome } from '@/utils/share'
+import { shareSelf, shareToHome } from '@/utils/share'
+import { issueShareToken, shareViewPath } from '@/api/share'
 import { useUserStore } from '@/store/user'
 import { copyText, requireFeature } from '@/utils/nav'
 import { hasAnyRole } from '@/utils/permission'
@@ -578,14 +579,66 @@ function openEdit() {
   formVisible.value = true
 }
 
+/* ---------- 分享给客户（v3.20.0） ----------
+ *
+ * 客户分析是给客户本人看的，但详情页要求登录 → 直接转发出去对方只会看到登录墙。
+ * 所以走「单份内容 token」：`POST /share/review/{id}/token` 换一个 64 位 token，
+ * 分享 path 指向免登录的 `/pkg-public/share/view?t=<token>`，客户点开就固定看到**这一份**，
+ * 且还要输手机号后四位（后端 401/403/410 三态）。
+ */
+const shareToken = ref('')
+/** 这份内容是否需要客户输后四位；false 时链接谁拿到都能看，必须明说 */
+const shareNeedCode = ref(true)
+const sharing = ref(false)
+
+/**
+ * 生成分享 token。
+ *
+ * 为什么是「先点生成、再点转发」两步：小程序的转发面板在**点击瞬间**读取
+ * `onShareAppMessage` 的返回值，token 是异步拿的 —— 把 open-type="share" 直接放在
+ * 「分享给客户」按钮上，第一次点必然发出旧的 path（首页）。所以按钮先只负责生成，
+ * 成功后再换成真正的转发按钮。
+ */
+async function onShareToCustomer(): Promise<void> {
+  if (sharing.value || !reviewId.value) return
+  sharing.value = true
+  try {
+    const res = await issueShareToken('review', reviewId.value)
+    shareToken.value = res.token
+    shareNeedCode.value = res.needCode
+    if (!res.needCode) {
+      // 无校验码：只靠 token 保护，员工必须知道「转发到群里谁也拦不住」
+      uni.showModal({
+        title: '这份内容没有校验码',
+        content: '该学员没有可用手机号，此链接一旦转发谁都能看，请只发给本人。',
+        showCancel: false
+      })
+    } else {
+      uni.showToast({ title: '已生成，点「转发给客户」', icon: 'none' })
+    }
+  } catch (e) {
+    // 403/422 后端给的就是人话（「命中红线的课后分析不对外分享」/「请先确认课后分析再分享」），
+    // 原样透出比换成「操作失败」更有用
+    const msg = e instanceof Error ? e.message : ''
+    uni.showToast({ title: msg || '生成分享链接失败，请稍后重试', icon: 'none' })
+  } finally {
+    sharing.value = false
+  }
+}
+
 function backToList() {
   const pages = getCurrentPages()
   if (pages.length > 1) uni.navigateBack({ delta: 1 })
   else uni.redirectTo({ url: '/pkg-biz/review/review' })
 }
 
-// 转发：员工页统一回首页（分享自己会撞 requireLogin 的登录墙），标题不带客户信息 —— 见 utils/share.ts
-onShareAppMessage(() => shareToHome())
+// 转发：**没有分享 token 时**一律回首页（员工页分享自己会撞 requireLogin 的登录墙）；
+// 生成过 token 之后，转发出去要落到免登录的公开页并固定这一份 —— 见 utils/share.ts 的 shareSelf。
+onShareAppMessage(() =>
+  shareToken.value
+    ? shareSelf('一麦 · 体态评估', shareViewPath(shareToken.value))
+    : shareToHome()
+)
 </script>
 
 <template>
@@ -728,6 +781,36 @@ onShareAppMessage(() => shareToHome())
         </view>
         <view v-else class="rv__readonly">
           <text>服务老师只读：填写与确认由授课老师完成</text>
+        </view>
+
+        <!-- 分享给客户：生成单份 token → 再转发（两步的原因见 onShareToCustomer 注释） -->
+        <view class="rv__share">
+          <wd-button
+            v-if="!shareToken"
+            size="small"
+            plain
+            :loading="sharing"
+            :disabled="sharing"
+            @click="onShareToCustomer"
+          >
+            分享给客户
+          </wd-button>
+          <!-- 原生 button 才能触发转发面板；样式在本页 scss 里重置 -->
+          <button v-else class="rv__share-btn" open-type="share">转发给客户</button>
+          <!-- 换发：同一份内容再生成一个新 token，**旧链接立刻失效** ——
+               链接被转错群时的撤回手段（后端 issue 是幂等换发，不新增行） -->
+          <text v-if="shareToken" class="rv__share-reset ym-tap" @click="onShareToCustomer">
+            重新生成（旧链接失效）
+          </text>
+          <text class="rv__share-hint">
+            {{
+              shareToken
+                ? shareNeedCode
+                  ? '链接已生成：客户需输入手机号后四位才能看'
+                  : '注意：这份内容没有校验码，谁拿到链接都能看'
+                : '生成一条只指向这份分析的链接，客户无需登录'
+            }}
+          </text>
         </view>
 
         <!-- 各维度评分 -->
@@ -1115,6 +1198,43 @@ onShareAppMessage(() => shareToHome())
     padding: 18rpx 28rpx 0;
     font-size: 22rpx;
     color: $ink-400;
+  }
+
+  /* ---------- 分享给客户 ---------- */
+  &__share {
+    display: flex;
+    flex-direction: column;
+    gap: 10rpx;
+    align-items: flex-start;
+    padding: 16rpx 28rpx 0;
+  }
+
+  /* 原生 button：微信默认整宽 + 自带边框/圆角，这里按设计系统重置成小胶囊 */
+  &__share-btn {
+    height: 60rpx;
+    padding: 0 26rpx;
+    font-size: 24rpx;
+    line-height: 60rpx;
+    color: $brand-700;
+    background: $brand-100;
+    border-radius: 999rpx;
+
+    &::after {
+      border: none;
+    }
+  }
+
+  &__share-hint {
+    font-size: 21rpx;
+    line-height: 1.5;
+    color: $ink-400;
+  }
+
+  /* 重新生成：次要动作，用文字链而不是第二个按钮（避免与「转发给客户」抢视觉） */
+  &__share-reset {
+    font-size: 21rpx;
+    color: $ink-400;
+    text-decoration: underline;
   }
 
   /* ---------- 观察项列表（只读） ---------- */
