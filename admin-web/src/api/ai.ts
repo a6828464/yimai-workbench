@@ -2668,7 +2668,8 @@ function cleanReadbackText(text: unknown): string {
     .replace(/^```[a-zA-Z]*\s*/, '')
     .replace(/```$/, '')
     .trim()
-  s = s.replace(/^[【\[]?\s*图片理解\s*[】\]]?\s*[：:]\s*/, '').trim()
+  // 全角/半角括号各一种，用非捕获组分开写：字符类里写 `\[` 会被 eslint 判为无谓转义
+  s = s.replace(/^(?:【|\[)?\s*图片理解\s*(?:】|\])?\s*[：:]\s*/, '').trim()
   return s
 }
 
